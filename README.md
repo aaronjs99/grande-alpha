@@ -8,6 +8,10 @@ every decision and broker response.
 This is an intraday automation workstation, not exchange-colocated high-frequency trading. It does
 not promise profit. TQQQ and SQQQ target leveraged **daily** returns and can lose value rapidly.
 
+Start with the complete [operating documentation](docs/README.md), especially the
+[Monday live runbook](docs/MONDAY_RUNBOOK.md) and
+[strategy/profit mechanics](docs/STRATEGY_AND_PROFIT.md).
+
 ## Monday startup
 
 1. Open Robinhood and verify the Agentic account's buying power and that ChatGPT/Agentic Trading is
