@@ -14,6 +14,8 @@ Use these documents in order:
    project without entering the robot runtime.
 7. [GRANDE Research Fund](GRANDE_RESEARCH_FUND.md) — a confirmation-gated personal-contribution
    ledger that never transfers money.
+8. [Sandbox](SANDBOX.md) — configurable seven-day TQQQS/SQQQS historical replay with virtual
+   cash, fills, metrics, and strict separation from Robinhood.
 
 ## One-sentence operating rule
 

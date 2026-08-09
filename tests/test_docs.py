@@ -15,6 +15,7 @@ def test_required_operating_docs_exist() -> None:
         "DAILY_JOURNAL_TEMPLATE.md",
         "SYSTEM_ARCHITECTURE.md",
         "GRANDE_RESEARCH_FUND.md",
+        "SANDBOX.md",
     }
     assert required <= {path.name for path in (ROOT / "docs").glob("*.md")}
 

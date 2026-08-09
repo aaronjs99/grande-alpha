@@ -1,5 +1,12 @@
 # Troubleshooting
 
+## Sandbox historical download fails
+
+Select **Offline deterministic scenario** and run again. Historical one-minute data comes from an
+external chart service that can be unavailable or change without notice. Offline results are
+generated scenarios, not a substitute for historical validation. Neither source requires or uses
+your Robinhood connection.
+
 ## Connect Robinhood opens a browser but never finishes
 
 1. Complete login only on a Robinhood domain.

@@ -22,6 +22,7 @@ GRANDE project family
 | Emergency stop | `STOP + CANCEL` blocks new orders and requests cancellation |
 | Evidence trail | SQLite receipts record decisions and broker responses |
 | Candidate versus approved runtime | `LOCKED`, `LIVE`, `EXPIRED`, and review-blocked states |
+| Simulation boundary | `TQQQS`/`SQQQS` replay engine receives no broker object or live authority |
 
 ## Hard separation
 
@@ -35,3 +36,7 @@ GRANDE project family
 The permitted connection is organizational and evidentiary: GRANDE Alpha uses the same style of
 bounded authority, explicit confirmation, stop control, and auditable receipts. Its Research Fund
 feature records only intended and externally confirmed contributions of personal realized profit.
+
+The sandbox is a third execution boundary inside GRANDE Alpha. It shares strategy mathematics and
+the audit store, but it has its own virtual accounting tables and no dependency on the broker,
+OAuth, account discovery, order review, order placement, or cancellation code.

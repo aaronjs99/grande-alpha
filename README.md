@@ -10,7 +10,16 @@ not promise profit. TQQQ and SQQQ target leveraged **daily** returns and can los
 
 Start with the complete [operating documentation](docs/README.md), especially the
 [Monday live runbook](docs/MONDAY_RUNBOOK.md) and
-[strategy/profit mechanics](docs/STRATEGY_AND_PROFIT.md).
+[strategy/profit mechanics](docs/STRATEGY_AND_PROFIT.md). To test without Robinhood or real
+orders, use the isolated [TQQQS/SQQQS sandbox](docs/SANDBOX.md).
+
+## Sandbox replay
+
+Open the **SANDBOX** tab without connecting Robinhood. It downloads up to seven calendar days of
+aligned QQQ/TQQQ/SQQQ one-minute candles—or uses a labeled deterministic offline scenario—and
+replays virtual `TQQQS`/`SQQQS` orders. Strategy, execution, exit, capital, and frequency settings
+are editable directly in the tab. Sandbox configuration and results never alter live authority or
+live strategy settings.
 
 ## Monday startup
 

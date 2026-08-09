@@ -86,6 +86,29 @@ class AuditStore:
                     confirmation_reference TEXT,
                     notes TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS sandbox_runs (
+                    run_id TEXT PRIMARY KEY,
+                    created_at TEXT NOT NULL,
+                    data_source TEXT NOT NULL,
+                    replay_start TEXT NOT NULL,
+                    replay_end TEXT NOT NULL,
+                    config_json TEXT NOT NULL,
+                    metrics_json TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS sandbox_fills (
+                    id INTEGER PRIMARY KEY,
+                    run_id TEXT NOT NULL REFERENCES sandbox_runs(run_id) ON DELETE CASCADE,
+                    filled_at TEXT NOT NULL,
+                    symbol TEXT NOT NULL CHECK(symbol IN ('TQQQS','SQQQS')),
+                    side TEXT NOT NULL CHECK(side IN ('buy','sell')),
+                    quantity REAL NOT NULL,
+                    price REAL NOT NULL,
+                    commission REAL NOT NULL,
+                    realized_pnl REAL,
+                    reason TEXT NOT NULL,
+                    cash_after REAL NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_sandbox_fills_run ON sandbox_fills(run_id,id);
                 """
             )
 
@@ -230,6 +253,65 @@ class AuditStore:
                 "SELECT COALESCE(SUM(eligible_contribution),0) AS total FROM research_fund WHERE status='confirmed'"
             ).fetchone()
         return float(row["total"] if row else 0.0)
+
+    def record_sandbox_run(
+        self,
+        run_id: str,
+        data_source: str,
+        replay_start: str,
+        replay_end: str,
+        config: dict[str, Any],
+        metrics: dict[str, Any],
+        fills: list[dict[str, Any]],
+    ) -> None:
+        with self._lock, self._connection:
+            self._connection.execute(
+                """INSERT INTO sandbox_runs(
+                    run_id,created_at,data_source,replay_start,replay_end,config_json,metrics_json
+                ) VALUES(?,?,?,?,?,?,?)""",
+                (
+                    run_id,
+                    utc_now().isoformat(),
+                    data_source,
+                    replay_start,
+                    replay_end,
+                    json.dumps(config, default=str),
+                    json.dumps(metrics, default=str),
+                ),
+            )
+            self._connection.executemany(
+                """INSERT INTO sandbox_fills(
+                    run_id,filled_at,symbol,side,quantity,price,commission,
+                    realized_pnl,reason,cash_after
+                ) VALUES(?,?,?,?,?,?,?,?,?,?)""",
+                [
+                    (
+                        run_id,
+                        fill["timestamp"],
+                        fill["symbol"],
+                        fill["side"],
+                        fill["quantity"],
+                        fill["price"],
+                        fill["commission"],
+                        fill["realized_pnl"],
+                        fill["reason"],
+                        fill["cash_after"],
+                    )
+                    for fill in fills
+                ],
+            )
+        self.receipt(
+            "sandbox",
+            f"Saved sandbox replay {run_id[:8]} with {len(fills)} virtual fills",
+            {"run_id": run_id, "metrics": metrics, "data_source": data_source},
+        )
+
+    def recent_sandbox_runs(self, limit: int = 50) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._connection.execute(
+                "SELECT * FROM sandbox_runs ORDER BY created_at DESC LIMIT ?", (limit,)
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def close(self) -> None:
         with self._lock:

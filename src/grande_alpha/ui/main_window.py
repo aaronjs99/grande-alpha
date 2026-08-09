@@ -31,6 +31,7 @@ from grande_alpha.config import AppConfig
 from grande_alpha.controller import TradingController, TradingSnapshot
 from grande_alpha.models import Regime
 from grande_alpha.ui.dialogs import FundPlanDialog, LiveGrantDialog
+from grande_alpha.ui.sandbox_widget import SandboxWidget
 
 STYLESHEET = """
 QWidget { background: #0b1118; color: #e9f0f6; font-family: 'Segoe UI'; font-size: 10pt; }
@@ -193,6 +194,8 @@ class MainWindow(QMainWindow):
         tabs.addTab(self.orders_table, "Orders")
         tabs.addTab(self.activity_table, "Receipts")
         tabs.addTab(fund_widget, "GRANDE Research Fund")
+        self.sandbox_widget = SandboxWidget(self.controller.store)
+        tabs.addTab(self.sandbox_widget, "SANDBOX")
         splitter.addWidget(tabs)
         splitter.setStretchFactor(0, 3)
         splitter.setStretchFactor(1, 2)

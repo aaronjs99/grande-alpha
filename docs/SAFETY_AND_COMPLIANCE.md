@@ -2,6 +2,10 @@
 
 This document identifies operating boundaries; it is not individualized legal or tax advice.
 
+The **SANDBOX** tab is non-financial simulation: it uses fictional aliases and cannot contact the
+broker. The rest of the application remains capable of real-money trading after explicit live
+authorization; a successful sandbox run never grants or implies that authority.
+
 ## Robinhood account boundary
 
 The app selects an active account that Robinhood reports as `agentic_allowed=true`. It can read
