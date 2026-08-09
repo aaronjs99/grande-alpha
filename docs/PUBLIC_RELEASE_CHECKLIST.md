@@ -28,4 +28,4 @@ A public release is ready only when every required item is checked for that exac
 - [ ] A qualified reviewer assesses financial promotion, broker API terms, privacy, consumer-protection, and applicable jurisdictional obligations.
 - [ ] Accessibility keyboard/focus/screen-reader checks are completed and limitations are documented.
 
-The local `0.4.0` build is a community-preview release candidate, not a claim that these external launch gates are complete.
+The local `0.5.0` build is a community-preview release candidate, not a claim that these external launch gates are complete.

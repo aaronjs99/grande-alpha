@@ -288,7 +288,7 @@ class HistoricalDataProvider:
             raise ValueError(f"Only {len(frames)} aligned {interval} candles were available")
         quality = assess_quality(frames, interval)
         bundle = HistoricalBundle(
-            source=f"Yahoo Finance chart data ({interval}) — cached research source",
+            source=f"Yahoo Finance chart data ({interval}) — unsupported research source",
             downloaded_at=utc_now(),
             frames=frames,
             interval=interval,

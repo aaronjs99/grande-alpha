@@ -10,6 +10,7 @@ from PySide6.QtCore import QObject, Signal
 
 from grande_alpha.broker.base import Broker, BrokerError
 from grande_alpha.config import AppConfig
+from grande_alpha.evidence import strategy_fingerprint
 from grande_alpha.models import (
     Account,
     BrokerOrder,
@@ -205,6 +206,11 @@ class TradingController(QObject):
     def authorize_live(self, grant: LiveGrant) -> None:
         if not self.config.live_trading_enabled:
             raise RuntimeError("Real-order controls are disabled. Unlock them deliberately in Settings first")
+        if not self.live_evidence_ready():
+            raise RuntimeError(
+                "Real-order authority requires a current passing evidence certificate for this exact strategy. "
+                "Run the full Evidence Lab on eligible market history; failed or mismatched research stays shadow-only"
+            )
         if self._shadow is not None and self._shadow.state.active:
             raise RuntimeError("Stop live shadow mode before granting real-order authority")
         if self.snapshot.account is None or self.snapshot.portfolio is None:
@@ -234,9 +240,21 @@ class TradingController(QObject):
         )
         self._emit()
 
+    def live_evidence_ready(self) -> bool:
+        fingerprint = strategy_fingerprint(self.config)
+        return self.store.current_live_evidence(fingerprint) is not None
+
     def start_strategy(self) -> None:
         if not self.config.live_trading_enabled:
             raise RuntimeError("Real-order controls are disabled in Settings")
+        if not self.live_evidence_ready():
+            self.risk.disarm()
+            self.snapshot.strategy_running = False
+            self._emit()
+            raise RuntimeError(
+                "The evidence certificate for this exact strategy is missing or expired; "
+                "real-order authority has been revoked"
+            )
         if self._shadow is not None and self._shadow.state.active:
             raise RuntimeError("Stop live shadow mode before starting real-order automation")
         if self.risk.session_status() != "LIVE":

@@ -1,8 +1,9 @@
 # Evidence lab and promotion gates
 
-The evidence lab is designed to make a promising backtest harder to fool. It never enables live
-trading. Its strongest outcome, `LIVE_REVIEW_ELIGIBLE`, means only that a human may perform a new
-live-risk review. The normal outcome is `SHADOW_ONLY`.
+The evidence lab is designed to make a promising backtest harder to fool. Its strongest outcome,
+`LIVE_REVIEW_ELIGIBLE`, creates a local, 30-day certificate for the exact strategy fingerprint.
+That certificate only makes the separate live-risk review available; it does not authorize an
+order or predict future profit. The normal outcome is `SHADOW_ONLY`.
 
 ## Tests produced
 
@@ -21,15 +22,21 @@ live-risk review. The normal outcome is `SHADOW_ONLY`.
 |---|---|
 | Historical source | Observed or imported market history; synthetic scenarios are ineligible |
 | Data breadth | At least 20 market sessions |
+| Data recency | Final observation no more than 30 days old |
 | Data integrity | Hash-valid, with zero duplicate or missing intraday intervals |
 | Parameter stability | At least half of neighboring configurations profitable |
-| Cost stress | Positive P/L at 2x modeled costs |
+| Cost stress | Positive P/L at 3x modeled costs |
+| Closed-trade sample | At least 30 after-cost round trips |
+| After-cost quality | Profit factor at least 1.20 and positive expectancy |
+| Random-entry control | Strategy at or above the 75th percentile of seeded random trials |
 | Profit concentration | No single day over 50% of positive daily P/L |
 | Drawdown | No more than 5% in the research configuration |
-| Walk-forward | At least five folds and at least 60% positive test folds |
+| Walk-forward | At least five folds, 60% positive test folds, 20 out-of-sample trades, median profit factor 1.10, and positive median expectancy |
 
-All gates must pass simultaneously. A pass does not estimate the probability of future profit,
-validate the market-data source, account for tax/settlement restrictions, or authorize real money.
+All gates must pass simultaneously. Every pass and failure is stored in the local audit database.
+Changing a fingerprinted signal or exit setting invalidates the certificate, and a certificate
+older than 30 days is ineligible. A pass does not estimate the probability of future profit,
+validate the market-data license, account for tax/settlement restrictions, or authorize real money.
 Before any live review, preserve a final dataset period that was not used to invent, select, or tune
 the strategy.
 

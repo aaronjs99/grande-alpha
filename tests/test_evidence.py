@@ -1,4 +1,11 @@
-from grande_alpha.evidence import candidate_grid, cost_stress, parameter_sweep, promotion_report
+from grande_alpha.evidence import (
+    candidate_grid,
+    cost_stress,
+    parameter_sweep,
+    promotion_report,
+    random_entry_control,
+    strategy_fingerprint,
+)
 from grande_alpha.historical import deterministic_demo
 from grande_alpha.sandbox import SandboxConfig, SandboxReplayEngine
 
@@ -13,10 +20,18 @@ def test_evidence_pipeline_is_deterministic_and_never_auto_promotes_weak_data() 
     assert first == second
     assert len(first) >= 9
     result = SandboxReplayEngine(config).run(bundle)
-    report = promotion_report(bundle, result, first, cost_stress(bundle, config), None)
+    control = random_entry_control(bundle, config, result.return_pct, trials=20)
+    report = promotion_report(bundle, config, result, first, cost_stress(bundle, config), None, control)
     assert report.status == "SHADOW_ONLY"
     assert not report.passed
     assert not next(gate for gate in report.gates if gate.name == "Historical source").passed
+    assert report.strategy_fingerprint == strategy_fingerprint(config)
+    assert {gate.name for gate in report.gates} >= {
+        "Closed-trade sample",
+        "After-cost quality",
+        "Random-entry control",
+        "Data recency",
+    }
 
 
 def test_execution_rejections_are_audited() -> None:

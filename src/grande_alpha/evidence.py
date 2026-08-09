@@ -1,15 +1,31 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import random
 import statistics
 from collections.abc import Iterable
 from dataclasses import dataclass, replace
+from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
 
 from grande_alpha.historical import HistoricalBundle, assess_quality
 from grande_alpha.sandbox import INTERVAL_MINUTES, SandboxConfig, SandboxReplayEngine, SandboxResult
 
 EASTERN = ZoneInfo("America/New_York")
+EVIDENCE_POLICY_VERSION = 2
+STRATEGY_FINGERPRINT_FIELDS = (
+    "warmup_bars",
+    "fast_ema",
+    "slow_ema",
+    "trend_threshold_bps",
+    "momentum_bars",
+    "hard_stop_pct",
+    "take_profit_pct",
+    "max_hold_minutes",
+    "no_trade_open_minutes",
+    "no_trade_close_minutes",
+)
 
 
 @dataclass(frozen=True)
@@ -46,6 +62,8 @@ class WalkForwardFold:
     test_return_pct: float
     test_drawdown_pct: float
     test_profit_factor: float
+    test_round_trips: int
+    test_expectancy: float
 
 
 @dataclass(frozen=True)
@@ -55,6 +73,9 @@ class WalkForwardResult:
     average_test_return_pct: float
     median_test_return_pct: float
     worst_test_drawdown_pct: float
+    total_test_round_trips: int
+    median_test_profit_factor: float
+    median_test_expectancy: float
 
 
 @dataclass(frozen=True)
@@ -79,10 +100,21 @@ class PromotionReport:
     status: str
     gates: list[PromotionGate]
     dataset_hash: str
+    strategy_fingerprint: str
+    policy_version: int = EVIDENCE_POLICY_VERSION
 
     @property
     def passed(self) -> bool:
         return all(gate.passed for gate in self.gates)
+
+
+def strategy_fingerprint(config: object) -> str:
+    payload = {
+        "policy_version": EVIDENCE_POLICY_VERSION,
+        **{field: getattr(config, field) for field in STRATEGY_FINGERPRINT_FIELDS},
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def compare_configs(bundle: HistoricalBundle, configs: dict[str, SandboxConfig]) -> list[ComparisonRow]:
@@ -214,6 +246,8 @@ def walk_forward(
                 test_result.return_pct,
                 test_result.max_drawdown_pct,
                 test_result.profit_factor,
+                test_result.round_trips,
+                test_result.expectancy,
             )
         )
         cursor += step_sessions
@@ -224,6 +258,9 @@ def walk_forward(
         statistics.fmean(test_returns),
         statistics.median(test_returns),
         max(fold.test_drawdown_pct for fold in folds),
+        sum(fold.test_round_trips for fold in folds),
+        statistics.median(fold.test_profit_factor for fold in folds),
+        statistics.median(fold.test_expectancy for fold in folds),
     )
 
 
@@ -281,17 +318,22 @@ def random_entry_control(
 
 def promotion_report(
     bundle: HistoricalBundle,
+    base_config: SandboxConfig,
     base_result: SandboxResult,
     sensitivity: list[SensitivityPoint],
     stressed: dict[float, SandboxResult],
     walk: WalkForwardResult | None,
+    random_control: RandomControl,
+    now: datetime | None = None,
 ) -> PromotionReport:
+    reference = now or datetime.now(UTC)
     sessions = bundle.quality.sessions if bundle.quality else len(_sessions(bundle))
     stable_pct = (
         sum(point.return_pct > 0 for point in sensitivity) / len(sensitivity) * 100.0 if sensitivity else 0.0
     )
     positive_days = [value for value in base_result.daily_pnl.values() if value > 0]
     concentration = max(positive_days) / sum(positive_days) * 100.0 if positive_days else 100.0
+    data_age_days = max(0, (reference - bundle.end).total_seconds() / 86_400)
     gates = [
         PromotionGate(
             "Historical source",
@@ -300,6 +342,12 @@ def promotion_report(
             "Observed or imported market history; synthetic scenarios are ineligible",
         ),
         PromotionGate("Data breadth", sessions >= 20, f"{sessions} sessions", "At least 20 sessions"),
+        PromotionGate(
+            "Data recency",
+            data_age_days <= 30,
+            f"{data_age_days:.1f} days old",
+            "The final observation is no more than 30 days old",
+        ),
         PromotionGate(
             "Data integrity",
             bool(bundle.quality and bundle.quality.clean and bundle.quality.missing_intervals == 0),
@@ -314,9 +362,27 @@ def promotion_report(
         ),
         PromotionGate(
             "Cost stress",
-            stressed.get(2.0, base_result).net_pnl > 0,
-            f"{stressed.get(2.0, base_result).return_pct:+.2f}% at 2x costs",
-            "Positive after 2x modeled costs",
+            stressed.get(3.0, base_result).net_pnl > 0,
+            f"{stressed.get(3.0, base_result).return_pct:+.2f}% at 3x costs",
+            "Positive after 3x modeled costs",
+        ),
+        PromotionGate(
+            "Closed-trade sample",
+            base_result.round_trips >= 30,
+            f"{base_result.round_trips} round trips",
+            "At least 30 after-cost closed round trips",
+        ),
+        PromotionGate(
+            "After-cost quality",
+            base_result.profit_factor >= 1.20 and base_result.expectancy > 0,
+            f"PF {base_result.profit_factor:.2f}; expectancy ${base_result.expectancy:+.4f}",
+            "Profit factor at least 1.20 and positive expectancy",
+        ),
+        PromotionGate(
+            "Random-entry control",
+            random_control.strategy_percentile >= 75.0,
+            f"Strategy at {random_control.strategy_percentile:.1f}th percentile",
+            "At or above the 75th percentile of seeded random-entry trials",
         ),
         PromotionGate(
             "Profit concentration",
@@ -332,15 +398,28 @@ def promotion_report(
         ),
     ]
     if walk is None:
-        gates.append(PromotionGate("Walk-forward", False, "Not run", "At least 5 folds; 60% positive"))
+        gates.append(
+            PromotionGate(
+                "Walk-forward",
+                False,
+                "Not run",
+                "At least 5 folds, 60% positive, 20 test trades, median PF 1.10, positive expectancy",
+            )
+        )
     else:
         gates.append(
             PromotionGate(
                 "Walk-forward",
-                len(walk.folds) >= 5 and walk.positive_fold_pct >= 60.0,
-                f"{len(walk.folds)} folds; {walk.positive_fold_pct:.1f}% positive",
-                "At least 5 folds; 60% positive",
+                len(walk.folds) >= 5
+                and walk.positive_fold_pct >= 60.0
+                and walk.total_test_round_trips >= 20
+                and walk.median_test_profit_factor >= 1.10
+                and walk.median_test_expectancy > 0,
+                f"{len(walk.folds)} folds; {walk.positive_fold_pct:.1f}% positive; "
+                f"{walk.total_test_round_trips} trades; median PF {walk.median_test_profit_factor:.2f}; "
+                f"expectancy ${walk.median_test_expectancy:+.4f}",
+                "At least 5 folds, 60% positive, 20 test trades, median PF 1.10, positive expectancy",
             )
         )
     status = "LIVE_REVIEW_ELIGIBLE" if all(gate.passed for gate in gates) else "SHADOW_ONLY"
-    return PromotionReport(status, gates, bundle.dataset_hash)
+    return PromotionReport(status, gates, bundle.dataset_hash, strategy_fingerprint(base_config))

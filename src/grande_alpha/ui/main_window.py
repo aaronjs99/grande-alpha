@@ -267,7 +267,11 @@ class MainWindow(QMainWindow):
             self.tabs.setCurrentIndex(index)
 
     def _open_settings(self) -> None:
-        dialog = SettingsDialog(self.config, self)
+        dialog = SettingsDialog(
+            self.config,
+            live_evidence_ready=self.controller.live_evidence_ready(),
+            parent=self,
+        )
         if dialog.exec() != dialog.DialogCode.Accepted:
             return
         previous = self.config
@@ -536,25 +540,30 @@ class MainWindow(QMainWindow):
         shadow = self._snapshot.shadow_running
         broker_enabled = self.config.broker_connection_enabled
         live_enabled = self.config.live_trading_enabled
+        evidence_ready = live_enabled and self.controller.live_evidence_ready()
         self.broker_panel.setVisible(broker_enabled)
         self.connect_button.setVisible(broker_enabled)
         self.shadow_button.setVisible(broker_enabled)
-        self.authorize_button.setVisible(live_enabled)
-        self.start_button.setVisible(live_enabled)
-        self.kill_button.setVisible(live_enabled)
-        self.flatten_button.setVisible(live_enabled)
+        self.authorize_button.setVisible(evidence_ready)
+        self.start_button.setVisible(evidence_ready)
+        self.kill_button.setVisible(evidence_ready)
+        self.flatten_button.setVisible(evidence_ready)
         self.mode_badge.setText(
-            "LIVE CONTROLS UNLOCKED"
+            "LIVE EVIDENCE READY"
+            if evidence_ready
+            else "SHADOW ONLY — EVIDENCE REQUIRED"
             if live_enabled
             else ("BROKER SHADOW ENABLED" if broker_enabled else "RESEARCH MODE")
         )
         self.mode_badge.setStyleSheet(
             "background:#4b2516;color:#ffc07a;border:1px solid #9a5328;border-radius:7px;padding:7px 10px;font-weight:700"
-            if live_enabled
+            if evidence_ready
             else "background:#15324a;color:#8fd3ff;border:1px solid #3478a4;border-radius:7px;padding:7px 10px;font-weight:700"
         )
-        self.authorize_button.setEnabled(connected and funded and not shadow)
-        self.start_button.setEnabled(live and not self._snapshot.strategy_running and not shadow)
+        self.authorize_button.setEnabled(evidence_ready and connected and funded and not shadow)
+        self.start_button.setEnabled(
+            evidence_ready and live and not self._snapshot.strategy_running and not shadow
+        )
         self.shadow_button.setEnabled(connected and (shadow or not live))
         self.kill_button.setEnabled(connected)
         self.flatten_button.setEnabled(bool(self._snapshot.positions))

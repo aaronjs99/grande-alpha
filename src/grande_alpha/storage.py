@@ -122,6 +122,19 @@ class AuditStore:
                 );
                 CREATE INDEX IF NOT EXISTS idx_sandbox_events_run
                     ON sandbox_execution_events(run_id,id);
+                CREATE TABLE IF NOT EXISTS research_promotions (
+                    id INTEGER PRIMARY KEY,
+                    created_at TEXT NOT NULL,
+                    dataset_hash TEXT NOT NULL,
+                    strategy_fingerprint TEXT NOT NULL,
+                    policy_version INTEGER NOT NULL,
+                    status TEXT NOT NULL CHECK(status IN ('SHADOW_ONLY','LIVE_REVIEW_ELIGIBLE')),
+                    source TEXT NOT NULL,
+                    replay_end TEXT NOT NULL,
+                    gates_json TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_research_promotions_fingerprint_time
+                    ON research_promotions(strategy_fingerprint,created_at DESC);
                 """
             )
 
@@ -370,6 +383,66 @@ class AuditStore:
                 "SELECT * FROM sandbox_runs ORDER BY created_at DESC LIMIT ?", (limit,)
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def record_research_promotion(
+        self,
+        *,
+        dataset_hash: str,
+        strategy_fingerprint: str,
+        policy_version: int,
+        status: str,
+        source: str,
+        replay_end: str,
+        gates: list[dict[str, Any]],
+    ) -> int:
+        if status not in {"SHADOW_ONLY", "LIVE_REVIEW_ELIGIBLE"}:
+            raise ValueError("Unknown research-promotion status")
+        with self._lock, self._connection:
+            cursor = self._connection.execute(
+                """INSERT INTO research_promotions(
+                    created_at,dataset_hash,strategy_fingerprint,policy_version,status,
+                    source,replay_end,gates_json
+                ) VALUES(?,?,?,?,?,?,?,?)""",
+                (
+                    utc_now().isoformat(),
+                    dataset_hash,
+                    strategy_fingerprint,
+                    policy_version,
+                    status,
+                    source,
+                    replay_end,
+                    json.dumps(gates, default=str),
+                ),
+            )
+            promotion_id = int(cursor.lastrowid)
+        self.receipt(
+            "research_promotion",
+            f"Research evidence result: {status}",
+            {
+                "promotion_id": promotion_id,
+                "dataset_hash": dataset_hash,
+                "strategy_fingerprint": strategy_fingerprint,
+                "policy_version": policy_version,
+                "status": status,
+            },
+            "warning" if status == "SHADOW_ONLY" else "info",
+        )
+        return promotion_id
+
+    def current_live_evidence(
+        self, strategy_fingerprint: str, max_age_days: int = 30
+    ) -> dict[str, Any] | None:
+        if max_age_days < 1:
+            raise ValueError("Evidence age must be at least one day")
+        with self._lock:
+            row = self._connection.execute(
+                """SELECT * FROM research_promotions
+                WHERE strategy_fingerprint=? AND status='LIVE_REVIEW_ELIGIBLE'
+                AND julianday(created_at) >= julianday('now', ?)
+                ORDER BY created_at DESC,id DESC LIMIT 1""",
+                (strategy_fingerprint, f"-{max_age_days} days"),
+            ).fetchone()
+        return dict(row) if row else None
 
     def close(self) -> None:
         with self._lock:

@@ -11,13 +11,15 @@ Real-order automation is optional and high risk. Complete the [research quicksta
 
 ## Enable capabilities
 
-1. Open **Settings & Permissions**.
-2. Enable **Broker connection** and save. Complete OAuth only on the provider's site.
-3. Compare account identity, value, buying power, positions, and open orders in both applications.
-4. Stop on any discrepancy, restriction, stale quote, pending order, or unexplained position.
-5. Return to settings, enable **Real-order automation**, and type the exact settings phrase.
+1. Confirm Evidence Lab shows `LIVE_REVIEW_ELIGIBLE` for current historical data and the exact current strategy. If it does not, remain in sandbox or shadow mode.
+2. Open **Settings & Permissions**.
+3. Enable **Broker connection** and save. Complete OAuth only on the provider's site.
+4. Compare account identity, value, buying power, positions, and open orders in both applications.
+5. Stop on any discrepancy, restriction, stale quote, pending order, or unexplained position.
+6. Return to settings, enable **Real-order automation**, and type the exact settings phrase.
 
-This enables controls, not a standing trading session.
+This enables controls, not a standing trading session. The app checks the certificate again before
+authorization and before strategy start; missing, expired, or mismatched evidence fails closed.
 
 ## Grant one bounded session
 

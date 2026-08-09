@@ -1,4 +1,5 @@
 import json
+from datetime import timedelta
 
 import pytest
 from PySide6.QtWidgets import QApplication, QDialogButtonBox
@@ -7,6 +8,8 @@ from grande_alpha import __version__
 from grande_alpha.broker.base import Broker
 from grande_alpha.config import AppConfig
 from grande_alpha.controller import TradingController
+from grande_alpha.evidence import EVIDENCE_POLICY_VERSION, strategy_fingerprint
+from grande_alpha.models import Account, LiveGrant, Portfolio, utc_now
 from grande_alpha.privacy import export_diagnostics
 from grande_alpha.storage import AuditStore
 from grande_alpha.ui.settings_dialog import LIVE_PHRASE, SettingsDialog
@@ -54,7 +57,7 @@ def test_public_defaults_are_research_only() -> None:
     assert not config.live_trading_enabled
     assert not config.remote_market_data_enabled
     assert not config.personal_ledger_enabled
-    assert __version__ == "0.4.0"
+    assert __version__ == "0.5.0"
 
 
 @pytest.mark.asyncio
@@ -68,7 +71,7 @@ async def test_disabled_broker_is_blocked_before_adapter_call(tmp_path) -> None:
 
 def test_live_setting_requires_broker_and_exact_phrase() -> None:
     qt_app()
-    dialog = SettingsDialog(AppConfig())
+    dialog = SettingsDialog(AppConfig(), live_evidence_ready=True)
     save = dialog.buttons.button(QDialogButtonBox.StandardButton.Save)
     dialog.live.setChecked(True)
     assert not save.isEnabled()
@@ -78,6 +81,58 @@ def test_live_setting_requires_broker_and_exact_phrase() -> None:
     assert save.isEnabled()
     updated = dialog.updated_config()
     assert updated.broker_connection_enabled and updated.live_trading_enabled
+
+
+def test_live_setting_stays_blocked_without_passing_evidence() -> None:
+    qt_app()
+    dialog = SettingsDialog(AppConfig(), live_evidence_ready=False)
+    save = dialog.buttons.button(QDialogButtonBox.StandardButton.Save)
+    dialog.broker.setChecked(True)
+    dialog.live.setChecked(True)
+    dialog.live_phrase.setText(LIVE_PHRASE)
+    assert not save.isEnabled()
+    assert "shadow-only" in dialog.validation.text()
+
+
+def test_controller_requires_matching_current_evidence_before_live_authority(tmp_path) -> None:
+    store = AuditStore(tmp_path / "audit.db")
+    config = AppConfig(broker_connection_enabled=True, live_trading_enabled=True)
+    controller = TradingController(DisabledBroker(), config, store)
+    now = utc_now()
+    controller.snapshot.account = Account("123456789", "Agentic", "cash", True, "active")
+    controller.snapshot.portfolio = Portfolio(100.0, 100.0, 100.0)
+    grant = LiveGrant(
+        account_number="123456789",
+        starts_at=now,
+        expires_at=now + timedelta(hours=1),
+        max_order_notional=10.0,
+        max_total_exposure=20.0,
+        max_daily_loss=2.0,
+        max_trades=4,
+        max_orders_per_minute=1,
+        max_spread_bps=20.0,
+        max_quote_age_seconds=8.0,
+    )
+    with pytest.raises(RuntimeError, match="evidence certificate"):
+        controller.authorize_live(grant)
+
+    store.record_research_promotion(
+        dataset_hash="market-history-hash",
+        strategy_fingerprint=strategy_fingerprint(config),
+        policy_version=EVIDENCE_POLICY_VERSION,
+        status="LIVE_REVIEW_ELIGIBLE",
+        source="licensed CSV",
+        replay_end=now.isoformat(),
+        gates=[{"name": "test fixture", "passed": True}],
+    )
+    controller.authorize_live(grant)
+    assert controller.snapshot.live_status == "LIVE"
+    controller.live_evidence_ready = lambda: False
+    with pytest.raises(RuntimeError, match="missing or expired"):
+        controller.start_strategy()
+    assert controller.snapshot.live_status == "LOCKED"
+    assert not controller.snapshot.strategy_running
+    store.close()
 
 
 def test_diagnostic_export_redacts_identifiers(tmp_path) -> None:

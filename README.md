@@ -11,7 +11,7 @@ GRANDE Alpha is independent software. It is not affiliated with, endorsed by, or
 - First launch opens a disclosure-led onboarding flow; research mode is the default.
 - Broker access, remote community market data, the optional personal ledger, and real-order controls are independent opt-ins.
 - Broker OAuth credentials are stored through the operating-system credential vault, never in project files.
-- Enabling real-order controls requires an explicit settings phrase. Every application launch still starts locked, and each live session needs a separate time-limited confirmation and numeric limits.
+- Enabling real-order controls requires a current passing Evidence Lab certificate for the exact strategy settings plus an explicit settings phrase. Every application launch still starts locked, and each live session needs a separate time-limited confirmation and numeric limits.
 - The red stop control revokes local order authority and attempts to cancel open Agentic equity orders. It cannot guarantee cancellation during a network or provider failure and does not liquidate filled positions.
 - A redacted diagnostic export is available for support. The application sends no first-party telemetry.
 
@@ -32,7 +32,7 @@ The executable is written to `dist\GRANDEAlpha\GRANDEAlpha.exe`. See [Quickstart
 
 This is not exchange-colocated high-frequency trading. It is a desktop research and consent-gated automation client. Its baseline strategy observes QQQ-derived signals and may select TQQQ, SQQQ, or cash. The included strategy is an engineering baseline, not a demonstrated edge.
 
-The sandbox models costs, spread, latency, partial fills, volume limits, rejections, and walk-forward evaluation. No sandbox, evidence-lab, or shadow result automatically grants live authority.
+The sandbox models costs, spread, latency, partial fills, volume limits, rejections, and walk-forward evaluation. Evidence results are recorded locally. Only a result that passes every current gate can unlock the separate live-review workflow for the same strategy fingerprint, and that certificate expires after 30 days. It still does not predict future returns or itself authorize an order.
 
 ## Broker integration
 
@@ -40,7 +40,7 @@ The optional adapter uses Robinhood's official Trading MCP endpoint and browser 
 
 ## Project status
 
-Version `0.4.0` is a community-preview release candidate. Source tests, packaging, and smoke checks are automated, but public binary distribution still requires maintainer release review, dependency audit, checksums, and code signing where available. See [Public release checklist](docs/PUBLIC_RELEASE_CHECKLIST.md).
+Version `0.5.0` is a community-preview release candidate. Source tests, packaging, and smoke checks are automated, but public binary distribution still requires maintainer release review, dependency audit, checksums, and code signing where available. See [Public release checklist](docs/PUBLIC_RELEASE_CHECKLIST.md).
 
 ## Contributing and support
 

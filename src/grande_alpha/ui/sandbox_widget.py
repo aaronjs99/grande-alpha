@@ -354,7 +354,17 @@ class SandboxWidget(QWidget):
         validation = QWidget()
         validation_layout = QVBoxLayout(validation)
         self.walk_table = self._table(
-            ["Train", "Test", "Fast/slow", "Train return", "Test return", "Test DD", "Test PF"]
+            [
+                "Train",
+                "Test",
+                "Fast/slow",
+                "Train return",
+                "Test return",
+                "Test DD",
+                "Test PF",
+                "Test trades",
+                "Test expectancy",
+            ]
         )
         self.gates_table = self._table(["Gate", "Status", "Observed", "Requirement"])
         self.promotion_label = QLabel("PROMOTION: SHADOW_ONLY until every evidence gate passes.")
@@ -585,7 +595,24 @@ class SandboxWidget(QWidget):
                     walk = await asyncio.to_thread(
                         walk_forward, self.bundle, candidates, train_sessions, test_sessions, test_sessions
                     )
-            report = promotion_report(self.bundle, base, points, stressed, walk)
+            report = promotion_report(
+                self.bundle,
+                config,
+                base,
+                points,
+                stressed,
+                walk,
+                random_control,
+            )
+            self.store.record_research_promotion(
+                dataset_hash=report.dataset_hash,
+                strategy_fingerprint=report.strategy_fingerprint,
+                policy_version=report.policy_version,
+                status=report.status,
+                source=self.bundle.source,
+                replay_end=self.bundle.end.isoformat(),
+                gates=[asdict(gate) for gate in report.gates],
+            )
             self._show_evidence(points, walk, report, random_control)
             self.store.receipt(
                 "sandbox_evidence",
@@ -634,6 +661,8 @@ class SandboxWidget(QWidget):
                 f"{fold.test_return_pct:+.2f}%",
                 f"{fold.test_drawdown_pct:.2f}%",
                 f"{fold.test_profit_factor:.2f}",
+                str(fold.test_round_trips),
+                f"${fold.test_expectancy:+.4f}",
             ]
             self._set_row(self.walk_table, row, values, fold.test_return_pct)
         self.gates_table.setRowCount(len(report.gates))

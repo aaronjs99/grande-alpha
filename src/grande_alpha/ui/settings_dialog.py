@@ -20,9 +20,10 @@ LIVE_PHRASE = "ENABLE LIVE ORDERS"
 
 
 class SettingsDialog(QDialog):
-    def __init__(self, config: AppConfig, parent=None) -> None:
+    def __init__(self, config: AppConfig, live_evidence_ready: bool = False, parent=None) -> None:
         super().__init__(parent)
         self.original = config
+        self.live_evidence_ready = live_evidence_ready
         self.setWindowTitle("GRANDE Alpha settings and permissions")
         self.setMinimumWidth(690)
         layout = QVBoxLayout(self)
@@ -49,7 +50,8 @@ class SettingsDialog(QDialog):
         permissions_layout.addWidget(self.live_phrase)
         live_note = QLabel(
             "Unlocking this feature grants no standing session. Every launch remains locked, and each live "
-            "session requires account-specific limits, an expiry, an attestation, and typed confirmation."
+            "session requires account-specific limits, an expiry, an attestation, and typed confirmation. "
+            "A current passing Evidence Lab certificate for the exact strategy is also required."
         )
         live_note.setWordWrap(True)
         permissions_layout.addWidget(live_note)
@@ -98,6 +100,12 @@ class SettingsDialog(QDialog):
         if self.live.isChecked() and not self.broker.isChecked():
             valid = False
             message = "Real-order automation requires the broker connection capability."
+        elif self.live.isChecked() and not self.live_evidence_ready:
+            valid = False
+            message = (
+                "Real-order automation remains shadow-only: run the full Evidence Lab on eligible recent "
+                "market history until every gate passes for this exact strategy."
+            )
         elif enabling_live and self.live_phrase.text().strip() != LIVE_PHRASE:
             valid = False
             message = f"Type {LIVE_PHRASE} exactly to unlock real-order controls."

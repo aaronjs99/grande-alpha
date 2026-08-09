@@ -1,5 +1,7 @@
 from pathlib import Path
 
+from grande_alpha.config import AppConfig
+from grande_alpha.evidence import EVIDENCE_POLICY_VERSION, strategy_fingerprint
 from grande_alpha.models import OrderIntent
 from grande_alpha.storage import AuditStore
 
@@ -54,4 +56,21 @@ def test_research_fund_never_allocates_losses_and_rejects_duplicate_confirmation
         assert "already confirmed" in str(exc)
     else:
         raise AssertionError("Duplicate fund confirmation should fail")
+    store.close()
+
+
+def test_live_evidence_is_exact_strategy_scoped(tmp_path: Path) -> None:
+    store = AuditStore(tmp_path / "audit.db")
+    fingerprint = strategy_fingerprint(AppConfig())
+    store.record_research_promotion(
+        dataset_hash="hash-1",
+        strategy_fingerprint=fingerprint,
+        policy_version=EVIDENCE_POLICY_VERSION,
+        status="LIVE_REVIEW_ELIGIBLE",
+        source="licensed CSV",
+        replay_end="2026-08-09T16:00:00+00:00",
+        gates=[{"name": "fixture", "passed": True}],
+    )
+    assert store.current_live_evidence(fingerprint) is not None
+    assert store.current_live_evidence("different-strategy") is None
     store.close()
