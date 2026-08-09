@@ -1,6 +1,6 @@
-# Momentum Trader
+# GRANDE Alpha
 
-Momentum Trader is a Windows desktop app for live, session-scoped TQQQ/SQQQ automation through
+GRANDE Alpha is a Windows desktop app for live, session-scoped TQQQ/SQQQ automation through
 Robinhood Agentic Trading. It connects only through Robinhood's official Trading MCP endpoint,
 uses browser OAuth, reviews every generated order with Robinhood, and records a local receipt for
 every decision and broker response.
@@ -18,7 +18,7 @@ Start with the complete [operating documentation](docs/README.md), especially th
    connected. The app refuses to trade when the broker reports zero buying power.
 2. Resolve F-1 and tax-status questions with your DSO/tax adviser. The app asks you to attest to
    this each live session; it does not decide your legal status.
-3. Double-click `Start Momentum Trader.cmd`.
+3. Double-click `Start GRANDE Alpha.cmd`.
 4. Select **Connect Robinhood** and complete browser OAuth. Credentials never enter this app.
 5. Confirm the account nickname and last four digits, broker-reported value, buying power, quotes,
    and positions.
@@ -56,7 +56,8 @@ session dialog only after understanding their effect.
 - Live authority expires automatically and is never remembered across app restarts.
 - Numeric limits are enforced by a separate risk engine outside the strategy.
 - Each logical order has a UUID idempotency key reused on transport retries.
-- SQLite receipts live under `%LOCALAPPDATA%\MomentumTrader\momentum_trader.db`.
+- SQLite receipts and the Research Fund ledger live under
+  `%LOCALAPPDATA%\GRANDEAlpha\grande_alpha.db`.
 
 ## Development
 
@@ -67,7 +68,7 @@ session dialog only after understanding their effect.
 .\build.ps1
 ```
 
-The packaged app is written to `dist\MomentumTrader\MomentumTrader.exe`.
+The packaged app is written to `dist\GRANDEAlpha\GRANDEAlpha.exe`.
 
 ## External limitations
 

@@ -23,7 +23,7 @@ holding TQQQ and SQQQ simultaneously. Frequent orders can make performance worse
 
 ## Exact baseline rules
 
-The implementation in `src/momentum_trader/strategy.py` uses completed QQQ midpoint bars:
+The implementation in `src/grande_alpha/strategy.py` uses completed QQQ midpoint bars:
 
 | Parameter | Value |
 |---|---:|
@@ -132,4 +132,3 @@ Success is not a target dollar profit. It is:
 
 A profitable session with an unexplained order is a failed system test. A small losing session in
 which every control behaved correctly is useful evidence, but it still does not prove an edge.
-

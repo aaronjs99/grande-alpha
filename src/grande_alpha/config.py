@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import json
+import shutil
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from platformdirs import user_data_path
 
-APP_NAME = "MomentumTrader"
+APP_NAME = "GRANDEAlpha"
+DISPLAY_NAME = "GRANDE Alpha"
+LEGACY_APP_NAME = "MomentumTrader"
 MCP_URL = "https://agent.robinhood.com/mcp/trading"
 
 
@@ -34,9 +37,30 @@ class AppConfig:
     default_max_quote_age_seconds: float = 8.0
 
 
+def migrate_legacy_data(legacy: Path, destination: Path) -> list[Path]:
+    """Copy legacy Momentum Trader state once without deleting the recoverable originals."""
+    destination.mkdir(parents=True, exist_ok=True)
+    copied: list[Path] = []
+    mappings = {
+        "config.json": "config.json",
+        "momentum_trader.db": "grande_alpha.db",
+        "momentum_trader.log": "legacy_momentum_trader.log",
+    }
+    if not legacy.exists() or legacy.resolve() == destination.resolve():
+        return copied
+    for old_name, new_name in mappings.items():
+        source = legacy / old_name
+        target = destination / new_name
+        if source.is_file() and not target.exists():
+            shutil.copy2(source, target)
+            copied.append(target)
+    return copied
+
+
 def data_dir() -> Path:
     path = user_data_path(APP_NAME, appauthor=False)
     path.mkdir(parents=True, exist_ok=True)
+    migrate_legacy_data(user_data_path(LEGACY_APP_NAME, appauthor=False), path)
     return path
 
 
@@ -57,4 +81,3 @@ def load_config() -> AppConfig:
 
 def save_config(config: AppConfig) -> None:
     config_path().write_text(json.dumps(asdict(config), indent=2), encoding="utf-8")
-

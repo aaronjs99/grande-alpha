@@ -2,8 +2,8 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from momentum_trader.models import Bar, Quote, Regime
-from momentum_trader.strategy import BarBuilder, MomentumStrategy, StrategyConfig, ema
+from grande_alpha.models import Bar, Quote, Regime
+from grande_alpha.strategy import BarBuilder, MomentumStrategy, StrategyConfig, ema
 
 
 def test_ema_tracks_recent_values() -> None:

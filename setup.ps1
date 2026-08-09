@@ -7,5 +7,6 @@ if (-not (Test-Path -LiteralPath $PythonExe)) {
 }
 
 & $PythonExe -m pip install --upgrade pip
+& $PythonExe -m pip uninstall -y momentum-trader
 & $PythonExe -m pip install -e "${ProjectRoot}[dev]"
 Write-Host 'Setup complete.' -ForegroundColor Green

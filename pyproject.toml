@@ -3,9 +3,9 @@ requires = ["setuptools>=75", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "momentum-trader"
+name = "grande-alpha"
 version = "0.1.0"
-description = "Live-gated TQQQ/SQQQ desktop trader for Robinhood Agentic Trading"
+description = "GRANDE Alpha live-gated TQQQ/SQQQ trader for Robinhood Agentic Trading"
 readme = "README.md"
 requires-python = ">=3.11,<3.13"
 dependencies = [
@@ -28,7 +28,7 @@ dev = [
 ]
 
 [project.scripts]
-momentum-trader = "momentum_trader.app:main"
+grande-alpha = "grande_alpha.app:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
@@ -44,4 +44,3 @@ target-version = "py311"
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
 ignore = ["E501"]
-

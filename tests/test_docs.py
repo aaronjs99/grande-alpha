@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from momentum_trader.config import AppConfig
+from grande_alpha.config import AppConfig
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -13,6 +13,8 @@ def test_required_operating_docs_exist() -> None:
         "SAFETY_AND_COMPLIANCE.md",
         "TROUBLESHOOTING.md",
         "DAILY_JOURNAL_TEMPLATE.md",
+        "SYSTEM_ARCHITECTURE.md",
+        "GRANDE_RESEARCH_FUND.md",
     }
     assert required <= {path.name for path in (ROOT / "docs").glob("*.md")}
 
@@ -25,4 +27,3 @@ def test_strategy_doc_matches_critical_defaults() -> None:
     assert f"| Slow EMA | {config.slow_ema} bars |" in text
     assert f"| Hard position stop | −{config.hard_stop_pct:.1%}" in text
     assert f"| Take-profit | +{config.take_profit_pct:.1%}" in text
-

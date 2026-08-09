@@ -4,12 +4,13 @@
 
 1. Complete login only on a Robinhood domain.
 2. Allow the browser to return to `http://localhost:37654/callback`.
-3. Ensure another Momentum Trader process is not running.
+3. Ensure another GRANDE Alpha process is not running.
 4. Disconnect/reconnect Robinhood Agentic Trading if Robinhood reports an expired authorization.
-5. Check `%LOCALAPPDATA%\MomentumTrader\momentum_trader.log`.
+5. Check `%LOCALAPPDATA%\GRANDEAlpha\grande_alpha.log`.
 
 The OAuth wait expires after five minutes. Tokens and registered-client information are stored in
-Windows Credential Manager under `MomentumTrader.RobinhoodMCP`.
+Windows Credential Manager under `GRANDEAlpha.RobinhoodMCP`. A legacy
+`MomentumTrader.RobinhoodMCP` credential is copied into the new namespace when first used.
 
 ## Robinhood shows $50 but the app shows $0
 
@@ -86,5 +87,4 @@ From PowerShell in the project directory:
 .\build.ps1
 ```
 
-The verified executable is `dist\MomentumTrader\MomentumTrader.exe`.
-
+The verified executable is `dist\GRANDEAlpha\GRANDEAlpha.exe`.

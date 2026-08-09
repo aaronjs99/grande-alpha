@@ -27,10 +27,10 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from momentum_trader.config import AppConfig
-from momentum_trader.controller import TradingController, TradingSnapshot
-from momentum_trader.models import Regime
-from momentum_trader.ui.dialogs import LiveGrantDialog
+from grande_alpha.config import AppConfig
+from grande_alpha.controller import TradingController, TradingSnapshot
+from grande_alpha.models import Regime
+from grande_alpha.ui.dialogs import FundPlanDialog, LiveGrantDialog
 
 STYLESHEET = """
 QWidget { background: #0b1118; color: #e9f0f6; font-family: 'Segoe UI'; font-size: 10pt; }
@@ -78,7 +78,7 @@ class MainWindow(QMainWindow):
         self._chart_times: deque[float] = deque(maxlen=1800)
         self._chart_prices: deque[float] = deque(maxlen=1800)
         self._closing_after_cleanup = False
-        self.setWindowTitle("Momentum Trader — Robinhood Agentic")
+        self.setWindowTitle("GRANDE Alpha — Robinhood Agentic")
         self.resize(1440, 900)
         QApplication.instance().setStyleSheet(STYLESHEET)
         self._build_ui()
@@ -98,7 +98,7 @@ class MainWindow(QMainWindow):
         outer.setSpacing(12)
 
         header = QHBoxLayout()
-        brand = QLabel("MOMENTUM TRADER")
+        brand = QLabel("GRANDE ALPHA")
         font = QFont("Segoe UI", 18)
         font.setBold(True)
         brand.setFont(font)
@@ -166,9 +166,33 @@ class MainWindow(QMainWindow):
         self.positions_table = self._table(["Symbol", "Quantity", "Sellable", "Average", "Mark", "P/L"])
         self.orders_table = self._table(["Time", "Symbol", "Side", "State", "Quantity/$", "Fill", "Order ID"])
         self.activity_table = self._table(["Time", "Severity", "Event"])
+        fund_widget = QWidget()
+        fund_layout = QVBoxLayout(fund_widget)
+        fund_notice = QLabel(
+            "Ledger only — GRANDE Alpha never transfers brokerage, university, grant, or laboratory funds. "
+            "A planned contribution becomes confirmed only after you verify an independent personal transfer."
+        )
+        fund_notice.setWordWrap(True)
+        fund_layout.addWidget(fund_notice)
+        fund_actions = QHBoxLayout()
+        self.fund_total_label = QLabel("Confirmed personal contributions: $0.00")
+        self.fund_plan_button = QPushButton("Plan contribution")
+        self.fund_plan_button.clicked.connect(self._plan_contribution)
+        self.fund_confirm_button = QPushButton("Mark selected contribution confirmed")
+        self.fund_confirm_button.clicked.connect(self._confirm_contribution)
+        fund_actions.addWidget(self.fund_total_label)
+        fund_actions.addStretch()
+        fund_actions.addWidget(self.fund_plan_button)
+        fund_actions.addWidget(self.fund_confirm_button)
+        fund_layout.addLayout(fund_actions)
+        self.fund_table = self._table(
+            ["ID", "Period", "Realized", "Fees", "Tax reserve", "Rate", "Eligible", "Status", "Confirmed"]
+        )
+        fund_layout.addWidget(self.fund_table)
         tabs.addTab(self.positions_table, "Positions")
         tabs.addTab(self.orders_table, "Orders")
         tabs.addTab(self.activity_table, "Receipts")
+        tabs.addTab(fund_widget, "GRANDE Research Fund")
         splitter.addWidget(tabs)
         splitter.setStretchFactor(0, 3)
         splitter.setStretchFactor(1, 2)
@@ -180,6 +204,7 @@ class MainWindow(QMainWindow):
         self.status.setWordWrap(True)
         outer.addWidget(self.status)
         self.setCentralWidget(root)
+        self._refresh_fund()
         self._set_controls()
 
     def _table(self, headers: list[str]) -> QTableWidget:
@@ -216,6 +241,59 @@ class MainWindow(QMainWindow):
             self.controller.start_strategy()
         except Exception as exc:
             QMessageBox.warning(self, "Strategy remains stopped", str(exc))
+
+    def _plan_contribution(self) -> None:
+        dialog = FundPlanDialog(self)
+        if dialog.exec() != dialog.DialogCode.Accepted:
+            return
+        try:
+            entry_id = self.controller.store.plan_research_contribution(**dialog.values())
+            self.controller.log(
+                f"Saved GRANDE Research Fund plan #{entry_id}; no money was transferred",
+                category="research_fund",
+            )
+            self._refresh_fund()
+        except Exception as exc:
+            QMessageBox.critical(self, "Contribution plan not saved", str(exc))
+
+    def _confirm_contribution(self) -> None:
+        row = self.fund_table.currentRow()
+        if row < 0:
+            QMessageBox.information(self, "Research Fund", "Select a planned contribution first.")
+            return
+        entry_id = int(self.fund_table.item(row, 0).text())
+        amount = self.fund_table.item(row, 6).text()
+        status = self.fund_table.item(row, 7).text().lower()
+        if status == "confirmed":
+            QMessageBox.information(self, "Research Fund", "This contribution is already confirmed.")
+            return
+        reference, ok = QInputDialog.getText(
+            self,
+            "External transfer reference",
+            "After independently completing the personal contribution, enter its confirmation/reference:",
+        )
+        if not ok or not reference.strip():
+            return
+        phrase = f"CONFIRM GRANDE {amount}"
+        confirmation, ok = QInputDialog.getText(
+            self,
+            "Confirm ledger entry",
+            f"This does not transfer money. It records that you independently transferred {amount}.\n"
+            f"Type exactly: {phrase}",
+        )
+        if not ok or confirmation.strip() != phrase:
+            self._on_event("info", "Research Fund confirmation declined; ledger unchanged")
+            return
+        try:
+            self.controller.store.confirm_research_contribution(entry_id, reference)
+            self.controller.log(
+                f"Marked GRANDE Research Fund entry #{entry_id} confirmed at {amount}",
+                "warning",
+                "research_fund",
+            )
+            self._refresh_fund()
+        except Exception as exc:
+            QMessageBox.critical(self, "Contribution not confirmed", str(exc))
 
     async def _flatten(self) -> None:
         positions = [item for item in self._snapshot.positions if item.symbol in {"TQQQ", "SQQQ"}]
@@ -363,6 +441,26 @@ class MainWindow(QMainWindow):
             self._chart_prices.append(quote.mid)
             self.chart_curve.setData(list(self._chart_times), list(self._chart_prices))
 
+    def _refresh_fund(self) -> None:
+        entries = self.controller.store.research_fund_entries()
+        self.fund_table.setRowCount(len(entries))
+        for row, entry in enumerate(entries):
+            values = [
+                str(entry["id"]),
+                str(entry["period"]),
+                f"${float(entry['realized_profit']):,.2f}",
+                f"${float(entry['fees']):,.2f}",
+                f"${float(entry['tax_reserve']):,.2f}",
+                f"{float(entry['contribution_rate']):.1%}",
+                f"${float(entry['eligible_contribution']):,.2f}",
+                str(entry["status"]),
+                str(entry["confirmed_at"] or "—"),
+            ]
+            for column, value in enumerate(values):
+                self.fund_table.setItem(row, column, QTableWidgetItem(value))
+        total = self.controller.store.confirmed_research_total()
+        self.fund_total_label.setText(f"Confirmed personal contributions: ${total:,.2f}")
+
     def _on_event(self, severity: str, summary: str) -> None:
         self.activity_table.insertRow(0)
         now = datetime.now().strftime("%I:%M:%S %p")
@@ -385,7 +483,7 @@ class MainWindow(QMainWindow):
         if self._snapshot.connected:
             answer = QMessageBox.question(
                 self,
-                "Exit Momentum Trader",
+                "Exit GRANDE Alpha",
                 "Exit will lock the strategy and attempt to cancel open agentic orders. Filled positions remain open. Continue?",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.No,
@@ -404,4 +502,3 @@ class MainWindow(QMainWindow):
         finally:
             self._closing_after_cleanup = True
             self.close()
-

@@ -8,9 +8,9 @@ from typing import Any
 
 from PySide6.QtCore import QObject, Signal
 
-from momentum_trader.broker.base import Broker, BrokerError
-from momentum_trader.config import AppConfig
-from momentum_trader.models import (
+from grande_alpha.broker.base import Broker, BrokerError
+from grande_alpha.config import AppConfig
+from grande_alpha.models import (
     Account,
     BrokerOrder,
     LiveGrant,
@@ -22,12 +22,12 @@ from momentum_trader.models import (
     Regime,
     utc_now,
 )
-from momentum_trader.models import (
+from grande_alpha.models import (
     Signal as TradeSignal,
 )
-from momentum_trader.risk import RiskEngine
-from momentum_trader.storage import AuditStore
-from momentum_trader.strategy import BarBuilder, MomentumStrategy, StrategyConfig
+from grande_alpha.risk import RiskEngine
+from grande_alpha.storage import AuditStore
+from grande_alpha.strategy import BarBuilder, MomentumStrategy, StrategyConfig
 
 
 @dataclass

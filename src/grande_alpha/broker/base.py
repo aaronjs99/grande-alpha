@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 
-from momentum_trader.models import (
+from grande_alpha.models import (
     Account,
     BrokerOrder,
     OrderIntent,
@@ -47,4 +47,3 @@ class Broker(ABC):
 
     @abstractmethod
     async def cancel_order(self, account_number: str, order_id: str) -> bool: ...
-

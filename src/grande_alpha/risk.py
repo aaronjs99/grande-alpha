@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
-from momentum_trader.models import LiveGrant, OrderIntent, Portfolio, Quote, utc_now
+from grande_alpha.models import LiveGrant, OrderIntent, Portfolio, Quote, utc_now
 
 EASTERN = ZoneInfo("America/New_York")
 

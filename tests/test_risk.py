@@ -1,7 +1,7 @@
 from datetime import UTC, datetime, timedelta
 
-from momentum_trader.models import LiveGrant, OrderIntent, Portfolio, Quote
-from momentum_trader.risk import RiskEngine
+from grande_alpha.models import LiveGrant, OrderIntent, Portfolio, Quote
+from grande_alpha.risk import RiskEngine
 
 NOW = datetime(2026, 8, 10, 15, 0, tzinfo=UTC)  # 11:00 ET Monday
 
@@ -79,4 +79,3 @@ def test_expired_grant_fails_closed() -> None:
     engine.arm(grant(expires_at=NOW - timedelta(seconds=1)), portfolio)
     assert not engine.authorize(intent(), quote(), portfolio, 0, NOW).allowed
     assert engine.session_status(NOW) == "LOCKED"
-

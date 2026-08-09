@@ -6,5 +6,4 @@ if (-not (Test-Path -LiteralPath $PythonExe)) {
     throw 'Run setup.ps1 first.'
 }
 
-Start-Process -FilePath $PythonExe -ArgumentList '-m', 'momentum_trader.app' -WorkingDirectory $ProjectRoot
-
+Start-Process -FilePath $PythonExe -ArgumentList '-m', 'grande_alpha.app' -WorkingDirectory $ProjectRoot

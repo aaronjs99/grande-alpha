@@ -12,10 +12,10 @@ from mcp.client.auth import OAuthClientProvider
 from mcp.client.streamable_http import streamablehttp_client
 from mcp.shared.auth import OAuthClientMetadata
 
-from momentum_trader.broker.base import Broker, BrokerError
-from momentum_trader.broker.oauth import CredentialTokenStorage, OAuthCallbackServer
-from momentum_trader.config import MCP_URL
-from momentum_trader.models import (
+from grande_alpha.broker.base import Broker, BrokerError
+from grande_alpha.broker.oauth import CredentialTokenStorage, OAuthCallbackServer
+from grande_alpha.config import MCP_URL
+from grande_alpha.models import (
     Account,
     BrokerOrder,
     OrderIntent,
@@ -75,7 +75,7 @@ class RobinhoodMCPBroker(Broker):
 
         metadata = OAuthClientMetadata.model_validate(
             {
-                "client_name": "Momentum Trader",
+                "client_name": "GRANDE Alpha",
                 "redirect_uris": ["http://localhost:37654/callback"],
                 "grant_types": ["authorization_code", "refresh_token"],
                 "response_types": ["code"],

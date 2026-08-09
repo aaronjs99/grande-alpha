@@ -4,7 +4,7 @@ from collections import deque
 from dataclasses import dataclass
 from datetime import datetime
 
-from momentum_trader.models import Bar, Quote, Regime, Signal, utc_now
+from grande_alpha.models import Bar, Quote, Regime, Signal, utc_now
 
 
 class BarBuilder:
@@ -99,4 +99,3 @@ class MomentumStrategy:
     def reset(self) -> None:
         self.bars.clear()
         self.last_signal = Signal(Regime.FLAT, 0.0, "Strategy reset", timestamp=utc_now())
-

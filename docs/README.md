@@ -1,4 +1,4 @@
-# Momentum Trader documentation
+# GRANDE Alpha documentation
 
 Use these documents in order:
 
@@ -10,6 +10,10 @@ Use these documents in order:
    rejected orders.
 5. [Daily journal template](DAILY_JOURNAL_TEMPLATE.md) — record the evidence needed to decide
    whether the strategy has positive expectancy.
+6. [System architecture](SYSTEM_ARCHITECTURE.md) — how GRANDE Alpha relates to the wider GRANDE
+   project without entering the robot runtime.
+7. [GRANDE Research Fund](GRANDE_RESEARCH_FUND.md) — a confirmation-gated personal-contribution
+   ledger that never transfers money.
 
 ## One-sentence operating rule
 
@@ -17,4 +21,3 @@ Trade only when Robinhood and the app agree on the account, buying power, positi
 fresh quotes; authorize one bounded session; stop when the cap is reached or anything looks wrong.
 
 Automation is execution discipline. It is not, by itself, a source of investment returns.
-

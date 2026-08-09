@@ -11,12 +11,13 @@ from PySide6.QtWidgets import (
     QFormLayout,
     QLabel,
     QLineEdit,
+    QPlainTextEdit,
     QSpinBox,
     QVBoxLayout,
 )
 
-from momentum_trader.config import AppConfig
-from momentum_trader.models import Account, LiveGrant, Portfolio, utc_now
+from grande_alpha.config import AppConfig
+from grande_alpha.models import Account, LiveGrant, Portfolio, utc_now
 
 
 class LiveGrantDialog(QDialog):
@@ -119,3 +120,82 @@ class LiveGrantDialog(QDialog):
             max_spread_bps=self.max_spread.value(),
             max_quote_age_seconds=self.config.default_max_quote_age_seconds,
         )
+
+
+class FundPlanDialog(QDialog):
+    """Create a ledger plan; this dialog never initiates a money transfer."""
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Plan GRANDE Research Fund contribution")
+        self.setModal(True)
+        self.setMinimumWidth(520)
+        layout = QVBoxLayout(self)
+        title = QLabel("Personal contribution ledger")
+        title.setObjectName("dialogTitle")
+        layout.addWidget(title)
+        explanation = QLabel(
+            "Enter realized brokerage results and a reserve. GRANDE Alpha calculates a planned "
+            "personal contribution only; it cannot transfer funds. Mark the entry confirmed only "
+            "after you independently complete and verify a transfer."
+        )
+        explanation.setWordWrap(True)
+        layout.addWidget(explanation)
+
+        form = QFormLayout()
+        self.period = QLineEdit(utc_now().strftime("%Y-%m"))
+        self.realized_profit = self._money(-1_000_000, 1_000_000)
+        self.fees = self._money(0, 1_000_000)
+        self.tax_reserve = self._money(0, 1_000_000)
+        self.rate = QDoubleSpinBox()
+        self.rate.setRange(0, 100)
+        self.rate.setDecimals(1)
+        self.rate.setSuffix("%")
+        self.rate.setValue(25.0)
+        self.notes = QPlainTextEdit()
+        self.notes.setMaximumHeight(80)
+        self.eligible = QLabel("$0.00")
+        self.eligible.setObjectName("cardValue")
+        form.addRow("Period (YYYY-MM)", self.period)
+        form.addRow("Realized profit", self.realized_profit)
+        form.addRow("Broker fees", self.fees)
+        form.addRow("Tax reserve", self.tax_reserve)
+        form.addRow("Contribution rate", self.rate)
+        form.addRow("Eligible contribution", self.eligible)
+        form.addRow("Notes", self.notes)
+        layout.addLayout(form)
+
+        self.buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Cancel | QDialogButtonBox.StandardButton.Ok
+        )
+        self.buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Save contribution plan")
+        self.buttons.accepted.connect(self.accept)
+        self.buttons.rejected.connect(self.reject)
+        layout.addWidget(self.buttons)
+        for widget in (self.realized_profit, self.fees, self.tax_reserve, self.rate):
+            widget.valueChanged.connect(self._update_preview)
+        self._update_preview()
+
+    def _money(self, minimum: float, maximum: float) -> QDoubleSpinBox:
+        widget = QDoubleSpinBox()
+        widget.setRange(minimum, maximum)
+        widget.setDecimals(2)
+        widget.setPrefix("$")
+        return widget
+
+    def _update_preview(self) -> None:
+        distributable = max(
+            0.0,
+            self.realized_profit.value() - self.fees.value() - self.tax_reserve.value(),
+        )
+        self.eligible.setText(f"${distributable * self.rate.value() / 100:,.2f}")
+
+    def values(self) -> dict[str, object]:
+        return {
+            "period": self.period.text().strip(),
+            "realized_profit": self.realized_profit.value(),
+            "fees": self.fees.value(),
+            "tax_reserve": self.tax_reserve.value(),
+            "contribution_rate": self.rate.value() / 100,
+            "notes": self.notes.toPlainText().strip(),
+        }

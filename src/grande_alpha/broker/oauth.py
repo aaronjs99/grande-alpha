@@ -11,7 +11,8 @@ import keyring
 from mcp.client.auth import TokenStorage
 from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
 
-KEYRING_SERVICE = "MomentumTrader.RobinhoodMCP"
+KEYRING_SERVICE = "GRANDEAlpha.RobinhoodMCP"
+LEGACY_KEYRING_SERVICE = "MomentumTrader.RobinhoodMCP"
 
 
 class CredentialTokenStorage(TokenStorage):
@@ -21,7 +22,13 @@ class CredentialTokenStorage(TokenStorage):
         self.profile = profile
 
     def _get(self, suffix: str) -> str | None:
-        return keyring.get_password(KEYRING_SERVICE, f"{self.profile}:{suffix}")
+        username = f"{self.profile}:{suffix}"
+        value = keyring.get_password(KEYRING_SERVICE, username)
+        if value is None:
+            value = keyring.get_password(LEGACY_KEYRING_SERVICE, username)
+            if value is not None:
+                keyring.set_password(KEYRING_SERVICE, username, value)
+        return value
 
     def _set(self, suffix: str, value: str) -> None:
         keyring.set_password(KEYRING_SERVICE, f"{self.profile}:{suffix}", value)
@@ -41,11 +48,12 @@ class CredentialTokenStorage(TokenStorage):
         await asyncio.to_thread(self._set, "client", client_info.model_dump_json())
 
     def clear(self) -> None:
-        for suffix in ("tokens", "client"):
-            try:
-                keyring.delete_password(KEYRING_SERVICE, f"{self.profile}:{suffix}")
-            except keyring.errors.PasswordDeleteError:
-                pass
+        for service in (KEYRING_SERVICE, LEGACY_KEYRING_SERVICE):
+            for suffix in ("tokens", "client"):
+                try:
+                    keyring.delete_password(service, f"{self.profile}:{suffix}")
+                except keyring.errors.PasswordDeleteError:
+                    pass
 
 
 class OAuthCallbackServer:
@@ -74,7 +82,7 @@ class OAuthCallbackServer:
                     "<!doctype html><html><body style='font-family:Segoe UI;background:#0c1118;color:#f3f7fb;"
                     "display:grid;place-items:center;height:100vh'><main><h1>"
                     + title
-                    + "</h1><p>You can close this tab and return to Momentum Trader.</p></main></body></html>"
+                    + "</h1><p>You can close this tab and return to GRANDE Alpha.</p></main></body></html>"
                 ).encode()
                 self.send_response(status)
                 self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -108,4 +116,3 @@ class OAuthCallbackServer:
 
 def pretty_payload(payload: dict[str, Any]) -> str:
     return json.dumps(payload, indent=2, default=str)
-

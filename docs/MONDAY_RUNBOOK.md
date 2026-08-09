@@ -39,7 +39,7 @@ only magnifies the outcome.
    - no unexpected TQQQ or SQQQ position;
    - no open or pending equity order;
    - no deposit, restriction, or settlement warning.
-3. Double-click `Start Momentum Trader.cmd` or open the packaged `MomentumTrader.exe`.
+3. Double-click `Start GRANDE Alpha.cmd` or open the packaged `GRANDEAlpha.exe`.
 4. Select **Connect Robinhood**.
 5. Complete Robinhood OAuth in the browser. Enter credentials only on Robinhood's site.
 6. Return to the app and compare its Agentic-account last four digits, value, buying power,
@@ -132,4 +132,3 @@ possible.
 4. Record the session in [the daily journal](DAILY_JOURNAL_TEMPLATE.md).
 5. Save/export Robinhood fills and fees when available.
 6. Exit the app. Its exit flow again attempts to lock and cancel, but filled positions remain yours.
-

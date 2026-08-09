@@ -71,7 +71,7 @@ Retain:
 - W-2, 1042-S, 1099, and other income forms;
 - Robinhood consolidated 1099 and transaction exports;
 - every executed fill, fee, transfer, and tax lot;
-- the app's `%LOCALAPPDATA%\MomentumTrader\momentum_trader.db` audit database;
+- the app's `%LOCALAPPDATA%\GRANDEAlpha\grande_alpha.db` audit database;
 - the daily journals;
 - records of substantially identical purchases in other accounts.
 
@@ -87,4 +87,3 @@ Robinhood does not provide native stock bracket/OCO orders through the supported
 here. The −0.8% stop and +1.5% target are app decisions. They cannot execute while the app, PC,
 internet, OAuth session, or Robinhood service is unavailable. Keep position size small enough that
 this limitation is acceptable, and keep the Robinhood app available for manual intervention.
-
