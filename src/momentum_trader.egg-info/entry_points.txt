@@ -1,2 +1,0 @@
-[console_scripts]
-momentum-trader = momentum_trader.app:main
