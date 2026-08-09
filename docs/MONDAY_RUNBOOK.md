@@ -66,6 +66,10 @@ Disconnect and troubleshoot. Do not authorize around a discrepancy.
 
 ## Authorize the live session
 
+For the first session, prefer [live shadow mode](SHADOW_MODE.md) and complete a full observed market
+session with no real-order authority. Stop shadow before following the live steps below. Shadow and
+live authority cannot operate together.
+
 After the account matches Robinhood and the warm-up is nearly complete:
 
 1. Select **Authorize Live Session**.

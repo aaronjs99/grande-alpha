@@ -6,6 +6,10 @@ The **SANDBOX** tab is non-financial simulation: it uses fictional aliases and c
 broker. The rest of the application remains capable of real-money trading after explicit live
 authorization; a successful sandbox run never grants or implies that authority.
 
+**Live shadow** reads current quotes but still makes only fictional fills. It is visibly labeled,
+one-click revocable, receipt-producing, and mutually exclusive with real-order authority. Neither a
+sandbox gate nor a shadow result can silently broaden consent into live trading.
+
 ## Robinhood account boundary
 
 The app selects an active account that Robinhood reports as `agentic_allowed=true`. It can read

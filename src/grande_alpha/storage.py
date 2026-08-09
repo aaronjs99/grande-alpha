@@ -109,6 +109,19 @@ class AuditStore:
                     cash_after REAL NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS idx_sandbox_fills_run ON sandbox_fills(run_id,id);
+                CREATE TABLE IF NOT EXISTS sandbox_execution_events (
+                    id INTEGER PRIMARY KEY,
+                    run_id TEXT NOT NULL REFERENCES sandbox_runs(run_id) ON DELETE CASCADE,
+                    event_at TEXT NOT NULL,
+                    symbol TEXT NOT NULL CHECK(symbol IN ('TQQQS','SQQQS')),
+                    side TEXT NOT NULL CHECK(side IN ('buy','sell')),
+                    status TEXT NOT NULL,
+                    requested_quantity REAL NOT NULL,
+                    filled_quantity REAL NOT NULL,
+                    reason TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_sandbox_events_run
+                    ON sandbox_execution_events(run_id,id);
                 """
             )
 
@@ -263,6 +276,7 @@ class AuditStore:
         config: dict[str, Any],
         metrics: dict[str, Any],
         fills: list[dict[str, Any]],
+        events: list[dict[str, Any]] | None = None,
     ) -> None:
         with self._lock, self._connection:
             self._connection.execute(
@@ -298,6 +312,24 @@ class AuditStore:
                         fill["cash_after"],
                     )
                     for fill in fills
+                ],
+            )
+            self._connection.executemany(
+                """INSERT INTO sandbox_execution_events(
+                    run_id,event_at,symbol,side,status,requested_quantity,filled_quantity,reason
+                ) VALUES(?,?,?,?,?,?,?,?)""",
+                [
+                    (
+                        run_id,
+                        event["timestamp"],
+                        event["symbol"],
+                        event["side"],
+                        event["status"],
+                        event["requested_quantity"],
+                        event["filled_quantity"],
+                        event["reason"],
+                    )
+                    for event in (events or [])
                 ],
             )
         self.receipt(

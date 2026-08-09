@@ -23,6 +23,7 @@ GRANDE project family
 | Evidence trail | SQLite receipts record decisions and broker responses |
 | Candidate versus approved runtime | `LOCKED`, `LIVE`, `EXPIRED`, and review-blocked states |
 | Simulation boundary | `TQQQS`/`SQQQS` replay engine receives no broker object or live authority |
+| Candidate observation | Live shadow consumes current quotes but has no broker-order dependency |
 
 ## Hard separation
 
@@ -37,6 +38,8 @@ The permitted connection is organizational and evidentiary: GRANDE Alpha uses th
 bounded authority, explicit confirmation, stop control, and auditable receipts. Its Research Fund
 feature records only intended and externally confirmed contributions of personal realized profit.
 
-The sandbox is a third execution boundary inside GRANDE Alpha. It shares strategy mathematics and
-the audit store, but it has its own virtual accounting tables and no dependency on the broker,
-OAuth, account discovery, order review, order placement, or cancellation code.
+The sandbox and live-shadow executor share a pure decision policy with live automation. The policy
+returns a target and reason; three separate execution boundaries consume that decision. Historical
+replay writes virtual accounting tables, live shadow records virtual receipts from current quotes,
+and only the live controller may request an official Robinhood review and order. Shadow and live
+authority are mutually exclusive.

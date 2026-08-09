@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import json
 import math
+import random
+import statistics
 import uuid
+from collections import deque
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -11,8 +14,11 @@ from zoneinfo import ZoneInfo
 
 from grande_alpha.config import data_dir
 from grande_alpha.historical import HistoricalBundle, ReplayFrame
-from grande_alpha.models import Regime
+from grande_alpha.policy import DecisionPolicy, PolicyConfig, PolicyPosition
 from grande_alpha.strategy import MomentumStrategy, StrategyConfig
+
+EASTERN = ZoneInfo("America/New_York")
+INTERVAL_MINUTES = {"1m": 1, "5m": 5, "15m": 15, "60m": 60, "1d": 390}
 
 
 @dataclass
@@ -21,7 +27,14 @@ class SandboxConfig:
     initial_cash: float = 50.0
     order_notional: float = 25.0
     slippage_bps: float = 2.0
+    base_spread_bps: float = 2.0
+    spread_volatility_multiplier: float = 0.10
     commission_per_order: float = 0.0
+    latency_bars: int = 0
+    fill_fraction_pct: float = 100.0
+    rejection_rate_pct: float = 0.0
+    max_volume_participation_pct: float = 1.0
+    random_seed: int = 7007
     warmup_bars: int = 24
     fast_ema: int = 8
     slow_ema: int = 21
@@ -33,10 +46,16 @@ class SandboxConfig:
     max_entries_per_day: int = 6
     no_trade_open_minutes: int = 5
     no_trade_close_minutes: int = 10
+    risk_budget_pct: float = 0.01
+    max_exposure_pct: float = 0.80
+    max_daily_loss_pct: float = 0.04
+    max_consecutive_losses: int = 3
+    volatility_target_pct: float = 0.30
+    force_flat_at_end: bool = False
 
     def validate(self) -> None:
-        if not 1 <= self.lookback_days <= 7:
-            raise ValueError("Lookback must be between 1 and 7 calendar days")
+        if not 1 <= self.lookback_days <= 3650:
+            raise ValueError("Lookback must be between 1 and 3650 calendar days")
         if self.initial_cash <= 0 or self.order_notional <= 0:
             raise ValueError("Starting cash and order notional must be positive")
         if self.order_notional > self.initial_cash:
@@ -47,8 +66,21 @@ class SandboxConfig:
             raise ValueError("Warm-up must be at least slow EMA + 2; momentum must be positive")
         if self.trend_threshold_bps <= 0:
             raise ValueError("Trend threshold must be positive")
-        if self.slippage_bps < 0 or self.commission_per_order < 0:
-            raise ValueError("Slippage and commission cannot be negative")
+        nonnegative = (
+            self.slippage_bps,
+            self.base_spread_bps,
+            self.spread_volatility_multiplier,
+            self.commission_per_order,
+            self.rejection_rate_pct,
+        )
+        if any(value < 0 for value in nonnegative):
+            raise ValueError("Execution costs and rejection rate cannot be negative")
+        if self.latency_bars < 0 or not 0 < self.fill_fraction_pct <= 100:
+            raise ValueError("Latency must be nonnegative and fill fraction must be in (0,100]")
+        if not 0 < self.max_volume_participation_pct <= 100:
+            raise ValueError("Volume participation must be in (0,100]")
+        if not 0 <= self.rejection_rate_pct <= 100:
+            raise ValueError("Rejection rate must be between 0 and 100")
         if self.hard_stop_pct <= 0 or self.take_profit_pct <= 0:
             raise ValueError("Stop and take-profit percentages must be positive")
         if self.max_hold_minutes < 1 or self.max_entries_per_day < 1:
@@ -59,6 +91,15 @@ class SandboxConfig:
             or self.no_trade_open_minutes + self.no_trade_close_minutes >= 390
         ):
             raise ValueError("No-trade windows must be nonnegative and leave part of the session open")
+        for name, value in (
+            ("risk budget", self.risk_budget_pct),
+            ("maximum exposure", self.max_exposure_pct),
+            ("daily loss", self.max_daily_loss_pct),
+        ):
+            if not 0 < value <= 1:
+                raise ValueError(f"{name.title()} percentage must be in (0,1]")
+        if self.max_consecutive_losses < 1 or self.volatility_target_pct < 0:
+            raise ValueError("Loss pause must be positive and volatility target cannot be negative")
 
 
 @dataclass(frozen=True)
@@ -72,6 +113,25 @@ class SandboxFill:
     realized_pnl: float | None
     reason: str
     cash_after: float
+    requested_quantity: float = 0.0
+    fill_fraction: float = 1.0
+    execution_cost: float = 0.0
+
+    def as_dict(self) -> dict[str, Any]:
+        values = asdict(self)
+        values["timestamp"] = self.timestamp.isoformat()
+        return values
+
+
+@dataclass(frozen=True)
+class ExecutionEvent:
+    timestamp: datetime
+    symbol: str
+    side: str
+    status: str
+    requested_quantity: float
+    filled_quantity: float
+    reason: str
 
     def as_dict(self) -> dict[str, Any]:
         values = asdict(self)
@@ -105,6 +165,19 @@ class SandboxResult:
     fills: list[SandboxFill]
     equity_curve: list[EquityPoint]
     warnings: list[str] = field(default_factory=list)
+    execution_events: list[ExecutionEvent] = field(default_factory=list)
+    profit_factor: float = 0.0
+    expectancy: float = 0.0
+    average_win: float = 0.0
+    average_loss: float = 0.0
+    turnover: float = 0.0
+    exposure_pct: float = 0.0
+    max_drawdown_bars: int = 0
+    sharpe: float = 0.0
+    sortino: float = 0.0
+    total_execution_cost: float = 0.0
+    ending_position: str | None = None
+    daily_pnl: dict[str, float] = field(default_factory=dict)
 
     def metrics(self) -> dict[str, Any]:
         return {
@@ -113,10 +186,22 @@ class SandboxResult:
             "net_pnl": self.net_pnl,
             "return_pct": self.return_pct,
             "max_drawdown_pct": self.max_drawdown_pct,
+            "max_drawdown_bars": self.max_drawdown_bars,
             "round_trips": self.round_trips,
             "win_rate": self.win_rate,
+            "profit_factor": self.profit_factor,
+            "expectancy": self.expectancy,
+            "average_win": self.average_win,
+            "average_loss": self.average_loss,
+            "turnover": self.turnover,
+            "exposure_pct": self.exposure_pct,
+            "sharpe": self.sharpe,
+            "sortino": self.sortino,
+            "total_execution_cost": self.total_execution_cost,
+            "ending_position": self.ending_position,
             "tqqqs_buy_hold_pct": self.tqqqs_buy_hold_pct,
             "sqqqs_buy_hold_pct": self.sqqqs_buy_hold_pct,
+            "daily_pnl": self.daily_pnl,
             "warnings": self.warnings,
         }
 
@@ -131,11 +216,23 @@ class _VirtualPosition:
 
 
 class SandboxReplayEngine:
-    """Pure virtual execution engine with no broker object or order-submission path."""
+    """Deterministic virtual execution with no broker or order-submission dependency."""
 
     def __init__(self, config: SandboxConfig) -> None:
         config.validate()
         self.config = config
+        self.rng = random.Random(config.random_seed)
+        self.policy = DecisionPolicy(
+            PolicyConfig(
+                bullish_symbol="TQQQS",
+                bearish_symbol="SQQQS",
+                hard_stop_pct=config.hard_stop_pct,
+                take_profit_pct=config.take_profit_pct,
+                max_hold_minutes=config.max_hold_minutes,
+                no_trade_open_minutes=config.no_trade_open_minutes,
+                no_trade_close_minutes=config.no_trade_close_minutes,
+            )
+        )
 
     def run(self, bundle: HistoricalBundle) -> SandboxResult:
         if len(bundle.frames) < self.config.warmup_bars + 3:
@@ -151,97 +248,135 @@ class SandboxReplayEngine:
         )
         cash = self.config.initial_cash
         position: _VirtualPosition | None = None
-        pending_target: str | None = None
-        pending_change = False
-        pending_reason = ""
+        scheduled: tuple[int, str | None, str] | None = None
         entries_by_day: dict[str, int] = {}
+        day_start_equity: dict[str, float] = {}
+        paused_days: set[str] = set()
         fills: list[SandboxFill] = []
+        events: list[ExecutionEvent] = []
         closed_pnl: list[float] = []
         curve: list[EquityPoint] = []
-        warnings: list[str] = []
+        recent_returns = {"TQQQS": deque(maxlen=30), "SQQQS": deque(maxlen=30)}
+        previous_prices: dict[str, float] = {}
+        consecutive_losses = 0
+        bar_minutes = INTERVAL_MINUTES.get(bundle.interval, 1)
+        self._bar_minutes = bar_minutes
+
+        def window_allowed(frame: ReplayFrame) -> bool:
+            return bundle.interval == "1d" or self.policy.trading_window_allowed(frame.start)
 
         for index, frame in enumerate(bundle.frames):
-            if pending_change:
-                cash, position, transition_fills = self._transition(
+            day = frame.start.astimezone(EASTERN).date().isoformat()
+            starting_equity = self._equity(cash, position, frame)
+            day_start_equity.setdefault(day, starting_equity)
+            for alias in ("TQQQS", "SQQQS"):
+                mark = frame.bar_for_alias(alias).close
+                if alias in previous_prices and previous_prices[alias] > 0:
+                    recent_returns[alias].append(mark / previous_prices[alias] - 1.0)
+                previous_prices[alias] = mark
+
+            if (
+                day_start_equity[day] > 0
+                and (day_start_equity[day] - starting_equity) / day_start_equity[day]
+                >= self.config.max_daily_loss_pct
+            ):
+                paused_days.add(day)
+                if position is not None and window_allowed(frame):
+                    scheduled = (index + 1 + self.config.latency_bars, None, "Daily loss pause")
+
+            if scheduled and index >= scheduled[0] and window_allowed(frame):
+                cash, position, new_fills, new_events, complete = self._transition(
                     frame,
                     index,
                     cash,
                     position,
-                    pending_target,
-                    pending_reason,
+                    scheduled[1],
+                    scheduled[2],
                     entries_by_day,
+                    paused_days,
+                    recent_returns,
                 )
-                fills.extend(transition_fills)
-                closed_pnl.extend(
-                    fill.realized_pnl for fill in transition_fills if fill.realized_pnl is not None
-                )
-                pending_change = False
+                fills.extend(new_fills)
+                events.extend(new_events)
+                for fill in new_fills:
+                    if fill.realized_pnl is not None:
+                        closed_pnl.append(fill.realized_pnl)
+                        consecutive_losses = consecutive_losses + 1 if fill.realized_pnl < 0 else 0
+                        if consecutive_losses >= self.config.max_consecutive_losses:
+                            paused_days.add(day)
+                scheduled = None if complete else (index + 1, scheduled[1], scheduled[2])
 
             signal = strategy.on_bar(frame.qqq)
-            desired = {
-                Regime.BULLISH: "TQQQS",
-                Regime.BEARISH: "SQQQS",
-                Regime.FLAT: None,
-            }[signal.regime]
-            reason = signal.reason
-            eastern = frame.start.astimezone(ZoneInfo("America/New_York"))
-            market_minute = (eastern.hour * 60 + eastern.minute) - (9 * 60 + 30)
-            if market_minute < self.config.no_trade_open_minutes:
-                desired, reason = None, "Configured opening no-trade window"
-            elif market_minute >= 390 - self.config.no_trade_close_minutes:
-                desired, reason = None, "Configured closing no-trade window"
+            policy_position = None
             if position is not None:
-                mark = frame.bar_for_alias(position.symbol).close
-                return_pct = (mark - position.entry_price) / position.entry_price
-                held_minutes = index - position.entry_index
-                if return_pct <= -self.config.hard_stop_pct:
-                    desired, reason = None, f"Sandbox stop {return_pct:+.2%}"
-                elif return_pct >= self.config.take_profit_pct:
-                    desired, reason = None, f"Sandbox take-profit {return_pct:+.2%}"
-                elif held_minutes >= self.config.max_hold_minutes:
-                    desired, reason = None, f"Sandbox max hold {held_minutes} minutes"
+                policy_position = PolicyPosition(
+                    position.symbol,
+                    position.entry_price,
+                    frame.bar_for_alias(position.symbol).close,
+                    (index - position.entry_index) * bar_minutes,
+                )
+            decision = self.policy.decide(signal, frame.start, policy_position)
             current = position.symbol if position else None
-            if desired != current:
-                pending_target = desired
-                pending_reason = reason
-                pending_change = True
+            if window_allowed(frame) and decision.target_symbol != current:
+                if scheduled is None or scheduled[1] != decision.target_symbol:
+                    scheduled = (
+                        index + 1 + self.config.latency_bars,
+                        decision.target_symbol,
+                        decision.reason,
+                    )
 
-            equity = cash
-            if position is not None:
-                equity += position.quantity * frame.bar_for_alias(position.symbol).close
+            equity = self._equity(cash, position, frame)
             curve.append(EquityPoint(frame.start, equity, cash, position.symbol if position else None))
 
-        if position is not None:
+        ending_position = position.symbol if position else None
+        if position is not None and self.config.force_flat_at_end:
             final_frame = bundle.frames[-1]
-            cash, position, final_fills = self._transition(
+            cash, position, new_fills, new_events, _ = self._transition(
                 final_frame,
                 len(bundle.frames),
                 cash,
                 position,
                 None,
-                "End of sandbox replay — forced virtual flatten",
+                "End of replay forced virtual flatten",
                 entries_by_day,
+                paused_days,
+                recent_returns,
                 use_close=True,
+                bypass_execution_failures=True,
             )
-            fills.extend(final_fills)
-            closed_pnl.extend(fill.realized_pnl for fill in final_fills if fill.realized_pnl is not None)
+            fills.extend(new_fills)
+            events.extend(new_events)
+            closed_pnl.extend(fill.realized_pnl for fill in new_fills if fill.realized_pnl is not None)
+            ending_position = None
             curve[-1] = EquityPoint(final_frame.start, cash, cash, None)
 
-        final_equity = cash
-        peak = self.config.initial_cash
-        max_drawdown = 0.0
-        for point in curve:
-            peak = max(peak, point.equity)
-            if peak > 0:
-                max_drawdown = max(max_drawdown, (peak - point.equity) / peak)
-        wins = sum(value > 0 for value in closed_pnl)
-        win_rate = wins / len(closed_pnl) if closed_pnl else 0.0
+        final_equity = curve[-1].equity
+        max_drawdown, max_drawdown_bars = self._drawdown(curve)
+        wins = [value for value in closed_pnl if value > 0]
+        losses = [value for value in closed_pnl if value < 0]
+        win_rate = len(wins) / len(closed_pnl) if closed_pnl else 0.0
+        gross_profit, gross_loss = sum(wins), abs(sum(losses))
+        profit_factor = gross_profit / gross_loss if gross_loss > 0 else (math.inf if gross_profit else 0.0)
+        expectancy = statistics.fmean(closed_pnl) if closed_pnl else 0.0
         first, last = bundle.frames[0], bundle.frames[-1]
-        tqqq_hold = (last.tqqq.close / first.tqqq.open - 1.0) * 100.0
-        sqqq_hold = (last.sqqq.close / first.sqqq.open - 1.0) * 100.0
+        returns = [
+            curve[index].equity / curve[index - 1].equity - 1.0
+            for index in range(1, len(curve))
+            if curve[index - 1].equity > 0
+        ]
+        annualization = math.sqrt(max(1.0, 252 * 390 / bar_minutes))
+        sharpe = self._risk_adjusted(returns, annualization, downside_only=False)
+        sortino = self._risk_adjusted(returns, annualization, downside_only=True)
+        turnover_dollars = sum(fill.quantity * fill.price for fill in fills)
+        execution_cost = sum(fill.execution_cost for fill in fills)
+        daily_pnl = self._daily_pnl(curve)
+        warnings = ["Historical replay is not evidence of future profitability"]
         if not closed_pnl:
-            warnings.append("No complete virtual round trips occurred with these settings")
-        warnings.append("Historical replay is not evidence of future profitability")
+            warnings.insert(0, "No complete virtual round trips occurred with these settings")
+        if ending_position:
+            warnings.append(f"Replay ended holding {ending_position}; final P/L includes unrealized value")
+        if bundle.quality and bundle.quality.missing_intervals:
+            warnings.append(f"Dataset has {bundle.quality.missing_intervals} missing intraday intervals")
         return SandboxResult(
             run_id=str(uuid.uuid4()),
             source=bundle.source,
@@ -254,11 +389,24 @@ class SandboxReplayEngine:
             max_drawdown_pct=max_drawdown * 100.0,
             round_trips=len(closed_pnl),
             win_rate=win_rate * 100.0,
-            tqqqs_buy_hold_pct=tqqq_hold,
-            sqqqs_buy_hold_pct=sqqq_hold,
+            tqqqs_buy_hold_pct=(last.tqqq.close / first.tqqq.open - 1.0) * 100.0,
+            sqqqs_buy_hold_pct=(last.sqqq.close / first.sqqq.open - 1.0) * 100.0,
             fills=fills,
             equity_curve=curve,
             warnings=warnings,
+            execution_events=events,
+            profit_factor=profit_factor,
+            expectancy=expectancy,
+            average_win=statistics.fmean(wins) if wins else 0.0,
+            average_loss=statistics.fmean(losses) if losses else 0.0,
+            turnover=turnover_dollars / self.config.initial_cash,
+            exposure_pct=sum(point.position_symbol is not None for point in curve) / len(curve) * 100.0,
+            max_drawdown_bars=max_drawdown_bars,
+            sharpe=sharpe,
+            sortino=sortino,
+            total_execution_cost=execution_cost,
+            ending_position=ending_position,
+            daily_pnl=daily_pnl,
         )
 
     def _transition(
@@ -270,64 +418,221 @@ class SandboxReplayEngine:
         target: str | None,
         reason: str,
         entries_by_day: dict[str, int],
+        paused_days: set[str],
+        recent_returns: dict[str, deque[float]],
         use_close: bool = False,
-    ) -> tuple[float, _VirtualPosition | None, list[SandboxFill]]:
+        bypass_execution_failures: bool = False,
+    ) -> tuple[
+        float,
+        _VirtualPosition | None,
+        list[SandboxFill],
+        list[ExecutionEvent],
+        bool,
+    ]:
         fills: list[SandboxFill] = []
+        events: list[ExecutionEvent] = []
         if position is not None and position.symbol != target:
-            raw = (
-                frame.bar_for_alias(position.symbol).close
-                if use_close
-                else frame.bar_for_alias(position.symbol).open
+            cash, position, fill, event, complete = self._sell(
+                frame, cash, position, reason, use_close, bypass_execution_failures
             )
-            price = self._slipped(raw, "sell")
-            proceeds = position.quantity * price - self.config.commission_per_order
-            cash += proceeds
-            realized = proceeds - position.cost_total
-            fills.append(
-                SandboxFill(
-                    frame.start,
-                    position.symbol,
-                    "sell",
-                    position.quantity,
-                    price,
-                    self.config.commission_per_order,
-                    realized,
-                    reason,
-                    cash,
-                )
-            )
-            position = None
+            events.append(event)
+            if fill:
+                fills.append(fill)
+            if not complete:
+                return cash, position, fills, events, False
         if target is not None and position is None:
-            day = frame.start.date().isoformat()
-            if entries_by_day.get(day, 0) >= self.config.max_entries_per_day:
-                return cash, None, fills
-            raw = frame.bar_for_alias(target).close if use_close else frame.bar_for_alias(target).open
-            price = self._slipped(raw, "buy")
-            budget = min(self.config.order_notional, cash - self.config.commission_per_order)
-            if budget > 0 and math.isfinite(price) and price > 0:
-                quantity = budget / price
-                cost = quantity * price + self.config.commission_per_order
-                cash -= cost
-                position = _VirtualPosition(target, quantity, price, cost, index)
+            day = frame.start.astimezone(EASTERN).date().isoformat()
+            if day in paused_days or entries_by_day.get(day, 0) >= self.config.max_entries_per_day:
+                events.append(ExecutionEvent(frame.start, target, "buy", "risk_blocked", 0, 0, reason))
+                return cash, None, fills, events, True
+            cash, position, fill, event = self._buy(
+                frame, index, cash, target, reason, recent_returns[target], use_close
+            )
+            events.append(event)
+            if fill:
+                fills.append(fill)
                 entries_by_day[day] = entries_by_day.get(day, 0) + 1
-                fills.append(
-                    SandboxFill(
-                        frame.start,
-                        target,
-                        "buy",
-                        quantity,
-                        price,
-                        self.config.commission_per_order,
-                        None,
-                        reason,
-                        cash,
-                    )
-                )
-        return cash, position, fills
+            return cash, position, fills, events, event.status != "rejected"
+        return cash, position, fills, events, True
 
-    def _slipped(self, price: float, side: str) -> float:
+    def _sell(
+        self,
+        frame: ReplayFrame,
+        cash: float,
+        position: _VirtualPosition,
+        reason: str,
+        use_close: bool,
+        bypass: bool,
+    ) -> tuple[float, _VirtualPosition | None, SandboxFill | None, ExecutionEvent, bool]:
+        if not bypass and self.rng.random() < self.config.rejection_rate_pct / 100.0:
+            return (
+                cash,
+                position,
+                None,
+                ExecutionEvent(frame.start, position.symbol, "sell", "rejected", position.quantity, 0, reason),
+                False,
+            )
+        bar = frame.bar_for_alias(position.symbol)
+        requested = position.quantity
+        quantity = self._fillable_quantity(bar, requested, bypass)
+        raw = bar.close if use_close else bar.open
+        spread = self._dynamic_spread_bps(bar)
+        price = self._execution_price(raw, "sell", spread)
+        cost_share = position.cost_total * (quantity / position.quantity)
+        proceeds = quantity * price - self.config.commission_per_order
+        cash += proceeds
+        realized = proceeds - cost_share
+        remaining = position.quantity - quantity
+        next_position = None
+        if remaining > 1e-9:
+            next_position = _VirtualPosition(
+                position.symbol,
+                remaining,
+                position.entry_price,
+                position.cost_total - cost_share,
+                position.entry_index,
+            )
+        execution_cost = max(0.0, (raw - price) * quantity) + self.config.commission_per_order
+        fraction = quantity / requested
+        status = "filled" if next_position is None else "partially_filled"
+        fill = SandboxFill(
+            frame.start,
+            position.symbol,
+            "sell",
+            quantity,
+            price,
+            self.config.commission_per_order,
+            realized,
+            reason,
+            cash,
+            requested,
+            fraction,
+            execution_cost,
+        )
+        event = ExecutionEvent(frame.start, position.symbol, "sell", status, requested, quantity, reason)
+        return cash, next_position, fill, event, next_position is None
+
+    def _buy(
+        self,
+        frame: ReplayFrame,
+        index: int,
+        cash: float,
+        target: str,
+        reason: str,
+        recent_returns: deque[float],
+        use_close: bool,
+    ) -> tuple[float, _VirtualPosition | None, SandboxFill | None, ExecutionEvent]:
+        bar = frame.bar_for_alias(target)
+        raw = bar.close if use_close else bar.open
+        equity = cash
+        risk_notional = equity * self.config.risk_budget_pct / self.config.hard_stop_pct
+        exposure_cap = equity * self.config.max_exposure_pct
+        volatility_scale = self._volatility_scale(recent_returns)
+        budget = min(self.config.order_notional, risk_notional, exposure_cap) * volatility_scale
+        budget = min(budget, cash - self.config.commission_per_order)
+        spread = self._dynamic_spread_bps(bar)
+        price = self._execution_price(raw, "buy", spread)
+        requested = max(0.0, budget / price)
+        if requested <= 0:
+            return cash, None, None, ExecutionEvent(frame.start, target, "buy", "risk_blocked", 0, 0, reason)
+        if self.rng.random() < self.config.rejection_rate_pct / 100.0:
+            return (
+                cash,
+                None,
+                None,
+                ExecutionEvent(frame.start, target, "buy", "rejected", requested, 0, reason),
+            )
+        quantity = self._fillable_quantity(bar, requested, False)
+        cost = quantity * price + self.config.commission_per_order
+        cash -= cost
+        execution_cost = max(0.0, (price - raw) * quantity) + self.config.commission_per_order
+        position = _VirtualPosition(target, quantity, price, cost, index)
+        fraction = quantity / requested
+        status = "filled" if fraction >= 0.999999 else "partially_filled"
+        fill = SandboxFill(
+            frame.start,
+            target,
+            "buy",
+            quantity,
+            price,
+            self.config.commission_per_order,
+            None,
+            reason,
+            cash,
+            requested,
+            fraction,
+            execution_cost,
+        )
+        return cash, position, fill, ExecutionEvent(
+            frame.start, target, "buy", status, requested, quantity, reason
+        )
+
+    def _fillable_quantity(self, bar, requested: float, bypass: bool) -> float:
+        if bypass:
+            return requested
+        fraction_cap = requested * self.config.fill_fraction_pct / 100.0
+        volume_cap = (
+            bar.volume * self.config.max_volume_participation_pct / 100.0
+            if bar.volume > 0
+            else requested
+        )
+        return max(0.0, min(requested, fraction_cap, volume_cap))
+
+    def _dynamic_spread_bps(self, bar) -> float:
+        range_bps = (bar.high - bar.low) / max(bar.open, 1e-9) * 10_000.0
+        return self.config.base_spread_bps + range_bps * self.config.spread_volatility_multiplier
+
+    def _execution_price(self, price: float, side: str, spread_bps: float) -> float:
         direction = 1.0 if side == "buy" else -1.0
-        return price * (1.0 + direction * self.config.slippage_bps / 10_000.0)
+        total_bps = self.config.slippage_bps + spread_bps / 2.0
+        return price * (1.0 + direction * total_bps / 10_000.0)
+
+    def _volatility_scale(self, returns: deque[float]) -> float:
+        if self.config.volatility_target_pct <= 0 or len(returns) < 10:
+            return 1.0
+        realized = statistics.pstdev(returns) * math.sqrt(252 * 390 / self._bar_minutes)
+        if realized <= 1e-9:
+            return 1.0
+        return min(1.0, self.config.volatility_target_pct / realized)
+
+    @staticmethod
+    def _equity(cash: float, position: _VirtualPosition | None, frame: ReplayFrame) -> float:
+        if position is None:
+            return cash
+        return cash + position.quantity * frame.bar_for_alias(position.symbol).close
+
+    @staticmethod
+    def _drawdown(curve: list[EquityPoint]) -> tuple[float, int]:
+        peak = curve[0].equity
+        peak_index = 0
+        max_drawdown = 0.0
+        max_duration = 0
+        for index, point in enumerate(curve):
+            if point.equity >= peak:
+                peak, peak_index = point.equity, index
+            elif peak > 0:
+                drawdown = (peak - point.equity) / peak
+                if drawdown > max_drawdown:
+                    max_drawdown = drawdown
+                    max_duration = index - peak_index
+        return max_drawdown, max_duration
+
+    @staticmethod
+    def _risk_adjusted(returns: list[float], annualization: float, downside_only: bool) -> float:
+        if len(returns) < 2:
+            return 0.0
+        sample = [min(0.0, value) for value in returns] if downside_only else returns
+        deviation = statistics.pstdev(sample)
+        return statistics.fmean(returns) / deviation * annualization if deviation > 1e-12 else 0.0
+
+    @staticmethod
+    def _daily_pnl(curve: list[EquityPoint]) -> dict[str, float]:
+        grouped: dict[str, list[float]] = {}
+        for point in curve:
+            grouped.setdefault(point.timestamp.astimezone(EASTERN).date().isoformat(), []).append(
+                point.equity
+            )
+        return {day: values[-1] - values[0] for day, values in grouped.items() if values}
 
 
 def sandbox_config_path() -> Path:

@@ -50,6 +50,7 @@ class Bar:
     low: float
     close: float
     samples: int
+    volume: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -167,4 +168,3 @@ class LiveGrant:
     def active(self, now: datetime | None = None) -> bool:
         reference = now or utc_now()
         return self.starts_at <= reference < self.expires_at
-

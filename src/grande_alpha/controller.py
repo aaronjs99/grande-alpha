@@ -25,7 +25,10 @@ from grande_alpha.models import (
 from grande_alpha.models import (
     Signal as TradeSignal,
 )
+from grande_alpha.policy import DecisionPolicy, PolicyConfig, PolicyPosition
 from grande_alpha.risk import RiskEngine
+from grande_alpha.sandbox import load_sandbox_config
+from grande_alpha.shadow import LiveShadowEngine
 from grande_alpha.storage import AuditStore
 from grande_alpha.strategy import BarBuilder, MomentumStrategy, StrategyConfig
 
@@ -45,6 +48,11 @@ class TradingSnapshot:
     drawdown: float = 0.0
     trades_today: int = 0
     last_refresh: datetime | None = None
+    shadow_running: bool = False
+    shadow_equity: float = 0.0
+    shadow_pnl: float = 0.0
+    shadow_position: str | None = None
+    shadow_fills: int = 0
 
 
 class TradingController(QObject):
@@ -68,16 +76,33 @@ class TradingController(QObject):
             )
         )
         self.bar_builder = BarBuilder("QQQ", config.bar_seconds)
+        self.policy = DecisionPolicy(
+            PolicyConfig(
+                hard_stop_pct=config.hard_stop_pct,
+                take_profit_pct=config.take_profit_pct,
+                max_hold_minutes=config.max_hold_minutes,
+                no_trade_open_minutes=config.no_trade_open_minutes,
+                no_trade_close_minutes=config.no_trade_close_minutes,
+            )
+        )
         self.snapshot = TradingSnapshot()
         self._tick_lock = asyncio.Lock()
         self._last_qqq_timestamp: datetime | None = None
         self._last_submission_at: datetime | None = None
+        self._shadow: LiveShadowEngine | None = None
 
     def _emit(self) -> None:
         self.snapshot.live_status = self.risk.session_status()
         self.snapshot.drawdown = self.risk.drawdown
         self.snapshot.trades_today = self.risk.trades_today
         self.snapshot.strategy_running = self.snapshot.strategy_running and self.snapshot.live_status == "LIVE"
+        if self._shadow is not None:
+            state = self._shadow.state
+            self.snapshot.shadow_running = state.active
+            self.snapshot.shadow_equity = state.equity
+            self.snapshot.shadow_pnl = state.pnl
+            self.snapshot.shadow_position = state.position.symbol if state.position else None
+            self.snapshot.shadow_fills = len(state.fills)
         self.snapshot_changed.emit(self.snapshot)
 
     def log(self, summary: str, severity: str = "info", category: str = "runtime", payload: Any = None) -> None:
@@ -148,6 +173,16 @@ class TradingController(QObject):
                         self.snapshot.signal = signal
                         self.store.record_signal(signal)
                         self.log(f"Signal: {signal.regime.value} — {signal.reason}", category="signal")
+                        if self._shadow is not None and self._shadow.state.active:
+                            fills = self._shadow.on_bar(bar.start, signal, quotes)
+                            for fill in fills:
+                                self.log(
+                                    f"SHADOW {fill.side.upper()} {fill.quantity:.6f} {fill.symbol} "
+                                    f"at ${fill.price:.2f}",
+                                    "market",
+                                    "shadow_fill",
+                                    fill.as_dict(),
+                                )
                 if evaluate and self.snapshot.strategy_running:
                     await self._evaluate_and_trade()
             except Exception as exc:
@@ -160,6 +195,8 @@ class TradingController(QObject):
                 self._emit()
 
     def authorize_live(self, grant: LiveGrant) -> None:
+        if self._shadow is not None and self._shadow.state.active:
+            raise RuntimeError("Stop live shadow mode before granting real-order authority")
         if self.snapshot.account is None or self.snapshot.portfolio is None:
             raise RuntimeError("Connect and refresh the Agentic account first")
         if grant.account_number != self.snapshot.account.account_number:
@@ -186,13 +223,51 @@ class TradingController(QObject):
         self._emit()
 
     def start_strategy(self) -> None:
+        if self._shadow is not None and self._shadow.state.active:
+            raise RuntimeError("Stop live shadow mode before starting real-order automation")
         if self.risk.session_status() != "LIVE":
             raise RuntimeError("Authorize a bounded live session first")
         self.snapshot.strategy_running = True
         self.log("Automatic strategy started", "warning", "strategy")
         self._emit()
 
+    def start_shadow(self) -> None:
+        if not self.snapshot.connected or self.snapshot.account is None:
+            raise RuntimeError("Connect Robinhood read access before starting live shadow mode")
+        if self.risk.session_status() == "LIVE" or self.snapshot.strategy_running:
+            raise RuntimeError("Live shadow and real-order authority are mutually exclusive")
+        if self._shadow is not None and self._shadow.state.active:
+            return
+        self._shadow = LiveShadowEngine(load_sandbox_config())
+        self.log(
+            "Live shadow started — virtual TQQQS/SQQQS fills only; no order authority granted",
+            "warning",
+            "shadow_authority",
+            {"run_id": self._shadow.state.run_id, "broker_calls_allowed": False},
+        )
+        self._emit()
+
+    def stop_shadow(self, reason: str = "Live shadow stopped by user") -> None:
+        if self._shadow is None or not self._shadow.state.active:
+            return
+        state = self._shadow.stop(self.snapshot.quotes)
+        self.log(
+            f"{reason}; virtual equity ${state.equity:,.2f}; P/L ${state.pnl:+,.2f}",
+            "warning",
+            "shadow_authority",
+            {
+                "run_id": state.run_id,
+                "virtual_equity": state.equity,
+                "virtual_pnl": state.pnl,
+                "ending_position": state.position.symbol if state.position else None,
+                "fills": [fill.as_dict() for fill in state.fills],
+                "real_orders_submitted": 0,
+            },
+        )
+        self._emit()
+
     async def stop_and_cancel(self, reason: str = "STOP + CANCEL pressed") -> None:
+        self.stop_shadow(reason)
         self.snapshot.strategy_running = False
         self.risk.disarm()
         cancelled: list[str] = []
@@ -220,13 +295,6 @@ class TradingController(QObject):
         )
         self._emit()
 
-    def _target_position(self) -> str | None:
-        if self.snapshot.signal.regime == Regime.BULLISH:
-            return "TQQQ"
-        if self.snapshot.signal.regime == Regime.BEARISH:
-            return "SQQQ"
-        return None
-
     def _leveraged_positions(self) -> list[Position]:
         return [item for item in self.snapshot.positions if item.symbol in {"TQQQ", "SQQQ"}]
 
@@ -249,7 +317,6 @@ class TradingController(QObject):
             return
         if self._last_submission_at and utc_now() - self._last_submission_at < timedelta(seconds=12):
             return
-        target = self._target_position()
         positions = self._leveraged_positions()
         held = positions[0] if positions else None
         if len(positions) > 1:
@@ -258,12 +325,37 @@ class TradingController(QObject):
             self.log("Both TQQQ and SQQQ are held; automatic trading locked", "critical", "risk")
             return
 
+        held_quote = self.snapshot.quotes.get(held.symbol) if held else None
+        held_minutes = None
+        if held:
+            entries = [
+                order.created_at
+                for order in self.snapshot.orders
+                if order.symbol == held.symbol
+                and order.side == "buy"
+                and order.created_at is not None
+                and order.state in {"filled", "partially_filled"}
+            ]
+            if entries:
+                held_minutes = max(0, int((utc_now() - max(entries)).total_seconds() / 60))
+        policy_position = (
+            PolicyPosition(
+                held.symbol,
+                held.average_price,
+                held_quote.mid if held_quote else None,
+                held_minutes,
+            )
+            if held
+            else None
+        )
+        decision = self.policy.decide(self.snapshot.signal, utc_now(), policy_position)
+        target = decision.target_symbol
+
         if held is not None:
-            quote = self.snapshot.quotes.get(held.symbol)
-            stop_reason = self._exit_reason(held, quote)
-            if target == held.symbol and stop_reason is None:
+            quote = held_quote
+            if target == held.symbol:
                 return
-            reason = stop_reason or f"Regime changed from {held.symbol} to {target or 'cash'}"
+            reason = decision.reason or f"Regime changed from {held.symbol} to {target or 'cash'}"
             if held.sellable_quantity <= 0:
                 self.log(f"Cannot exit {held.symbol}: broker reports zero sellable shares", "error", "risk")
                 return
@@ -296,19 +388,9 @@ class TradingController(QObject):
             symbol=target,
             side="buy",
             dollar_amount=round(notional, 2),
-            reason=self.snapshot.signal.reason,
+            reason=decision.reason,
         )
         await self._submit(intent, quote)
-
-    def _exit_reason(self, position: Position, quote: Quote | None) -> str | None:
-        if quote is None or position.average_price is None or position.average_price <= 0:
-            return None
-        change = quote.mid / position.average_price - 1.0
-        if change <= -self.config.hard_stop_pct:
-            return f"Hard stop reached at {change:.2%}"
-        if change >= self.config.take_profit_pct:
-            return f"Take-profit reached at {change:.2%}"
-        return None
 
     async def _submit(self, intent: OrderIntent, quote: Quote | None) -> BrokerOrder | None:
         if self.snapshot.account is None or self.snapshot.portfolio is None or quote is None:

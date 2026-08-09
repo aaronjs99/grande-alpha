@@ -112,6 +112,8 @@ class MainWindow(QMainWindow):
         self.authorize_button.clicked.connect(self._authorize)
         self.start_button = QPushButton("Start Strategy")
         self.start_button.clicked.connect(self._start_strategy)
+        self.shadow_button = QPushButton("Start Live Shadow")
+        self.shadow_button.clicked.connect(self._toggle_shadow)
         self.kill_button = QPushButton("STOP + CANCEL")
         self.kill_button.setObjectName("danger")
         self.kill_button.clicked.connect(lambda: asyncio.create_task(self.controller.stop_and_cancel()))
@@ -122,6 +124,7 @@ class MainWindow(QMainWindow):
             self.connect_button,
             self.authorize_button,
             self.start_button,
+            self.shadow_button,
             self.kill_button,
             self.flatten_button,
         ):
@@ -135,6 +138,7 @@ class MainWindow(QMainWindow):
         self.session_card = MetricCard("Live authority", "LOCKED")
         self.signal_card = MetricCard("QQQ regime", "FLAT")
         self.drawdown_card = MetricCard("Session drawdown", "$0.00")
+        self.shadow_card = MetricCard("Live shadow", "OFF")
         for column, card in enumerate(
             (
                 self.account_card,
@@ -143,6 +147,7 @@ class MainWindow(QMainWindow):
                 self.session_card,
                 self.signal_card,
                 self.drawdown_card,
+                self.shadow_card,
             )
         ):
             cards.addWidget(card, 0, column)
@@ -244,6 +249,15 @@ class MainWindow(QMainWindow):
             self.controller.start_strategy()
         except Exception as exc:
             QMessageBox.warning(self, "Strategy remains stopped", str(exc))
+
+    def _toggle_shadow(self) -> None:
+        try:
+            if self._snapshot.shadow_running:
+                self.controller.stop_shadow()
+            else:
+                self.controller.start_shadow()
+        except Exception as exc:
+            QMessageBox.warning(self, "Live shadow unchanged", str(exc))
 
     def _plan_contribution(self) -> None:
         dialog = FundPlanDialog(self)
@@ -359,6 +373,15 @@ class MainWindow(QMainWindow):
         signal_color = {Regime.BULLISH: "#00e507", Regime.BEARISH: "#ff697d", Regime.FLAT: "#f2c14e"}
         self.signal_card.value.setStyleSheet(f"color:{signal_color[snapshot.signal.regime]}")
         self.drawdown_card.value.setText(f"${snapshot.drawdown:,.2f}")
+        if snapshot.shadow_running:
+            self.shadow_card.value.setText(
+                f"${snapshot.shadow_pnl:+,.2f} • {snapshot.shadow_position or 'cash'}"
+            )
+            self.shadow_card.value.setStyleSheet("color:#65b9ff")
+        else:
+            self.shadow_card.value.setText("OFF")
+            self.shadow_card.value.setStyleSheet("color:#8fa4b8")
+        self.shadow_button.setText("Stop Live Shadow" if snapshot.shadow_running else "Start Live Shadow")
         self.connect_button.setText("Disconnect" if snapshot.connected else "Connect Robinhood")
         self._update_quotes(snapshot)
         self._update_positions(snapshot)
@@ -367,6 +390,7 @@ class MainWindow(QMainWindow):
         refreshed = snapshot.last_refresh.astimezone().strftime("%I:%M:%S %p") if snapshot.last_refresh else "never"
         self.status.setText(
             f"{snapshot.live_status} • Strategy {'RUNNING' if snapshot.strategy_running else 'STOPPED'} • "
+            f"Shadow {'RUNNING — NO ORDERS' if snapshot.shadow_running else 'OFF'} • "
             f"Orders {snapshot.trades_today} • Last broker refresh {refreshed} • {snapshot.signal.reason}"
         )
         self._set_controls()
@@ -375,8 +399,10 @@ class MainWindow(QMainWindow):
         connected = self._snapshot.connected
         funded = bool(self._snapshot.portfolio and self._snapshot.portfolio.buying_power > 0)
         live = self._snapshot.live_status == "LIVE"
-        self.authorize_button.setEnabled(connected and funded)
-        self.start_button.setEnabled(live and not self._snapshot.strategy_running)
+        shadow = self._snapshot.shadow_running
+        self.authorize_button.setEnabled(connected and funded and not shadow)
+        self.start_button.setEnabled(live and not self._snapshot.strategy_running and not shadow)
+        self.shadow_button.setEnabled(connected and (shadow or not live))
         self.kill_button.setEnabled(connected)
         self.flatten_button.setEnabled(bool(self._snapshot.positions))
 

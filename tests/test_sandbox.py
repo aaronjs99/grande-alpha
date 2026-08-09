@@ -10,8 +10,11 @@ from grande_alpha.historical import (
     HistoricalBundle,
     ReplayFrame,
     align_bars,
+    assess_quality,
     deterministic_demo,
+    load_bundle,
     parse_yahoo_chart,
+    save_bundle,
 )
 from grande_alpha.models import Bar
 from grande_alpha.sandbox import SandboxConfig, SandboxReplayEngine
@@ -91,6 +94,7 @@ def test_replay_uses_sandbox_aliases_and_next_bar_fills() -> None:
         max_entries_per_day=10,
         no_trade_open_minutes=0,
         no_trade_close_minutes=0,
+        force_flat_at_end=True,
     )
 
     result = SandboxReplayEngine(config).run(bundle)
@@ -112,6 +116,33 @@ def test_demo_is_repeatable_and_config_rejects_lookahead_prone_values() -> None:
         SandboxConfig(fast_ema=21, slow_ema=8).validate()
 
 
+def test_historical_cache_round_trip_verifies_content_hash(tmp_path: Path) -> None:
+    bundle = deterministic_demo(2, seed=14)
+    path = tmp_path / "bundle.json"
+    save_bundle(bundle, path)
+
+    restored = load_bundle(path)
+
+    assert restored.dataset_hash == bundle.dataset_hash
+    assert restored.frames == bundle.frames
+    assert restored.quality and restored.quality.clean
+
+
+def test_data_quality_counts_intraday_gaps() -> None:
+    start = datetime(2026, 8, 3, 13, 30, tzinfo=UTC)
+    frames = [
+        ReplayFrame(start, _bar("QQQ", start, 1), _bar("TQQQ", start, 1), _bar("SQQQ", start, 1)),
+        ReplayFrame(
+            start + timedelta(minutes=3),
+            _bar("QQQ", start + timedelta(minutes=3), 1),
+            _bar("TQQQ", start + timedelta(minutes=3), 1),
+            _bar("SQQQ", start + timedelta(minutes=3), 1),
+        ),
+    ]
+    quality = assess_quality(frames, "1m")
+    assert quality.missing_intervals == 2
+
+
 def test_sandbox_run_persists_separately_from_live_orders(tmp_path: Path) -> None:
     store = AuditStore(tmp_path / "audit.db")
     result = SandboxReplayEngine(SandboxConfig()).run(deterministic_demo(2))
@@ -123,11 +154,17 @@ def test_sandbox_run_persists_separately_from_live_orders(tmp_path: Path) -> Non
         asdict(SandboxConfig()),
         result.metrics(),
         [fill.as_dict() for fill in result.fills],
+        [event.as_dict() for event in result.execution_events],
     )
 
     runs = store.recent_sandbox_runs()
     assert runs[0]["run_id"] == result.run_id
     assert "sandbox" in store.recent_receipts()[0]["category"]
+    with store._lock:
+        event_count = store._connection.execute(
+            "SELECT COUNT(*) AS count FROM sandbox_execution_events WHERE run_id=?", (result.run_id,)
+        ).fetchone()["count"]
+    assert event_count == len(result.execution_events)
     store.close()
 
 

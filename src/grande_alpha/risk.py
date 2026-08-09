@@ -2,12 +2,10 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass
-from datetime import UTC, datetime, time, timedelta
-from zoneinfo import ZoneInfo
+from datetime import UTC, datetime, timedelta
 
 from grande_alpha.models import LiveGrant, OrderIntent, Portfolio, Quote, utc_now
-
-EASTERN = ZoneInfo("America/New_York")
+from grande_alpha.policy import EASTERN, regular_session_allowed
 
 
 @dataclass(frozen=True)
@@ -63,16 +61,9 @@ class RiskEngine:
         return "LIVE"
 
     def _regular_session_allowed(self, now: datetime) -> bool:
-        local = now.astimezone(EASTERN)
-        if local.weekday() >= 5:
-            return False
-        opened = datetime.combine(local.date(), time(9, 30), tzinfo=EASTERN) + timedelta(
-            minutes=self.no_trade_open_minutes
+        return regular_session_allowed(
+            now, self.no_trade_open_minutes, self.no_trade_close_minutes
         )
-        closing = datetime.combine(local.date(), time(16, 0), tzinfo=EASTERN) - timedelta(
-            minutes=self.no_trade_close_minutes
-        )
-        return opened <= local <= closing
 
     def authorize(
         self,
