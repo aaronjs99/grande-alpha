@@ -35,11 +35,10 @@ def test_shadow_uses_next_bar_virtual_fills_and_is_revocable() -> None:
 
 
 def test_shadow_module_cannot_call_broker_order_methods() -> None:
-    source = (
-        Path(__file__).resolve().parents[1] / "src" / "grande_alpha" / "shadow.py"
-    ).read_text(encoding="utf-8")
+    source = (Path(__file__).resolve().parents[1] / "src" / "grande_alpha" / "shadow.py").read_text(
+        encoding="utf-8"
+    )
     assert "place_order" not in source
     assert "review_order" not in source
     assert "cancel_order" not in source
     assert "from grande_alpha.broker" not in source
-

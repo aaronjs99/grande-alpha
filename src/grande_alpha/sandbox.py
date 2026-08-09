@@ -469,7 +469,9 @@ class SandboxReplayEngine:
                 cash,
                 position,
                 None,
-                ExecutionEvent(frame.start, position.symbol, "sell", "rejected", position.quantity, 0, reason),
+                ExecutionEvent(
+                    frame.start, position.symbol, "sell", "rejected", position.quantity, 0, reason
+                ),
                 False,
             )
         bar = frame.bar_for_alias(position.symbol)
@@ -563,8 +565,11 @@ class SandboxReplayEngine:
             fraction,
             execution_cost,
         )
-        return cash, position, fill, ExecutionEvent(
-            frame.start, target, "buy", status, requested, quantity, reason
+        return (
+            cash,
+            position,
+            fill,
+            ExecutionEvent(frame.start, target, "buy", status, requested, quantity, reason),
         )
 
     def _fillable_quantity(self, bar, requested: float, bypass: bool) -> float:
@@ -572,9 +577,7 @@ class SandboxReplayEngine:
             return requested
         fraction_cap = requested * self.config.fill_fraction_pct / 100.0
         volume_cap = (
-            bar.volume * self.config.max_volume_participation_pct / 100.0
-            if bar.volume > 0
-            else requested
+            bar.volume * self.config.max_volume_participation_pct / 100.0 if bar.volume > 0 else requested
         )
         return max(0.0, min(requested, fraction_cap, volume_cap))
 

@@ -85,9 +85,7 @@ class PromotionReport:
         return all(gate.passed for gate in self.gates)
 
 
-def compare_configs(
-    bundle: HistoricalBundle, configs: dict[str, SandboxConfig]
-) -> list[ComparisonRow]:
+def compare_configs(bundle: HistoricalBundle, configs: dict[str, SandboxConfig]) -> list[ComparisonRow]:
     rows = []
     for name, config in configs.items():
         result = SandboxReplayEngine(config).run(bundle)
@@ -111,7 +109,11 @@ def candidate_grid(base: SandboxConfig, compact: bool = True) -> list[SandboxCon
     thresholds = sorted(
         {max(0.5, base.trend_threshold_bps / 2), base.trend_threshold_bps, base.trend_threshold_bps * 2}
     )
-    stops = [base.hard_stop_pct] if compact else [base.hard_stop_pct * 0.75, base.hard_stop_pct, base.hard_stop_pct * 1.25]
+    stops = (
+        [base.hard_stop_pct]
+        if compact
+        else [base.hard_stop_pct * 0.75, base.hard_stop_pct, base.hard_stop_pct * 1.25]
+    )
     configs = []
     for fast in fast_values:
         for slow in slow_values:
@@ -132,9 +134,7 @@ def candidate_grid(base: SandboxConfig, compact: bool = True) -> list[SandboxCon
     return configs
 
 
-def parameter_sweep(
-    bundle: HistoricalBundle, configs: Iterable[SandboxConfig]
-) -> list[SensitivityPoint]:
+def parameter_sweep(bundle: HistoricalBundle, configs: Iterable[SandboxConfig]) -> list[SensitivityPoint]:
     points = []
     for config in configs:
         result = SandboxReplayEngine(config).run(bundle)
@@ -164,9 +164,7 @@ def _sessions(bundle: HistoricalBundle) -> dict[str, list]:
 def _subset(bundle: HistoricalBundle, session_names: list[str]) -> HistoricalBundle:
     allowed = set(session_names)
     frames = [
-        frame
-        for frame in bundle.frames
-        if frame.start.astimezone(EASTERN).date().isoformat() in allowed
+        frame for frame in bundle.frames if frame.start.astimezone(EASTERN).date().isoformat() in allowed
     ]
     quality = assess_quality(frames, bundle.interval)
     return HistoricalBundle(
@@ -290,9 +288,7 @@ def promotion_report(
 ) -> PromotionReport:
     sessions = bundle.quality.sessions if bundle.quality else len(_sessions(bundle))
     stable_pct = (
-        sum(point.return_pct > 0 for point in sensitivity) / len(sensitivity) * 100.0
-        if sensitivity
-        else 0.0
+        sum(point.return_pct > 0 for point in sensitivity) / len(sensitivity) * 100.0 if sensitivity else 0.0
     )
     positive_days = [value for value in base_result.daily_pnl.values() if value > 0]
     concentration = max(positive_days) / sum(positive_days) * 100.0 if positive_days else 100.0

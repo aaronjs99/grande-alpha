@@ -111,9 +111,7 @@ def parse_yahoo_chart(payload: dict[str, Any], expected_symbol: str) -> list[Bar
                 close=values[3],
                 samples=1,
                 volume=(
-                    float(volumes[index])
-                    if index < len(volumes) and volumes[index] is not None
-                    else 0.0
+                    float(volumes[index]) if index < len(volumes) and volumes[index] is not None else 0.0
                 ),
             )
         )
@@ -160,9 +158,7 @@ def assess_quality(frames: list[ReplayFrame], interval: str) -> DataQuality:
                 missing += max(0, round(gap / seconds) - 1)
         previous = frame
     zero_volume = sum(
-        1
-        for frame in frames
-        if frame.qqq.volume <= 0 or frame.tqqq.volume <= 0 or frame.sqqq.volume <= 0
+        1 for frame in frames if frame.qqq.volume <= 0 or frame.tqqq.volume <= 0 or frame.sqqq.volume <= 0
     )
     return DataQuality(
         aligned_bars=len(frames),
@@ -269,18 +265,14 @@ class HistoricalDataProvider:
         response.raise_for_status()
         return parse_yahoo_chart(response.json(), symbol)
 
-    async def fetch(
-        self, days: int = 7, interval: str = "1m", use_cache: bool = True
-    ) -> HistoricalBundle:
+    async def fetch(self, days: int = 7, interval: str = "1m", use_cache: bool = True) -> HistoricalBundle:
         maximum = INTERVAL_LIMITS.get(interval)
         if maximum is None:
             raise ValueError(f"Unsupported historical interval: {interval}")
         if not 1 <= days <= maximum:
             raise ValueError(f"{interval} historical lookback must be between 1 and {maximum} days")
         cache_path = (
-            data_dir()
-            / "sandbox_cache"
-            / f"yahoo_{interval}_{days}d_{utc_now().date().isoformat()}.json"
+            data_dir() / "sandbox_cache" / f"yahoo_{interval}_{days}d_{utc_now().date().isoformat()}.json"
         )
         if use_cache and cache_path.exists():
             return load_bundle(cache_path)

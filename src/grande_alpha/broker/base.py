@@ -18,6 +18,10 @@ class BrokerError(RuntimeError):
 
 
 class Broker(ABC):
+    def clear_credentials(self) -> None:
+        """Forget locally stored credentials when the adapter supports persistence."""
+        return None
+
     @abstractmethod
     async def connect(self) -> None: ...
 

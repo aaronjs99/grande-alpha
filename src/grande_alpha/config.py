@@ -11,10 +11,19 @@ APP_NAME = "GRANDEAlpha"
 DISPLAY_NAME = "GRANDE Alpha"
 LEGACY_APP_NAME = "MomentumTrader"
 MCP_URL = "https://agent.robinhood.com/mcp/trading"
+ONBOARDING_VERSION = 1
+DISCLOSURE_VERSION = "2026-08"
 
 
 @dataclass
 class AppConfig:
+    onboarding_version: int = 0
+    disclosure_version: str = ""
+    broker_connection_enabled: bool = False
+    live_trading_enabled: bool = False
+    remote_market_data_enabled: bool = False
+    personal_ledger_enabled: bool = False
+    market_history_retention_days: int = 90
     poll_seconds: float = 2.0
     bar_seconds: int = 60
     warmup_bars: int = 24
@@ -80,4 +89,7 @@ def load_config() -> AppConfig:
 
 
 def save_config(config: AppConfig) -> None:
-    config_path().write_text(json.dumps(asdict(config), indent=2), encoding="utf-8")
+    path = config_path()
+    pending = path.with_suffix(".json.pending")
+    pending.write_text(json.dumps(asdict(config), indent=2), encoding="utf-8")
+    pending.replace(path)

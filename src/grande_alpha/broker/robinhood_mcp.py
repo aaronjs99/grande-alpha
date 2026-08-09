@@ -61,6 +61,11 @@ class RobinhoodMCPBroker(Broker):
     def tools(self) -> set[str]:
         return set(self._tools)
 
+    def clear_credentials(self) -> None:
+        if self.connected:
+            raise BrokerError("Disconnect before forgetting stored broker credentials")
+        self.storage.clear()
+
     async def connect(self) -> None:
         if self.connected:
             return
@@ -105,7 +110,8 @@ class RobinhoodMCPBroker(Broker):
             await session.initialize()
             listing = await session.list_tools()
             self._tools = {
-                item.name: (item.inputSchema if isinstance(item.inputSchema, dict) else {}) for item in listing.tools
+                item.name: (item.inputSchema if isinstance(item.inputSchema, dict) else {})
+                for item in listing.tools
             }
             required = {
                 "get_accounts",
@@ -230,7 +236,9 @@ class RobinhoodMCPBroker(Broker):
                     quantity=quantity,
                     sellable_quantity=_number(row.get("shares_available_for_sells")),
                     average_price=(
-                        _number(row.get("average_buy_price")) if row.get("average_buy_price") is not None else None
+                        _number(row.get("average_buy_price"))
+                        if row.get("average_buy_price") is not None
+                        else None
                     ),
                 )
             )

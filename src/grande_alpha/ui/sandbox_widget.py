@@ -89,9 +89,11 @@ PRESETS = {
 class SandboxWidget(QWidget):
     """Historical virtual research surface. It deliberately receives no Broker."""
 
-    def __init__(self, store: AuditStore, parent=None) -> None:
+    def __init__(self, store: AuditStore, allow_remote_data: bool = False, parent=None) -> None:
         super().__init__(parent)
         self.store = store
+        self.allow_remote_data = allow_remote_data
+        self._remote_acknowledged = False
         self.bundle: HistoricalBundle | None = None
         self.result: SandboxResult | None = None
         self.csv_path: Path | None = None
@@ -100,6 +102,7 @@ class SandboxWidget(QWidget):
         self._replay_timer.timeout.connect(self._advance_replay)
         self._build_ui()
         self._apply_config(load_sandbox_config())
+        self.set_remote_data_allowed(allow_remote_data)
         self._source_changed()
         self._refresh_saved_runs()
 
@@ -118,15 +121,16 @@ class SandboxWidget(QWidget):
         splitter = QSplitter(Qt.Orientation.Horizontal)
         config_scroll = QScrollArea()
         config_scroll.setWidgetResizable(True)
+        config_scroll.setMinimumWidth(470)
         panel = QWidget()
         layout = QVBoxLayout(panel)
 
         data = QGroupBox("Dataset and provenance")
         form = QFormLayout(data)
         self.source = QComboBox()
-        self.source.addItem("Recent 1-minute (max 7 days)", ("yahoo", "1m", 7))
-        self.source.addItem("5-minute (max 60 days)", ("yahoo", "5m", 60))
-        self.source.addItem("Hourly (max 730 days)", ("yahoo", "60m", 730))
+        self.source.addItem("Community remote: 1-minute (max 7 days)", ("yahoo", "1m", 7))
+        self.source.addItem("Community remote: 5-minute (max 60 days)", ("yahoo", "5m", 60))
+        self.source.addItem("Community remote: hourly (max 730 days)", ("yahoo", "60m", 730))
         self.source.addItem("Import aligned CSV", ("csv", "1m", 3650))
         self.source.addItem("Offline deterministic scenario", ("demo", "1m", 3650))
         self.source.currentIndexChanged.connect(self._source_changed)
@@ -272,10 +276,17 @@ class SandboxWidget(QWidget):
         metrics = QGridLayout()
         self.metric_labels: dict[str, QLabel] = {}
         names = [
-            ("final", "Final equity"), ("pnl", "Net P/L"), ("return", "Return"),
-            ("drawdown", "Max drawdown"), ("trades", "Round trips"), ("win_rate", "Win rate"),
-            ("pf", "Profit factor"), ("expectancy", "Expectancy"),
-            ("sharpe", "Sharpe"), ("sortino", "Sortino"), ("exposure", "Exposure"),
+            ("final", "Final equity"),
+            ("pnl", "Net P/L"),
+            ("return", "Return"),
+            ("drawdown", "Max drawdown"),
+            ("trades", "Round trips"),
+            ("win_rate", "Win rate"),
+            ("pf", "Profit factor"),
+            ("expectancy", "Expectancy"),
+            ("sharpe", "Sharpe"),
+            ("sortino", "Sortino"),
+            ("exposure", "Exposure"),
             ("cost", "Execution cost"),
         ]
         for index, (key, title) in enumerate(names):
@@ -357,8 +368,10 @@ class SandboxWidget(QWidget):
         self.status.setWordWrap(True)
         results_layout.addWidget(self.status)
         splitter.addWidget(results)
-        splitter.setStretchFactor(0, 1)
-        splitter.setStretchFactor(1, 4)
+        splitter.setCollapsible(0, False)
+        splitter.setStretchFactor(0, 0)
+        splitter.setStretchFactor(1, 1)
+        splitter.setSizes([480, 920])
         outer.addWidget(splitter)
 
     def _table(self, headers: list[str]) -> QTableWidget:
@@ -376,8 +389,9 @@ class SandboxWidget(QWidget):
         widget.setRange(minimum, maximum)
         return widget
 
-    def _decimal(self, minimum: float, maximum: float, prefix: str = "", decimals: int = 2,
-                 suffix: str = "") -> QDoubleSpinBox:
+    def _decimal(
+        self, minimum: float, maximum: float, prefix: str = "", decimals: int = 2, suffix: str = ""
+    ) -> QDoubleSpinBox:
         widget = QDoubleSpinBox()
         widget.setRange(minimum, maximum)
         widget.setDecimals(decimals)
@@ -391,6 +405,23 @@ class SandboxWidget(QWidget):
         self.lookback.setValue(min(self.lookback.value(), maximum))
         self.csv_button.setEnabled(kind == "csv")
 
+    def set_remote_data_allowed(self, allowed: bool) -> None:
+        self.allow_remote_data = allowed
+        for index in range(min(3, self.source.count())):
+            item = self.source.model().item(index)
+            if item is not None:
+                item.setEnabled(allowed)
+        if not allowed and self.source.currentData()[0] == "yahoo":
+            for index in range(self.source.count()):
+                if self.source.itemData(index)[0] == "demo":
+                    self.source.setCurrentIndex(index)
+                    break
+        if not allowed:
+            self.quality.setText(
+                "Remote community data is disabled. Use the deterministic scenario or import your own lawful CSV; "
+                "enable remote data deliberately in Settings."
+            )
+
     def _choose_csv(self) -> None:
         filename, _ = QFileDialog.getOpenFileName(self, "Aligned QQQ/TQQQ/SQQQ history", "", "CSV (*.csv)")
         if filename:
@@ -399,17 +430,25 @@ class SandboxWidget(QWidget):
 
     def _apply_config(self, config: SandboxConfig) -> None:
         values = {
-            self.lookback: config.lookback_days, self.initial_cash: config.initial_cash,
-            self.order_notional: config.order_notional, self.slippage: config.slippage_bps,
+            self.lookback: config.lookback_days,
+            self.initial_cash: config.initial_cash,
+            self.order_notional: config.order_notional,
+            self.slippage: config.slippage_bps,
             self.base_spread: config.base_spread_bps,
             self.vol_spread: config.spread_volatility_multiplier,
-            self.commission: config.commission_per_order, self.latency: config.latency_bars,
-            self.fill_fraction: config.fill_fraction_pct, self.rejection: config.rejection_rate_pct,
+            self.commission: config.commission_per_order,
+            self.latency: config.latency_bars,
+            self.fill_fraction: config.fill_fraction_pct,
+            self.rejection: config.rejection_rate_pct,
             self.volume_participation: config.max_volume_participation_pct,
-            self.warmup: config.warmup_bars, self.fast_ema: config.fast_ema,
-            self.slow_ema: config.slow_ema, self.threshold: config.trend_threshold_bps,
-            self.momentum: config.momentum_bars, self.stop: config.hard_stop_pct * 100,
-            self.take_profit: config.take_profit_pct * 100, self.max_hold: config.max_hold_minutes,
+            self.warmup: config.warmup_bars,
+            self.fast_ema: config.fast_ema,
+            self.slow_ema: config.slow_ema,
+            self.threshold: config.trend_threshold_bps,
+            self.momentum: config.momentum_bars,
+            self.stop: config.hard_stop_pct * 100,
+            self.take_profit: config.take_profit_pct * 100,
+            self.max_hold: config.max_hold_minutes,
             self.max_entries: config.max_entries_per_day,
             self.no_trade_open: config.no_trade_open_minutes,
             self.no_trade_close: config.no_trade_close_minutes,
@@ -425,20 +464,29 @@ class SandboxWidget(QWidget):
 
     def _config(self) -> SandboxConfig:
         return SandboxConfig(
-            lookback_days=self.lookback.value(), initial_cash=self.initial_cash.value(),
-            order_notional=self.order_notional.value(), slippage_bps=self.slippage.value(),
+            lookback_days=self.lookback.value(),
+            initial_cash=self.initial_cash.value(),
+            order_notional=self.order_notional.value(),
+            slippage_bps=self.slippage.value(),
             base_spread_bps=self.base_spread.value(),
             spread_volatility_multiplier=self.vol_spread.value(),
-            commission_per_order=self.commission.value(), latency_bars=self.latency.value(),
-            fill_fraction_pct=self.fill_fraction.value(), rejection_rate_pct=self.rejection.value(),
+            commission_per_order=self.commission.value(),
+            latency_bars=self.latency.value(),
+            fill_fraction_pct=self.fill_fraction.value(),
+            rejection_rate_pct=self.rejection.value(),
             max_volume_participation_pct=self.volume_participation.value(),
-            warmup_bars=self.warmup.value(), fast_ema=self.fast_ema.value(),
-            slow_ema=self.slow_ema.value(), trend_threshold_bps=self.threshold.value(),
-            momentum_bars=self.momentum.value(), hard_stop_pct=self.stop.value() / 100,
-            take_profit_pct=self.take_profit.value() / 100, max_hold_minutes=self.max_hold.value(),
+            warmup_bars=self.warmup.value(),
+            fast_ema=self.fast_ema.value(),
+            slow_ema=self.slow_ema.value(),
+            trend_threshold_bps=self.threshold.value(),
+            momentum_bars=self.momentum.value(),
+            hard_stop_pct=self.stop.value() / 100,
+            take_profit_pct=self.take_profit.value() / 100,
+            max_hold_minutes=self.max_hold.value(),
             max_entries_per_day=self.max_entries.value(),
             no_trade_open_minutes=self.no_trade_open.value(),
-            no_trade_close_minutes=self.no_trade_close.value(), risk_budget_pct=self.risk_budget.value() / 100,
+            no_trade_close_minutes=self.no_trade_close.value(),
+            risk_budget_pct=self.risk_budget.value() / 100,
             max_exposure_pct=self.max_exposure.value() / 100,
             max_daily_loss_pct=self.daily_loss.value() / 100,
             max_consecutive_losses=self.loss_pause.value(),
@@ -449,6 +497,21 @@ class SandboxWidget(QWidget):
     async def _load_bundle(self, config: SandboxConfig) -> HistoricalBundle:
         kind, interval, _ = self.source.currentData()
         if kind == "yahoo":
+            if not self.allow_remote_data:
+                raise RuntimeError("Community remote market data is disabled in Settings")
+            if not self._remote_acknowledged:
+                answer = QMessageBox.question(
+                    self,
+                    "Use unsupported community market data?",
+                    "This research adapter contacts Yahoo's unsupported chart endpoint and sends only the "
+                    "requested symbols, dates, and interval. No broker or account data is sent. Availability, "
+                    "licensing, schema, and accuracy are not guaranteed. Continue for this app session?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.No,
+                )
+                if answer != QMessageBox.StandardButton.Yes:
+                    raise RuntimeError("Remote market-data request declined; no network request was made")
+                self._remote_acknowledged = True
             return await HistoricalDataProvider().fetch(config.lookback_days, interval)
         if kind == "csv":
             if not self.csv_path:
@@ -481,12 +544,20 @@ class SandboxWidget(QWidget):
             rows = await asyncio.to_thread(compare_configs, self.bundle, PRESETS)
             self.compare_table.setRowCount(len(rows))
             for row_index, row in enumerate(rows):
-                values = [row.name, f"{row.return_pct:+.2f}%", f"{row.max_drawdown_pct:.2f}%",
-                          f"{row.profit_factor:.2f}", str(row.round_trips), f"{row.exposure_pct:.1f}%",
-                          f"${row.total_cost:.2f}"]
+                values = [
+                    row.name,
+                    f"{row.return_pct:+.2f}%",
+                    f"{row.max_drawdown_pct:.2f}%",
+                    f"{row.profit_factor:.2f}",
+                    str(row.round_trips),
+                    f"{row.exposure_pct:.1f}%",
+                    f"${row.total_cost:.2f}",
+                ]
                 self._set_row(self.compare_table, row_index, values, row.return_pct)
             self.tabs.setCurrentIndex(1)
-            self.status.setText("Preset comparison uses the exact same immutable dataset hash: " + self.bundle.dataset_hash)
+            self.status.setText(
+                "Preset comparison uses the exact same immutable dataset hash: " + self.bundle.dataset_hash
+            )
         except Exception as exc:
             self._error(exc)
         finally:
@@ -502,7 +573,9 @@ class SandboxWidget(QWidget):
             candidates = candidate_grid(config)
             points = await asyncio.to_thread(parameter_sweep, self.bundle, candidates)
             stressed = await asyncio.to_thread(cost_stress, self.bundle, config)
-            random_control = await asyncio.to_thread(random_entry_control, self.bundle, config, base.return_pct)
+            random_control = await asyncio.to_thread(
+                random_entry_control, self.bundle, config, base.return_pct
+            )
             sessions = self.bundle.quality.sessions if self.bundle.quality else 0
             walk = None
             if sessions >= 15:
@@ -515,9 +588,14 @@ class SandboxWidget(QWidget):
             report = promotion_report(self.bundle, base, points, stressed, walk)
             self._show_evidence(points, walk, report, random_control)
             self.store.receipt(
-                "sandbox_evidence", f"Evidence lab status: {report.status}",
-                {"dataset_hash": report.dataset_hash, "gates": [asdict(g) for g in report.gates],
-                 "note": self.notes.text().strip()}, "warning" if not report.passed else "info"
+                "sandbox_evidence",
+                f"Evidence lab status: {report.status}",
+                {
+                    "dataset_hash": report.dataset_hash,
+                    "gates": [asdict(g) for g in report.gates],
+                    "note": self.notes.text().strip(),
+                },
+                "warning" if not report.passed else "info",
             )
             self.tabs.setCurrentIndex(3)
         except Exception as exc:
@@ -529,10 +607,16 @@ class SandboxWidget(QWidget):
         ordered = sorted(points, key=lambda item: (item.fast_ema, item.slow_ema, item.threshold_bps))
         self.sensitivity_table.setRowCount(len(ordered))
         for row, point in enumerate(ordered):
-            values = [str(point.fast_ema), str(point.slow_ema), f"{point.threshold_bps:.1f}",
-                      f"{point.hard_stop_pct:.2%}", f"{point.return_pct:+.2f}%",
-                      f"{point.max_drawdown_pct:.2f}%", f"{point.profit_factor:.2f}",
-                      str(point.round_trips)]
+            values = [
+                str(point.fast_ema),
+                str(point.slow_ema),
+                f"{point.threshold_bps:.1f}",
+                f"{point.hard_stop_pct:.2%}",
+                f"{point.return_pct:+.2f}%",
+                f"{point.max_drawdown_pct:.2f}%",
+                f"{point.profit_factor:.2f}",
+                str(point.round_trips),
+            ]
             self._set_row(self.sensitivity_table, row, values, point.return_pct)
         self.random_label.setText(
             f"Random-entry control ({control.trials} trials): median {control.median_return_pct:+.2f}%, "
@@ -542,16 +626,24 @@ class SandboxWidget(QWidget):
         folds = walk.folds if walk else []
         self.walk_table.setRowCount(len(folds))
         for row, fold in enumerate(folds):
-            values = [f"{fold.train_start} → {fold.train_end}", f"{fold.test_start} → {fold.test_end}",
-                      f"{fold.selected.fast_ema}/{fold.selected.slow_ema}",
-                      f"{fold.train_return_pct:+.2f}%", f"{fold.test_return_pct:+.2f}%",
-                      f"{fold.test_drawdown_pct:.2f}%", f"{fold.test_profit_factor:.2f}"]
+            values = [
+                f"{fold.train_start} → {fold.train_end}",
+                f"{fold.test_start} → {fold.test_end}",
+                f"{fold.selected.fast_ema}/{fold.selected.slow_ema}",
+                f"{fold.train_return_pct:+.2f}%",
+                f"{fold.test_return_pct:+.2f}%",
+                f"{fold.test_drawdown_pct:.2f}%",
+                f"{fold.test_profit_factor:.2f}",
+            ]
             self._set_row(self.walk_table, row, values, fold.test_return_pct)
         self.gates_table.setRowCount(len(report.gates))
         for row, gate in enumerate(report.gates):
-            self._set_row(self.gates_table, row,
-                          [gate.name, "PASS" if gate.passed else "FAIL", gate.observed, gate.requirement],
-                          1 if gate.passed else -1)
+            self._set_row(
+                self.gates_table,
+                row,
+                [gate.name, "PASS" if gate.passed else "FAIL", gate.observed, gate.requirement],
+                1 if gate.passed else -1,
+            )
         self.promotion_label.setText(f"PROMOTION: {report.status} — no mode is automatically enabled.")
         self.promotion_label.setStyleSheet(
             "font-size:14pt;font-weight:700;color:" + ("#00e507" if report.passed else "#f2c14e")
@@ -563,22 +655,35 @@ class SandboxWidget(QWidget):
 
     def _save_result(self, config: SandboxConfig, result: SandboxResult) -> None:
         self.store.record_sandbox_run(
-            result.run_id, result.source, result.start.isoformat(), result.end.isoformat(),
-            {**asdict(config), "note": self.notes.text().strip(),
-             "dataset_hash": self.bundle.dataset_hash if self.bundle else ""},
-            result.metrics(), [fill.as_dict() for fill in result.fills],
+            result.run_id,
+            result.source,
+            result.start.isoformat(),
+            result.end.isoformat(),
+            {
+                **asdict(config),
+                "note": self.notes.text().strip(),
+                "dataset_hash": self.bundle.dataset_hash if self.bundle else "",
+            },
+            result.metrics(),
+            [fill.as_dict() for fill in result.fills],
             [event.as_dict() for event in result.execution_events],
         )
         self._refresh_saved_runs()
 
     def _show_result(self, result: SandboxResult) -> None:
         values = {
-            "final": f"${result.final_equity:,.2f}", "pnl": f"${result.net_pnl:+,.2f}",
-            "return": f"{result.return_pct:+.2f}%", "drawdown": f"{result.max_drawdown_pct:.2f}%",
-            "trades": str(result.round_trips), "win_rate": f"{result.win_rate:.1f}%",
-            "pf": f"{result.profit_factor:.2f}", "expectancy": f"${result.expectancy:+.2f}",
-            "sharpe": f"{result.sharpe:+.2f}", "sortino": f"{result.sortino:+.2f}",
-            "exposure": f"{result.exposure_pct:.1f}%", "cost": f"${result.total_execution_cost:.2f}",
+            "final": f"${result.final_equity:,.2f}",
+            "pnl": f"${result.net_pnl:+,.2f}",
+            "return": f"{result.return_pct:+.2f}%",
+            "drawdown": f"{result.max_drawdown_pct:.2f}%",
+            "trades": str(result.round_trips),
+            "win_rate": f"{result.win_rate:.1f}%",
+            "pf": f"{result.profit_factor:.2f}",
+            "expectancy": f"${result.expectancy:+.2f}",
+            "sharpe": f"{result.sharpe:+.2f}",
+            "sortino": f"{result.sortino:+.2f}",
+            "exposure": f"{result.exposure_pct:.1f}%",
+            "cost": f"${result.total_execution_cost:.2f}",
         }
         for key, value in values.items():
             self.metric_labels[key].setText(value)
@@ -588,10 +693,17 @@ class SandboxWidget(QWidget):
         self.replay_slider.setValue(0)
         self.fills_table.setRowCount(len(result.fills))
         for row, fill in enumerate(result.fills):
-            values = [fill.timestamp.astimezone().strftime("%m/%d %I:%M %p"), fill.symbol,
-                      fill.side.upper(), f"{fill.requested_quantity:.6f}", f"${fill.price:,.2f}",
-                      f"{fill.fill_fraction:.0%}", f"${fill.execution_cost:,.4f}",
-                      f"${fill.realized_pnl:+,.2f}" if fill.realized_pnl is not None else "—", fill.reason]
+            values = [
+                fill.timestamp.astimezone().strftime("%m/%d %I:%M %p"),
+                fill.symbol,
+                fill.side.upper(),
+                f"{fill.requested_quantity:.6f}",
+                f"${fill.price:,.2f}",
+                f"{fill.fill_fraction:.0%}",
+                f"${fill.execution_cost:,.4f}",
+                f"${fill.realized_pnl:+,.2f}" if fill.realized_pnl is not None else "—",
+                fill.reason,
+            ]
             self._set_row(self.fills_table, row, values, fill.realized_pnl)
         quality = self.bundle.quality if self.bundle else None
         if quality:
@@ -647,18 +759,23 @@ class SandboxWidget(QWidget):
         fill = self.result.fills[row]
         self.inspector.setPlainText(json.dumps(fill.as_dict(), indent=2, default=str))
         times = [p.timestamp for p in self.result.equity_curve]
-        nearest = min(range(len(times)), key=lambda index: abs((times[index] - fill.timestamp).total_seconds()))
+        nearest = min(
+            range(len(times)), key=lambda index: abs((times[index] - fill.timestamp).total_seconds())
+        )
         self.replay_slider.setValue(nearest)
 
     def _export(self) -> None:
         if not self.result:
             QMessageBox.information(self, "Export", "Run a sandbox replay first.")
             return
-        filename, _ = QFileDialog.getSaveFileName(self, "Export virtual fills", "sandbox-fills.csv", "CSV (*.csv)")
+        filename, _ = QFileDialog.getSaveFileName(
+            self, "Export virtual fills", "sandbox-fills.csv", "CSV (*.csv)"
+        )
         if not filename:
             return
         fields = list(self.result.fills[0].as_dict()) if self.result.fills else []
         import csv
+
         with Path(filename).open("w", encoding="utf-8", newline="") as handle:
             writer = csv.DictWriter(handle, fieldnames=fields)
             writer.writeheader()

@@ -1,80 +1,23 @@
 # GRANDE Alpha
 
-GRANDE Alpha is a Windows desktop app for live, session-scoped TQQQ/SQQQ automation through
-Robinhood Agentic Trading. It connects only through Robinhood's official Trading MCP endpoint,
-uses browser OAuth, reviews every generated order with Robinhood, and records a local receipt for
-every decision and broker response.
+GRANDE Alpha is a local-first Windows desktop workstation for researching leveraged-ETF strategies. It starts in research mode, provides deterministic and historical replay for synthetic `TQQQS`/`SQQQS` instruments, and keeps broker access and real-order controls behind separate, revocable permissions.
 
-This is an intraday automation workstation, not exchange-colocated high-frequency trading. It does
-not promise profit. TQQQ and SQQQ target leveraged **daily** returns and can lose value rapidly.
+> Community preview: this software is experimental, provides no investment advice, and cannot promise profit. Leveraged and inverse ETFs seek daily objectives; results over longer periods can differ materially. You can lose the entire amount traded.
 
-Start with the complete [operating documentation](docs/README.md), especially the
-[Monday live runbook](docs/MONDAY_RUNBOOK.md) and
-[strategy/profit mechanics](docs/STRATEGY_AND_PROFIT.md). To test without Robinhood or real
-orders, use the isolated [TQQQS/SQQQS sandbox](docs/SANDBOX.md), its
-[evidence lab](docs/EVIDENCE_LAB.md), and [live shadow mode](docs/SHADOW_MODE.md).
+GRANDE Alpha is independent software. It is not affiliated with, endorsed by, or sponsored by Robinhood Markets, Inc., ProShares, Nasdaq, or any broker, exchange, or fund sponsor.
 
-## Sandbox replay
+## Public-safety defaults
 
-Open **SANDBOX** without connecting Robinhood. It can cache recent 1-minute, 5-minute, or hourly
-QQQ/TQQQ/SQQQ candles, import licensed long-history CSV data, or use a labeled deterministic
-scenario. It models next-bar fills, spread, slippage, latency, partial fills, rejections, volume
-participation, risk-based sizing, pauses, and unflattened ending positions. The evidence lab adds
-preset comparison, parameter sensitivity, cost stress, random-entry controls, walk-forward folds,
-and explicit promotion gates. No result automatically grants live authority.
+- First launch opens a disclosure-led onboarding flow; research mode is the default.
+- Broker access, remote community market data, the optional personal ledger, and real-order controls are independent opt-ins.
+- Broker OAuth credentials are stored through the operating-system credential vault, never in project files.
+- Enabling real-order controls requires an explicit settings phrase. Every application launch still starts locked, and each live session needs a separate time-limited confirmation and numeric limits.
+- The red stop control revokes local order authority and attempts to cancel open Agentic equity orders. It cannot guarantee cancellation during a network or provider failure and does not liquidate filled positions.
+- A redacted diagnostic export is available for support. The application sends no first-party telemetry.
 
-After connecting read access, **Start Live Shadow** runs the same decision policy against current
-quotes but records fictional `TQQQS`/`SQQQS` fills only. Shadow mode and real-order authority are
-mutually exclusive and STOP immediately revokes shadow execution.
+## Start here
 
-## Monday startup
-
-1. Open Robinhood and verify the Agentic account's buying power and that ChatGPT/Agentic Trading is
-   connected. The app refuses to trade when the broker reports zero buying power.
-2. Resolve F-1 and tax-status questions with your DSO/tax adviser. The app asks you to attest to
-   this each live session; it does not decide your legal status.
-3. Double-click `Start GRANDE Alpha.cmd`.
-4. Select **Connect Robinhood** and complete browser OAuth. Credentials never enter this app.
-5. Confirm the account nickname and last four digits, broker-reported value, buying power, quotes,
-   and positions.
-6. Select **Authorize Live Session**, set numeric caps, and type the displayed confirmation phrase.
-7. Select **Start Strategy**. Keep Robinhood open independently for monitoring.
-
-On a new morning, launch before 9:30 AM Eastern when practical. The first run needs 24 completed
-one-minute QQQ bars before the baseline strategy has enough data; the warm-up status is shown in
-the QQQ regime card and receipt log.
-
-The red **STOP + CANCEL** button immediately blocks new orders and attempts to cancel every open
-agentic equity order. It cannot guarantee cancellation if the network or Robinhood is unavailable.
-It does not liquidate filled positions; use **Flatten Position** and confirm the exact sell preview.
-
-## Strategy
-
-The included deterministic strategy observes QQQ one-minute midpoint bars and chooses one state:
-
-- bullish: buy/hold TQQQ;
-- bearish: buy/hold SQQQ;
-- uncertain: hold cash.
-
-It uses EMA trend separation and short-horizon momentum. It never intentionally holds TQQQ and
-SQQQ at the same time. Existing opposite positions are sold before a new direction is considered.
-The strategy waits for warm-up data, does not trade the first five or last ten minutes of the
-regular session, and applies a spread/staleness filter before every order.
-
-These rules are an engineering baseline, not a proven market edge. Change thresholds in the live
-session dialog only after understanding their effect.
-
-## Security and authority
-
-- Robinhood tokens and dynamically registered OAuth client information are stored in Windows
-  Credential Manager through `keyring`, not plaintext files.
-- Live authority expires automatically and is never remembered across app restarts.
-- Numeric limits are enforced by a separate risk engine outside the strategy.
-- Each logical order has a UUID idempotency key reused on transport retries.
-- SQLite receipts and the Research Fund ledger live under
-  `%LOCALAPPDATA%\GRANDEAlpha\grande_alpha.db`.
-
-## Development
+For a packaged build, run `GRANDEAlpha.exe`, complete onboarding, and select **Research Sandbox**. For source development:
 
 ```powershell
 .\setup.ps1
@@ -83,13 +26,28 @@ session dialog only after understanding their effect.
 .\build.ps1
 ```
 
-The packaged app is written to `dist\GRANDEAlpha\GRANDEAlpha.exe`.
+The executable is written to `dist\GRANDEAlpha\GRANDEAlpha.exe`. See [Quickstart](docs/QUICKSTART.md), [Safety](docs/SAFETY_AND_COMPLIANCE.md), [Privacy](PRIVACY.md), and the complete [documentation index](docs/README.md).
 
-## External limitations
+## What it is—and is not
 
-- Robinhood controls MCP availability, authentication, quotes, reviews, order acceptance, fills,
-  settlement, and account restrictions.
-- A cash Agentic account remains subject to settled-funds rules even after PDT changes.
-- Robinhood stock orders do not provide native bracket/OCO orders. The app therefore does not
-  claim that a local stop can protect a position while the app or network is down.
-- Keep the Robinhood mobile app available as an independent emergency control.
+This is not exchange-colocated high-frequency trading. It is a desktop research and consent-gated automation client. Its baseline strategy observes QQQ-derived signals and may select TQQQ, SQQQ, or cash. The included strategy is an engineering baseline, not a demonstrated edge.
+
+The sandbox models costs, spread, latency, partial fills, volume limits, rejections, and walk-forward evaluation. No sandbox, evidence-lab, or shadow result automatically grants live authority.
+
+## Broker integration
+
+The optional adapter uses Robinhood's official Trading MCP endpoint and browser OAuth. Robinhood states that a connected third-party agent can read data across Robinhood accounts, while trading is restricted to the dedicated Agentic account. Review the current provider disclosures before opting in: <https://robinhood.com/us/en/support/articles/agentic-trading-overview/>.
+
+## Project status
+
+Version `0.4.0` is a community-preview release candidate. Source tests, packaging, and smoke checks are automated, but public binary distribution still requires maintainer release review, dependency audit, checksums, and code signing where available. See [Public release checklist](docs/PUBLIC_RELEASE_CHECKLIST.md).
+
+## Contributing and support
+
+- [Contributing](CONTRIBUTING.md)
+- [Security policy](SECURITY.md)
+- [Support](SUPPORT.md)
+- [Code of conduct](CODE_OF_CONDUCT.md)
+- [Changelog](CHANGELOG.md)
+
+Licensed under the [Apache License 2.0](LICENSE).

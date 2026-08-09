@@ -61,9 +61,7 @@ class RiskEngine:
         return "LIVE"
 
     def _regular_session_allowed(self, now: datetime) -> bool:
-        return regular_session_allowed(
-            now, self.no_trade_open_minutes, self.no_trade_close_minutes
-        )
+        return regular_session_allowed(now, self.no_trade_open_minutes, self.no_trade_close_minutes)
 
     def authorize(
         self,

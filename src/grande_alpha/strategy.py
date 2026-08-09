@@ -79,7 +79,11 @@ class MomentumStrategy:
         fast = ema(closes[-self.config.slow_ema * 3 :], self.config.fast_ema)
         slow = ema(closes[-self.config.slow_ema * 3 :], self.config.slow_ema)
         separation_bps = (fast - slow) / slow * 10_000
-        momentum_bps = (closes[-1] - closes[-1 - self.config.momentum_bars]) / closes[-1 - self.config.momentum_bars] * 10_000
+        momentum_bps = (
+            (closes[-1] - closes[-1 - self.config.momentum_bars])
+            / closes[-1 - self.config.momentum_bars]
+            * 10_000
+        )
         threshold = self.config.trend_threshold_bps
 
         if separation_bps >= threshold and momentum_bps > 0:

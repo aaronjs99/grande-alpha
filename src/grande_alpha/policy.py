@@ -79,10 +79,7 @@ class DecisionPolicy:
                     target, reason = None, f"Hard stop reached at {change:.2%}"
                 elif change >= self.config.take_profit_pct:
                     target, reason = None, f"Take-profit reached at {change:.2%}"
-            if (
-                position.held_minutes is not None
-                and position.held_minutes >= self.config.max_hold_minutes
-            ):
+            if position.held_minutes is not None and position.held_minutes >= self.config.max_hold_minutes:
                 target, reason = None, f"Maximum hold reached at {position.held_minutes} minutes"
         return PolicyDecision(target, reason, signal.regime)
 

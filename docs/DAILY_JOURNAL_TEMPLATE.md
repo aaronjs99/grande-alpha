@@ -10,7 +10,7 @@ Copy this section for each session. Use Robinhood's executed fills as the source
 - Starting account value:
 - Starting buying power:
 - Robinhood/app values matched: yes / no
-- F-1/tax attestation valid for this session: yes / no
+- Required legal/tax/account attestations valid for this session: yes / no
 
 ## Authority granted
 
@@ -59,4 +59,3 @@ Copy this section for each session. Use Robinhood's executed fills as the source
 
 Never increase multiple limits at once. A profitable day with a control failure does not justify
 scaling.
-

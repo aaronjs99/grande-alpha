@@ -24,13 +24,10 @@ def test_shared_policy_exits_on_stop_profit_and_time() -> None:
     assert policy.decide(signal, timestamp, PolicyPosition("TQQQ", 100, 98)).target_symbol is None
     assert "Hard stop" in policy.decide(signal, timestamp, PolicyPosition("TQQQ", 100, 98)).reason
     assert "Take-profit" in policy.decide(signal, timestamp, PolicyPosition("TQQQ", 100, 103)).reason
-    assert "Maximum hold" in policy.decide(
-        signal, timestamp, PolicyPosition("TQQQ", 100, 100, 10)
-    ).reason
+    assert "Maximum hold" in policy.decide(signal, timestamp, PolicyPosition("TQQQ", 100, 100, 10)).reason
 
 
 def test_regular_session_gate_is_timezone_aware() -> None:
     eastern = ZoneInfo("America/New_York")
     assert regular_session_allowed(datetime(2026, 8, 3, 10, 0, tzinfo=eastern), 5, 10)
     assert not regular_session_allowed(datetime(2026, 8, 3, 9, 32, tzinfo=eastern), 5, 10)
-

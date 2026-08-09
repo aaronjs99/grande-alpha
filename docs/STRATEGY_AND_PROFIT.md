@@ -55,15 +55,15 @@ multi-day performance can diverge substantially from simply multiplying QQQ's cu
 Review the official [TQQQ](https://www.proshares.com/our-etfs/leveraged-and-inverse/tqqq) and
 [SQQQ](https://www.proshares.com/our-etfs/leveraged-and-inverse/sqqq) disclosures.
 
-## The $50-account math
+## Position-size math
 
-At a $25 position size:
+For a hypothetical position notional `N`:
 
-| Event | Gross percentage | Approximate gross dollars |
+| Event | Gross percentage | Gross result before other costs |
 |---|---:|---:|
-| Take-profit | +1.5% | +$0.375 |
-| Hard stop | −0.8% | −$0.200 |
-| 20-bps round-trip friction | −0.2% | −$0.050 |
+| Take-profit | +1.5% | `+0.015 × N` |
+| Hard stop | −0.8% | `−0.008 × N` |
+| 20-bps round-trip friction | −0.2% | `−0.002 × N` |
 
 The gross reward-to-risk ratio implied by those thresholds is 1.875 to 1. Ignoring costs and all
 execution differences, the mathematical break-even win rate would be:
@@ -119,7 +119,7 @@ Do not scale because of one profitable day. Require at least 20 live sessions an
 Only consider increasing one limit at a time if after-cost expectancy is positive, drawdown is
 acceptable, and no unresolved control failure occurred. Reduce size or stop if those conditions fail.
 
-## What “success” means for the first Monday
+## What “success” means for a first evaluation
 
 Success is not a target dollar profit. It is:
 

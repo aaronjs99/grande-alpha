@@ -3,13 +3,15 @@ from __future__ import annotations
 import asyncio
 from collections import deque
 from datetime import datetime
+from pathlib import Path
 
 import pyqtgraph as pg
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QCloseEvent, QColor, QFont
+from PySide6.QtGui import QAction, QCloseEvent, QColor, QFont
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
+    QFileDialog,
     QFrame,
     QGridLayout,
     QHBoxLayout,
@@ -27,11 +29,15 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from grande_alpha.config import AppConfig
+from grande_alpha import __version__
+from grande_alpha.config import AppConfig, save_config
 from grande_alpha.controller import TradingController, TradingSnapshot
 from grande_alpha.models import Regime
+from grande_alpha.privacy import export_diagnostics
 from grande_alpha.ui.dialogs import FundPlanDialog, LiveGrantDialog
 from grande_alpha.ui.sandbox_widget import SandboxWidget
+from grande_alpha.ui.settings_dialog import SettingsDialog
+from grande_alpha.ui.welcome_widget import WelcomeWidget
 
 STYLESHEET = """
 QWidget { background: #0b1118; color: #e9f0f6; font-family: 'Segoe UI'; font-size: 10pt; }
@@ -79,7 +85,7 @@ class MainWindow(QMainWindow):
         self._chart_times: deque[float] = deque(maxlen=1800)
         self._chart_prices: deque[float] = deque(maxlen=1800)
         self._closing_after_cleanup = False
-        self.setWindowTitle("GRANDE Alpha — Robinhood Agentic")
+        self.setWindowTitle(f"GRANDE Alpha {__version__} — Community Preview")
         self.resize(1440, 900)
         QApplication.instance().setStyleSheet(STYLESHEET)
         self._build_ui()
@@ -104,6 +110,11 @@ class MainWindow(QMainWindow):
         font.setBold(True)
         brand.setFont(font)
         header.addWidget(brand)
+        self.mode_badge = QLabel("RESEARCH MODE")
+        self.mode_badge.setStyleSheet(
+            "background:#15324a;color:#8fd3ff;border:1px solid #3478a4;border-radius:7px;padding:7px 10px;font-weight:700"
+        )
+        header.addWidget(self.mode_badge)
         header.addStretch()
         self.connect_button = QPushButton("Connect Robinhood")
         self.connect_button.clicked.connect(lambda: asyncio.create_task(self._connect()))
@@ -120,6 +131,10 @@ class MainWindow(QMainWindow):
         self.flatten_button = QPushButton("Flatten Position")
         self.flatten_button.setObjectName("flatten")
         self.flatten_button.clicked.connect(lambda: asyncio.create_task(self._flatten()))
+        self.settings_button = QPushButton("Settings & Permissions")
+        self.settings_button.clicked.connect(self._open_settings)
+        self.about_button = QPushButton("About")
+        self.about_button.clicked.connect(self._about)
         for button in (
             self.connect_button,
             self.authorize_button,
@@ -127,10 +142,15 @@ class MainWindow(QMainWindow):
             self.shadow_button,
             self.kill_button,
             self.flatten_button,
+            self.settings_button,
+            self.about_button,
         ):
             header.addWidget(button)
         outer.addLayout(header)
 
+        self.broker_panel = QWidget()
+        broker_layout = QVBoxLayout(self.broker_panel)
+        broker_layout.setContentsMargins(0, 0, 0, 0)
         cards = QGridLayout()
         self.account_card = MetricCard("Agentic account", "Disconnected")
         self.value_card = MetricCard("Account value", "—")
@@ -151,14 +171,13 @@ class MainWindow(QMainWindow):
             )
         ):
             cards.addWidget(card, 0, column)
-        outer.addLayout(cards)
+        broker_layout.addLayout(cards)
 
-        splitter = QSplitter(Qt.Orientation.Vertical)
         top = QSplitter(Qt.Orientation.Horizontal)
         self.chart = pg.PlotWidget(axisItems={"bottom": pg.DateAxisItem()})
         self.chart.setBackground("#0e1720")
         self.chart.showGrid(x=True, y=True, alpha=0.18)
-        self.chart.setLabel("left", "QQQ midpoint", units="$" )
+        self.chart.setLabel("left", "QQQ midpoint", units="$")
         self.chart_curve = self.chart.plot(pen=pg.mkPen("#00d407", width=2))
         top.addWidget(self.chart)
 
@@ -166,14 +185,18 @@ class MainWindow(QMainWindow):
         top.addWidget(self.quotes_table)
         top.setStretchFactor(0, 3)
         top.setStretchFactor(1, 2)
-        splitter.addWidget(top)
+        broker_layout.addWidget(top)
+        outer.addWidget(self.broker_panel)
 
-        tabs = QTabWidget()
+        self.tabs = QTabWidget()
+        self.welcome_widget = WelcomeWidget(self.config)
+        self.welcome_widget.open_sandbox.connect(self._open_sandbox)
+        self.welcome_widget.open_settings.connect(self._open_settings)
         self.positions_table = self._table(["Symbol", "Quantity", "Sellable", "Average", "Mark", "P/L"])
         self.orders_table = self._table(["Time", "Symbol", "Side", "State", "Quantity/$", "Fill", "Order ID"])
         self.activity_table = self._table(["Time", "Severity", "Event"])
-        fund_widget = QWidget()
-        fund_layout = QVBoxLayout(fund_widget)
+        self.fund_widget = QWidget()
+        fund_layout = QVBoxLayout(self.fund_widget)
         fund_notice = QLabel(
             "Ledger only — GRANDE Alpha never transfers brokerage, university, grant, or laboratory funds. "
             "A planned contribution becomes confirmed only after you verify an independent personal transfer."
@@ -195,25 +218,38 @@ class MainWindow(QMainWindow):
             ["ID", "Period", "Realized", "Fees", "Tax reserve", "Rate", "Eligible", "Status", "Confirmed"]
         )
         fund_layout.addWidget(self.fund_table)
-        tabs.addTab(self.positions_table, "Positions")
-        tabs.addTab(self.orders_table, "Orders")
-        tabs.addTab(self.activity_table, "Receipts")
-        tabs.addTab(fund_widget, "GRANDE Research Fund")
-        self.sandbox_widget = SandboxWidget(self.controller.store)
-        tabs.addTab(self.sandbox_widget, "SANDBOX")
-        splitter.addWidget(tabs)
-        splitter.setStretchFactor(0, 3)
-        splitter.setStretchFactor(1, 2)
-        outer.addWidget(splitter)
+        self.tabs.addTab(self.welcome_widget, "Getting Started")
+        self.sandbox_widget = SandboxWidget(
+            self.controller.store, allow_remote_data=self.config.remote_market_data_enabled
+        )
+        self.tabs.addTab(self.sandbox_widget, "Research Sandbox")
+        self.tabs.addTab(self.positions_table, "Positions")
+        self.tabs.addTab(self.orders_table, "Orders")
+        self.tabs.addTab(self.activity_table, "Receipts")
+        if self.config.personal_ledger_enabled:
+            self.tabs.addTab(self.fund_widget, "Personal Research Fund")
+        outer.addWidget(self.tabs, 1)
 
         self.status = QLabel(
-            "LOCKED • Connect Robinhood, verify broker values, then authorize a bounded live session."
+            "RESEARCH MODE • No optional network or broker action occurs without your consent."
         )
         self.status.setWordWrap(True)
         outer.addWidget(self.status)
         self.setCentralWidget(root)
         self._refresh_fund()
         self._set_controls()
+
+        file_menu = self.menuBar().addMenu("File")
+        export_action = QAction("Export redacted support diagnostics…", self)
+        export_action.triggered.connect(self._export_diagnostics)
+        file_menu.addAction(export_action)
+        settings_action = QAction("Settings & Permissions…", self)
+        settings_action.triggered.connect(self._open_settings)
+        file_menu.addAction(settings_action)
+        help_menu = self.menuBar().addMenu("Help")
+        about_action = QAction("About GRANDE Alpha", self)
+        about_action.triggered.connect(self._about)
+        help_menu.addAction(about_action)
 
     def _table(self, headers: list[str]) -> QTableWidget:
         table = QTableWidget(0, len(headers))
@@ -224,6 +260,91 @@ class MainWindow(QMainWindow):
         table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         table.setAlternatingRowColors(True)
         return table
+
+    def _open_sandbox(self) -> None:
+        index = self.tabs.indexOf(self.sandbox_widget)
+        if index >= 0:
+            self.tabs.setCurrentIndex(index)
+
+    def _open_settings(self) -> None:
+        dialog = SettingsDialog(self.config, self)
+        if dialog.exec() != dialog.DialogCode.Accepted:
+            return
+        previous = self.config
+        updated = dialog.updated_config()
+        self.config = updated
+        self.controller.config = updated
+        save_config(updated)
+        self.welcome_widget.update_config(updated)
+        self.sandbox_widget.set_remote_data_allowed(updated.remote_market_data_enabled)
+        self._sync_optional_tabs()
+        self.controller.log(
+            "Settings and capability boundaries updated",
+            "warning",
+            "permissions",
+            {
+                "broker_connection_enabled": updated.broker_connection_enabled,
+                "live_trading_enabled": updated.live_trading_enabled,
+                "remote_market_data_enabled": updated.remote_market_data_enabled,
+                "personal_ledger_enabled": updated.personal_ledger_enabled,
+            },
+        )
+        asyncio.create_task(
+            self._apply_permission_revocations(previous, updated, dialog.forget_credentials.isChecked())
+        )
+        self._set_controls()
+
+    async def _apply_permission_revocations(
+        self, previous: AppConfig, updated: AppConfig, forget_credentials: bool
+    ) -> None:
+        if previous.broker_connection_enabled and not updated.broker_connection_enabled:
+            if self._snapshot.connected:
+                await self.controller.disconnect()
+        elif previous.live_trading_enabled and not updated.live_trading_enabled:
+            await self.controller.stop_and_cancel("Real-order capability revoked in Settings")
+        if forget_credentials:
+            try:
+                await self.controller.forget_broker_credentials()
+            except Exception as exc:
+                QMessageBox.warning(self, "Credentials were not forgotten", str(exc))
+
+    def _sync_optional_tabs(self) -> None:
+        index = self.tabs.indexOf(self.fund_widget)
+        if self.config.personal_ledger_enabled and index < 0:
+            self.tabs.addTab(self.fund_widget, "Personal Research Fund")
+        elif not self.config.personal_ledger_enabled and index >= 0:
+            self.tabs.removeTab(index)
+
+    def _export_diagnostics(self) -> None:
+        filename, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export redacted support diagnostics",
+            "grande-alpha-diagnostics.json",
+            "JSON (*.json)",
+        )
+        if not filename:
+            return
+        try:
+            export_diagnostics(self.config, self.controller.store, Path(filename))
+            QMessageBox.information(
+                self,
+                "Diagnostics exported",
+                "The export redacts known credential, account, order, and reference identifiers. "
+                "Review the JSON yourself before sharing it.",
+            )
+        except Exception as exc:
+            QMessageBox.critical(self, "Diagnostics export failed", str(exc))
+
+    def _about(self) -> None:
+        QMessageBox.about(
+            self,
+            "About GRANDE Alpha",
+            f"GRANDE Alpha {__version__}\n\n"
+            "Local-first leveraged-ETF strategy research and consent-gated execution workstation.\n\n"
+            "Independent community software. Not affiliated with or endorsed by Robinhood, "
+            "ProShares, Nasdaq, or Yahoo. No telemetry. No investment, legal, or tax advice.\n\n"
+            "Licensed under Apache-2.0. See README, PRIVACY.md, SECURITY.md, and docs/ for details.",
+        )
 
     async def _connect(self) -> None:
         try:
@@ -350,7 +471,11 @@ class MainWindow(QMainWindow):
 
     def _on_busy(self, busy: bool) -> None:
         self.connect_button.setEnabled(not busy)
-        self.connect_button.setText("Connecting in browser…" if busy else ("Disconnect" if self._snapshot.connected else "Connect Robinhood"))
+        self.connect_button.setText(
+            "Connecting in browser…"
+            if busy
+            else ("Disconnect" if self._snapshot.connected else "Connect Robinhood")
+        )
 
     def _on_snapshot(self, snapshot: TradingSnapshot) -> None:
         self._snapshot = snapshot
@@ -364,11 +489,13 @@ class MainWindow(QMainWindow):
         else:
             self.value_card.value.setText("—")
             self.buying_power_card.value.setText("—")
-        session = snapshot.live_status
+        session = snapshot.live_status if self.config.live_trading_enabled else "DISABLED"
         if session == "LIVE" and snapshot.session_expires_at:
             session = f"LIVE to {snapshot.session_expires_at.astimezone().strftime('%I:%M %p')}"
         self.session_card.value.setText(session)
-        self.session_card.value.setStyleSheet("color:#00e507" if snapshot.live_status == "LIVE" else "color:#ff697d")
+        self.session_card.value.setStyleSheet(
+            "color:#00e507" if snapshot.live_status == "LIVE" else "color:#8fa4b8"
+        )
         self.signal_card.value.setText(snapshot.signal.regime.value.upper())
         signal_color = {Regime.BULLISH: "#00e507", Regime.BEARISH: "#ff697d", Regime.FLAT: "#f2c14e"}
         self.signal_card.value.setStyleSheet(f"color:{signal_color[snapshot.signal.regime]}")
@@ -387,12 +514,19 @@ class MainWindow(QMainWindow):
         self._update_positions(snapshot)
         self._update_orders(snapshot)
         self._update_chart(snapshot)
-        refreshed = snapshot.last_refresh.astimezone().strftime("%I:%M:%S %p") if snapshot.last_refresh else "never"
-        self.status.setText(
-            f"{snapshot.live_status} • Strategy {'RUNNING' if snapshot.strategy_running else 'STOPPED'} • "
-            f"Shadow {'RUNNING — NO ORDERS' if snapshot.shadow_running else 'OFF'} • "
-            f"Orders {snapshot.trades_today} • Last broker refresh {refreshed} • {snapshot.signal.reason}"
+        refreshed = (
+            snapshot.last_refresh.astimezone().strftime("%I:%M:%S %p") if snapshot.last_refresh else "never"
         )
+        if not self.config.broker_connection_enabled:
+            self.status.setText(
+                "RESEARCH MODE • Broker capability is off • Local sandbox and CSV import only • No telemetry"
+            )
+        else:
+            self.status.setText(
+                f"{session} • Strategy {'RUNNING' if snapshot.strategy_running else 'STOPPED'} • "
+                f"Shadow {'RUNNING — NO ORDERS' if snapshot.shadow_running else 'OFF'} • "
+                f"Orders {snapshot.trades_today} • Last broker refresh {refreshed} • {snapshot.signal.reason}"
+            )
         self._set_controls()
 
     def _set_controls(self) -> None:
@@ -400,6 +534,25 @@ class MainWindow(QMainWindow):
         funded = bool(self._snapshot.portfolio and self._snapshot.portfolio.buying_power > 0)
         live = self._snapshot.live_status == "LIVE"
         shadow = self._snapshot.shadow_running
+        broker_enabled = self.config.broker_connection_enabled
+        live_enabled = self.config.live_trading_enabled
+        self.broker_panel.setVisible(broker_enabled)
+        self.connect_button.setVisible(broker_enabled)
+        self.shadow_button.setVisible(broker_enabled)
+        self.authorize_button.setVisible(live_enabled)
+        self.start_button.setVisible(live_enabled)
+        self.kill_button.setVisible(live_enabled)
+        self.flatten_button.setVisible(live_enabled)
+        self.mode_badge.setText(
+            "LIVE CONTROLS UNLOCKED"
+            if live_enabled
+            else ("BROKER SHADOW ENABLED" if broker_enabled else "RESEARCH MODE")
+        )
+        self.mode_badge.setStyleSheet(
+            "background:#4b2516;color:#ffc07a;border:1px solid #9a5328;border-radius:7px;padding:7px 10px;font-weight:700"
+            if live_enabled
+            else "background:#15324a;color:#8fd3ff;border:1px solid #3478a4;border-radius:7px;padding:7px 10px;font-weight:700"
+        )
         self.authorize_button.setEnabled(connected and funded and not shadow)
         self.start_button.setEnabled(live and not self._snapshot.strategy_running and not shadow)
         self.shadow_button.setEnabled(connected and (shadow or not live))
@@ -450,7 +603,9 @@ class MainWindow(QMainWindow):
         orders = snapshot.orders[:100]
         self.orders_table.setRowCount(len(orders))
         for row, order in enumerate(orders):
-            amount = f"{order.quantity:g} sh" if order.quantity is not None else f"${order.dollar_amount:,.2f}"
+            amount = (
+                f"{order.quantity:g} sh" if order.quantity is not None else f"${order.dollar_amount:,.2f}"
+            )
             values = [
                 order.created_at.astimezone().strftime("%m/%d %I:%M:%S") if order.created_at else "—",
                 order.symbol,

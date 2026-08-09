@@ -95,7 +95,9 @@ class TradingController(QObject):
         self.snapshot.live_status = self.risk.session_status()
         self.snapshot.drawdown = self.risk.drawdown
         self.snapshot.trades_today = self.risk.trades_today
-        self.snapshot.strategy_running = self.snapshot.strategy_running and self.snapshot.live_status == "LIVE"
+        self.snapshot.strategy_running = (
+            self.snapshot.strategy_running and self.snapshot.live_status == "LIVE"
+        )
         if self._shadow is not None:
             state = self._shadow.state
             self.snapshot.shadow_running = state.active
@@ -105,16 +107,22 @@ class TradingController(QObject):
             self.snapshot.shadow_fills = len(state.fills)
         self.snapshot_changed.emit(self.snapshot)
 
-    def log(self, summary: str, severity: str = "info", category: str = "runtime", payload: Any = None) -> None:
+    def log(
+        self, summary: str, severity: str = "info", category: str = "runtime", payload: Any = None
+    ) -> None:
         self.store.receipt(category, summary, payload, severity)
         self.event.emit(severity, summary)
 
     async def connect(self) -> None:
+        if not self.config.broker_connection_enabled:
+            raise RuntimeError("Broker connections are disabled. Enable the capability in Settings first")
         self.connection_busy.emit(True)
         try:
             await self.broker.connect()
             accounts = await self.broker.get_accounts()
-            candidates = [account for account in accounts if account.agentic_allowed and account.state == "active"]
+            candidates = [
+                account for account in accounts if account.agentic_allowed and account.state == "active"
+            ]
             if not candidates:
                 raise BrokerError("No active Robinhood account is enabled for this agent")
             candidates.sort(key=lambda item: (item.nickname.lower() != "agentic", item.account_number))
@@ -195,6 +203,8 @@ class TradingController(QObject):
                 self._emit()
 
     def authorize_live(self, grant: LiveGrant) -> None:
+        if not self.config.live_trading_enabled:
+            raise RuntimeError("Real-order controls are disabled. Unlock them deliberately in Settings first")
         if self._shadow is not None and self._shadow.state.active:
             raise RuntimeError("Stop live shadow mode before granting real-order authority")
         if self.snapshot.account is None or self.snapshot.portfolio is None:
@@ -202,7 +212,9 @@ class TradingController(QObject):
         if grant.account_number != self.snapshot.account.account_number:
             raise RuntimeError("Grant account does not match the connected Agentic account")
         if self.snapshot.portfolio.total_value <= 0 or self.snapshot.portfolio.buying_power <= 0:
-            raise RuntimeError("Robinhood reports zero account value or buying power; live trading stays locked")
+            raise RuntimeError(
+                "Robinhood reports zero account value or buying power; live trading stays locked"
+            )
         self.risk.arm(grant, self.snapshot.portfolio)
         self.snapshot.session_expires_at = grant.expires_at
         self.log(
@@ -223,6 +235,8 @@ class TradingController(QObject):
         self._emit()
 
     def start_strategy(self) -> None:
+        if not self.config.live_trading_enabled:
+            raise RuntimeError("Real-order controls are disabled in Settings")
         if self._shadow is not None and self._shadow.state.active:
             raise RuntimeError("Stop live shadow mode before starting real-order automation")
         if self.risk.session_status() != "LIVE":
@@ -232,6 +246,8 @@ class TradingController(QObject):
         self._emit()
 
     def start_shadow(self) -> None:
+        if not self.config.broker_connection_enabled:
+            raise RuntimeError("Broker connections are disabled in Settings")
         if not self.snapshot.connected or self.snapshot.account is None:
             raise RuntimeError("Connect Robinhood read access before starting live shadow mode")
         if self.risk.session_status() == "LIVE" or self.snapshot.strategy_running:
@@ -307,7 +323,10 @@ class TradingController(QObject):
         return total
 
     def _has_open_order(self) -> bool:
-        return any(order.state in {"new", "queued", "confirmed", "unconfirmed", "partially_filled"} for order in self.snapshot.orders)
+        return any(
+            order.state in {"new", "queued", "confirmed", "unconfirmed", "partially_filled"}
+            for order in self.snapshot.orders
+        )
 
     async def _evaluate_and_trade(self) -> None:
         if self.risk.session_status() != "LIVE":
@@ -440,6 +459,8 @@ class TradingController(QObject):
         return order
 
     async def review_flatten(self, symbol: str) -> tuple[OrderIntent, OrderReview]:
+        if not self.config.live_trading_enabled:
+            raise RuntimeError("Real-order controls are disabled in Settings")
         if self.snapshot.account is None:
             raise RuntimeError("Robinhood is not connected")
         position = next((item for item in self.snapshot.positions if item.symbol == symbol), None)
@@ -462,6 +483,8 @@ class TradingController(QObject):
         return intent, review
 
     async def place_reviewed_flatten(self, intent: OrderIntent, review: OrderReview) -> BrokerOrder:
+        if not self.config.live_trading_enabled:
+            raise RuntimeError("Real-order controls are disabled in Settings")
         if self.snapshot.account is None:
             raise RuntimeError("Robinhood is not connected")
         if intent.ref_id != review.intent.ref_id or intent.side != "sell":
@@ -475,3 +498,13 @@ class TradingController(QObject):
             {"order_id": order.order_id, "ref_id": intent.ref_id},
         )
         return order
+
+    async def forget_broker_credentials(self) -> None:
+        if self.snapshot.connected:
+            await self.disconnect()
+        self.broker.clear_credentials()
+        self.log(
+            "Stored broker OAuth credentials were removed; reconnect to restore access",
+            "warning",
+            "credentials",
+        )

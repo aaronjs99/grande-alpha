@@ -19,7 +19,7 @@ The OAuth wait expires after five minutes. Tokens and registered-client informat
 Windows Credential Manager under `GRANDEAlpha.RobinhoodMCP`. A legacy
 `MomentumTrader.RobinhoodMCP` credential is copied into the new namespace when first used.
 
-## Robinhood shows $50 but the app shows $0
+## Broker and app balances disagree
 
 Do not authorize live trading.
 
@@ -29,8 +29,8 @@ Do not authorize live trading.
 4. Reconnect OAuth and refresh.
 5. If the mismatch remains, use Robinhood support before trading.
 
-The app deliberately refuses to authorize when Robinhood's MCP reports zero account value or zero
-buying power.
+The app deliberately refuses to authorize when the provider reports zero account value or zero
+buying power. Never authorize around an unexplained discrepancy of any size.
 
 ## Quotes are stale or missing
 

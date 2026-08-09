@@ -129,7 +129,14 @@ class AuditStore:
         with self._lock, self._connection:
             self._connection.execute(
                 "INSERT INTO quotes(observed_at,symbol,bid,ask,last,venue_timestamp) VALUES(?,?,?,?,?,?)",
-                (utc_now().isoformat(), quote.symbol, quote.bid, quote.ask, quote.last, quote.timestamp.isoformat()),
+                (
+                    utc_now().isoformat(),
+                    quote.symbol,
+                    quote.bid,
+                    quote.ask,
+                    quote.last,
+                    quote.timestamp.isoformat(),
+                ),
             )
 
     def record_bar(self, bar: Bar) -> None:
@@ -182,6 +189,25 @@ class AuditStore:
                 "SELECT * FROM receipts ORDER BY id DESC LIMIT ?", (limit,)
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def prune_market_history(self, retention_days: int) -> dict[str, int]:
+        """Remove old derived market observations, never orders, receipts, or research records."""
+        if retention_days < 1:
+            raise ValueError("Market-history retention must be at least one day")
+        modifier = f"-{retention_days} days"
+        removed: dict[str, int] = {}
+        with self._lock, self._connection:
+            for table, time_column in (
+                ("quotes", "observed_at"),
+                ("bars", "start_at"),
+                ("signals", "created_at"),
+            ):
+                cursor = self._connection.execute(
+                    f"DELETE FROM {table} WHERE {time_column} < datetime('now', ?)",
+                    (modifier,),
+                )
+                removed[table] = max(0, cursor.rowcount)
+        return removed
 
     def plan_research_contribution(
         self,

@@ -138,8 +138,14 @@ class LiveShadowEngine:
             self.state.cash += proceeds
             self.state.position = None
             fill = ShadowFill(
-                timestamp, position.symbol, "sell", position.quantity, price, realized,
-                reason or "Shadow exit", self.state.cash,
+                timestamp,
+                position.symbol,
+                "sell",
+                position.quantity,
+                price,
+                realized,
+                reason or "Shadow exit",
+                self.state.cash,
             )
             return target is None, fill
         if target is None:
