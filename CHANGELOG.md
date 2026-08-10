@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.10.0 - 2026-08-10
+
+- Made the analysis and trade clocks explicit: the default completed analysis bar is 5 seconds and
+  a pair-action decision occurs every 3 bars, so nominal `t_analysis=5s < t_trade=15s`.
+- Expressed each live target transition in the exact nine-action `(T,S)` command vocabulary and
+  recorded the selected command, source analysis, inventory, target, cadence, and state feasibility.
+- Added a visible pair-action status card and separate analysis/trade cadence controls.
+- Added a configurable research decision stride and bound it into evidence fingerprints, invalidating
+  older timing-mismatched certificates under evidence policy version 6.
+- Preserved long-only inventory, mutual-exclusion, sells-before-buys, open-order, cooldown, broker
+  review, risk-envelope, and shadow/evidence gates; no failed research result was promoted.
+
 ## 0.9.3 - 2026-08-10
 
 - Stored oversized Robinhood OAuth material as integrity-verified chunks in Windows Credential Manager.

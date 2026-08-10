@@ -74,10 +74,12 @@ class LiveShadowEngine:
             equity=config.initial_cash,
         )
         self._pending: tuple[str | None, str] | None = None
+        self._analysis_count = 0
 
     def on_bar(self, timestamp: datetime, signal: Signal, quotes: dict[str, Quote]) -> list[ShadowFill]:
         if not self.state.active:
             return []
+        self._analysis_count += 1
         fills: list[ShadowFill] = []
         window_allowed = self.policy.trading_window_allowed(timestamp)
         pending_is_exit = (
@@ -110,13 +112,14 @@ class LiveShadowEngine:
             if position
             else None
         )
-        decision = self.policy.decide(signal, timestamp, policy_position)
-        current = position.symbol if position else None
-        decision_window = (
-            self.policy.exit_window_allowed(timestamp) if current is not None else window_allowed
-        )
-        if decision_window and decision.target_symbol != current and self._pending is None:
-            self._pending = (decision.target_symbol, decision.reason)
+        if self._analysis_count % self.config.decision_stride == 0:
+            decision = self.policy.decide(signal, timestamp, policy_position)
+            current = position.symbol if position else None
+            decision_window = (
+                self.policy.exit_window_allowed(timestamp) if current is not None else window_allowed
+            )
+            if decision_window and decision.target_symbol != current and self._pending is None:
+                self._pending = (decision.target_symbol, decision.reason)
         self._mark(quotes)
         return fills
 

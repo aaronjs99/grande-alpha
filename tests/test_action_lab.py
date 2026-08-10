@@ -6,6 +6,8 @@ from grande_alpha.action_lab import (
     TradeCommand,
     apply_action,
     evaluate_daily_benchmarks,
+    live_feasible_action_ids,
+    pair_action_for_target,
     train_offline_action_policy,
     valid_action_ids,
 )
@@ -53,6 +55,15 @@ def test_long_only_action_mask_depends_on_current_inventory() -> None:
     assert valid_action_ids(0, 0) == (4, 5, 7, 8)
     assert valid_action_ids(1, 1) == (0, 1, 3, 4)
     assert apply_action(1, 0, PairAction(TradeCommand.SELL, TradeCommand.BUY)) == (0, 1)
+
+
+def test_live_targets_are_expressed_in_the_exact_pair_action_vocabulary() -> None:
+    assert pair_action_for_target(0, 0, "TQQQ").label == "(+1,0)"
+    assert pair_action_for_target(1, 0, "SQQQ").label == "(-1,+1)"
+    assert pair_action_for_target(0, 1, "TQQQ").label == "(+1,-1)"
+    assert pair_action_for_target(1, 1, None).label == "(-1,-1)"
+    assert live_feasible_action_ids(0, 0) == (4, 5, 7)
+    assert 8 not in live_feasible_action_ids(0, 0)
 
 
 def test_offline_action_policy_uses_chronological_holdout_and_audits_actions() -> None:

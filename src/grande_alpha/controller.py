@@ -8,6 +8,13 @@ from typing import Any
 
 from PySide6.QtCore import QObject, Signal
 
+from grande_alpha.action_lab import (
+    ALL_PAIR_ACTIONS,
+    PairAction,
+    TradeCommand,
+    live_feasible_action_ids,
+    pair_action_for_target,
+)
 from grande_alpha.broker.base import Broker, BrokerError
 from grande_alpha.config import AppConfig
 from grande_alpha.evidence import strategy_fingerprint
@@ -54,6 +61,10 @@ class TradingSnapshot:
     shadow_pnl: float = 0.0
     shadow_position: str | None = None
     shadow_fills: int = 0
+    pair_action_id: int = 4
+    pair_action_label: str = "(0,0)"
+    last_analysis_at: datetime | None = None
+    last_trade_decision_at: datetime | None = None
 
 
 class TradingController(QObject):
@@ -63,6 +74,7 @@ class TradingController(QObject):
 
     def __init__(self, broker: Broker, config: AppConfig, store: AuditStore) -> None:
         super().__init__()
+        config.validate_cadence()
         self.broker = broker
         self.config = config
         self.store = store
@@ -91,6 +103,8 @@ class TradingController(QObject):
         self._reconcile_lock = asyncio.Lock()
         self._last_qqq_timestamp: datetime | None = None
         self._last_submission_at: datetime | None = None
+        self._analysis_sequence = 0
+        self._last_trade_decision_sequence = 0
         self._shadow: LiveShadowEngine | None = None
 
     def _emit(self) -> None:
@@ -153,15 +167,27 @@ class TradingController(QObject):
 
     def update_config(self, config: AppConfig) -> None:
         """Apply safe runtime settings; a bar-size change starts a fresh warm-up."""
+        config.validate_cadence()
         bar_changed = config.bar_seconds != self.config.bar_seconds
+        trade_cadence_changed = config.trade_every_bars != self.config.trade_every_bars
         self.config = config
         if bar_changed:
             self.bar_builder = BarBuilder("QQQ", config.bar_seconds)
             self.strategy.reset()
             self._last_qqq_timestamp = None
+            self._analysis_sequence = 0
+            self._last_trade_decision_sequence = 0
             self.snapshot.signal = TradeSignal(Regime.FLAT, 0.0, "Cadence changed; warming up")
             self.log(
                 f"Decision cadence changed to {config.bar_seconds}s completed bars; warm-up reset",
+                "warning",
+                "cadence",
+            )
+        elif trade_cadence_changed:
+            self._last_trade_decision_sequence = self._analysis_sequence
+            self.log(
+                f"Trade decision cadence changed to every {config.trade_every_bars} analysis bars "
+                f"({config.trade_seconds}s nominal)",
                 "warning",
                 "cadence",
             )
@@ -221,7 +247,9 @@ class TradingController(QObject):
                     if bar is not None:
                         self.store.record_bar(bar)
                         signal = self.strategy.on_bar(bar)
+                        self._analysis_sequence += 1
                         self.snapshot.signal = signal
+                        self.snapshot.last_analysis_at = signal.timestamp
                         self.store.record_signal(signal)
                         self.log(f"Signal: {signal.regime.value} — {signal.reason}", category="signal")
                         if self._shadow is not None and self._shadow.state.active:
@@ -312,6 +340,7 @@ class TradingController(QObject):
         if self.risk.session_status() != "LIVE":
             raise RuntimeError("Authorize a bounded live session first")
         self.snapshot.strategy_running = True
+        self._last_trade_decision_sequence = self._analysis_sequence
         self.log("Automatic strategy started", "warning", "strategy")
         self._emit()
 
@@ -340,6 +369,7 @@ class TradingController(QObject):
             max_hold_minutes=self.config.max_hold_minutes,
             no_trade_open_minutes=self.config.no_trade_open_minutes,
             no_trade_close_minutes=self.config.no_trade_close_minutes,
+            decision_stride=self.config.trade_every_bars,
         )
         self._shadow = LiveShadowEngine(shadow_config)
         self.log(
@@ -419,17 +449,96 @@ class TradingController(QObject):
             for order in self.snapshot.orders
         )
 
+    def _inventory_units(self) -> tuple[int, int]:
+        symbols = {
+            position.symbol
+            for position in self._leveraged_positions()
+            if position.quantity > 0
+        }
+        return int("TQQQ" in symbols), int("SQQQ" in symbols)
+
+    def _trade_decision_due(self) -> bool:
+        return (
+            self._analysis_sequence - self._last_trade_decision_sequence
+            >= self.config.trade_every_bars
+        )
+
+    def _record_pair_decision(
+        self,
+        action: PairAction,
+        trade_at: datetime,
+        target_symbol: str | None,
+        reason: str,
+        state_feasible: bool,
+    ) -> None:
+        t_units, s_units = self._inventory_units()
+        self.snapshot.pair_action_id = action.action_id
+        self.snapshot.pair_action_label = action.label
+        self.snapshot.last_trade_decision_at = trade_at
+        self.store.receipt(
+            "pair_decision",
+            f"Pair action {action.label}: {reason}",
+            {
+                "action_id": action.action_id,
+                "action_t": int(action.t),
+                "action_s": int(action.s),
+                "before_t": t_units,
+                "before_s": s_units,
+                "action_space_size": len(ALL_PAIR_ACTIONS),
+                "state_feasible_action_ids": list(live_feasible_action_ids(t_units, s_units)),
+                "target_symbol": target_symbol or "cash",
+                "signal_regime": self.snapshot.signal.regime.value,
+                "analysis_at": (
+                    self.snapshot.last_analysis_at.isoformat()
+                    if self.snapshot.last_analysis_at is not None
+                    else None
+                ),
+                "trade_at": trade_at.isoformat(),
+                "analysis_sequence": self._analysis_sequence,
+                "decision_stride": self.config.trade_every_bars,
+                "nominal_analysis_seconds": self.config.bar_seconds,
+                "nominal_trade_seconds": self.config.trade_seconds,
+                "state_feasible": state_feasible,
+                "reason": reason,
+            },
+        )
+
     async def _evaluate_and_trade(self) -> None:
         if self.risk.session_status() != "LIVE":
             self.snapshot.strategy_running = False
             return
-        if self._has_open_order():
+        if not self._trade_decision_due():
             return
-        if self._last_submission_at and utc_now() - self._last_submission_at < timedelta(seconds=12):
+        self._last_trade_decision_sequence = self._analysis_sequence
+        trade_at = utc_now()
+        if self._has_open_order():
+            self._record_pair_decision(
+                PairAction(TradeCommand.HOLD, TradeCommand.HOLD),
+                trade_at,
+                None,
+                "Open broker order is still pending",
+                False,
+            )
+            return
+        if self._last_submission_at and trade_at - self._last_submission_at < timedelta(seconds=12):
+            self._record_pair_decision(
+                PairAction(TradeCommand.HOLD, TradeCommand.HOLD),
+                trade_at,
+                None,
+                "Independent 12-second submission cooldown is active",
+                False,
+            )
             return
         positions = self._leveraged_positions()
         held = positions[0] if positions else None
         if len(positions) > 1:
+            self._record_pair_decision(
+                pair_action_for_target(1, 1, None),
+                trade_at,
+                None,
+                "Both leveraged funds are held; automatic execution is locked",
+                False,
+            )
             self.snapshot.strategy_running = False
             self.risk.disarm()
             self.log("Both TQQQ and SQQQ are held; automatic trading locked", "critical", "risk")
@@ -458,8 +567,17 @@ class TradingController(QObject):
             if held
             else None
         )
-        decision = self.policy.decide(self.snapshot.signal, utc_now(), policy_position)
+        decision = self.policy.decide(self.snapshot.signal, trade_at, policy_position)
         target = decision.target_symbol
+        t_units, s_units = self._inventory_units()
+        pair_action = pair_action_for_target(t_units, s_units, target)
+        self._record_pair_decision(
+            pair_action,
+            trade_at,
+            target,
+            decision.reason or "Policy target unchanged",
+            True,
+        )
 
         if held is not None:
             quote = held_quote

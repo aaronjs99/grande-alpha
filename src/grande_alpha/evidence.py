@@ -15,7 +15,7 @@ from grande_alpha.sandbox import INTERVAL_MINUTES, SandboxConfig, SandboxReplayE
 from grande_alpha.strategy import StrategyConfig
 
 EASTERN = ZoneInfo("America/New_York")
-EVIDENCE_POLICY_VERSION = 5
+EVIDENCE_POLICY_VERSION = 6
 MIN_EVIDENCE_SESSIONS = 120
 STRATEGY_FINGERPRINT_FIELDS = (
     "strategy_name",
@@ -132,9 +132,13 @@ def _interval_seconds(config: object, interval: str | None) -> int:
 
 def strategy_fingerprint(config: object, interval: str | None = None) -> str:
     defaults = StrategyConfig()
+    decision_stride = int(
+        getattr(config, "decision_stride", getattr(config, "trade_every_bars", 1))
+    )
     payload = {
         "policy_version": EVIDENCE_POLICY_VERSION,
         "bar_interval_seconds": _interval_seconds(config, interval),
+        "decision_stride": decision_stride,
         **{
             field: getattr(config, field, getattr(defaults, field, None))
             for field in STRATEGY_FINGERPRINT_FIELDS

@@ -66,6 +66,64 @@ def apply_action(t_units: int, s_units: int, action: PairAction, max_units: int 
     return t_units + int(action.t), s_units + int(action.s)
 
 
+def live_feasible_action_ids(t_units: int, s_units: int) -> tuple[int, ...]:
+    """Return long-only actions that do not leave both leveraged funds held."""
+
+    feasible = []
+    for action_id in valid_action_ids(t_units, s_units):
+        action = ALL_PAIR_ACTIONS[action_id]
+        next_t, next_s = apply_action(t_units, s_units, action)
+        if next_t * next_s == 0:
+            feasible.append(action_id)
+    return tuple(feasible)
+
+
+def select_pair_action(
+    t_units: int,
+    s_units: int,
+    target_symbol: str | None,
+) -> PairAction:
+    """Select one of all nine commands for a cash/TQQQ/SQQQ target.
+
+    Live inventory is long-only and mutually exclusive. The nine-command model is
+    still the canonical action vocabulary, while the current state and product risk
+    rules determine which commands are feasible at a particular decision tick.
+    """
+
+    if t_units not in (0, 1) or s_units not in (0, 1):
+        raise ValueError("Pair-action inventory must be binary")
+    targets = {
+        None: (0, 0),
+        "TQQQ": (1, 0),
+        "TQQQS": (1, 0),
+        "SQQQ": (0, 1),
+        "SQQQS": (0, 1),
+    }
+    if target_symbol not in targets:
+        raise ValueError(f"Unsupported pair-action target: {target_symbol}")
+    target_t, target_s = targets[target_symbol]
+    feasible = live_feasible_action_ids(t_units, s_units)
+
+    def score(action_id: int) -> tuple[int, int, int]:
+        action = ALL_PAIR_ACTIONS[action_id]
+        next_t, next_s = apply_action(t_units, s_units, action)
+        target_distance = abs(next_t - target_t) + abs(next_s - target_s)
+        turnover = abs(int(action.t)) + abs(int(action.s))
+        return target_distance, turnover, action_id
+
+    return ALL_PAIR_ACTIONS[min(feasible, key=score)]
+
+
+def pair_action_for_target(
+    t_units: int,
+    s_units: int,
+    target_symbol: str | None,
+) -> PairAction:
+    """Compatibility alias for the enumerated live pair-action selector."""
+
+    return select_pair_action(t_units, s_units, target_symbol)
+
+
 @dataclass(frozen=True)
 class OfflineTrainingConfig:
     epochs: int = 80

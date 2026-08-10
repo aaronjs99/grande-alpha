@@ -46,6 +46,7 @@ def public_config(config: AppConfig) -> dict[str, Any]:
         "poll_seconds",
         "reconcile_seconds",
         "bar_seconds",
+        "trade_every_bars",
         "warmup_bars",
         "fast_ema",
         "slow_ema",

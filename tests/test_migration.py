@@ -5,10 +5,27 @@ from grande_alpha.config import migrate_config_payload, migrate_legacy_data
 
 def test_pre_cadence_config_is_upgraded_to_retail_low_latency_defaults() -> None:
     upgraded = migrate_config_payload({"poll_seconds": 2.0, "bar_seconds": 60})
-    assert upgraded["cadence_version"] == 1
+    assert upgraded["cadence_version"] == 2
     assert upgraded["poll_seconds"] == 1.0
     assert upgraded["reconcile_seconds"] == 5.0
     assert upgraded["bar_seconds"] == 5
+    assert upgraded["trade_every_bars"] == 3
+
+
+def test_v1_cadence_preserves_existing_clocks_and_adds_trade_stride() -> None:
+    upgraded = migrate_config_payload(
+        {
+            "cadence_version": 1,
+            "poll_seconds": 0.5,
+            "reconcile_seconds": 10.0,
+            "bar_seconds": 2,
+        }
+    )
+    assert upgraded["poll_seconds"] == 0.5
+    assert upgraded["reconcile_seconds"] == 10.0
+    assert upgraded["bar_seconds"] == 2
+    assert upgraded["trade_every_bars"] == 3
+    assert upgraded["cadence_version"] == 2
 
 
 def test_legacy_data_is_copied_without_deleting_originals(tmp_path: Path) -> None:

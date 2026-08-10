@@ -13,7 +13,7 @@ LEGACY_APP_NAME = "MomentumTrader"
 MCP_URL = "https://agent.robinhood.com/mcp/trading"
 ONBOARDING_VERSION = 1
 DISCLOSURE_VERSION = "2026-08"
-CADENCE_VERSION = 1
+CADENCE_VERSION = 2
 
 
 @dataclass
@@ -31,6 +31,9 @@ class AppConfig:
     poll_seconds: float = 1.0
     reconcile_seconds: float = 5.0
     bar_seconds: int = 5
+    # One policy action is selected only after this many completed analysis bars.
+    # The default therefore gives t_analysis=5s and t_trade=15s.
+    trade_every_bars: int = 3
     warmup_bars: int = 24
     fast_ema: int = 8
     slow_ema: int = 21
@@ -49,6 +52,20 @@ class AppConfig:
     default_max_orders_per_minute: int = 2
     default_max_spread_bps: float = 20.0
     default_max_quote_age_seconds: float = 8.0
+
+    @property
+    def trade_seconds(self) -> int:
+        return self.bar_seconds * self.trade_every_bars
+
+    def validate_cadence(self) -> None:
+        if not 0.25 <= self.poll_seconds <= 5.0:
+            raise ValueError("Quote request target must be between 0.25 and 5 seconds")
+        if not 2.0 <= self.reconcile_seconds <= 60.0:
+            raise ValueError("Account reconciliation must be between 2 and 60 seconds")
+        if not 1 <= self.bar_seconds <= 300:
+            raise ValueError("Analysis bar must be between 1 and 300 seconds")
+        if not 2 <= self.trade_every_bars <= 120:
+            raise ValueError("Trade decisions must be separated by 2 to 120 analysis bars")
 
 
 def migrate_legacy_data(legacy: Path, destination: Path) -> list[Path]:
@@ -91,6 +108,7 @@ def load_config() -> AppConfig:
     raw = migrate_config_payload(json.loads(path.read_text(encoding="utf-8")))
     allowed = AppConfig.__dataclass_fields__.keys()
     config = AppConfig(**{key: value for key, value in raw.items() if key in allowed})
+    config.validate_cadence()
     if json.loads(path.read_text(encoding="utf-8")) != raw:
         save_config(config)
     return config
@@ -99,13 +117,16 @@ def load_config() -> AppConfig:
 def migrate_config_payload(raw: dict) -> dict:
     """Upgrade pre-cadence settings; those releases had no timing controls in the UI."""
     upgraded = dict(raw)
-    if int(upgraded.get("cadence_version", 0)) < CADENCE_VERSION:
+    version = int(upgraded.get("cadence_version", 0))
+    if version < 1:
         upgraded.update(
-            cadence_version=CADENCE_VERSION,
             poll_seconds=1.0,
             reconcile_seconds=5.0,
             bar_seconds=5,
         )
+    if version < 2:
+        upgraded["trade_every_bars"] = 3
+    upgraded["cadence_version"] = CADENCE_VERSION
     return upgraded
 
 

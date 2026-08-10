@@ -42,7 +42,7 @@ order or predict future profit. The normal outcome is `SHADOW_ONLY`.
 | Walk-forward | At least five folds, 60% positive test folds, 20 out-of-sample trades, median profit factor 1.10, and positive median expectancy |
 
 All gates must pass simultaneously. Every pass and failure is stored in the local audit database.
-Changing a fingerprinted signal, exit setting, bar interval, or policy version invalidates the
+Changing a fingerprinted signal, exit setting, bar interval, decision stride, or policy version invalidates the
 certificate. A requested live grant cannot exceed the notional, exposure, loss, trade-rate, or
 spread envelope tested by the certificate, and a certificate older than 30 days is ineligible. A pass does not estimate the probability of future profit,
 validate the market-data license, account for tax/settlement restrictions, or authorize real money.

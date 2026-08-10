@@ -255,6 +255,8 @@ class SandboxWidget(QWidget):
         self.strategy_name = QComboBox()
         for key, label in STRATEGY_NAMES.items():
             self.strategy_name.addItem(label, key)
+        self.decision_stride = self._integer(1, 120)
+        self.decision_stride.setSuffix(" analysis bars")
         self.warmup = self._integer(5, 1000)
         self.fast_ema = self._integer(1, 500)
         self.slow_ema = self._integer(2, 1000)
@@ -271,6 +273,7 @@ class SandboxWidget(QWidget):
         self.ensemble_votes = self._integer(1, 4)
         for title, widget in (
             ("Research strategy", self.strategy_name),
+            ("Trade decision every", self.decision_stride),
             ("Warm-up", self.warmup),
             ("Fast EMA", self.fast_ema),
             ("Slow EMA", self.slow_ema),
@@ -638,6 +641,7 @@ class SandboxWidget(QWidget):
             self.fill_fraction: config.fill_fraction_pct,
             self.rejection: config.rejection_rate_pct,
             self.volume_participation: config.max_volume_participation_pct,
+            self.decision_stride: config.decision_stride,
             self.warmup: config.warmup_bars,
             self.fast_ema: config.fast_ema,
             self.slow_ema: config.slow_ema,
@@ -680,6 +684,7 @@ class SandboxWidget(QWidget):
             rejection_rate_pct=self.rejection.value(),
             max_volume_participation_pct=self.volume_participation.value(),
             strategy_name=self.strategy_name.currentData(),
+            decision_stride=self.decision_stride.value(),
             warmup_bars=self.warmup.value(),
             fast_ema=self.fast_ema.value(),
             slow_ema=self.slow_ema.value(),

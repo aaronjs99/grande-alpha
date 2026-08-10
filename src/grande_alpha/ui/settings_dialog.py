@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QCheckBox,
     QDialog,
@@ -49,6 +50,7 @@ class SettingsDialog(QDialog):
         self.scroll.setObjectName("settingsScroll")
         self.scroll.setWidgetResizable(True)
         self.scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         body = QWidget()
         body_layout = QVBoxLayout(body)
         body_layout.setContentsMargins(2, 2, 8, 2)
@@ -162,17 +164,21 @@ class SettingsDialog(QDialog):
         self.reconcile.setSuffix(" s")
         self.reconcile.setValue(config.reconcile_seconds)
         self.bar_seconds = QSpinBox()
-        self.bar_seconds.setAccessibleName("Completed decision bar interval")
+        self.bar_seconds.setAccessibleName("Completed analysis bar interval")
         self.bar_seconds.setRange(1, 300)
         self.bar_seconds.setSuffix(" s")
         self.bar_seconds.setValue(config.bar_seconds)
+        self.trade_every_bars = QSpinBox()
+        self.trade_every_bars.setAccessibleName("Trade decision interval in analysis bars")
+        self.trade_every_bars.setRange(2, 120)
+        self.trade_every_bars.setSuffix(" bars")
+        self.trade_every_bars.setValue(config.trade_every_bars)
         cadence_form.addRow("Quote request target", self.quote_poll)
         cadence_form.addRow("Account reconciliation", self.reconcile)
-        cadence_form.addRow("Completed decision bar", self.bar_seconds)
-        self.cadence_note = self._description(
-            "Quote requests are single-flight: if Robinhood takes longer than the target, ticks are coalesced. "
-            "This changes observation and decision speed, not the bounded live order-rate limit."
-        )
+        cadence_form.addRow("Completed analysis bar", self.bar_seconds)
+        cadence_form.addRow("Trade decision every", self.trade_every_bars)
+        self.cadence_note = self._description("")
+        self._update_cadence_note()
         cadence_form.addRow(self.cadence_note)
         body_layout.addWidget(cadence)
         body_layout.addStretch()
@@ -193,6 +199,8 @@ class SettingsDialog(QDialog):
         self.broker.stateChanged.connect(self._validate)
         self.live.stateChanged.connect(self._validate)
         self.live_phrase.textChanged.connect(self._validate)
+        self.bar_seconds.valueChanged.connect(self._update_cadence_note)
+        self.trade_every_bars.valueChanged.connect(self._update_cadence_note)
         self._validate()
 
     @staticmethod
@@ -202,6 +210,14 @@ class SettingsDialog(QDialog):
         label.setWordWrap(True)
         label.setContentsMargins(25, 0, 6, 5)
         return label
+
+    def _update_cadence_note(self, _value: int | None = None) -> None:
+        analysis = self.bar_seconds.value()
+        stride = self.trade_every_bars.value()
+        self.cadence_note.setText(
+            f"t_analysis = {analysis}s and t_trade = {analysis * stride}s ({stride} completed analysis bars). "
+            "Quote requests are single-flight and execution remains subject to independent broker and risk gates."
+        )
 
     def _validate(self) -> None:
         enabling_live = self.live.isChecked() and not self.original.live_trading_enabled
@@ -235,4 +251,5 @@ class SettingsDialog(QDialog):
             poll_seconds=self.quote_poll.value(),
             reconcile_seconds=self.reconcile.value(),
             bar_seconds=self.bar_seconds.value(),
+            trade_every_bars=self.trade_every_bars.value(),
         )

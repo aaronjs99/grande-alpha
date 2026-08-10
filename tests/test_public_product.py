@@ -4,6 +4,7 @@ from datetime import timedelta
 from pathlib import Path
 
 import pytest
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication, QDialogButtonBox, QScrollArea
 
 from grande_alpha import __version__
@@ -12,7 +13,7 @@ from grande_alpha.config import AppConfig
 from grande_alpha.controller import TradingController
 from grande_alpha.evidence import EVIDENCE_POLICY_VERSION, strategy_fingerprint
 from grande_alpha.historical import deterministic_demo
-from grande_alpha.models import Account, LiveGrant, Portfolio, Quote, utc_now
+from grande_alpha.models import Account, LiveGrant, Portfolio, Position, Quote, Regime, Signal, utc_now
 from grande_alpha.privacy import export_diagnostics
 from grande_alpha.sandbox import SandboxConfig, SandboxReplayEngine
 from grande_alpha.storage import AuditStore
@@ -66,7 +67,9 @@ def test_public_defaults_are_research_only() -> None:
     assert config.poll_seconds == 1.0
     assert config.reconcile_seconds == 5.0
     assert config.bar_seconds == 5
-    assert __version__ == "0.9.3"
+    assert config.trade_every_bars == 3
+    assert config.trade_seconds == 15
+    assert __version__ == "0.10.0"
 
 
 def test_main_window_starts_with_independent_low_latency_clocks(tmp_path) -> None:
@@ -79,6 +82,7 @@ def test_main_window_starts_with_independent_low_latency_clocks(tmp_path) -> Non
     assert window.timer.interval() == 250
     assert window.reconcile_timer.interval() == 2_000
     assert controller.bar_builder.seconds == 1
+    assert controller.config.trade_seconds == 3
     assert not controller.snapshot.connected
 
     window.close()
@@ -180,6 +184,7 @@ def test_settings_dialog_is_scrollable_and_explains_agentic_account_scope() -> N
 
     assert isinstance(dialog.scroll, QScrollArea)
     assert dialog.scroll.widgetResizable()
+    assert dialog.scroll.horizontalScrollBarPolicy() == Qt.ScrollBarPolicy.ScrollBarAlwaysOff
     assert dialog.minimumWidth() >= 780
     assert dialog.minimumHeight() >= 650
     assert dialog.broker.text() == "Connect Robinhood broker data"
@@ -189,7 +194,56 @@ def test_settings_dialog_is_scrollable_and_explains_agentic_account_scope() -> N
     assert "LOCKED" in dialog.evidence_status.text()
     assert dialog.remote_data_note.wordWrap()
     assert dialog.credential_note.wordWrap()
+    assert "t_analysis = 5s" in dialog.cadence_note.text()
+    assert "t_trade = 15s" in dialog.cadence_note.text()
     dialog.close()
+
+
+def test_trade_decision_requires_multiple_completed_analysis_bars(tmp_path) -> None:
+    store = AuditStore(tmp_path / "audit.db")
+    controller = TradingController(
+        DisabledBroker(),
+        AppConfig(bar_seconds=5, trade_every_bars=3),
+        store,
+    )
+
+    controller._analysis_sequence = 2
+    assert not controller._trade_decision_due()
+    controller._analysis_sequence = 3
+    assert controller._trade_decision_due()
+    store.close()
+
+
+@pytest.mark.asyncio
+async def test_due_trade_tick_records_exact_pair_action_without_forcing_turnover(
+    tmp_path, monkeypatch
+) -> None:
+    store = AuditStore(tmp_path / "audit.db")
+    controller = TradingController(
+        DisabledBroker(),
+        AppConfig(bar_seconds=5, trade_every_bars=3),
+        store,
+    )
+    now = utc_now().replace(hour=16, minute=0, second=0, microsecond=0)
+    monkeypatch.setattr("grande_alpha.controller.utc_now", lambda: now)
+    controller.risk.session_status = lambda: "LIVE"
+    controller.snapshot.signal = Signal(Regime.BULLISH, 1.0, "Test bullish signal", now)
+    controller.snapshot.last_analysis_at = now
+    controller.snapshot.positions = [Position("TQQQ", 0.1, 0.1, 100.0)]
+    controller.snapshot.quotes = {"TQQQ": Quote("TQQQ", 100.0, 100.02, 100.01, now)}
+    controller._analysis_sequence = 3
+
+    await controller._evaluate_and_trade()
+
+    assert controller.snapshot.pair_action_id == 4
+    assert controller.snapshot.pair_action_label == "(0,0)"
+    receipt = store.recent_receipts(1)[0]
+    assert receipt["category"] == "pair_decision"
+    payload = json.loads(receipt["payload_json"])
+    assert payload["action_t"] == payload["action_s"] == 0
+    assert payload["nominal_analysis_seconds"] == 5
+    assert payload["nominal_trade_seconds"] == 15
+    store.close()
 
 
 def test_controller_requires_matching_current_evidence_before_live_authority(tmp_path) -> None:
@@ -271,6 +325,7 @@ def test_live_shadow_overrides_saved_research_signal_with_live_settings(tmp_path
     assert (shadow.fast_ema, shadow.slow_ema) == (5, 18)
     assert shadow.trend_threshold_bps == 7.0
     assert shadow.max_hold_minutes == 33
+    assert shadow.decision_stride == config.trade_every_bars
     store.close()
 
 

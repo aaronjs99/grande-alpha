@@ -44,7 +44,8 @@ The implementation in `src/grande_alpha/strategy.py` uses completed QQQ midpoint
 
 | Parameter | Value |
 |---|---:|
-| Bar length | 1 minute |
+| Completed analysis bar | 5 seconds |
+| Pair-action decision | Every 3 analysis bars (15 seconds nominal) |
 | Warm-up | 24 completed bars |
 | Fast EMA | 8 bars |
 | Slow EMA | 21 bars |
@@ -60,9 +61,9 @@ risk-reducing sells remain permitted through the 4:00 p.m. Eastern regular-sessi
 
 Decision rules:
 
-- fast EMA above slow EMA by at least four basis points and positive three-minute momentum:
+- fast EMA above slow EMA by at least four basis points and positive three-bar momentum:
   **BULLISH**, target TQQQ;
-- fast EMA below slow EMA by at least four basis points and negative three-minute momentum:
+- fast EMA below slow EMA by at least four basis points and negative three-bar momentum:
   **BEARISH**, target SQQQ;
 - otherwise: **FLAT**, target cash.
 

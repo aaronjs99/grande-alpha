@@ -45,11 +45,13 @@ replay writes virtual accounting tables, live shadow records virtual receipts fr
 and only the live controller may request an official Robinhood review and order. Shadow and live
 authority are mutually exclusive.
 
-The runtime uses three clocks. A batched quote request targets the configured fast cadence and drops
-overlapping timer ticks. Completed QQQ bars drive entries. Portfolio, position, and order truth is
-reconciled separately. Broker review, open-order detection, a 12-second submission cooldown, and the
-session's orders-per-minute limit remain independent gates. This is designed to remain stable when
-remote latency exceeds the local timer; it is not an exchange feed or colocated execution engine.
+The runtime uses four clocks. A batched quote request targets the configured fast cadence and drops
+overlapping timer ticks. Completed QQQ bars update analysis, while a slower integer bar stride selects
+one exact `(T,S)` pair action, enforcing `t_analysis < t_trade`. Portfolio, position, and order truth
+is reconciled separately. Broker review, open-order detection, a 12-second submission cooldown, and
+the session's orders-per-minute limit remain independent gates. Two-leg rotations sell first and wait
+for fill/reconciliation before buying; commands are not treated as atomic. This is designed to remain
+stable when remote latency exceeds the local timer; it is not an exchange feed or colocated execution engine.
 
 The research sandbox selects a finite strategy through a versioned factory. Each strategy accepts
 completed QQQ bars and returns the same bullish, bearish, or flat signal contract. The factory does

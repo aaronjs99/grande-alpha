@@ -9,6 +9,13 @@ It represents the user's requested command space exactly:
 | **0 hold** | (0,-1) | (0,0) | (0,+1) |
 | **+1 buy** | (+1,-1) | (+1,0) | (+1,+1) |
 
+The live baseline now uses the same action vocabulary for its audited target transitions, but not the
+failed learned Q table. Analysis is updated on completed bars and a command is selected only every
+configured decision stride, so `t_trade = decision_stride × t_analysis` and the live default is
+`15s = 3 × 5s`. The selector enumerates all nine commands, then masks commands that would short,
+exceed inventory, or leave both funds held. Research certificates bind both the bar interval and
+decision stride.
+
 ## What sell means
 
 The public preview is long-only. A sell reduces an existing one-unit sandbox position; it does

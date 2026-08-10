@@ -177,6 +177,7 @@ class MainWindow(QMainWindow):
         self.buying_power_card = MetricCard("Buying power", "—")
         self.session_card = MetricCard("Live authority", "LOCKED")
         self.signal_card = MetricCard("QQQ regime", "FLAT")
+        self.pair_action_card = MetricCard("Pair action (T,S)", "(0,0)")
         self.drawdown_card = MetricCard("Session drawdown", "$0.00")
         self.shadow_card = MetricCard("Live shadow", "OFF")
         for column, card in enumerate(
@@ -186,6 +187,7 @@ class MainWindow(QMainWindow):
                 self.buying_power_card,
                 self.session_card,
                 self.signal_card,
+                self.pair_action_card,
                 self.drawdown_card,
                 self.shadow_card,
             )
@@ -729,6 +731,10 @@ class MainWindow(QMainWindow):
         self.signal_card.value.setText(snapshot.signal.regime.value.upper())
         signal_color = {Regime.BULLISH: "#00e507", Regime.BEARISH: "#ff697d", Regime.FLAT: "#f2c14e"}
         self.signal_card.value.setStyleSheet(f"color:{signal_color[snapshot.signal.regime]}")
+        self.pair_action_card.value.setText(snapshot.pair_action_label)
+        self.pair_action_card.value.setStyleSheet(
+            "color:#f2c14e" if snapshot.pair_action_id == 4 else "color:#65b9ff"
+        )
         self.drawdown_card.value.setText(f"${snapshot.drawdown:,.2f}")
         if snapshot.shadow_running:
             self.shadow_card.value.setText(
@@ -755,6 +761,7 @@ class MainWindow(QMainWindow):
             self.status.setText(
                 f"{session} • Strategy {'RUNNING' if snapshot.strategy_running else 'STOPPED'} • "
                 f"Shadow {'RUNNING — NO ORDERS' if snapshot.shadow_running else 'OFF'} • "
+                f"Action {snapshot.pair_action_label} every {self.config.trade_seconds}s nominal • "
                 f"Orders {snapshot.trades_today} • Last broker refresh {refreshed} • {snapshot.signal.reason}"
             )
         self._set_controls()

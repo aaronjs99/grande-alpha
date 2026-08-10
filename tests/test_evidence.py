@@ -1,3 +1,4 @@
+from grande_alpha.config import AppConfig
 from grande_alpha.evidence import (
     candidate_grid,
     cost_stress,
@@ -54,6 +55,18 @@ def test_fingerprint_binds_strategy_and_bar_interval() -> None:
     assert strategy_fingerprint(base, "1m") != strategy_fingerprint(
         SandboxConfig(strategy_name="close_momentum"), "1m"
     )
+    assert strategy_fingerprint(base, "1m") != strategy_fingerprint(
+        SandboxConfig(strategy_name="ema_momentum", decision_stride=3), "1m"
+    )
+
+
+def test_live_and_research_fingerprints_match_only_at_the_same_decision_stride() -> None:
+    live = AppConfig(bar_seconds=5, trade_every_bars=3)
+    matching = SandboxConfig(decision_stride=3)
+    mismatched = SandboxConfig(decision_stride=1)
+
+    assert strategy_fingerprint(live) == strategy_fingerprint(matching, "5s")
+    assert strategy_fingerprint(live) != strategy_fingerprint(mismatched, "5s")
 
 
 def test_deflated_sharpe_penalizes_trial_search_and_negative_returns() -> None:

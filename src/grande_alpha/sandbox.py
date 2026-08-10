@@ -41,6 +41,9 @@ class SandboxConfig:
     slow_ema: int = 21
     trend_threshold_bps: float = 4.0
     momentum_bars: int = 3
+    # Number of completed analysis bars between policy action selections.
+    # Keep 1 for legacy experiments; use the live value when seeking an exact certificate match.
+    decision_stride: int = 1
     trend_short_bars: int = 3
     trend_medium_bars: int = 12
     trend_long_bars: int = 36
@@ -72,6 +75,8 @@ class SandboxConfig:
             raise ValueError("Fast EMA must be positive and smaller than slow EMA")
         if self.momentum_bars < 1 or self.warmup_bars < self.slow_ema + 2:
             raise ValueError("Warm-up must be at least slow EMA + 2; momentum must be positive")
+        if not 1 <= self.decision_stride <= 120:
+            raise ValueError("Decision stride must be between 1 and 120 analysis bars")
         if self.trend_threshold_bps <= 0:
             raise ValueError("Trend threshold must be positive")
         nonnegative = (
@@ -280,6 +285,7 @@ class SandboxReplayEngine:
         recent_returns = {"TQQQS": deque(maxlen=30), "SQQQS": deque(maxlen=30)}
         previous_prices: dict[str, float] = {}
         consecutive_losses = 0
+        session_bar_counts: dict[str, int] = {}
         bar_minutes = INTERVAL_MINUTES.get(bundle.interval, 1)
         self._bar_minutes = bar_minutes
         session_last_indices: dict[str, int] = {}
@@ -295,6 +301,7 @@ class SandboxReplayEngine:
 
         for index, frame in enumerate(bundle.frames):
             day = frame.start.astimezone(EASTERN).date().isoformat()
+            session_bar_counts[day] = session_bar_counts.get(day, 0) + 1
             starting_equity = self._equity(cash, position, frame)
             day_start_equity.setdefault(day, starting_equity)
             for alias in ("TQQQS", "SQQQS"):
@@ -348,16 +355,18 @@ class SandboxReplayEngine:
                     frame.bar_for_alias(position.symbol).close,
                     max(0, int((frame.start - position.entry_time).total_seconds() // 60)),
                 )
-            decision = self.policy.decide(signal, frame.start, policy_position)
-            current = position.symbol if position else None
-            decision_window = exit_window_allowed(frame) if current is not None else window_allowed(frame)
-            if decision_window and decision.target_symbol != current:
-                if scheduled is None or scheduled[1] != decision.target_symbol:
-                    scheduled = (
-                        index + 1 + self.config.latency_bars,
-                        decision.target_symbol,
-                        decision.reason,
-                    )
+            decision_due = session_bar_counts[day] % self.config.decision_stride == 0
+            if decision_due:
+                decision = self.policy.decide(signal, frame.start, policy_position)
+                current = position.symbol if position else None
+                decision_window = exit_window_allowed(frame) if current is not None else window_allowed(frame)
+                if decision_window and decision.target_symbol != current:
+                    if scheduled is None or scheduled[1] != decision.target_symbol:
+                        scheduled = (
+                            index + 1 + self.config.latency_bars,
+                            decision.target_symbol,
+                            decision.reason,
+                        )
 
             if (
                 position is not None
