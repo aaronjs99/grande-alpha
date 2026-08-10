@@ -40,7 +40,7 @@ The optional adapter uses Robinhood's official Trading MCP endpoint and browser 
 
 ## Project status
 
-Version `0.6.0` is a community-preview release candidate. The latest 40-session research tournament found one positive candidate, but it failed the complete promotion policy and remains shadow-only. Source tests, packaging, and smoke checks are automated, but public binary distribution still requires maintainer release review, dependency audit, checksums, and code signing where available. See the [strategy research report](docs/STRATEGY_RESEARCH_2026-08-09.md) and [public release checklist](docs/PUBLIC_RELEASE_CHECKLIST.md).
+Version `0.6.1` is a community-preview release candidate. The sandbox Replay view plots virtual price paths and every purchase and sale, including realized-sale outcome and audit details. The latest 40-session research tournament found one positive candidate, but it failed the complete promotion policy and remains shadow-only. Source tests, packaging, and smoke checks are automated, but public binary distribution still requires maintainer release review, dependency audit, checksums, and code signing where available. See the [strategy research report](docs/STRATEGY_RESEARCH_2026-08-09.md) and [public release checklist](docs/PUBLIC_RELEASE_CHECKLIST.md).
 
 ## Contributing and support
 

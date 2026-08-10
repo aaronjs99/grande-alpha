@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.6.1 - 2026-08-09
+
+- Added an interactive sandbox trade timeline with TQQQS/SQQQS price paths and every virtual fill.
+- Distinguished buys, profitable sales, losing sales, and flat sales with both shape and color.
+- Added hover details, marker-to-fill-ledger selection, a realized-sales summary, and synchronized replay cursors.
+- Added a regression test that requires every virtual fill to appear on the chart.
+- Published a readable static preview from the frozen 40-session closing-momentum benchmark.
+
 ## 0.6.0 - 2026-08-09
 
 - Added a causal research-only strategy library for closing momentum, multi-horizon trend, opening-range breakout, and conservative signal agreement.

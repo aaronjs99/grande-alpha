@@ -356,8 +356,79 @@ class SandboxWidget(QWidget):
         self.chart.setLabel("left", "Virtual equity", units="$")
         self.equity_curve = self.chart.plot(pen=pg.mkPen("#8fd3ff", width=2))
         self.cursor_line = pg.InfiniteLine(angle=90, movable=False, pen=pg.mkPen("#f2c14e"))
-        self.chart.addItem(self.cursor_line)
+        self.chart.addItem(self.cursor_line, ignoreBounds=True)
         replay_layout.addWidget(self.chart, 3)
+
+        self.trade_chart = pg.PlotWidget(axisItems={"bottom": pg.DateAxisItem()})
+        self.trade_chart.setBackground("#0e1720")
+        self.trade_chart.showGrid(x=True, y=True, alpha=0.18)
+        self.trade_chart.setLabel("left", "Virtual market price", units="$")
+        self.trade_chart.setXLink(self.chart)
+        self.trade_chart.addLegend(offset=(8, 8))
+        self.tqqqs_price_curve = self.trade_chart.plot(name="TQQQS price", pen=pg.mkPen("#8fd3ff", width=1.7))
+        self.sqqqs_price_curve = self.trade_chart.plot(
+            name="SQQQS price",
+            pen=pg.mkPen("#b9c2cc", width=1.5, style=Qt.PenStyle.DashLine),
+        )
+        for curve in (self.tqqqs_price_curve, self.sqqqs_price_curve):
+            curve.setClipToView(True)
+            curve.setDownsampling(auto=True, method="peak")
+
+        def marker_tip(_x, _y, data):
+            return data.get("tooltip", "Virtual fill") if data else "Virtual fill"
+
+        self.buy_markers = pg.ScatterPlotItem(
+            name="Buy",
+            symbol="t1",
+            size=13,
+            pen=pg.mkPen("#d9f1ff", width=1.5),
+            brush=pg.mkBrush("#198fbd"),
+            hoverable=True,
+            tip=marker_tip,
+        )
+        self.profitable_sale_markers = pg.ScatterPlotItem(
+            name="Profitable sale",
+            symbol="t",
+            size=13,
+            pen=pg.mkPen("#fff1b8", width=1.5),
+            brush=pg.mkBrush("#f2c14e"),
+            hoverable=True,
+            tip=marker_tip,
+        )
+        self.losing_sale_markers = pg.ScatterPlotItem(
+            name="Losing sale",
+            symbol="x",
+            size=13,
+            pen=pg.mkPen("#ff9eb5", width=2.2),
+            brush=None,
+            hoverable=True,
+            tip=marker_tip,
+        )
+        self.flat_sale_markers = pg.ScatterPlotItem(
+            name="Flat sale",
+            symbol="s",
+            size=10,
+            pen=pg.mkPen("#f3f5f7", width=1.5),
+            brush=None,
+            hoverable=True,
+            tip=marker_tip,
+        )
+        for markers in (
+            self.buy_markers,
+            self.profitable_sale_markers,
+            self.losing_sale_markers,
+            self.flat_sale_markers,
+        ):
+            markers.sigClicked.connect(self._trade_marker_clicked)
+            self.trade_chart.addItem(markers)
+        self.trade_cursor_line = pg.InfiniteLine(angle=90, movable=False, pen=pg.mkPen("#f2c14e"))
+        self.trade_chart.addItem(self.trade_cursor_line, ignoreBounds=True)
+        self.sales_summary = QLabel(
+            "Run a replay to plot virtual purchases and sales. Hover or click any marker for details."
+        )
+        self.sales_summary.setWordWrap(True)
+        replay_layout.addWidget(self.trade_chart, 3)
+        replay_layout.addWidget(self.sales_summary)
         controls = QHBoxLayout()
         self.play = QPushButton("Play")
         self.play.clicked.connect(self._toggle_replay)
@@ -781,8 +852,11 @@ class SandboxWidget(QWidget):
             self.metric_labels[key].setText(value)
         points = result.equity_curve
         self.equity_curve.setData([p.timestamp.timestamp() for p in points], [p.equity for p in points])
+        self._show_trade_timeline(result)
         self.replay_slider.setRange(0, max(0, len(points) - 1))
         self.replay_slider.setValue(0)
+        if points:
+            self._seek_replay(0)
         self.fills_table.setRowCount(len(result.fills))
         for row, fill in enumerate(result.fills):
             values = [
@@ -809,6 +883,70 @@ class SandboxWidget(QWidget):
             f"{result.source}. {' '.join(result.warnings)}"
         )
 
+    def _show_trade_timeline(self, result: SandboxResult) -> None:
+        frames = self.bundle.frames if self.bundle else []
+
+        def session_broken_prices(field: str) -> tuple[list[float], list[float]]:
+            timestamps = []
+            prices = []
+            previous_date = None
+            for frame in frames:
+                session_date = frame.start.date()
+                if previous_date is not None and session_date != previous_date:
+                    timestamps.append(frame.start.timestamp())
+                    prices.append(float("nan"))
+                timestamps.append(frame.start.timestamp())
+                prices.append(getattr(frame, field).close)
+                previous_date = session_date
+            return timestamps, prices
+
+        tqqqs_time, tqqqs_price = session_broken_prices("tqqq")
+        sqqqs_time, sqqqs_price = session_broken_prices("sqqq")
+        self.tqqqs_price_curve.setData(tqqqs_time, tqqqs_price, connect="finite")
+        self.sqqqs_price_curve.setData(sqqqs_time, sqqqs_price, connect="finite")
+        groups = {"buy": [], "profit": [], "loss": [], "flat": []}
+        sell_fills = []
+        for row, fill in enumerate(result.fills):
+            realized = fill.realized_pnl
+            outcome = ""
+            if fill.side == "sell":
+                sell_fills.append(fill)
+                outcome = f" • realized P/L ${realized:+,.2f}" if realized is not None else ""
+            tooltip = (
+                f"{fill.side.upper()} {fill.symbol} • {fill.timestamp.astimezone():%b %d %I:%M %p}"
+                f" • ${fill.price:,.2f}{outcome}\n{fill.reason}"
+            )
+            spot = {
+                "pos": (fill.timestamp.timestamp(), fill.price),
+                "data": {"row": row, "tooltip": tooltip},
+            }
+            if fill.side == "buy":
+                groups["buy"].append(spot)
+            elif realized is not None and realized > 1e-9:
+                groups["profit"].append(spot)
+            elif realized is not None and realized < -1e-9:
+                groups["loss"].append(spot)
+            else:
+                groups["flat"].append(spot)
+        self.buy_markers.setData(groups["buy"])
+        self.profitable_sale_markers.setData(groups["profit"])
+        self.losing_sale_markers.setData(groups["loss"])
+        self.flat_sale_markers.setData(groups["flat"])
+        realized_total = sum(fill.realized_pnl or 0.0 for fill in sell_fills)
+        self.sales_summary.setText(
+            f"Sell fills: {len(sell_fills)} • profitable: {len(groups['profit'])} • "
+            f"losing: {len(groups['loss'])} • flat: {len(groups['flat'])} • "
+            f"total realized P/L ${realized_total:+,.2f}. "
+            "Markers show executed virtual prices; click one to open its exact reason and assumptions."
+        )
+
+    def _trade_marker_clicked(self, _plot, points, _event) -> None:
+        if not points:
+            return
+        payload = points[0].data()
+        if isinstance(payload, dict) and isinstance(payload.get("row"), int):
+            self.fills_table.selectRow(payload["row"])
+
     def _set_row(self, table: QTableWidget, row: int, values: list[str], score=None) -> None:
         color = None if score is None else QColor("#00e507" if score >= 0 else "#ff697d")
         for column, value in enumerate(values):
@@ -823,6 +961,7 @@ class SandboxWidget(QWidget):
             return
         point = self.result.equity_curve[index]
         self.cursor_line.setValue(point.timestamp.timestamp())
+        self.trade_cursor_line.setValue(point.timestamp.timestamp())
         self.status.setText(
             f"Replay {index + 1}/{len(self.result.equity_curve)} • {point.timestamp.astimezone():%b %d %I:%M %p} • "
             f"equity ${point.equity:,.2f} • {point.position_symbol or 'cash'}"

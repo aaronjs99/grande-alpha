@@ -9,10 +9,12 @@ from grande_alpha.broker.base import Broker
 from grande_alpha.config import AppConfig
 from grande_alpha.controller import TradingController
 from grande_alpha.evidence import EVIDENCE_POLICY_VERSION, strategy_fingerprint
+from grande_alpha.historical import deterministic_demo
 from grande_alpha.models import Account, LiveGrant, Portfolio, utc_now
 from grande_alpha.privacy import export_diagnostics
-from grande_alpha.sandbox import SandboxConfig
+from grande_alpha.sandbox import SandboxConfig, SandboxReplayEngine
 from grande_alpha.storage import AuditStore
+from grande_alpha.ui.sandbox_widget import SandboxWidget
 from grande_alpha.ui.settings_dialog import LIVE_PHRASE, SettingsDialog
 
 
@@ -58,7 +60,7 @@ def test_public_defaults_are_research_only() -> None:
     assert not config.live_trading_enabled
     assert not config.remote_market_data_enabled
     assert not config.personal_ledger_enabled
-    assert __version__ == "0.6.0"
+    assert __version__ == "0.6.1"
 
 
 @pytest.mark.asyncio
@@ -174,6 +176,44 @@ def test_live_shadow_overrides_saved_research_signal_with_live_settings(tmp_path
     assert (shadow.fast_ema, shadow.slow_ema) == (5, 18)
     assert shadow.trend_threshold_bps == 7.0
     assert shadow.max_hold_minutes == 33
+    store.close()
+
+
+def test_sandbox_trade_timeline_marks_every_virtual_fill(tmp_path) -> None:
+    qt_app()
+    store = AuditStore(tmp_path / "audit.db")
+    widget = SandboxWidget(store, allow_remote_data=False)
+    bundle = deterministic_demo(2, seed=9)
+    config = SandboxConfig(
+        warmup_bars=5,
+        fast_ema=1,
+        slow_ema=3,
+        trend_threshold_bps=0.1,
+        momentum_bars=1,
+        hard_stop_pct=0.5,
+        take_profit_pct=0.5,
+        max_hold_minutes=100,
+        max_entries_per_day=10,
+        no_trade_open_minutes=0,
+        no_trade_close_minutes=0,
+        force_flat_at_end=True,
+    )
+    result = SandboxReplayEngine(config).run(bundle)
+    widget.bundle = bundle
+    widget.result = result
+
+    widget._show_result(result)
+
+    assert len(widget.tqqqs_price_curve.xData) >= len(bundle.frames)
+    assert len(widget.buy_markers.data) == sum(fill.side == "buy" for fill in result.fills)
+    plotted_sales = (
+        len(widget.profitable_sale_markers.data)
+        + len(widget.losing_sale_markers.data)
+        + len(widget.flat_sale_markers.data)
+    )
+    assert plotted_sales == sum(fill.side == "sell" for fill in result.fills)
+    assert "total realized P/L" in widget.sales_summary.text()
+    widget.close()
     store.close()
 
 

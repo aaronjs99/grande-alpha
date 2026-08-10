@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "grande-alpha"
-version = "0.6.0"
+version = "0.6.1"
 description = "Local-first leveraged-ETF strategy research and consent-gated execution workstation"
 readme = "README.md"
 license = "Apache-2.0"

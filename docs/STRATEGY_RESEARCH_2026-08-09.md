@@ -50,6 +50,18 @@ Every row ended flat. The four available folds are below the policy minimum of f
 5-minute source also falls below the new 120-session breadth gate. A lawful long-history import and
 a genuinely untouched final holdout are required before another promotion attempt.
 
+## Virtual sales timeline
+
+The 0.6.1 Replay view adds the interactive version of this plot. Upward triangles are purchases,
+downward triangles are profitable sales, and X markers are losing sales. The static preview uses
+the exact frozen closing-momentum configuration and dataset above.
+
+![Sandbox virtual trade timeline](images/sandbox_trade_timeline.png)
+
+The chart makes possible early exits visible, but it does not prove that holding longer would have
+improved a causal strategy. That question requires predeclared post-sale opportunity windows,
+maximum-favorable/adverse-excursion metrics, and untouched out-of-sample validation.
+
 ## Evidence basis and code-adoption decisions
 
 The strongest immediately testable market hypothesis was closing-window continuation documented

@@ -54,6 +54,10 @@ short-lived quote changes, or the market impact of a real order.
    exposure, turnover/costs, ending position, equity curve, and fill ledger.
 4. Use the slider or Play control to replay the equity state. Selecting a fill exposes its exact
    timestamp, requested quantity, filled fraction, price, cost, reason, and resulting cash.
+   The synchronized trade timeline shows both fictional ETF price paths with upward buy markers,
+   downward profitable-sale markers, X-shaped losing-sale markers, and square flat-sale markers.
+   Hover a marker for its time, modeled price, realized P/L, and exit reason; click it to select the
+   matching fill-ledger row.
 5. Compare presets on the same dataset. This tournament is exploratory and does not make the
    winning row out-of-sample. Then run the [evidence lab](EVIDENCE_LAB.md) on the exact candidate.
 6. Load prior configurations from **Saved runs** or export the virtual fills as CSV.
