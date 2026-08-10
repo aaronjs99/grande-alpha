@@ -22,6 +22,12 @@
   review, plus hover/click explanations, accessible descriptions, evidence-row help, and an F1 glossary.
 - Made disabled Settings saves explain the exact blocker and how to preserve broker-only or research
   changes without attempting an ineligible live-order permission.
+- Made every table column manually adjustable, added header fit/reset controls, and gave compact
+  fields such as Status narrower defaults so evidence observations and requirements remain usable.
+- Added selected-gate explanations and defensible next actions, while clarifying that a pass count is
+  not a progress score because every independent promotion gate is mandatory.
+- Added `grande-alpha-cli` with shared sandbox and Evidence Lab execution, local status, evidence,
+  saved-run, receipt, glossary, wrapping-table, adjustable-width, and JSON commands.
 
 ## 0.10.0 - 2026-08-10
 

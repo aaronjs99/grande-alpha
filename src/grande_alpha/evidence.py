@@ -127,7 +127,7 @@ class PromotionReport:
 
     @property
     def passed(self) -> bool:
-        return all(gate.passed for gate in self.gates)
+        return bool(self.gates) and all(gate.passed for gate in self.gates)
 
 
 def _interval_seconds(config: object, interval: str | None) -> int:

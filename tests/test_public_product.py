@@ -6,7 +6,13 @@ from types import SimpleNamespace
 
 import pytest
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QApplication, QDialogButtonBox, QScrollArea
+from PySide6.QtWidgets import (
+    QApplication,
+    QDialogButtonBox,
+    QHeaderView,
+    QScrollArea,
+    QTableWidget,
+)
 
 from grande_alpha import __version__
 from grande_alpha.broker.base import Broker
@@ -149,6 +155,11 @@ def test_main_window_exposes_complete_desktop_navigation(tmp_path) -> None:
     assert window.glossary_action.shortcut().toString() == "F1"
     assert isinstance(window.account_card.title, ExplainedLabel)
     assert "dedicated Robinhood account" in window.account_card.title.toolTip()
+    assert window.quotes_table.horizontalHeader().sectionResizeMode(0) == QHeaderView.ResizeMode.Interactive
+    assert all(
+        table.horizontalHeader().sectionResizeMode(0) == QHeaderView.ResizeMode.Interactive
+        for table in window.findChildren(QTableWidget)
+    )
     assert not window.refresh_action.isEnabled()
     assert not window.flatten_action.isEnabled()
 
@@ -287,6 +298,18 @@ def test_settings_sandbox_and_live_grant_expose_contextual_help(tmp_path) -> Non
     )
     assert "5 sessions" in sandbox.gates_table.item(0, 0).toolTip()
     assert "0/1 gates passed" in sandbox.promotion_label.text()
+    assert "not a progress score" in sandbox.evidence_overview.text()
+    assert "Use at least 120 complete market sessions" in sandbox.gate_inspector.toPlainText()
+    assert (
+        sandbox.gates_table.horizontalHeader().sectionResizeMode(0)
+        == QHeaderView.ResizeMode.Interactive
+    )
+    assert sandbox.gates_table.columnWidth(1) < sandbox.gates_table.columnWidth(2)
+    sandbox.gates_table.horizontalHeader().resizeSection(1, 92)
+    assert sandbox.gates_table.columnWidth(1) == 92
+    sandbox.reset_table_columns()
+    assert sandbox.gates_table.columnWidth(1) == 64
+    assert "Right-click" in sandbox.gates_table.horizontalHeader().toolTip()
 
     account = Account("123456789", "Agentic", "cash", True, "active")
     grant = LiveGrantDialog(account, Portfolio(100, 100, 100), AppConfig())
@@ -300,6 +323,37 @@ def test_settings_sandbox_and_live_grant_expose_contextual_help(tmp_path) -> Non
     sandbox.close()
     store.close()
     settings.close()
+
+
+def test_sandbox_restores_latest_evidence_receipt_with_next_step(tmp_path) -> None:
+    qt_app()
+    store = AuditStore(tmp_path / "saved-evidence.db")
+    promotion_id = store.record_research_promotion(
+        dataset_hash="saved-dataset",
+        strategy_fingerprint="saved-strategy",
+        policy_version=EVIDENCE_POLICY_VERSION,
+        status="SHADOW_ONLY",
+        source="Deterministic offline scenario",
+        replay_end="2026-08-10T20:00:00+00:00",
+        gates=[
+            {
+                "name": "Data breadth",
+                "passed": False,
+                "observed": "5 sessions",
+                "requirement": "At least 120 sessions",
+            }
+        ],
+        risk_envelope={},
+    )
+
+    sandbox = SandboxWidget(store, allow_remote_data=False)
+
+    assert f"receipt #{promotion_id}" in sandbox.evidence_overview.text()
+    assert "5 sessions" in sandbox.gates_table.item(0, 2).text()
+    assert "Use at least 120 complete market sessions" in sandbox.gate_inspector.toPlainText()
+    assert "Loaded evidence receipt" in sandbox.status.text()
+    sandbox.close()
+    store.close()
 
 
 def test_settings_dialog_is_scrollable_and_explains_agentic_account_scope() -> None:
@@ -521,6 +575,8 @@ def test_release_labels_unsigned_binary_and_produces_source_bundle() -> None:
     assert "Get-AuthenticodeSignature" in doctor
     assert "SOURCE APP READY" in doctor
     assert "install-local.ps1" in script
+    assert "cli.ps1" in script
+    assert "GRANDE Alpha CLI.cmd" in script
 
 
 def test_local_installer_uses_trusted_launcher_and_both_shortcut_locations() -> None:

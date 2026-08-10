@@ -42,6 +42,11 @@ This is not exchange-colocated high-frequency trading. It is a desktop research 
 
 The sandbox models costs, spread, latency, partial fills, volume limits, rejections, and purged walk-forward evaluation. It includes a finite, documented research library: EMA momentum, multi-horizon trend, a paper-faithful first-half-hour momentum rule, an older rest-of-day closing hypothesis, opening-range breakout, and a conservative agreement ensemble. The separate nine-action lab represents every `(T,S)` command pair where each leg is sell `-1`, hold `0`, or buy `+1`, trains an auditable offline policy, and evaluates it on a later chronological holdout. It also shows fixed and volatility-managed daily exposure benchmarks. These are hypotheses, not guaranteed edges. Evidence results are recorded locally with a unique candidate-trial ledger and Deflated Sharpe gate. Only a result that passes every current gate can unlock the separate live-review workflow for the same strategy fingerprint, bar interval, and tested risk envelope; Action Lab results cannot unlock trading. A certificate expires after 30 days and still does not predict future returns or itself authorize an order.
 
+All desktop tables have manually adjustable columns and contextual sizing controls. The
+[`grande-alpha-cli`](docs/CLI.md) companion exposes the same sandbox engine, Evidence Lab gate table,
+saved runs, receipts, and glossary with wrapping output and JSON mode. It intentionally has no command
+that bypasses the desktop application's bounded live-session consent workflow.
+
 ## Broker integration
 
 The optional adapter uses Robinhood's official Trading MCP endpoint and browser OAuth. Robinhood states that a connected third-party agent can read data across Robinhood accounts, while trading is restricted to the dedicated Agentic account. The provider consent is broader than the app's read-only diagnostic: that diagnostic never invokes order review, placement, cancellation, or watchlist tools, but the granted OAuth scope can include those capabilities. Review the current provider disclosures before opting in: <https://robinhood.com/us/en/support/articles/agentic-trading-overview/>.

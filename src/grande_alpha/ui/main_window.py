@@ -15,7 +15,6 @@ from PySide6.QtWidgets import (
     QFrame,
     QGridLayout,
     QHBoxLayout,
-    QHeaderView,
     QInputDialog,
     QLabel,
     QMainWindow,
@@ -43,6 +42,7 @@ from grande_alpha.ui.glossary import (
 )
 from grande_alpha.ui.sandbox_widget import SandboxWidget
 from grande_alpha.ui.settings_dialog import SettingsDialog
+from grande_alpha.ui.table_layout import configure_adjustable_columns, reset_column_widths
 from grande_alpha.ui.welcome_widget import WelcomeWidget
 
 STYLESHEET = """
@@ -67,6 +67,7 @@ QPushButton#primary { background: #00c805; border-color: #00c805; color: #021004
 QPushButton#danger { background: #c62d42; border-color: #ec5266; color: white; font-weight: 700; }
 QPushButton#flatten { background: #7f3d18; border-color: #c66a2e; color: white; }
 QTableWidget { background: #0e1720; alternate-background-color: #101c27; border: 1px solid #223142; gridline-color: #223142; }
+QTableWidget::item:selected { background: #244663; color: #ffffff; }
 QHeaderView::section { background: #14202b; color: #a9bac8; padding: 6px; border: 0; border-right: 1px solid #223142; }
 QTabWidget::pane { border: 1px solid #223142; }
 QTabBar::tab { background: #111a24; padding: 9px 16px; }
@@ -327,7 +328,9 @@ class MainWindow(QMainWindow):
         )
         self.view_menu.addAction(self.fund_view_action)
         self.view_menu.addSeparator()
-        self.reset_layout_action = self._action("Reset Window Layout", self._reset_layout)
+        self.reset_layout_action = self._action(
+            "Reset Window && Table Columns", self._reset_layout
+        )
         self.view_menu.addAction(self.reset_layout_action)
         self.full_screen_action = self._action("Full Screen", self._toggle_full_screen, "F11")
         self.full_screen_action.setCheckable(True)
@@ -411,7 +414,7 @@ class MainWindow(QMainWindow):
         table = QTableWidget(0, len(headers))
         table.setHorizontalHeaderLabels(headers)
         apply_table_header_help(table)
-        table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        configure_adjustable_columns(table, headers)
         table.verticalHeader().setVisible(False)
         table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
@@ -442,6 +445,9 @@ class MainWindow(QMainWindow):
         self.full_screen_action.setChecked(False)
         self.resize(1440, 900)
         self.market_splitter.setSizes([850, 500])
+        for table in self.findChildren(QTableWidget):
+            reset_column_widths(table)
+        self.status.setText("Window and adjustable table-column widths reset to their defaults.")
 
     def _toggle_full_screen(self, checked: bool) -> None:
         if checked:

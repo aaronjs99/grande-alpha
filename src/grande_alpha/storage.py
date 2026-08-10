@@ -404,6 +404,26 @@ class AuditStore:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def sandbox_run(self, run_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT * FROM sandbox_runs WHERE run_id=?", (run_id,)
+            ).fetchone()
+            if row is None:
+                return None
+            fills = self._connection.execute(
+                "SELECT * FROM sandbox_fills WHERE run_id=? ORDER BY id", (run_id,)
+            ).fetchall()
+            events = self._connection.execute(
+                "SELECT * FROM sandbox_execution_events WHERE run_id=? ORDER BY id", (run_id,)
+            ).fetchall()
+        result = dict(row)
+        result["config"] = json.loads(result.pop("config_json"))
+        result["metrics"] = json.loads(result.pop("metrics_json"))
+        result["fills"] = [dict(value) for value in fills]
+        result["events"] = [dict(value) for value in events]
+        return result
+
     def record_research_trials(
         self, dataset_hash: str, trials: list[dict[str, Any]]
     ) -> int:
@@ -451,6 +471,12 @@ class AuditStore:
     ) -> int:
         if status not in {"SHADOW_ONLY", "LIVE_REVIEW_ELIGIBLE"}:
             raise ValueError("Unknown research-promotion status")
+        if not gates:
+            raise ValueError("Research promotion requires at least one evidence gate")
+        if status == "LIVE_REVIEW_ELIGIBLE" and not all(
+            bool(gate.get("passed", False)) for gate in gates
+        ):
+            raise ValueError("Live-review eligibility requires every recorded gate to pass")
         with self._lock, self._connection:
             cursor = self._connection.execute(
                 """INSERT INTO research_promotions(
@@ -485,6 +511,38 @@ class AuditStore:
         )
         return promotion_id
 
+    @staticmethod
+    def _decode_research_promotion(row: sqlite3.Row) -> dict[str, Any]:
+        result = dict(row)
+        try:
+            gates = json.loads(result.pop("gates_json"))
+            risk_envelope = json.loads(result.pop("risk_envelope_json"))
+        except (TypeError, json.JSONDecodeError):
+            gates, risk_envelope = [], {}
+            result["decode_error"] = "Stored evidence JSON is invalid"
+        result["gates"] = gates if isinstance(gates, list) else []
+        result["risk_envelope"] = risk_envelope if isinstance(risk_envelope, dict) else {}
+        return result
+
+    def recent_research_promotions(self, limit: int = 50) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._connection.execute(
+                "SELECT * FROM research_promotions ORDER BY id DESC LIMIT ?", (limit,)
+            ).fetchall()
+        return [self._decode_research_promotion(row) for row in rows]
+
+    def research_promotion(self, promotion_id: int | None = None) -> dict[str, Any] | None:
+        with self._lock:
+            if promotion_id is None:
+                row = self._connection.execute(
+                    "SELECT * FROM research_promotions ORDER BY id DESC LIMIT 1"
+                ).fetchone()
+            else:
+                row = self._connection.execute(
+                    "SELECT * FROM research_promotions WHERE id=?", (promotion_id,)
+                ).fetchone()
+        return self._decode_research_promotion(row) if row is not None else None
+
     def current_live_evidence(
         self,
         strategy_fingerprint: str,
@@ -506,7 +564,14 @@ class AuditStore:
         evidence = dict(row)
         try:
             tested = json.loads(evidence["risk_envelope_json"])
+            gates = json.loads(evidence["gates_json"])
         except (KeyError, TypeError, json.JSONDecodeError):
+            return None
+        if not isinstance(gates, list) or not gates or not all(
+            isinstance(gate, dict) and bool(gate.get("passed", False)) for gate in gates
+        ):
+            return None
+        if not isinstance(tested, dict):
             return None
         required = {
             "max_order_notional",

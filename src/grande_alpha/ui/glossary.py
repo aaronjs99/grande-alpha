@@ -129,6 +129,22 @@ TERM_HELP: dict[str, str] = {
     "Volatility spread": "Additional modeled spread proportional to each candle's high-low range.",
     "Volatility target": "Annualized volatility objective used to reduce position size when recent volatility rises.",
     "Warm-up": "Completed bars observed before the strategy is allowed to produce its first decision.",
+    "After-cost quality": "Whether modeled profit factor and expectancy remain adequate after execution costs.",
+    "Closed-trade sample": "Number of completed after-cost round trips supporting trade-quality estimates.",
+    "Cost stress": "Replay result after multiplying modeled execution costs to test whether a small edge survives.",
+    "Data breadth": "Number of complete market sessions available for evidence; promotion requires at least 120.",
+    "Data integrity": "Whether aligned bars are hash-valid, complete, nonduplicated, and free of missing expected intervals.",
+    "Data recency": "Age of the final market observation; promotion requires no more than 30 days.",
+    "Deflated Sharpe": "Probability that risk-adjusted performance remains meaningful after non-normal returns and all registered strategy trials are considered.",
+    "Ending flat": "Whether the replay closes every virtual position and finishes in cash.",
+    "Exact candidate identity": "Whether every training fold selected the exact configuration being considered for certification.",
+    "Historical source": "Whether evidence comes from observed or imported market history rather than a synthetic scenario.",
+    "Parameter stability": "Share of neighboring parameter configurations that remain profitable instead of relying on one tuned setting.",
+    "Profit concentration": "Share of positive daily P/L contributed by the single best day; promotion caps it at 50%.",
+    "Random-entry control": "Seeded chance-entry benchmark using comparable holding and sizing assumptions.",
+    "Trading-session coverage": "Whether the evidence dataset covers the complete session selected by the strategy route.",
+    "Trial-adjusted significance": "Statistical evidence after correcting for every candidate tried on the dataset.",
+    "Walk-forward": "Purged chronological train/test folds that evaluate selections on later unseen sessions.",
 }
 
 

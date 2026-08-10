@@ -62,6 +62,17 @@ The always-visible menu bar keeps infrequent controls out of the trading header:
   searchable terminology glossary with `F1`. Dashed-underlined labels also show the same definitions
   on hover or click.
 
+Every data-table column can be resized by dragging its header boundary. Right-click any header to fit
+one column, fit all columns, or restore the defaults; **View → Reset Window & Table Columns** also restores the
+default widths. Compact fields such as Status start narrow so Observed and Requirement have more room.
+
+For the matching terminal research and inspection surface, see the [command-line companion](CLI.md):
+
+```powershell
+.\cli.ps1 status
+.\cli.ps1 evidence show --width 150
+```
+
 To authenticate and validate the complete provider read path without invoking any write method:
 
 ```powershell

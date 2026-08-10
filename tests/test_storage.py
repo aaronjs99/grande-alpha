@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from grande_alpha.config import AppConfig
 from grande_alpha.evidence import EVIDENCE_POLICY_VERSION, strategy_fingerprint
 from grande_alpha.models import OrderIntent
@@ -98,6 +100,22 @@ def test_live_evidence_is_exact_strategy_scoped(tmp_path: Path) -> None:
     store.close()
 
 
+def test_live_evidence_receipt_fails_closed_when_any_gate_failed(tmp_path: Path) -> None:
+    store = AuditStore(tmp_path / "audit.db")
+    with pytest.raises(ValueError, match="every recorded gate"):
+        store.record_research_promotion(
+            dataset_hash="hash-1",
+            strategy_fingerprint="candidate-1",
+            policy_version=EVIDENCE_POLICY_VERSION,
+            status="LIVE_REVIEW_ELIGIBLE",
+            source="fixture",
+            replay_end="2026-08-10T20:00:00+00:00",
+            gates=[{"name": "fixture", "passed": False}],
+            risk_envelope={},
+        )
+    store.close()
+
+
 def test_research_trial_ledger_counts_unique_candidates_per_dataset(tmp_path: Path) -> None:
     store = AuditStore(tmp_path / "audit.db")
     trial = {
@@ -111,4 +129,49 @@ def test_research_trial_ledger_counts_unique_candidates_per_dataset(tmp_path: Pa
     assert store.record_research_trials("dataset-b", [trial]) == 1
     assert store.research_trial_count("dataset-a") == 1
     assert store.research_trial_count("dataset-b") == 1
+    store.close()
+
+
+def test_research_promotions_and_sandbox_runs_have_decoded_cli_views(tmp_path: Path) -> None:
+    store = AuditStore(tmp_path / "audit.db")
+    promotion_id = store.record_research_promotion(
+        dataset_hash="dataset-a",
+        strategy_fingerprint="candidate-a",
+        policy_version=EVIDENCE_POLICY_VERSION,
+        status="SHADOW_ONLY",
+        source="fixture",
+        replay_end="2026-08-10T20:00:00+00:00",
+        gates=[{"name": "fixture", "passed": False, "observed": "no", "requirement": "yes"}],
+        risk_envelope={"max_order_notional": 10},
+    )
+    store.record_sandbox_run(
+        "run-a",
+        "fixture",
+        "2026-08-10T19:00:00+00:00",
+        "2026-08-10T20:00:00+00:00",
+        {"strategy_name": "ema_momentum"},
+        {"return_pct": 1.0},
+        [
+            {
+                "timestamp": "2026-08-10T19:30:00+00:00",
+                "symbol": "TQQQS",
+                "side": "buy",
+                "quantity": 1,
+                "price": 10,
+                "commission": 0,
+                "realized_pnl": None,
+                "reason": "fixture",
+                "cash_after": 40,
+            }
+        ],
+    )
+
+    promotion = store.research_promotion(promotion_id)
+    run = store.sandbox_run("run-a")
+
+    assert promotion is not None and promotion["gates"][0]["name"] == "fixture"
+    assert promotion["risk_envelope"]["max_order_notional"] == 10
+    assert store.recent_research_promotions()[0]["id"] == promotion_id
+    assert run is not None and run["metrics"]["return_pct"] == 1.0
+    assert run["fills"][0]["symbol"] == "TQQQS"
     store.close()

@@ -1,5 +1,6 @@
 from grande_alpha.config import AppConfig
 from grande_alpha.evidence import (
+    PromotionReport,
     candidate_grid,
     cost_stress,
     deflated_sharpe_ratio,
@@ -11,7 +12,9 @@ from grande_alpha.evidence import (
     walk_forward,
 )
 from grande_alpha.historical import deterministic_demo
+from grande_alpha.research_service import run_evidence_lab
 from grande_alpha.sandbox import SandboxConfig, SandboxReplayEngine
+from grande_alpha.storage import AuditStore
 
 
 def test_evidence_pipeline_is_deterministic_and_never_auto_promotes_weak_data() -> None:
@@ -37,6 +40,10 @@ def test_evidence_pipeline_is_deterministic_and_never_auto_promotes_weak_data() 
         "Random-entry control",
         "Data recency",
     }
+
+
+def test_empty_gate_report_never_passes() -> None:
+    assert not PromotionReport("SHADOW_ONLY", [], "dataset", "strategy").passed
 
 
 def test_execution_rejections_are_audited() -> None:
@@ -105,3 +112,25 @@ def test_walk_forward_inserts_a_purged_session_gap() -> None:
 
     assert result.folds
     assert all(fold.train_end < fold.test_start for fold in result.folds)
+
+
+def test_shared_gui_cli_evidence_service_records_one_explainable_result(tmp_path) -> None:
+    store = AuditStore(tmp_path / "evidence.db")
+    bundle = deterministic_demo(2, seed=88)
+
+    lab = run_evidence_lab(bundle, SandboxConfig(), store, note="shared surface test")
+    saved = store.research_promotion(lab.promotion_id)
+
+    assert lab.report.status == "SHADOW_ONLY"
+    assert saved is not None
+    assert saved["dataset_hash"] == bundle.dataset_hash
+    assert saved["gates"] == [
+        {
+            "name": gate.name,
+            "passed": gate.passed,
+            "observed": gate.observed,
+            "requirement": gate.requirement,
+        }
+        for gate in lab.report.gates
+    ]
+    store.close()

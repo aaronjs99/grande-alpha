@@ -41,18 +41,9 @@ from grande_alpha.action_lab import (
     evaluate_daily_benchmarks,
     train_offline_action_policy,
 )
-from grande_alpha.evidence import (
-    candidate_grid,
-    compare_configs,
-    cost_stress,
-    parameter_sweep,
-    promotion_report,
-    random_entry_control,
-    strategy_fingerprint,
-    tested_risk_envelope,
-    walk_forward,
-)
+from grande_alpha.evidence import PromotionGate, PromotionReport, RandomControl, compare_configs
 from grande_alpha.execution import MARKET_HOURS_LABELS, ORDER_TYPE_LABELS, TIME_IN_FORCE_LABELS
+from grande_alpha.gate_guidance import gate_detail, promotion_overview
 from grande_alpha.historical import (
     HistoricalBundle,
     HistoricalDataProvider,
@@ -60,6 +51,7 @@ from grande_alpha.historical import (
     full_history_calendar_days,
     load_csv_history,
 )
+from grande_alpha.research_service import run_evidence_lab
 from grande_alpha.sandbox import (
     SandboxConfig,
     SandboxReplayEngine,
@@ -75,6 +67,7 @@ from grande_alpha.ui.glossary import (
     apply_table_header_help,
     help_hint,
 )
+from grande_alpha.ui.table_layout import configure_adjustable_columns, reset_column_widths
 
 PRESETS = {
     "Balanced research": SandboxConfig(),
@@ -148,6 +141,7 @@ class SandboxWidget(QWidget):
         self._remote_acknowledged = False
         self.bundle: HistoricalBundle | None = None
         self.result: SandboxResult | None = None
+        self._evidence_gates: list[object] = []
         self.csv_path: Path | None = None
         self._replay_index = 0
         self._replay_timer = QTimer(self)
@@ -157,6 +151,7 @@ class SandboxWidget(QWidget):
         self.set_remote_data_allowed(allow_remote_data)
         self._source_changed()
         self._refresh_saved_runs()
+        self._load_latest_evidence()
 
     def _build_ui(self) -> None:
         outer = QVBoxLayout(self)
@@ -546,6 +541,7 @@ class SandboxWidget(QWidget):
             ]
         )
         self.gates_table = self._table(["Gate", "Status", "Observed", "Requirement"])
+        self.gates_table.itemSelectionChanged.connect(self._inspect_gate)
         self.promotion_label = QLabel("PROMOTION: SHADOW_ONLY until every evidence gate passes.")
         self.promotion_label.setStyleSheet("font-size:14pt;font-weight:700;color:#f2c14e")
         apply_help(
@@ -554,8 +550,19 @@ class SandboxWidget(QWidget):
             "SHADOW_ONLY cannot unlock orders. LIVE_REVIEW_ELIGIBLE creates a 30-day local certificate but still grants no standing authority.",
         )
         validation_layout.addWidget(self.promotion_label)
+        self.evidence_overview = QLabel(
+            "Run the full Evidence Lab to see independent pass/fail conditions and exact next steps."
+        )
+        self.evidence_overview.setWordWrap(True)
+        self.evidence_overview.setObjectName("settingsDescription")
+        validation_layout.addWidget(self.evidence_overview)
         validation_layout.addWidget(self.walk_table)
         validation_layout.addWidget(self.gates_table)
+        self.gate_inspector = QPlainTextEdit()
+        self.gate_inspector.setReadOnly(True)
+        self.gate_inspector.setMaximumHeight(145)
+        self.gate_inspector.setPlaceholderText("Select an evidence gate to see why it matters and what to do next.")
+        validation_layout.addWidget(self.gate_inspector)
         self.tabs.addTab(validation, "Walk-forward & gates")
 
         action_lab = QWidget()
@@ -569,7 +576,7 @@ class SandboxWidget(QWidget):
         self.action_matrix = QTableWidget(3, 3)
         self.action_matrix.setHorizontalHeaderLabels(["S = -1", "S = 0", "S = +1"])
         self.action_matrix.setVerticalHeaderLabels(["T = -1", "T = 0", "T = +1"])
-        self.action_matrix.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        configure_adjustable_columns(self.action_matrix, ["S = -1", "S = 0", "S = +1"])
         self.action_matrix.verticalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.action_matrix.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         for action in ALL_PAIR_ACTIONS:
@@ -615,12 +622,16 @@ class SandboxWidget(QWidget):
         table = QTableWidget(0, len(headers))
         table.setHorizontalHeaderLabels(headers)
         apply_table_header_help(table)
-        table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        configure_adjustable_columns(table, headers)
         table.verticalHeader().setVisible(False)
         table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         table.setAlternatingRowColors(True)
         return table
+
+    def reset_table_columns(self) -> None:
+        for table in self.findChildren(QTableWidget):
+            reset_column_widths(table)
 
     def _integer(self, minimum: int, maximum: int) -> QSpinBox:
         widget = QSpinBox()
@@ -883,65 +894,18 @@ class SandboxWidget(QWidget):
             config = self._config()
             config.validate()
             self.bundle = self.bundle or await self._load_bundle(config)
-            base = await asyncio.to_thread(SandboxReplayEngine(config).run, self.bundle)
-            candidates = candidate_grid(config)
-            points = await asyncio.to_thread(parameter_sweep, self.bundle, candidates)
-            self.store.record_research_trials(
-                self.bundle.dataset_hash,
-                [
-                    {
-                        "trial_fingerprint": strategy_fingerprint(candidate, self.bundle.interval),
-                        "config": asdict(candidate),
-                        "metrics": asdict(point),
-                    }
-                    for candidate, point in zip(candidates, points, strict=True)
-                ],
-            )
-            total_trial_count = self.store.research_trial_count(self.bundle.dataset_hash)
-            stressed = await asyncio.to_thread(cost_stress, self.bundle, config)
-            random_control = await asyncio.to_thread(
-                random_entry_control, self.bundle, config, base.return_pct
-            )
-            sessions = self.bundle.quality.sessions if self.bundle.quality else 0
-            walk = None
-            if sessions >= 15:
-                test_sessions = max(1, min(5, sessions // 7))
-                train_sessions = max(5, min(20, sessions - 5 * test_sessions))
-                if train_sessions + test_sessions <= sessions:
-                    walk = await asyncio.to_thread(
-                        walk_forward, self.bundle, candidates, train_sessions, test_sessions, test_sessions
-                    )
-            report = promotion_report(
+            lab = await asyncio.to_thread(
+                run_evidence_lab,
                 self.bundle,
                 config,
-                base,
-                points,
-                stressed,
-                walk,
-                random_control,
-                total_trial_count=total_trial_count,
+                self.store,
+                note=self.notes.text().strip(),
             )
-            self.store.record_research_promotion(
-                dataset_hash=report.dataset_hash,
-                strategy_fingerprint=report.strategy_fingerprint,
-                policy_version=report.policy_version,
-                status=report.status,
-                source=self.bundle.source,
-                replay_end=self.bundle.end.isoformat(),
-                gates=[asdict(gate) for gate in report.gates],
-                risk_envelope=tested_risk_envelope(config),
-            )
-            self._show_evidence(points, walk, report, random_control)
-            self.store.receipt(
-                "sandbox_evidence",
-                f"Evidence lab status: {report.status}",
-                {
-                    "dataset_hash": report.dataset_hash,
-                    "gates": [asdict(g) for g in report.gates],
-                    "note": self.notes.text().strip(),
-                    "registered_trial_count": total_trial_count,
-                },
-                "warning" if not report.passed else "info",
+            self._show_evidence(
+                lab.sensitivity,
+                lab.walk_forward,
+                lab.report,
+                lab.random_control,
             )
             self.tabs.setCurrentIndex(3)
         except Exception as exc:
@@ -1074,6 +1038,8 @@ class SandboxWidget(QWidget):
                 f"${fold.test_expectancy:+.4f}",
             ]
             self._set_row(self.walk_table, row, values, fold.test_return_pct)
+        self._evidence_gates = list(report.gates)
+        self.gates_table.clearSelection()
         self.gates_table.setRowCount(len(report.gates))
         for row, gate in enumerate(report.gates):
             self._set_row(
@@ -1082,12 +1048,7 @@ class SandboxWidget(QWidget):
                 [gate.name, "PASS" if gate.passed else "FAIL", gate.observed, gate.requirement],
                 1 if gate.passed else -1,
             )
-            tooltip = (
-                f"{gate.name}\n"
-                f"Status: {'PASS' if gate.passed else 'FAIL'}\n"
-                f"Observed: {gate.observed}\n"
-                f"Required: {gate.requirement}"
-            )
+            tooltip = gate_detail(gate)
             for column in range(self.gates_table.columnCount()):
                 item = self.gates_table.item(row, column)
                 if item is not None:
@@ -1101,16 +1062,61 @@ class SandboxWidget(QWidget):
         else:
             promotion_text = (
                 f"PROMOTION: {report.status} — {passed}/{len(report.gates)} gates passed; "
-                "hover any row to compare observed versus required."
+                "select any row for the reason and next step."
             )
         self.promotion_label.setText(promotion_text)
         self.promotion_label.setStyleSheet(
             "font-size:14pt;font-weight:700;color:" + ("#00e507" if report.passed else "#f2c14e")
         )
+        self.evidence_overview.setText(promotion_overview(report.gates))
+        first_failure = next((gate for gate in report.gates if not gate.passed), None)
+        self.gate_inspector.setPlainText(
+            gate_detail(first_failure)
+            if first_failure is not None
+            else "All evidence gates passed. The certificate still grants no standing order authority."
+        )
         self.status.setText(
             f"Evidence receipt saved • dataset {report.dataset_hash[:16]}… • "
             f"{sum(g.passed for g in report.gates)}/{len(report.gates)} gates passed."
         )
+
+    def _load_latest_evidence(self) -> None:
+        saved = self.store.research_promotion()
+        if saved is None:
+            return
+        report = PromotionReport(
+            saved["status"],
+            [
+                PromotionGate(
+                    str(gate.get("name", "Unknown gate")),
+                    bool(gate.get("passed", False)),
+                    str(gate.get("observed", "Not recorded by this receipt")),
+                    str(gate.get("requirement", "Not recorded by this receipt")),
+                )
+                for gate in saved["gates"]
+            ],
+            saved["dataset_hash"],
+            saved["strategy_fingerprint"],
+            saved["policy_version"],
+        )
+        self._show_evidence([], None, report, RandomControl(0, 0.0, 0.0, 0.0, 0.0))
+        self.random_label.setText(
+            "Loaded a saved evidence receipt. Rerun the Evidence Lab to regenerate sensitivity, "
+            "random-control, and walk-forward detail."
+        )
+        self.evidence_overview.setText(
+            promotion_overview(report.gates)
+            + f" Loaded local receipt #{saved['id']} from {saved['created_at']}."
+        )
+        self.status.setText(
+            f"Loaded evidence receipt #{saved['id']} • dataset {saved['dataset_hash'][:16]}… • "
+            f"{sum(gate.passed for gate in report.gates)}/{len(report.gates)} gates passed."
+        )
+
+    def _inspect_gate(self) -> None:
+        row = self.gates_table.currentRow()
+        if 0 <= row < len(self._evidence_gates):
+            self.gate_inspector.setPlainText(gate_detail(self._evidence_gates[row]))
 
     def _save_result(self, config: SandboxConfig, result: SandboxResult) -> None:
         self.store.record_sandbox_run(
