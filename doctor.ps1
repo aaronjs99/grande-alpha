@@ -1,4 +1,4 @@
-param([switch]$Full)
+param([switch]$Full, [switch]$Broker)
 
 $ErrorActionPreference = 'Stop'
 $ProjectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
@@ -47,6 +47,13 @@ if ($Full -and $SourceReady) {
     Write-Host ''
     Write-Host 'Running full verification...' -ForegroundColor Cyan
     & (Join-Path $ProjectRoot 'verify.ps1')
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+}
+
+if ($Broker -and $SourceReady) {
+    Write-Host ''
+    Write-Host 'Starting explicit read-only Robinhood OAuth and data check...' -ForegroundColor Cyan
+    & $VenvPython -m grande_alpha.broker_check
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }
 

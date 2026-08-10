@@ -128,7 +128,9 @@ class RobinhoodMCPBroker(Broker):
                 raise BrokerError(f"Robinhood MCP is missing required tools: {', '.join(missing)}")
             self._stack = stack
             self._session = session
-        except Exception:
+        # Cancellation derives from BaseException on supported Python versions. Closing here keeps
+        # the MCP transport from being finalized later by a different task after an OAuth timeout.
+        except BaseException:
             await stack.aclose()
             raise
         finally:

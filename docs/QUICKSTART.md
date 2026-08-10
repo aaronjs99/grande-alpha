@@ -5,6 +5,7 @@
 ```powershell
 .\setup.ps1
 .\doctor.ps1 -Full
+.\install-local.ps1
 .\run.ps1
 ```
 
@@ -36,6 +37,17 @@ Open **Settings & Permissions** to enable capabilities one at a time:
 - **Personal ledger** shows a local planning ledger; it never transfers funds.
 
 Removing broker permission disconnects the adapter. Removing real-order permission stops the strategy, revokes live authority, and attempts cancellation. Stored OAuth credentials can be forgotten from the same dialog.
+
+To authenticate and validate the complete provider read path without invoking any write method:
+
+```powershell
+.\doctor.ps1 -Broker
+```
+
+This may open Robinhood in your browser. It reads account discovery, one portfolio response,
+QQQ/TQQQ/SQQQ quotes, positions, and orders, then disconnects. It does not review, place, or cancel
+an order. Robinhood's current consent screen grants a broader provider scope that can include trading
+and watchlist access; "read-only" describes this diagnostic's behavior, not the provider's OAuth scope.
 
 ## Source checkout
 

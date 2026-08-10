@@ -54,7 +54,8 @@ foreach ($Directory in @('src', 'docs', 'assets', 'tests')) {
     Copy-Item -LiteralPath (Join-Path $ProjectRoot $Directory) -Destination $SourceRoot -Recurse
 }
 foreach ($File in @(
-    'pyproject.toml', 'runtime-path.ps1', 'setup.ps1', 'run.ps1', 'doctor.ps1', 'verify.ps1', 'build.ps1',
+    'pyproject.toml', 'runtime-path.ps1', 'setup.ps1', 'run.ps1', 'install-local.ps1',
+    'doctor.ps1', 'verify.ps1', 'build.ps1',
     'Start GRANDE Alpha.cmd', 'README.md', 'CHANGELOG.md', 'LICENSE', 'NOTICE', 'PRIVACY.md',
     'SECURITY.md', 'SUPPORT.md', 'CONTRIBUTING.md', 'CODE_OF_CONDUCT.md'
 )) {

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.9.2 - 2026-08-10
+
+- Added a local Desktop and Start Menu installer using the trusted PowerShell/Python launch path.
+- Added an explicit read-only Robinhood OAuth diagnostic covering accounts, portfolio response, quotes, positions, and orders.
+- Kept all order review, placement, and cancellation methods outside the diagnostic path.
+
 ## 0.9.1 - 2026-08-09
 
 - Added a readiness doctor and native main-window cadence regression test.

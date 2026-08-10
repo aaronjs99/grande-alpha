@@ -22,6 +22,7 @@ On Windows, the immediately usable path is the signed-Python source launcher:
 ```powershell
 .\setup.ps1
 .\doctor.ps1 -Full
+.\install-local.ps1
 .\run.ps1
 ```
 
@@ -39,11 +40,11 @@ The sandbox models costs, spread, latency, partial fills, volume limits, rejecti
 
 ## Broker integration
 
-The optional adapter uses Robinhood's official Trading MCP endpoint and browser OAuth. Robinhood states that a connected third-party agent can read data across Robinhood accounts, while trading is restricted to the dedicated Agentic account. Review the current provider disclosures before opting in: <https://robinhood.com/us/en/support/articles/agentic-trading-overview/>.
+The optional adapter uses Robinhood's official Trading MCP endpoint and browser OAuth. Robinhood states that a connected third-party agent can read data across Robinhood accounts, while trading is restricted to the dedicated Agentic account. The provider consent is broader than the app's read-only diagnostic: that diagnostic never invokes order review, placement, cancellation, or watchlist tools, but the granted OAuth scope can include those capabilities. Review the current provider disclosures before opting in: <https://robinhood.com/us/en/support/articles/agentic-trading-overview/>.
 
 ## Project status
 
-Version `0.9.1` adds separated low-latency quote, decision, and reconciliation clocks plus an honest Windows deployment path and readiness doctor. Full shared-history daily research aligns 4,147 QQQ/TQQQ/SQQQ sessions from 2010-02-11 through 2026-08-07. The nine-action holdout policy chose cash: 0.00% return and drawdown. On the corrected 40-session intraday benchmark, every tested strategy lost money after modeled costs; the source-faithful first-half-hour rule returned -0.77%. Long-run fixed and volatility-managed TQQQ benchmarks were historically profitable but are Nasdaq exposure, not demonstrated alpha or future-profit evidence. No strategy has a live certificate. See the [0.8 research upgrade](docs/RESEARCH_UPGRADE_2026-08-09.md), [Action Lab methodology](docs/ACTION_LAB.md), and [public release checklist](docs/PUBLIC_RELEASE_CHECKLIST.md).
+Version `0.9.2` adds separated low-latency quote, decision, and reconciliation clocks, an honest Windows deployment path, Desktop/Start Menu installation, and an explicit read-only Robinhood diagnostic. Full shared-history daily research aligns 4,147 QQQ/TQQQ/SQQQ sessions from 2010-02-11 through 2026-08-07. The nine-action holdout policy chose cash: 0.00% return and drawdown. On the corrected 40-session intraday benchmark, every tested strategy lost money after modeled costs; the source-faithful first-half-hour rule returned -0.77%. Long-run fixed and volatility-managed TQQQ benchmarks were historically profitable but are Nasdaq exposure, not demonstrated alpha or future-profit evidence. No strategy has a live certificate. See the [0.8 research upgrade](docs/RESEARCH_UPGRADE_2026-08-09.md), [Action Lab methodology](docs/ACTION_LAB.md), and [public release checklist](docs/PUBLIC_RELEASE_CHECKLIST.md).
 
 ## Contributing and support
 
