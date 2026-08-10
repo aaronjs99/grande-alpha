@@ -38,6 +38,17 @@ Open **Settings & Permissions** to enable capabilities one at a time:
 
 Removing broker permission disconnects the adapter. Removing real-order permission stops the strategy, revokes live authority, and attempts cancellation. Stored OAuth credentials can be forgotten from the same dialog.
 
+## Desktop navigation
+
+The always-visible menu bar keeps infrequent controls out of the trading header:
+
+- **File** exports redacted diagnostics, opens Settings & Permissions, or exits.
+- **View** switches workspaces with `Ctrl+1` through `Ctrl+5`, resets the layout, or uses `F11` full screen.
+- **Broker** connects or disconnects Robinhood, refreshes with `F5`, controls live shadow, or forgets the locally stored OAuth credential after confirmation.
+- **Research** opens each sandbox result surface directly.
+- **Safety** exposes only evidence-gated live controls plus the stop/cancel and flatten paths.
+- **Help** explains quick start, account scope, privacy, safety locks, and version ownership.
+
 To authenticate and validate the complete provider read path without invoking any write method:
 
 ```powershell

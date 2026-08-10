@@ -42,6 +42,14 @@ from grande_alpha.ui.welcome_widget import WelcomeWidget
 STYLESHEET = """
 QWidget { background: #0b1118; color: #e9f0f6; font-family: 'Segoe UI'; font-size: 10pt; }
 QMainWindow { background: #081018; }
+QMenuBar { background: #0a141d; border-bottom: 1px solid #223142; padding: 2px 5px; }
+QMenuBar::item { background: transparent; padding: 6px 10px; border-radius: 4px; }
+QMenuBar::item:selected { background: #1b2b3b; color: #8fd3ff; }
+QMenu { background: #101a24; border: 1px solid #304357; padding: 5px; }
+QMenu::item { padding: 7px 34px 7px 24px; border-radius: 4px; }
+QMenu::item:selected { background: #1f3446; color: #ffffff; }
+QMenu::item:disabled { color: #5d7182; }
+QMenu::separator { height: 1px; background: #2c3c4b; margin: 5px 8px; }
 QFrame#card { background: #111a24; border: 1px solid #223142; border-radius: 10px; }
 QLabel#cardTitle { color: #8fa4b8; font-size: 9pt; }
 QLabel#cardValue { font-size: 18pt; font-weight: 650; }
@@ -59,6 +67,11 @@ QTabBar::tab { background: #111a24; padding: 9px 16px; }
 QTabBar::tab:selected { background: #1b2b3b; color: #00e507; }
 QLineEdit, QSpinBox, QDoubleSpinBox { background: #0e1720; border: 1px solid #2c4155; border-radius: 5px; padding: 6px; }
 QCheckBox { spacing: 8px; }
+QGroupBox { border: 1px solid #2b3b4b; border-radius: 9px; margin-top: 13px; padding-top: 12px; font-weight: 650; }
+QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 7px; color: #d7e5f0; }
+QLabel#settingsDescription { color: #91a6b8; font-size: 9pt; }
+QLabel#settingsStatus { border-radius: 6px; padding: 6px 9px; font-size: 9pt; font-weight: 700; }
+QLabel#validationWarning { color: #ffd27a; background: #2b2315; border: 1px solid #6f5727; border-radius: 6px; padding: 8px; }
 QToolTip { background: #243648; color: white; border: 1px solid #45617a; }
 """
 
@@ -86,6 +99,7 @@ class MainWindow(QMainWindow):
         self._chart_prices: deque[float] = deque(maxlen=1800)
         self._closing_after_cleanup = False
         self.setWindowTitle(f"GRANDE Alpha {__version__} — Community Preview")
+        self.setMinimumSize(1180, 720)
         self.resize(1440, 900)
         QApplication.instance().setStyleSheet(STYLESHEET)
         self._build_ui()
@@ -121,6 +135,8 @@ class MainWindow(QMainWindow):
         header.addWidget(self.mode_badge)
         header.addStretch()
         self.connect_button = QPushButton("Connect Robinhood")
+        self.connect_button.setAccessibleName("Connect or disconnect Robinhood")
+        self.connect_button.setToolTip("Connect to the consented Robinhood provider session")
         self.connect_button.clicked.connect(lambda: asyncio.create_task(self._connect()))
         self.authorize_button = QPushButton("Authorize Live Session")
         self.authorize_button.setObjectName("primary")
@@ -128,6 +144,7 @@ class MainWindow(QMainWindow):
         self.start_button = QPushButton("Start Strategy")
         self.start_button.clicked.connect(self._start_strategy)
         self.shadow_button = QPushButton("Start Live Shadow")
+        self.shadow_button.setToolTip("Run live observations and virtual fills without sending orders")
         self.shadow_button.clicked.connect(self._toggle_shadow)
         self.kill_button = QPushButton("STOP + CANCEL")
         self.kill_button.setObjectName("danger")
@@ -135,10 +152,10 @@ class MainWindow(QMainWindow):
         self.flatten_button = QPushButton("Flatten Position")
         self.flatten_button.setObjectName("flatten")
         self.flatten_button.clicked.connect(lambda: asyncio.create_task(self._flatten()))
-        self.settings_button = QPushButton("Settings & Permissions")
+        self.settings_button = QPushButton("Settings && Permissions")
+        self.settings_button.setAccessibleName("Settings and permissions")
+        self.settings_button.setToolTip("Review account scope, capabilities, privacy, and cadence")
         self.settings_button.clicked.connect(self._open_settings)
-        self.about_button = QPushButton("About")
-        self.about_button.clicked.connect(self._about)
         for button in (
             self.connect_button,
             self.authorize_button,
@@ -147,7 +164,6 @@ class MainWindow(QMainWindow):
             self.kill_button,
             self.flatten_button,
             self.settings_button,
-            self.about_button,
         ):
             header.addWidget(button)
         outer.addLayout(header)
@@ -178,7 +194,11 @@ class MainWindow(QMainWindow):
         broker_layout.addLayout(cards)
 
         top = QSplitter(Qt.Orientation.Horizontal)
+        self.market_splitter = top
+        top.setMinimumHeight(220)
+        top.setChildrenCollapsible(False)
         self.chart = pg.PlotWidget(axisItems={"bottom": pg.DateAxisItem()})
+        self.chart.setMinimumWidth(560)
         self.chart.setBackground("#0e1720")
         self.chart.showGrid(x=True, y=True, alpha=0.18)
         self.chart.setLabel("left", "QQQ midpoint", units="$")
@@ -186,9 +206,11 @@ class MainWindow(QMainWindow):
         top.addWidget(self.chart)
 
         self.quotes_table = self._table(["Symbol", "Bid", "Ask", "Last", "Spread", "Age"])
+        self.quotes_table.setMinimumWidth(390)
         top.addWidget(self.quotes_table)
         top.setStretchFactor(0, 3)
         top.setStretchFactor(1, 2)
+        top.setSizes([850, 500])
         broker_layout.addWidget(top)
         outer.addWidget(self.broker_panel)
 
@@ -240,20 +262,133 @@ class MainWindow(QMainWindow):
         self.status.setWordWrap(True)
         outer.addWidget(self.status)
         self.setCentralWidget(root)
+        self._build_menus()
         self._refresh_fund()
         self._set_controls()
 
-        file_menu = self.menuBar().addMenu("File")
-        export_action = QAction("Export redacted support diagnostics…", self)
-        export_action.triggered.connect(self._export_diagnostics)
-        file_menu.addAction(export_action)
-        settings_action = QAction("Settings & Permissions…", self)
-        settings_action.triggered.connect(self._open_settings)
-        file_menu.addAction(settings_action)
-        help_menu = self.menuBar().addMenu("Help")
-        about_action = QAction("About GRANDE Alpha", self)
-        about_action.triggered.connect(self._about)
-        help_menu.addAction(about_action)
+    def _action(self, text: str, callback, shortcut: str | None = None) -> QAction:
+        action = QAction(text, self)
+        action.triggered.connect(callback)
+        if shortcut:
+            action.setShortcut(shortcut)
+        return action
+
+    def _build_menus(self) -> None:
+        menu_bar = self.menuBar()
+        menu_bar.setNativeMenuBar(False)
+
+        self.file_menu = menu_bar.addMenu("File")
+        self.export_action = self._action(
+            "Export redacted support diagnostics…", self._export_diagnostics
+        )
+        self.file_menu.addAction(self.export_action)
+        self.settings_action = self._action(
+            "Settings && Permissions…", self._open_settings, "Ctrl+,"
+        )
+        self.file_menu.addAction(self.settings_action)
+        self.file_menu.addSeparator()
+        self.exit_action = self._action("Exit", self.close, "Ctrl+Q")
+        self.file_menu.addAction(self.exit_action)
+
+        self.view_menu = menu_bar.addMenu("View")
+        destinations = (
+            ("Getting Started", self.welcome_widget, "Ctrl+1"),
+            ("Research Sandbox", self.sandbox_widget, "Ctrl+2"),
+            ("Positions", self.positions_table, "Ctrl+3"),
+            ("Orders", self.orders_table, "Ctrl+4"),
+            ("Receipts", self.activity_table, "Ctrl+5"),
+        )
+        self.view_actions: list[QAction] = []
+        for label, widget, shortcut in destinations:
+            action = self._action(
+                label,
+                lambda _checked=False, target=widget: self._show_tab(target),
+                shortcut,
+            )
+            self.view_menu.addAction(action)
+            self.view_actions.append(action)
+        self.fund_view_action = self._action(
+            "Personal Research Fund",
+            lambda _checked=False: self._show_tab(self.fund_widget),
+            "Ctrl+6",
+        )
+        self.view_menu.addAction(self.fund_view_action)
+        self.view_menu.addSeparator()
+        self.reset_layout_action = self._action("Reset Window Layout", self._reset_layout)
+        self.view_menu.addAction(self.reset_layout_action)
+        self.full_screen_action = self._action("Full Screen", self._toggle_full_screen, "F11")
+        self.full_screen_action.setCheckable(True)
+        self.view_menu.addAction(self.full_screen_action)
+
+        self.broker_menu = menu_bar.addMenu("Broker")
+        self.broker_connect_action = self._action(
+            "Connect Robinhood…",
+            lambda _checked=False: asyncio.create_task(self._connect()),
+            "Ctrl+Shift+C",
+        )
+        self.broker_menu.addAction(self.broker_connect_action)
+        self.refresh_action = self._action(
+            "Refresh Account && Quotes",
+            lambda _checked=False: asyncio.create_task(self._refresh_broker()),
+            "F5",
+        )
+        self.broker_menu.addAction(self.refresh_action)
+        self.shadow_action = self._action("Start Live Shadow", self._toggle_shadow)
+        self.broker_menu.addAction(self.shadow_action)
+        self.broker_menu.addSeparator()
+        self.forget_credentials_action = self._action(
+            "Forget Stored OAuth Credentials…", self._confirm_forget_credentials
+        )
+        self.broker_menu.addAction(self.forget_credentials_action)
+
+        self.research_menu = menu_bar.addMenu("Research")
+        research_tabs = (
+            ("Replay", 0),
+            ("Comparison", 1),
+            ("Sensitivity", 2),
+            ("Walk-forward && Gates", 3),
+            ("9-action Lab", self.sandbox_widget.action_tab_index),
+        )
+        self.research_actions: list[QAction] = []
+        for label, index in research_tabs:
+            action = self._action(
+                label,
+                lambda _checked=False, tab_index=index: self._show_research_tab(tab_index),
+            )
+            self.research_menu.addAction(action)
+            self.research_actions.append(action)
+
+        self.safety_menu = menu_bar.addMenu("Safety")
+        self.authorize_action = self._action("Authorize Live Session…", self._authorize)
+        self.safety_menu.addAction(self.authorize_action)
+        self.start_strategy_action = self._action("Start Live Strategy", self._start_strategy)
+        self.safety_menu.addAction(self.start_strategy_action)
+        self.stop_cancel_action = self._action(
+            "STOP + CANCEL Agentic Orders",
+            lambda _checked=False: asyncio.create_task(self.controller.stop_and_cancel()),
+            "Ctrl+Shift+X",
+        )
+        self.safety_menu.addAction(self.stop_cancel_action)
+        self.flatten_action = self._action(
+            "Flatten Position…", lambda _checked=False: asyncio.create_task(self._flatten())
+        )
+        self.safety_menu.addAction(self.flatten_action)
+        self.safety_menu.addSeparator()
+        self.safety_explainer_action = self._action(
+            "Explain Safety Locks…", self._show_safety_help
+        )
+        self.safety_menu.addAction(self.safety_explainer_action)
+
+        self.help_menu = menu_bar.addMenu("Help")
+        self.quickstart_action = self._action("Quick Start…", self._show_quickstart)
+        self.help_menu.addAction(self.quickstart_action)
+        self.account_scope_action = self._action(
+            "Account Scope && Privacy…", self._show_account_scope
+        )
+        self.help_menu.addAction(self.account_scope_action)
+        self.help_menu.addSeparator()
+        self.about_action = self._action("About GRANDE Alpha", self._about)
+        self.help_menu.addAction(self.about_action)
 
     def _table(self, headers: list[str]) -> QTableWidget:
         table = QTableWidget(0, len(headers))
@@ -269,6 +404,90 @@ class MainWindow(QMainWindow):
         index = self.tabs.indexOf(self.sandbox_widget)
         if index >= 0:
             self.tabs.setCurrentIndex(index)
+
+    def _show_tab(self, widget: QWidget) -> None:
+        index = self.tabs.indexOf(widget)
+        if index >= 0:
+            self.tabs.setCurrentIndex(index)
+
+    def _show_research_tab(self, index: int) -> None:
+        self._open_sandbox()
+        if 0 <= index < self.sandbox_widget.tabs.count():
+            self.sandbox_widget.tabs.setCurrentIndex(index)
+
+    def _reset_layout(self) -> None:
+        if self.isFullScreen():
+            self.showNormal()
+        self.full_screen_action.setChecked(False)
+        self.resize(1440, 900)
+        self.market_splitter.setSizes([850, 500])
+
+    def _toggle_full_screen(self, checked: bool) -> None:
+        if checked:
+            self.showFullScreen()
+        else:
+            self.showNormal()
+
+    async def _refresh_broker(self) -> None:
+        try:
+            await self.controller.refresh(evaluate=False)
+        except Exception as exc:
+            QMessageBox.critical(self, "Broker refresh failed", str(exc))
+
+    def _confirm_forget_credentials(self) -> None:
+        answer = QMessageBox.question(
+            self,
+            "Forget stored Robinhood credentials?",
+            "This removes GRANDE Alpha's local OAuth credential, disconnects the app, and requires "
+            "browser consent next time. It does not revoke the connection inside Robinhood. Continue?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer == QMessageBox.StandardButton.Yes:
+            asyncio.create_task(self._forget_credentials())
+
+    async def _forget_credentials(self) -> None:
+        try:
+            await self.controller.forget_broker_credentials()
+            QMessageBox.information(
+                self,
+                "Stored credentials removed",
+                "The local OAuth credential was removed. Reconnect to restore broker access.",
+            )
+        except Exception as exc:
+            QMessageBox.warning(self, "Credentials were not forgotten", str(exc))
+
+    def _show_quickstart(self) -> None:
+        QMessageBox.information(
+            self,
+            "GRANDE Alpha quick start",
+            "1. Use Research Sandbox to replay and inspect virtual fills.\n"
+            "2. Use Live Shadow to observe current quotes without sending orders.\n"
+            "3. Review every receipt and evidence gate before considering live controls.\n\n"
+            "No strategy is guaranteed profitable, and live authority stays locked unless the "
+            "saved capability, evidence certificate, account limits, and session confirmation all agree.",
+        )
+
+    def _show_safety_help(self) -> None:
+        QMessageBox.information(
+            self,
+            "Why live controls are locked",
+            "GRANDE Alpha defaults to research and shadow mode. Real-order controls require a current "
+            "passing Evidence Lab certificate for the exact strategy, an enabled broker capability, "
+            "an enabled live-order capability, a connected funded Agentic account, and a short-lived "
+            "account-specific authorization. Any mismatch fails closed.",
+        )
+
+    def _show_account_scope(self) -> None:
+        QMessageBox.information(
+            self,
+            "Robinhood account scope and privacy",
+            "Robinhood's OAuth consent may expose metadata and read data across connected accounts. "
+            "GRANDE Alpha filters the provider response to the active Agentic account and requests "
+            "portfolio, positions, and orders for that selected Agentic account. The regular investing "
+            "account is not selected for those app views. Trading is provider-restricted to the Agentic "
+            "account. GRANDE Alpha sends no first-party telemetry.",
+        )
 
     def _open_settings(self) -> None:
         dialog = SettingsDialog(
@@ -324,6 +543,7 @@ class MainWindow(QMainWindow):
             self.tabs.addTab(self.fund_widget, "Personal Research Fund")
         elif not self.config.personal_ledger_enabled and index >= 0:
             self.tabs.removeTab(index)
+        self.fund_view_action.setVisible(self.config.personal_ledger_enabled)
 
     def _export_diagnostics(self) -> None:
         filename, _ = QFileDialog.getSaveFileName(
@@ -573,6 +793,21 @@ class MainWindow(QMainWindow):
         self.shadow_button.setEnabled(connected and (shadow or not live))
         self.kill_button.setEnabled(connected)
         self.flatten_button.setEnabled(bool(self._snapshot.positions))
+        self.fund_view_action.setVisible(self.config.personal_ledger_enabled)
+        self.broker_connect_action.setEnabled(broker_enabled)
+        self.broker_connect_action.setText(
+            "Disconnect Robinhood" if connected else "Connect Robinhood…"
+        )
+        self.refresh_action.setEnabled(broker_enabled and connected)
+        self.shadow_action.setEnabled(broker_enabled and connected and (shadow or not live))
+        self.shadow_action.setText("Stop Live Shadow" if shadow else "Start Live Shadow")
+        self.forget_credentials_action.setEnabled(broker_enabled)
+        self.authorize_action.setEnabled(evidence_ready and connected and funded and not shadow)
+        self.start_strategy_action.setEnabled(
+            evidence_ready and live and not self._snapshot.strategy_running and not shadow
+        )
+        self.stop_cancel_action.setEnabled(evidence_ready and connected)
+        self.flatten_action.setEnabled(evidence_ready and bool(self._snapshot.positions))
 
     def _update_quotes(self, snapshot: TradingSnapshot) -> None:
         symbols = [symbol for symbol in ("QQQ", "TQQQ", "SQQQ") if symbol in snapshot.quotes]

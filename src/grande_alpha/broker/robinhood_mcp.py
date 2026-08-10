@@ -102,6 +102,9 @@ class RobinhoodMCPBroker(Broker):
                     self.server_url,
                     timeout=30.0,
                     sse_read_timeout=300.0,
+                    # Robinhood currently rejects the optional MCP DELETE-session request with 400.
+                    # Closing the authenticated HTTP transport is sufficient and avoids a false warning.
+                    terminate_on_close=False,
                     auth=auth,
                 )
             )

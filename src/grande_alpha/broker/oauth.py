@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import hashlib
+import hmac
 import json
+import secrets
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
@@ -13,6 +17,10 @@ from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
 
 KEYRING_SERVICE = "GRANDEAlpha.RobinhoodMCP"
 LEGACY_KEYRING_SERVICE = "MomentumTrader.RobinhoodMCP"
+CHUNKED_CREDENTIAL_PREFIX = "GRANDE_ALPHA_CREDENTIAL_V1:"
+# Windows Credential Manager limits generic credential blobs to 2,560 bytes. The Windows keyring
+# backend stores text as UTF-16, so keep each base64 (ASCII) chunk comfortably below that boundary.
+CHUNK_CHARACTERS = 900
 
 
 class CredentialTokenStorage(TokenStorage):
@@ -21,17 +29,97 @@ class CredentialTokenStorage(TokenStorage):
     def __init__(self, profile: str = "default") -> None:
         self.profile = profile
 
+    def _username(self, suffix: str) -> str:
+        return f"{self.profile}:{suffix}"
+
+    @staticmethod
+    def _parse_manifest(raw: str | None) -> dict[str, Any] | None:
+        if raw is None or not raw.startswith(CHUNKED_CREDENTIAL_PREFIX):
+            return None
+        try:
+            manifest = json.loads(raw.removeprefix(CHUNKED_CREDENTIAL_PREFIX))
+            version = str(manifest["version"])
+            chunks = int(manifest["chunks"])
+            digest = str(manifest["sha256"])
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+            raise RuntimeError("Credential vault manifest is invalid") from exc
+        if not version or chunks < 1 or len(digest) != 64:
+            raise RuntimeError("Credential vault manifest is invalid")
+        return {"version": version, "chunks": chunks, "sha256": digest}
+
+    @staticmethod
+    def _delete_password(service: str, username: str) -> None:
+        try:
+            keyring.delete_password(service, username)
+        except keyring.errors.PasswordDeleteError:
+            pass
+
+    def _read_service(self, service: str, suffix: str) -> str | None:
+        username = self._username(suffix)
+        raw = keyring.get_password(service, username)
+        manifest = self._parse_manifest(raw)
+        if manifest is None:
+            return raw
+
+        parts = []
+        for index in range(manifest["chunks"]):
+            chunk_username = f"{username}:{manifest['version']}:{index:04d}"
+            chunk = keyring.get_password(service, chunk_username)
+            if chunk is None:
+                raise RuntimeError("Credential vault record is incomplete")
+            parts.append(chunk)
+        encoded = "".join(parts)
+        try:
+            value = base64.b64decode(encoded, validate=True).decode("utf-8")
+        except (ValueError, UnicodeDecodeError) as exc:
+            raise RuntimeError("Credential vault record cannot be decoded") from exc
+        digest = hashlib.sha256(value.encode("utf-8")).hexdigest()
+        if not hmac.compare_digest(digest, manifest["sha256"]):
+            raise RuntimeError("Credential vault record failed its integrity check")
+        return value
+
     def _get(self, suffix: str) -> str | None:
-        username = f"{self.profile}:{suffix}"
-        value = keyring.get_password(KEYRING_SERVICE, username)
+        value = self._read_service(KEYRING_SERVICE, suffix)
         if value is None:
-            value = keyring.get_password(LEGACY_KEYRING_SERVICE, username)
+            value = self._read_service(LEGACY_KEYRING_SERVICE, suffix)
             if value is not None:
-                keyring.set_password(KEYRING_SERVICE, username, value)
+                self._set(suffix, value)
         return value
 
     def _set(self, suffix: str, value: str) -> None:
-        keyring.set_password(KEYRING_SERVICE, f"{self.profile}:{suffix}", value)
+        username = self._username(suffix)
+        old_raw = keyring.get_password(KEYRING_SERVICE, username)
+        old_manifest = self._parse_manifest(old_raw)
+        encoded = base64.b64encode(value.encode("utf-8")).decode("ascii")
+        chunks = [
+            encoded[start : start + CHUNK_CHARACTERS]
+            for start in range(0, len(encoded), CHUNK_CHARACTERS)
+        ] or [""]
+        version = secrets.token_hex(8)
+        written_usernames = []
+        try:
+            for index, chunk in enumerate(chunks):
+                chunk_username = f"{username}:{version}:{index:04d}"
+                keyring.set_password(KEYRING_SERVICE, chunk_username, chunk)
+                written_usernames.append(chunk_username)
+            manifest = CHUNKED_CREDENTIAL_PREFIX + json.dumps(
+                {
+                    "version": version,
+                    "chunks": len(chunks),
+                    "sha256": hashlib.sha256(value.encode("utf-8")).hexdigest(),
+                },
+                separators=(",", ":"),
+            )
+            keyring.set_password(KEYRING_SERVICE, username, manifest)
+        except Exception:
+            for chunk_username in written_usernames:
+                self._delete_password(KEYRING_SERVICE, chunk_username)
+            raise
+
+        if old_manifest is not None:
+            for index in range(old_manifest["chunks"]):
+                old_username = f"{username}:{old_manifest['version']}:{index:04d}"
+                self._delete_password(KEYRING_SERVICE, old_username)
 
     async def get_tokens(self) -> OAuthToken | None:
         raw = await asyncio.to_thread(self._get, "tokens")
@@ -50,10 +138,14 @@ class CredentialTokenStorage(TokenStorage):
     def clear(self) -> None:
         for service in (KEYRING_SERVICE, LEGACY_KEYRING_SERVICE):
             for suffix in ("tokens", "client"):
-                try:
-                    keyring.delete_password(service, f"{self.profile}:{suffix}")
-                except keyring.errors.PasswordDeleteError:
-                    pass
+                username = self._username(suffix)
+                raw = keyring.get_password(service, username)
+                manifest = self._parse_manifest(raw)
+                self._delete_password(service, username)
+                if manifest is not None:
+                    for index in range(manifest["chunks"]):
+                        chunk_username = f"{username}:{manifest['version']}:{index:04d}"
+                        self._delete_password(service, chunk_username)
 
 
 class OAuthCallbackServer:

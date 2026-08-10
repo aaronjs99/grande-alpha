@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.9.3 - 2026-08-10
+
+- Stored oversized Robinhood OAuth material as integrity-verified chunks in Windows Credential Manager.
+- Preserved direct legacy credentials and migrated them without deleting the recoverable originals.
+- Disabled an unsupported MCP session-termination request that produced a false provider 400 warning.
+- Added complete File, View, Broker, Research, Safety, and Help desktop menus with keyboard shortcuts.
+- Redesigned Settings & Permissions into a scrollable, accessible account-scope and capability review.
+- Registered a stable Windows app identity so the GRANDE Alpha logo is used for the window and taskbar.
+
 ## 0.9.2 - 2026-08-10
 
 - Added a local Desktop and Start Menu installer using the trusted PowerShell/Python launch path.

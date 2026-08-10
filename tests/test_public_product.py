@@ -4,7 +4,7 @@ from datetime import timedelta
 from pathlib import Path
 
 import pytest
-from PySide6.QtWidgets import QApplication, QDialogButtonBox
+from PySide6.QtWidgets import QApplication, QDialogButtonBox, QScrollArea
 
 from grande_alpha import __version__
 from grande_alpha.broker.base import Broker
@@ -66,7 +66,7 @@ def test_public_defaults_are_research_only() -> None:
     assert config.poll_seconds == 1.0
     assert config.reconcile_seconds == 5.0
     assert config.bar_seconds == 5
-    assert __version__ == "0.9.2"
+    assert __version__ == "0.9.3"
 
 
 def test_main_window_starts_with_independent_low_latency_clocks(tmp_path) -> None:
@@ -80,6 +80,29 @@ def test_main_window_starts_with_independent_low_latency_clocks(tmp_path) -> Non
     assert window.reconcile_timer.interval() == 2_000
     assert controller.bar_builder.seconds == 1
     assert not controller.snapshot.connected
+
+    window.close()
+    store.close()
+
+
+def test_main_window_exposes_complete_desktop_navigation(tmp_path) -> None:
+    qt_app()
+    store = AuditStore(tmp_path / "audit.db")
+    config = AppConfig(broker_connection_enabled=True)
+    controller = TradingController(DisabledBroker(), config, store)
+    window = MainWindow(controller, config)
+
+    menu_titles = [action.text().replace("&", "") for action in window.menuBar().actions()]
+    assert menu_titles == ["File", "View", "Broker", "Research", "Safety", "Help"]
+    assert window.settings_button.text() == "Settings && Permissions"
+    assert window.minimumWidth() >= 1180
+    assert window.minimumHeight() >= 720
+    assert window.market_splitter.minimumHeight() >= 220
+    assert window.refresh_action.shortcut().toString() == "F5"
+    assert window.full_screen_action.shortcut().toString() == "F11"
+    assert window.stop_cancel_action.shortcut().toString() == "Ctrl+Shift+X"
+    assert not window.refresh_action.isEnabled()
+    assert not window.flatten_action.isEnabled()
 
     window.close()
     store.close()
@@ -149,6 +172,24 @@ def test_live_setting_stays_blocked_without_passing_evidence() -> None:
     dialog.live_phrase.setText(LIVE_PHRASE)
     assert not save.isEnabled()
     assert "shadow-only" in dialog.validation.text()
+
+
+def test_settings_dialog_is_scrollable_and_explains_agentic_account_scope() -> None:
+    qt_app()
+    dialog = SettingsDialog(AppConfig(broker_connection_enabled=True), live_evidence_ready=False)
+
+    assert isinstance(dialog.scroll, QScrollArea)
+    assert dialog.scroll.widgetResizable()
+    assert dialog.minimumWidth() >= 780
+    assert dialog.minimumHeight() >= 650
+    assert dialog.broker.text() == "Connect Robinhood broker data"
+    assert dialog.broker_note.wordWrap()
+    assert "active Agentic account" in dialog.broker_note.text()
+    assert "regular investing account is not selected" in dialog.broker_note.text()
+    assert "LOCKED" in dialog.evidence_status.text()
+    assert dialog.remote_data_note.wordWrap()
+    assert dialog.credential_note.wordWrap()
+    dialog.close()
 
 
 def test_controller_requires_matching_current_evidence_before_live_authority(tmp_path) -> None:
@@ -303,6 +344,15 @@ def test_local_installer_uses_trusted_launcher_and_both_shortcut_locations() -> 
     assert "GetFolderPath('Desktop')" in script
     assert "GetFolderPath('Programs')" in script
     assert "run.ps1" in script
+
+
+def test_windows_app_identity_uses_the_grande_alpha_logo_group() -> None:
+    root = Path(__file__).resolve().parents[1]
+    app_source = (root / "src" / "grande_alpha" / "app.py").read_text(encoding="utf-8")
+
+    assert 'WINDOWS_APP_USER_MODEL_ID = "AaronJS.GRANDEAlpha"' in app_source
+    assert "SetCurrentProcessExplicitAppUserModelID" in app_source
+    assert "window.setWindowIcon(app.windowIcon())" in app_source
 
 
 def test_sandbox_exposes_exact_nine_action_matrix_and_full_history_source(tmp_path) -> None:
