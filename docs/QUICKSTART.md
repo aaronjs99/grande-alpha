@@ -58,7 +58,9 @@ The always-visible menu bar keeps infrequent controls out of the trading header:
 - **Broker** connects or disconnects Robinhood, refreshes with `F5`, controls live shadow, or forgets the locally stored OAuth credential after confirmation.
 - **Research** opens each sandbox result surface directly.
 - **Safety** exposes only evidence-gated live controls plus the stop/cancel and flatten paths.
-- **Help** explains quick start, account scope, privacy, safety locks, and version ownership.
+- **Help** explains quick start, account scope, privacy, safety locks, version ownership, and opens the
+  searchable terminology glossary with `F1`. Dashed-underlined labels also show the same definitions
+  on hover or click.
 
 To authenticate and validate the complete provider read path without invoking any write method:
 

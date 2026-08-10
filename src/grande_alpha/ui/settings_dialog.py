@@ -26,6 +26,7 @@ from grande_alpha.execution import (
     ORDER_TYPE_LABELS,
     TIME_IN_FORCE_LABELS,
 )
+from grande_alpha.ui.glossary import add_explained_row, apply_help, help_hint
 
 LIVE_PHRASE = "ENABLE LIVE ORDERS"
 
@@ -59,6 +60,7 @@ class SettingsDialog(QDialog):
         subtitle.setObjectName("settingsDescription")
         subtitle.setWordWrap(True)
         layout.addWidget(subtitle)
+        layout.addWidget(help_hint())
 
         self.scroll = QScrollArea()
         self.scroll.setObjectName("settingsScroll")
@@ -76,6 +78,11 @@ class SettingsDialog(QDialog):
         self.broker = QCheckBox("Connect Robinhood broker data")
         self.broker.setAccessibleName("Connect Robinhood broker data")
         self.broker.setChecked(config.broker_connection_enabled)
+        apply_help(
+            self.broker,
+            "Connect Robinhood broker data",
+            "Allows provider OAuth and broker-exposed reads. It does not itself grant permission to submit orders.",
+        )
         permissions_layout.addWidget(self.broker)
         self.broker_note = self._description(
             "Robinhood's consent may expose metadata and read data across connected accounts. GRANDE Alpha "
@@ -92,6 +99,11 @@ class SettingsDialog(QDialog):
         self.live = QCheckBox("Allow real-order automation for TQQQ/SQQQ")
         self.live.setAccessibleName("Allow real-order automation")
         self.live.setChecked(config.live_trading_enabled)
+        apply_help(
+            self.live,
+            "Allow real-order automation",
+            "Makes evidence-gated live controls available. A separate bounded session is still required every launch.",
+        )
         permissions_layout.addWidget(self.live)
         self.evidence_status = QLabel(
             "EVIDENCE GATE  •  READY FOR SEPARATE SESSION REVIEW"
@@ -103,6 +115,11 @@ class SettingsDialog(QDialog):
             "background:#17301f;color:#80e899;border:1px solid #376d45;"
             if live_evidence_ready
             else "background:#2b2315;color:#ffd27a;border:1px solid #6f5727;"
+        )
+        apply_help(
+            self.evidence_status,
+            "Evidence gate",
+            "A current LIVE_REVIEW_ELIGIBLE certificate for the exact strategy, cadence, route, and risk envelope is required.",
         )
         permissions_layout.addWidget(self.evidence_status)
         self.live_phrase = QLineEdit()
@@ -124,6 +141,11 @@ class SettingsDialog(QDialog):
         self.remote_data = QCheckBox("Use community remote market data")
         self.remote_data.setAccessibleName("Use community remote market data")
         self.remote_data.setChecked(config.remote_market_data_enabled)
+        apply_help(
+            self.remote_data,
+            "Community remote market data",
+            "Permits requested research downloads from an unsupported public chart endpoint; it is not execution-quality data.",
+        )
         optional_layout.addWidget(self.remote_data)
         self.remote_data_note = self._description(
             "Contacts an unsupported Yahoo chart endpoint only for requested symbols, intervals, and time "
@@ -133,6 +155,11 @@ class SettingsDialog(QDialog):
         self.personal_ledger = QCheckBox("Show the personal research-fund ledger")
         self.personal_ledger.setAccessibleName("Show the personal research-fund ledger")
         self.personal_ledger.setChecked(config.personal_ledger_enabled)
+        apply_help(
+            self.personal_ledger,
+            "Personal research-fund ledger",
+            "Shows a local planning ledger. It never moves money or connects to university, grant, or laboratory funds.",
+        )
         optional_layout.addWidget(self.personal_ledger)
         self.personal_ledger_note = self._description(
             "A local planning ledger only. It never transfers brokerage, university, grant, or laboratory funds."
@@ -150,8 +177,8 @@ class SettingsDialog(QDialog):
         self.retention.setValue(config.market_history_retention_days)
         self.forget_credentials = QCheckBox("Forget stored OAuth credentials when I save")
         self.forget_credentials.setAccessibleName("Forget stored OAuth credentials when saving")
-        privacy_form.addRow("Quote, bar, and signal history", self.retention)
-        privacy_form.addRow("Local credential", self.forget_credentials)
+        add_explained_row(privacy_form, "Quote, bar, and signal history", self.retention)
+        add_explained_row(privacy_form, "Local credential", self.forget_credentials)
         self.credential_note = self._description(
             "This disconnects GRANDE Alpha and removes its Windows-stored credential. Reconnect in the browser "
             "to restore access. It does not revoke the connection inside Robinhood."
@@ -179,10 +206,10 @@ class SettingsDialog(QDialog):
         self.limit_offset.setDecimals(1)
         self.limit_offset.setSuffix(" bps")
         self.limit_offset.setValue(config.limit_offset_bps)
-        routing_form.addRow("Trading session", self.market_hours)
-        routing_form.addRow("Order type", self.order_type)
-        routing_form.addRow("Time in force", self.time_in_force)
-        routing_form.addRow("Marketable-limit offset", self.limit_offset)
+        add_explained_row(routing_form, "Trading session", self.market_hours)
+        add_explained_row(routing_form, "Order type", self.order_type)
+        add_explained_row(routing_form, "Time in force", self.time_in_force)
+        add_explained_row(routing_form, "Marketable-limit offset", self.limit_offset)
         self.routing_note = self._description("")
         routing_form.addRow(self.routing_note)
         body_layout.addWidget(routing)
@@ -213,10 +240,10 @@ class SettingsDialog(QDialog):
         self.trade_every_bars.setRange(2, 120)
         self.trade_every_bars.setSuffix(" bars")
         self.trade_every_bars.setValue(config.trade_every_bars)
-        cadence_form.addRow("Quote request target", self.quote_poll)
-        cadence_form.addRow("Account reconciliation", self.reconcile)
-        cadence_form.addRow("Completed analysis bar", self.bar_seconds)
-        cadence_form.addRow("Trade decision every", self.trade_every_bars)
+        add_explained_row(cadence_form, "Quote request target", self.quote_poll)
+        add_explained_row(cadence_form, "Account reconciliation", self.reconcile)
+        add_explained_row(cadence_form, "Completed analysis bar", self.bar_seconds)
+        add_explained_row(cadence_form, "Trade decision every", self.trade_every_bars)
         self.cadence_note = self._description("")
         self._update_cadence_note()
         cadence_form.addRow(self.cadence_note)
@@ -317,14 +344,17 @@ class SettingsDialog(QDialog):
             valid = False
             message = (
                 "Real-order automation remains shadow-only: run the full Evidence Lab on eligible recent "
-                "market history until every gate passes for this exact strategy."
+                "market history until every gate passes for this exact strategy. Uncheck real-order "
+                "automation to save broker-only or research settings now."
             )
         elif enabling_live and self.live_phrase.text().strip() != LIVE_PHRASE:
             valid = False
             message = f"Type {LIVE_PHRASE} exactly to unlock real-order controls."
         self.validation.setText(message)
         self.validation.setVisible(bool(message))
-        self.buttons.button(QDialogButtonBox.StandardButton.Save).setEnabled(valid)
+        save = self.buttons.button(QDialogButtonBox.StandardButton.Save)
+        save.setEnabled(valid)
+        save.setToolTip(message if message else "Save settings and create an audit receipt.")
 
     def updated_config(self) -> AppConfig:
         return replace(

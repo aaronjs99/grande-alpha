@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
 from grande_alpha.config import AppConfig
 from grande_alpha.execution import MARKET_HOURS_LABELS, ORDER_TYPE_LABELS, TIME_IN_FORCE_LABELS
 from grande_alpha.models import Account, LiveGrant, Portfolio, utc_now
+from grande_alpha.ui.glossary import add_explained_row, apply_help, help_hint
 
 
 class LiveGrantDialog(QDialog):
@@ -48,6 +49,7 @@ class LiveGrantDialog(QDialog):
         )
         details.setWordWrap(True)
         layout.addWidget(details)
+        layout.addWidget(help_hint())
 
         risk_group = QGroupBox("Session risk limits")
         form = QFormLayout(risk_group)
@@ -68,13 +70,13 @@ class LiveGrantDialog(QDialog):
         self.max_spread.setDecimals(1)
         self.max_spread.setValue(config.default_max_spread_bps)
         self.max_spread.setSuffix(" bps")
-        form.addRow("Session duration", self.minutes)
-        form.addRow("Max order notional", self.max_order)
-        form.addRow("Max total exposure", self.max_exposure)
-        form.addRow("Max session loss", self.max_loss)
-        form.addRow("Max submitted orders", self.max_trades)
-        form.addRow("Max orders per minute", self.orders_per_minute)
-        form.addRow("Maximum spread", self.max_spread)
+        add_explained_row(form, "Session duration", self.minutes)
+        add_explained_row(form, "Max order notional", self.max_order)
+        add_explained_row(form, "Max total exposure", self.max_exposure)
+        add_explained_row(form, "Max session loss", self.max_loss)
+        add_explained_row(form, "Max submitted orders", self.max_trades)
+        add_explained_row(form, "Max orders per minute", self.orders_per_minute)
+        add_explained_row(form, "Maximum spread", self.max_spread)
         layout.addWidget(risk_group)
 
         route_group = QGroupBox("Order routing")
@@ -96,10 +98,10 @@ class LiveGrantDialog(QDialog):
         self.limit_offset.setDecimals(1)
         self.limit_offset.setValue(config.limit_offset_bps)
         self.limit_offset.setSuffix(" bps")
-        route.addRow("Authorized session", self.market_hours)
-        route.addRow("Authorized order type", self.order_type)
-        route.addRow("Authorized time in force", self.time_in_force)
-        route.addRow("Limit offset", self.limit_offset)
+        add_explained_row(route, "Authorized session", self.market_hours)
+        add_explained_row(route, "Authorized order type", self.order_type)
+        add_explained_row(route, "Authorized time in force", self.time_in_force)
+        add_explained_row(route, "Limit offset", self.limit_offset)
         layout.addWidget(route_group)
         self.route_note = QLabel("")
         self.route_note.setWordWrap(True)
@@ -108,6 +110,11 @@ class LiveGrantDialog(QDialog):
         self.attest = QCheckBox(
             "I am trading only my own account and have obtained the immigration/tax guidance\n"
             "needed for my circumstances."
+        )
+        apply_help(
+            self.attest,
+            "Live-session attestation",
+            "Confirm this only when every statement is true. It is a consent checkpoint, not immigration or tax advice.",
         )
         layout.addWidget(self.attest)
 
@@ -143,7 +150,13 @@ class LiveGrantDialog(QDialog):
 
     def _validate(self) -> None:
         valid = self.attest.isChecked() and self.confirmation.text().strip() == self.phrase
-        self.buttons.button(QDialogButtonBox.StandardButton.Ok).setEnabled(valid)
+        authorize = self.buttons.button(QDialogButtonBox.StandardButton.Ok)
+        authorize.setEnabled(valid)
+        authorize.setToolTip(
+            "Authorize this bounded session."
+            if valid
+            else f"Check the attestation and type {self.phrase} exactly."
+        )
 
     def _route_changed(self, _value: int | None = None) -> None:
         outside_regular = self.market_hours.currentData() != "regular_hours"
@@ -224,13 +237,13 @@ class FundPlanDialog(QDialog):
         self.notes.setMaximumHeight(80)
         self.eligible = QLabel("$0.00")
         self.eligible.setObjectName("cardValue")
-        form.addRow("Period (YYYY-MM)", self.period)
-        form.addRow("Realized profit", self.realized_profit)
-        form.addRow("Broker fees", self.fees)
-        form.addRow("Tax reserve", self.tax_reserve)
-        form.addRow("Contribution rate", self.rate)
-        form.addRow("Eligible contribution", self.eligible)
-        form.addRow("Notes", self.notes)
+        add_explained_row(form, "Period (YYYY-MM)", self.period)
+        add_explained_row(form, "Realized profit", self.realized_profit)
+        add_explained_row(form, "Broker fees", self.fees)
+        add_explained_row(form, "Tax reserve", self.tax_reserve)
+        add_explained_row(form, "Contribution rate", self.rate)
+        add_explained_row(form, "Eligible contribution", self.eligible)
+        add_explained_row(form, "Notes", self.notes)
         layout.addLayout(form)
 
         self.buttons = QDialogButtonBox(

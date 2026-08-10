@@ -69,6 +69,12 @@ from grande_alpha.sandbox import (
 )
 from grande_alpha.storage import AuditStore
 from grande_alpha.strategy import STRATEGY_NAMES
+from grande_alpha.ui.glossary import (
+    add_explained_row,
+    apply_help,
+    apply_table_header_help,
+    help_hint,
+)
 
 PRESETS = {
     "Balanced research": SandboxConfig(),
@@ -164,6 +170,7 @@ class SandboxWidget(QWidget):
             "padding:9px;font-weight:650"
         )
         outer.addWidget(banner)
+        outer.addWidget(help_hint())
         splitter = QSplitter(Qt.Orientation.Horizontal)
         config_scroll = QScrollArea()
         config_scroll.setWidgetResizable(True)
@@ -199,11 +206,11 @@ class SandboxWidget(QWidget):
         csv_row.addWidget(self.csv_label, 1)
         self.quality = QLabel("Run a replay to calculate data quality and SHA-256 provenance.")
         self.quality.setWordWrap(True)
-        form.addRow("Source", self.source)
-        form.addRow("Calendar lookback", self.lookback)
-        form.addRow("Imported bar interval", self.csv_seconds)
-        form.addRow("Long-history CSV", csv_row)
-        form.addRow("Integrity", self.quality)
+        add_explained_row(form, "Source", self.source)
+        add_explained_row(form, "Calendar lookback", self.lookback)
+        add_explained_row(form, "Imported bar interval", self.csv_seconds)
+        add_explained_row(form, "Long-history CSV", csv_row)
+        add_explained_row(form, "Integrity", self.quality)
         layout.addWidget(data)
 
         preset_group = QGroupBox("Experiment")
@@ -223,9 +230,9 @@ class SandboxWidget(QWidget):
         saved_row = QHBoxLayout()
         saved_row.addWidget(self.saved_runs)
         saved_row.addWidget(load_saved)
-        preset_form.addRow("Preset", row)
-        preset_form.addRow("Run note", self.notes)
-        preset_form.addRow("Saved runs", saved_row)
+        add_explained_row(preset_form, "Preset", row)
+        add_explained_row(preset_form, "Run note", self.notes)
+        add_explained_row(preset_form, "Saved runs", saved_row)
         layout.addWidget(preset_group)
 
         execution = QGroupBox("Virtual execution model")
@@ -267,7 +274,7 @@ class SandboxWidget(QWidget):
             ("Time in force", self.time_in_force),
             ("Limit offset", self.limit_offset),
         ):
-            execution_form.addRow(title, widget)
+            add_explained_row(execution_form, title, widget)
         self.route_note = QLabel("")
         self.route_note.setWordWrap(True)
         execution_form.addRow(self.route_note)
@@ -313,7 +320,7 @@ class SandboxWidget(QWidget):
             ("Breakout buffer", self.breakout_buffer),
             ("Ensemble votes", self.ensemble_votes),
         ):
-            signal_form.addRow(title, widget)
+            add_explained_row(signal_form, title, widget)
         layout.addWidget(signal)
 
         risk = QGroupBox("Exits and risk budget")
@@ -346,7 +353,7 @@ class SandboxWidget(QWidget):
             ("Volatility target", self.vol_target),
             ("End handling", self.force_flat),
         ):
-            risk_form.addRow(title, widget)
+            add_explained_row(risk_form, title, widget)
         layout.addWidget(risk)
 
         buttons = QGridLayout()
@@ -356,6 +363,9 @@ class SandboxWidget(QWidget):
         self.compare_button = QPushButton("Compare presets")
         self.compare_button.clicked.connect(lambda: asyncio.create_task(self._compare()))
         self.evidence_button = QPushButton("Run full evidence lab")
+        self.evidence_button.setToolTip(
+            "Run sensitivity, cost stress, random-entry, significance, and chronological walk-forward gates."
+        )
         self.evidence_button.clicked.connect(lambda: asyncio.create_task(self._evidence()))
         self.action_lab_button = QPushButton("Train 9-action lab")
         self.action_lab_button.clicked.connect(lambda: asyncio.create_task(self._action_lab()))
@@ -538,6 +548,11 @@ class SandboxWidget(QWidget):
         self.gates_table = self._table(["Gate", "Status", "Observed", "Requirement"])
         self.promotion_label = QLabel("PROMOTION: SHADOW_ONLY until every evidence gate passes.")
         self.promotion_label.setStyleSheet("font-size:14pt;font-weight:700;color:#f2c14e")
+        apply_help(
+            self.promotion_label,
+            "Promotion status",
+            "SHADOW_ONLY cannot unlock orders. LIVE_REVIEW_ELIGIBLE creates a 30-day local certificate but still grants no standing authority.",
+        )
         validation_layout.addWidget(self.promotion_label)
         validation_layout.addWidget(self.walk_table)
         validation_layout.addWidget(self.gates_table)
@@ -599,6 +614,7 @@ class SandboxWidget(QWidget):
     def _table(self, headers: list[str]) -> QTableWidget:
         table = QTableWidget(0, len(headers))
         table.setHorizontalHeaderLabels(headers)
+        apply_table_header_help(table)
         table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         table.verticalHeader().setVisible(False)
         table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -1066,7 +1082,28 @@ class SandboxWidget(QWidget):
                 [gate.name, "PASS" if gate.passed else "FAIL", gate.observed, gate.requirement],
                 1 if gate.passed else -1,
             )
-        self.promotion_label.setText(f"PROMOTION: {report.status} — no mode is automatically enabled.")
+            tooltip = (
+                f"{gate.name}\n"
+                f"Status: {'PASS' if gate.passed else 'FAIL'}\n"
+                f"Observed: {gate.observed}\n"
+                f"Required: {gate.requirement}"
+            )
+            for column in range(self.gates_table.columnCount()):
+                item = self.gates_table.item(row, column)
+                if item is not None:
+                    item.setToolTip(tooltip)
+        passed = sum(gate.passed for gate in report.gates)
+        if report.passed:
+            promotion_text = (
+                f"PROMOTION: {report.status} — {passed}/{len(report.gates)} gates passed; "
+                "a 30-day local certificate was saved."
+            )
+        else:
+            promotion_text = (
+                f"PROMOTION: {report.status} — {passed}/{len(report.gates)} gates passed; "
+                "hover any row to compare observed versus required."
+            )
+        self.promotion_label.setText(promotion_text)
         self.promotion_label.setStyleSheet(
             "font-size:14pt;font-weight:700;color:" + ("#00e507" if report.passed else "#f2c14e")
         )

@@ -35,6 +35,12 @@ from grande_alpha.controller import TradingController, TradingSnapshot
 from grande_alpha.models import Regime
 from grande_alpha.privacy import export_diagnostics
 from grande_alpha.ui.dialogs import FundPlanDialog, LiveGrantDialog
+from grande_alpha.ui.glossary import (
+    ExplainedLabel,
+    GlossaryDialog,
+    apply_table_header_help,
+    term_help,
+)
 from grande_alpha.ui.sandbox_widget import SandboxWidget
 from grande_alpha.ui.settings_dialog import SettingsDialog
 from grande_alpha.ui.welcome_widget import WelcomeWidget
@@ -81,8 +87,13 @@ class MetricCard(QFrame):
         super().__init__()
         self.setObjectName("card")
         layout = QVBoxLayout(self)
-        title_label = QLabel(title)
-        title_label.setObjectName("cardTitle")
+        explanation = term_help(title)
+        if explanation:
+            title_label = ExplainedLabel(title, explanation, compact=True)
+        else:
+            title_label = QLabel(title)
+            title_label.setObjectName("cardTitle")
+        self.title = title_label
         self.value = QLabel(value)
         self.value.setObjectName("cardValue")
         layout.addWidget(title_label)
@@ -384,6 +395,10 @@ class MainWindow(QMainWindow):
         self.help_menu = menu_bar.addMenu("Help")
         self.quickstart_action = self._action("Quick Start…", self._show_quickstart)
         self.help_menu.addAction(self.quickstart_action)
+        self.glossary_action = self._action(
+            "Terminology && Glossary…", self._show_glossary, "F1"
+        )
+        self.help_menu.addAction(self.glossary_action)
         self.account_scope_action = self._action(
             "Account Scope && Privacy…", self._show_account_scope
         )
@@ -395,12 +410,16 @@ class MainWindow(QMainWindow):
     def _table(self, headers: list[str]) -> QTableWidget:
         table = QTableWidget(0, len(headers))
         table.setHorizontalHeaderLabels(headers)
+        apply_table_header_help(table)
         table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         table.verticalHeader().setVisible(False)
         table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         table.setAlternatingRowColors(True)
         return table
+
+    def _show_glossary(self) -> None:
+        GlossaryDialog(self).exec()
 
     def _open_sandbox(self) -> None:
         index = self.tabs.indexOf(self.sandbox_widget)

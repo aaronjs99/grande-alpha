@@ -18,6 +18,10 @@
   task so connect/disconnect no longer crosses AnyIO cancel-scope task boundaries.
 - Bound Desktop and Start-menu shortcuts to the running app's Windows identity, added a readiness
   check, and verified that a branded taskbar pin survives close and relaunch.
+- Added dashed-underlined contextual terms across the dashboard, Settings, Sandbox, and live-session
+  review, plus hover/click explanations, accessible descriptions, evidence-row help, and an F1 glossary.
+- Made disabled Settings saves explain the exact blocker and how to preserve broker-only or research
+  changes without attempting an ineligible live-order permission.
 
 ## 0.10.0 - 2026-08-10
 

@@ -2,6 +2,7 @@ import asyncio
 import json
 from datetime import timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from PySide6.QtCore import Qt
@@ -17,6 +18,8 @@ from grande_alpha.models import Account, LiveGrant, Portfolio, Position, Quote, 
 from grande_alpha.privacy import export_diagnostics
 from grande_alpha.sandbox import SandboxConfig, SandboxReplayEngine
 from grande_alpha.storage import AuditStore
+from grande_alpha.ui.dialogs import LiveGrantDialog
+from grande_alpha.ui.glossary import TERM_HELP, ExplainedLabel, GlossaryDialog
 from grande_alpha.ui.main_window import MainWindow
 from grande_alpha.ui.sandbox_widget import SandboxWidget
 from grande_alpha.ui.settings_dialog import LIVE_PHRASE, SettingsDialog
@@ -143,6 +146,9 @@ def test_main_window_exposes_complete_desktop_navigation(tmp_path) -> None:
     assert window.refresh_action.shortcut().toString() == "F5"
     assert window.full_screen_action.shortcut().toString() == "F11"
     assert window.stop_cancel_action.shortcut().toString() == "Ctrl+Shift+X"
+    assert window.glossary_action.shortcut().toString() == "F1"
+    assert isinstance(window.account_card.title, ExplainedLabel)
+    assert "dedicated Robinhood account" in window.account_card.title.toolTip()
     assert not window.refresh_action.isEnabled()
     assert not window.flatten_action.isEnabled()
 
@@ -214,6 +220,86 @@ def test_live_setting_stays_blocked_without_passing_evidence() -> None:
     dialog.live_phrase.setText(LIVE_PHRASE)
     assert not save.isEnabled()
     assert "shadow-only" in dialog.validation.text()
+    assert "Uncheck real-order automation" in dialog.validation.text()
+    assert "Uncheck real-order automation" in save.toolTip()
+
+
+def test_glossary_terms_are_dashed_discoverable_and_searchable() -> None:
+    qt_app()
+    label = ExplainedLabel("Trading session")
+
+    assert "dashed" in label.styleSheet()
+    assert "Trading session" in label.toolTip()
+    assert label.accessibleName() == "Trading session"
+    assert label.accessibleDescription() == TERM_HELP["Trading session"]
+    assert label.whatsThis() == TERM_HELP["Trading session"]
+    assert label.cursor().shape() == Qt.CursorShape.WhatsThisCursor
+
+    glossary = GlossaryDialog()
+    glossary.search.setText("bid-ask")
+    visible = [
+        glossary.terms.item(row).text()
+        for row in range(glossary.terms.count())
+        if not glossary.terms.item(row).isHidden()
+    ]
+    assert "Base spread" in visible
+    assert glossary.definition.text()
+    glossary.close()
+
+
+def test_settings_sandbox_and_live_grant_expose_contextual_help(tmp_path) -> None:
+    qt_app()
+    settings = SettingsDialog(AppConfig(), live_evidence_ready=False)
+    settings_terms = {label.text() for label in settings.findChildren(ExplainedLabel)}
+    assert {"Trading session", "Completed analysis bar", "Local credential"} <= settings_terms
+    assert settings.evidence_status.toolTip()
+
+    store = AuditStore(tmp_path / "glossary.db")
+    sandbox = SandboxWidget(store, allow_remote_data=False)
+    sandbox_terms = {label.text() for label in sandbox.findChildren(ExplainedLabel)}
+    assert {"Source", "Slippage / side", "Hard stop", "Research strategy"} <= sandbox_terms
+    assert sandbox.evidence_button.toolTip()
+    assert sandbox.gates_table.horizontalHeaderItem(0).toolTip()
+    assert sandbox.promotion_label.toolTip()
+    sandbox._show_evidence(
+        [],
+        None,
+        SimpleNamespace(
+            passed=False,
+            status="SHADOW_ONLY",
+            dataset_hash="test-dataset-hash",
+            gates=[
+                SimpleNamespace(
+                    name="Data breadth",
+                    passed=False,
+                    observed="5 sessions",
+                    requirement="At least 120 sessions",
+                )
+            ],
+        ),
+        SimpleNamespace(
+            trials=100,
+            median_return_pct=0.0,
+            percentile_10=-1.0,
+            percentile_90=1.0,
+            strategy_percentile=50.0,
+        ),
+    )
+    assert "5 sessions" in sandbox.gates_table.item(0, 0).toolTip()
+    assert "0/1 gates passed" in sandbox.promotion_label.text()
+
+    account = Account("123456789", "Agentic", "cash", True, "active")
+    grant = LiveGrantDialog(account, Portfolio(100, 100, 100), AppConfig())
+    grant_terms = {label.text() for label in grant.findChildren(ExplainedLabel)}
+    assert {"Session duration", "Max session loss", "Authorized session"} <= grant_terms
+    authorize = grant.buttons.button(QDialogButtonBox.StandardButton.Ok)
+    assert not authorize.isEnabled()
+    assert "Check the attestation" in authorize.toolTip()
+
+    grant.close()
+    sandbox.close()
+    store.close()
+    settings.close()
 
 
 def test_settings_dialog_is_scrollable_and_explains_agentic_account_scope() -> None:
