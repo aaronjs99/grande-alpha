@@ -36,6 +36,7 @@ def redact(value: Any, key: str = "") -> Any:
 def public_config(config: AppConfig) -> dict[str, Any]:
     allowed = {
         "onboarding_version",
+        "cadence_version",
         "disclosure_version",
         "broker_connection_enabled",
         "live_trading_enabled",
@@ -43,6 +44,7 @@ def public_config(config: AppConfig) -> dict[str, Any]:
         "personal_ledger_enabled",
         "market_history_retention_days",
         "poll_seconds",
+        "reconcile_seconds",
         "bar_seconds",
         "warmup_bars",
         "fast_ema",

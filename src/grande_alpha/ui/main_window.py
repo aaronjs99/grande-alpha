@@ -95,8 +95,12 @@ class MainWindow(QMainWindow):
         controller.connection_busy.connect(self._on_busy)
         self.timer = QTimer(self)
         self.timer.setInterval(int(config.poll_seconds * 1000))
-        self.timer.timeout.connect(lambda: asyncio.create_task(self.controller.refresh()))
+        self.timer.timeout.connect(lambda: asyncio.create_task(self.controller.refresh_quotes()))
         self.timer.start()
+        self.reconcile_timer = QTimer(self)
+        self.reconcile_timer.setInterval(int(config.reconcile_seconds * 1000))
+        self.reconcile_timer.timeout.connect(lambda: asyncio.create_task(self.controller.reconcile()))
+        self.reconcile_timer.start()
 
     def _build_ui(self) -> None:
         root = QWidget()
@@ -277,7 +281,9 @@ class MainWindow(QMainWindow):
         previous = self.config
         updated = dialog.updated_config()
         self.config = updated
-        self.controller.config = updated
+        self.controller.update_config(updated)
+        self.timer.setInterval(int(updated.poll_seconds * 1000))
+        self.reconcile_timer.setInterval(int(updated.reconcile_seconds * 1000))
         save_config(updated)
         self.welcome_widget.update_config(updated)
         self.sandbox_widget.set_remote_data_allowed(updated.remote_market_data_enabled)

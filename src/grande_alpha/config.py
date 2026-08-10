@@ -13,10 +13,12 @@ LEGACY_APP_NAME = "MomentumTrader"
 MCP_URL = "https://agent.robinhood.com/mcp/trading"
 ONBOARDING_VERSION = 1
 DISCLOSURE_VERSION = "2026-08"
+CADENCE_VERSION = 1
 
 
 @dataclass
 class AppConfig:
+    cadence_version: int = CADENCE_VERSION
     onboarding_version: int = 0
     disclosure_version: str = ""
     broker_connection_enabled: bool = False
@@ -24,8 +26,11 @@ class AppConfig:
     remote_market_data_enabled: bool = False
     personal_ledger_enabled: bool = False
     market_history_retention_days: int = 90
-    poll_seconds: float = 2.0
-    bar_seconds: int = 60
+    # Retail low-latency profile: quote reads are completion-gated, decisions use
+    # completed bars, and account/order state is reconciled on a separate clock.
+    poll_seconds: float = 1.0
+    reconcile_seconds: float = 5.0
+    bar_seconds: int = 5
     warmup_bars: int = 24
     fast_ema: int = 8
     slow_ema: int = 21
@@ -83,9 +88,25 @@ def load_config() -> AppConfig:
         config = AppConfig()
         save_config(config)
         return config
-    raw = json.loads(path.read_text(encoding="utf-8"))
+    raw = migrate_config_payload(json.loads(path.read_text(encoding="utf-8")))
     allowed = AppConfig.__dataclass_fields__.keys()
-    return AppConfig(**{key: value for key, value in raw.items() if key in allowed})
+    config = AppConfig(**{key: value for key, value in raw.items() if key in allowed})
+    if json.loads(path.read_text(encoding="utf-8")) != raw:
+        save_config(config)
+    return config
+
+
+def migrate_config_payload(raw: dict) -> dict:
+    """Upgrade pre-cadence settings; those releases had no timing controls in the UI."""
+    upgraded = dict(raw)
+    if int(upgraded.get("cadence_version", 0)) < CADENCE_VERSION:
+        upgraded.update(
+            cadence_version=CADENCE_VERSION,
+            poll_seconds=1.0,
+            reconcile_seconds=5.0,
+            bar_seconds=5,
+        )
+    return upgraded
 
 
 def save_config(config: AppConfig) -> None:
