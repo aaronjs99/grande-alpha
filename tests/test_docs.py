@@ -19,6 +19,7 @@ def test_required_operating_docs_exist() -> None:
         "EVIDENCE_LAB.md",
         "SHADOW_MODE.md",
         "LOW_LATENCY_EXECUTION.md",
+        "WINDOWS_INSTALLATION.md",
     }
     assert required <= {path.name for path in (ROOT / "docs").glob("*.md")}
 

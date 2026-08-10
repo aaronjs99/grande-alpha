@@ -1,6 +1,7 @@
 $ErrorActionPreference = 'Stop'
 $ProjectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
-$PythonExe = Join-Path $ProjectRoot '.venv\Scripts\python.exe'
+. (Join-Path $ProjectRoot 'runtime-path.ps1')
+$PythonExe = Get-GrandeAlphaPython $ProjectRoot
 
 & $PythonExe -m ruff check src tests
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

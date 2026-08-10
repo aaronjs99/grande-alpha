@@ -1,6 +1,7 @@
 $ErrorActionPreference = 'Stop'
 $ProjectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
-$PythonExe = Join-Path $ProjectRoot '.venv\Scripts\pythonw.exe'
+. (Join-Path $ProjectRoot 'runtime-path.ps1')
+$PythonExe = Get-GrandeAlphaPython $ProjectRoot -Windowed
 
 if (-not (Test-Path -LiteralPath $PythonExe)) {
     throw 'Run setup.ps1 first.'

@@ -16,6 +16,7 @@ from grande_alpha.models import Account, LiveGrant, Portfolio, Quote, utc_now
 from grande_alpha.privacy import export_diagnostics
 from grande_alpha.sandbox import SandboxConfig, SandboxReplayEngine
 from grande_alpha.storage import AuditStore
+from grande_alpha.ui.main_window import MainWindow
 from grande_alpha.ui.sandbox_widget import SandboxWidget
 from grande_alpha.ui.settings_dialog import LIVE_PHRASE, SettingsDialog
 
@@ -65,7 +66,23 @@ def test_public_defaults_are_research_only() -> None:
     assert config.poll_seconds == 1.0
     assert config.reconcile_seconds == 5.0
     assert config.bar_seconds == 5
-    assert __version__ == "0.9.0"
+    assert __version__ == "0.9.1"
+
+
+def test_main_window_starts_with_independent_low_latency_clocks(tmp_path) -> None:
+    qt_app()
+    store = AuditStore(tmp_path / "audit.db")
+    config = AppConfig(poll_seconds=0.25, reconcile_seconds=2.0, bar_seconds=1)
+    controller = TradingController(DisabledBroker(), config, store)
+    window = MainWindow(controller, config)
+
+    assert window.timer.interval() == 250
+    assert window.reconcile_timer.interval() == 2_000
+    assert controller.bar_builder.seconds == 1
+    assert not controller.snapshot.connected
+
+    window.close()
+    store.close()
 
 
 class CadenceBroker(DisabledBroker):
@@ -254,12 +271,27 @@ def test_sandbox_trade_timeline_marks_every_virtual_fill(tmp_path) -> None:
     store.close()
 
 
-def test_windows_build_uses_active_python_when_local_venv_is_absent() -> None:
+def test_windows_scripts_share_short_managed_runtime_fallback() -> None:
     root = Path(__file__).resolve().parents[1]
     script = (root / "build.ps1").read_text(encoding="utf-8")
+    runtime = (root / "runtime-path.ps1").read_text(encoding="utf-8")
 
-    assert "Test-Path -LiteralPath $VenvPython" in script
+    assert "Get-GrandeAlphaPython" in script
     assert "else { 'python' }" in script
+    assert "LOCALAPPDATA" in runtime
+    assert "GRANDE_ALPHA_RUNTIME_DIR" in runtime
+
+
+def test_release_labels_unsigned_binary_and_produces_source_bundle() -> None:
+    root = Path(__file__).resolve().parents[1]
+    script = (root / "release.ps1").read_text(encoding="utf-8")
+    doctor = (root / "doctor.ps1").read_text(encoding="utf-8")
+
+    assert "unsigned-windows-x64" in script
+    assert "UNSIGNED_BUILD.txt" in script
+    assert "windows-source" in script
+    assert "Get-AuthenticodeSignature" in doctor
+    assert "SOURCE APP READY" in doctor
 
 
 def test_sandbox_exposes_exact_nine_action_matrix_and_full_history_source(tmp_path) -> None:

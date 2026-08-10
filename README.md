@@ -17,16 +17,19 @@ GRANDE Alpha is independent software. It is not affiliated with, endorsed by, or
 
 ## Start here
 
-For a packaged build, run `GRANDEAlpha.exe`, complete onboarding, and select **Research Sandbox**. For source development:
+On Windows, the immediately usable path is the signed-Python source launcher:
 
 ```powershell
 .\setup.ps1
+.\doctor.ps1 -Full
 .\run.ps1
-.\verify.ps1
-.\build.ps1
 ```
 
-The executable is written to `dist\GRANDEAlpha\GRANDEAlpha.exe`. See [Quickstart](docs/QUICKSTART.md), [Safety](docs/SAFETY_AND_COMPLIANCE.md), [Privacy](PRIVACY.md), and the complete [documentation index](docs/README.md).
+`build.ps1` writes an **unsigned release candidate** to `dist\GRANDEAlpha`; Windows Smart App Control or enterprise Code Integrity may block it until it is Authenticode-signed with a trusted publisher identity. See [Quickstart](docs/QUICKSTART.md), [Windows installation](docs/WINDOWS_INSTALLATION.md), [Safety](docs/SAFETY_AND_COMPLIANCE.md), [Privacy](PRIVACY.md), and the complete [documentation index](docs/README.md).
+
+Source bundles place their managed Python environment at `%LOCALAPPDATA%\GRANDEAlpha\runtime` to
+avoid PySide6 installation failures caused by deeply nested Windows extraction paths. An existing
+developer checkout `.venv` remains preferred.
 
 ## What it is—and is not
 
@@ -40,7 +43,7 @@ The optional adapter uses Robinhood's official Trading MCP endpoint and browser 
 
 ## Project status
 
-Version `0.9.0` adds separated low-latency quote, decision, and reconciliation clocks while retaining the research-validation gates. Full shared-history daily research aligns 4,147 QQQ/TQQQ/SQQQ sessions from 2010-02-11 through 2026-08-07. The nine-action holdout policy chose cash: 0.00% return and drawdown. On the corrected 40-session intraday benchmark, every tested strategy lost money after modeled costs; the source-faithful first-half-hour rule returned -0.77%. Long-run fixed and volatility-managed TQQQ benchmarks were historically profitable but are Nasdaq exposure, not demonstrated alpha or future-profit evidence. No strategy has a live certificate. See the [0.8 research upgrade](docs/RESEARCH_UPGRADE_2026-08-09.md), [Action Lab methodology](docs/ACTION_LAB.md), and [public release checklist](docs/PUBLIC_RELEASE_CHECKLIST.md).
+Version `0.9.1` adds separated low-latency quote, decision, and reconciliation clocks plus an honest Windows deployment path and readiness doctor. Full shared-history daily research aligns 4,147 QQQ/TQQQ/SQQQ sessions from 2010-02-11 through 2026-08-07. The nine-action holdout policy chose cash: 0.00% return and drawdown. On the corrected 40-session intraday benchmark, every tested strategy lost money after modeled costs; the source-faithful first-half-hour rule returned -0.77%. Long-run fixed and volatility-managed TQQQ benchmarks were historically profitable but are Nasdaq exposure, not demonstrated alpha or future-profit evidence. No strategy has a live certificate. See the [0.8 research upgrade](docs/RESEARCH_UPGRADE_2026-08-09.md), [Action Lab methodology](docs/ACTION_LAB.md), and [public release checklist](docs/PUBLIC_RELEASE_CHECKLIST.md).
 
 ## Contributing and support
 

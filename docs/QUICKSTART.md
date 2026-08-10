@@ -1,8 +1,19 @@
 # Quickstart
 
-## Packaged application
+## Source application (works without a GRANDE Alpha signing certificate)
 
-1. Start `GRANDEAlpha.exe`.
+```powershell
+.\setup.ps1
+.\doctor.ps1 -Full
+.\run.ps1
+```
+
+The launcher uses the trusted Python installation on the machine. Review
+[Windows installation](WINDOWS_INSTALLATION.md) before distributing a binary.
+
+## Research session
+
+1. Start with `.\run.ps1` or `Start GRANDE Alpha.cmd`.
 2. Read the first-run disclosures and leave every optional capability off.
 3. Open **Research Sandbox**.
 4. Use the deterministic scenario or import CSV data you are permitted to use.
@@ -34,4 +45,6 @@ Removing broker permission disconnects the adapter. Removing real-order permissi
 .\run.ps1
 ```
 
-Use `.\build.ps1` for a local Windows build and `.\release.ps1` for a reviewed release bundle.
+Use `.\build.ps1` for an unsigned local Windows candidate and `.\release.ps1` for both an explicitly
+labeled unsigned candidate and a runnable source bundle. Do not distribute the executable as a
+finished public binary until it has a valid Authenticode signature.
