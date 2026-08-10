@@ -13,6 +13,7 @@ STRATEGY_NAMES = {
     "ema_momentum": "EMA momentum",
     "multi_horizon_trend": "Multi-horizon trend",
     "close_momentum": "Closing-window momentum",
+    "first_half_hour_momentum": "First-half-hour momentum",
     "opening_breakout": "Opening-range breakout",
     "conservative_ensemble": "Conservative agreement ensemble",
 }
@@ -236,6 +237,62 @@ class CloseMomentumStrategy:
         self.last_signal = Signal(Regime.FLAT, 0.0, "Strategy reset", timestamp=utc_now())
 
 
+class FirstHalfHourMomentumStrategy:
+    """Use the completed first half-hour return to signal only in the last half-hour."""
+
+    def __init__(self, config: StrategyConfig) -> None:
+        config.validate()
+        self.config = config
+        self.session_date = None
+        self.previous_close: float | None = None
+        self.first_half_hour_close: float | None = None
+        self.last_session_mark: float | None = None
+        self.last_signal = Signal(Regime.FLAT, 0.0, "Waiting for first-half-hour evidence")
+
+    def on_bar(self, bar: Bar) -> Signal:
+        local = bar.start.astimezone(EASTERN)
+        if self.session_date != local.date():
+            if self.session_date is not None:
+                self.previous_close = self.last_session_mark
+            self.session_date = local.date()
+            self.first_half_hour_close = None
+        minute = local.hour * 60 + local.minute
+        if 9 * 60 + 30 <= minute < 10 * 60:
+            self.first_half_hour_close = bar.close
+        self.last_session_mark = bar.close
+
+        active = 15 * 60 + 30 <= minute < 16 * 60
+        if self.previous_close is None or self.first_half_hour_close is None:
+            regime, confidence = Regime.FLAT, 0.0
+            reason = "Prior close or completed first half-hour is unavailable"
+        else:
+            return_bps = (self.first_half_hour_close / self.previous_close - 1.0) * 10_000
+            threshold = self.config.close_momentum_bps
+            if not active:
+                regime, confidence = Regime.FLAT, 0.0
+                reason = f"Last-half-hour window inactive; first-half-hour return {return_bps:+.1f} bps"
+            elif return_bps >= threshold:
+                regime = Regime.BULLISH
+                confidence = min(1.0, abs(return_bps) / max(threshold * 4.0, 1.0))
+                reason = f"First-half-hour QQQ return {return_bps:+.1f} bps predicts closing direction"
+            elif return_bps <= -threshold:
+                regime = Regime.BEARISH
+                confidence = min(1.0, abs(return_bps) / max(threshold * 4.0, 1.0))
+                reason = f"First-half-hour QQQ return {return_bps:+.1f} bps predicts closing direction"
+            else:
+                regime, confidence = Regime.FLAT, 0.0
+                reason = f"First-half-hour QQQ return {return_bps:+.1f} bps is below threshold"
+        self.last_signal = Signal(regime, confidence, reason, timestamp=bar.start)
+        return self.last_signal
+
+    def reset(self) -> None:
+        self.session_date = None
+        self.previous_close = None
+        self.first_half_hour_close = None
+        self.last_session_mark = None
+        self.last_signal = Signal(Regime.FLAT, 0.0, "Strategy reset", timestamp=utc_now())
+
+
 class OpeningRangeBreakoutStrategy:
     """Causal breakout using only the completed opening range."""
 
@@ -296,7 +353,7 @@ class ConservativeEnsembleStrategy:
         self.components: list[SignalStrategy] = [
             MomentumStrategy(config),
             MultiHorizonTrendStrategy(config),
-            CloseMomentumStrategy(config),
+            FirstHalfHourMomentumStrategy(config),
             OpeningRangeBreakoutStrategy(config),
         ]
         self.last_signal = Signal(Regime.FLAT, 0.0, "Waiting for ensemble components")
@@ -329,6 +386,7 @@ def build_strategy(config: StrategyConfig) -> SignalStrategy:
         "ema_momentum": MomentumStrategy,
         "multi_horizon_trend": MultiHorizonTrendStrategy,
         "close_momentum": CloseMomentumStrategy,
+        "first_half_hour_momentum": FirstHalfHourMomentumStrategy,
         "opening_breakout": OpeningRangeBreakoutStrategy,
         "conservative_ensemble": ConservativeEnsembleStrategy,
     }

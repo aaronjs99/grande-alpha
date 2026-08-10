@@ -12,12 +12,13 @@ order or predict future profit. The normal outcome is `SHADOW_ONLY`.
   is broad or a single lucky point.
 - **Cost stress:** the candidate reruns at 1x, 2x, and 3x spread, slippage, and commissions.
 - **Random-entry control:** seeded random direction/entry trials provide a basic luck benchmark.
-- **Walk-forward:** each fold selects a configuration using earlier training sessions and measures
-  it only on later, non-overlapping test sessions.
+- **Purged walk-forward:** each fold selects a configuration using earlier training sessions,
+  leaves a configurable session gap, and measures it only on later test sessions.
 - **Profit concentration:** checks whether one day accounts for most positive daily P/L.
-- **Trial-adjusted significance:** applies a transparent one-sided normal approximation with a
-  Bonferroni familywise correction across every sensitivity candidate. This is a conservative
-  screen, not a Deflated Sharpe Ratio and not proof of a stable distribution.
+- **Trial ledger:** unique candidate fingerprints are committed by dataset before promotion is
+  evaluated, so previously registered trials cannot disappear from the reported search count.
+- **Trial-adjusted significance:** applies both a Bonferroni familywise correction and the
+  Deflated Sharpe Ratio's selection-bias, skew, and kurtosis adjustment.
 
 ## Current gates
 
@@ -33,6 +34,7 @@ order or predict future profit. The normal outcome is `SHADOW_ONLY`.
 | After-cost quality | Profit factor at least 1.20 and positive expectancy |
 | Random-entry control | Strategy at or above the 75th percentile of seeded random trials |
 | Trial-adjusted significance | One-sided Bonferroni-adjusted daily-P/L p-value at most 0.05 |
+| Deflated Sharpe | At least 95% probability after registered-trial and non-normality adjustment |
 | Profit concentration | No single day over 50% of positive daily P/L |
 | Drawdown | No more than 5% in the research configuration |
 | Ending flat | No virtual position remains open at the end of replay |

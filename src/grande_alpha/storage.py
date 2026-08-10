@@ -136,6 +136,17 @@ class AuditStore:
                 );
                 CREATE INDEX IF NOT EXISTS idx_research_promotions_fingerprint_time
                     ON research_promotions(strategy_fingerprint,created_at DESC);
+                CREATE TABLE IF NOT EXISTS research_trials (
+                    id INTEGER PRIMARY KEY,
+                    created_at TEXT NOT NULL,
+                    dataset_hash TEXT NOT NULL,
+                    trial_fingerprint TEXT NOT NULL,
+                    config_json TEXT NOT NULL,
+                    metrics_json TEXT NOT NULL,
+                    UNIQUE(dataset_hash,trial_fingerprint)
+                );
+                CREATE INDEX IF NOT EXISTS idx_research_trials_dataset
+                    ON research_trials(dataset_hash,id);
                 """
             )
             promotion_columns = {
@@ -392,6 +403,39 @@ class AuditStore:
                 "SELECT * FROM sandbox_runs ORDER BY created_at DESC LIMIT ?", (limit,)
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def record_research_trials(
+        self, dataset_hash: str, trials: list[dict[str, Any]]
+    ) -> int:
+        """Commit unique candidate trials before promotion statistics are evaluated."""
+
+        with self._lock, self._connection:
+            before = self._connection.total_changes
+            self._connection.executemany(
+                """INSERT OR IGNORE INTO research_trials(
+                    created_at,dataset_hash,trial_fingerprint,config_json,metrics_json
+                ) VALUES(?,?,?,?,?)""",
+                [
+                    (
+                        utc_now().isoformat(),
+                        dataset_hash,
+                        str(trial["trial_fingerprint"]),
+                        json.dumps(trial["config"], sort_keys=True, default=str),
+                        json.dumps(trial["metrics"], sort_keys=True, default=str),
+                    )
+                    for trial in trials
+                ],
+            )
+            inserted = self._connection.total_changes - before
+        return inserted
+
+    def research_trial_count(self, dataset_hash: str) -> int:
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT COUNT(*) AS count FROM research_trials WHERE dataset_hash=?",
+                (dataset_hash,),
+            ).fetchone()
+        return int(row["count"] if row else 0)
 
     def record_research_promotion(
         self,

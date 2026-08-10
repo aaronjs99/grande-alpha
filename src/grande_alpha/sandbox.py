@@ -204,6 +204,7 @@ class SandboxResult:
     total_execution_cost: float = 0.0
     ending_position: str | None = None
     daily_pnl: dict[str, float] = field(default_factory=dict)
+    daily_returns: list[float] = field(default_factory=list)
 
     def metrics(self) -> dict[str, Any]:
         return {
@@ -228,6 +229,7 @@ class SandboxResult:
             "tqqqs_buy_hold_pct": self.tqqqs_buy_hold_pct,
             "sqqqs_buy_hold_pct": self.sqqqs_buy_hold_pct,
             "daily_pnl": self.daily_pnl,
+            "daily_returns": self.daily_returns,
             "warnings": self.warnings,
         }
 
@@ -428,6 +430,7 @@ class SandboxReplayEngine:
         turnover_dollars = sum(fill.quantity * fill.price for fill in fills)
         execution_cost = sum(fill.execution_cost for fill in fills)
         daily_pnl = self._daily_pnl(curve)
+        daily_returns = self._daily_returns(curve, self.config.initial_cash)
         warnings = ["Historical replay is not evidence of future profitability"]
         if not closed_pnl:
             warnings.insert(0, "No complete virtual round trips occurred with these settings")
@@ -465,6 +468,7 @@ class SandboxReplayEngine:
             total_execution_cost=execution_cost,
             ending_position=ending_position,
             daily_pnl=daily_pnl,
+            daily_returns=daily_returns,
         )
 
     def _transition(
@@ -695,6 +699,20 @@ class SandboxReplayEngine:
                 point.equity
             )
         return {day: values[-1] - values[0] for day, values in grouped.items() if values}
+
+    @staticmethod
+    def _daily_returns(curve: list[EquityPoint], initial_equity: float) -> list[float]:
+        ending_equity: dict[str, float] = {}
+        for point in curve:
+            day = point.timestamp.astimezone(EASTERN).date().isoformat()
+            ending_equity[day] = point.equity
+        previous = initial_equity
+        returns = []
+        for equity in ending_equity.values():
+            if previous > 0:
+                returns.append(equity / previous - 1.0)
+            previous = equity
+        return returns
 
 
 def sandbox_config_path() -> Path:

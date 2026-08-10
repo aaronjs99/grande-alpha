@@ -96,3 +96,19 @@ def test_live_evidence_is_exact_strategy_scoped(tmp_path: Path) -> None:
         is None
     )
     store.close()
+
+
+def test_research_trial_ledger_counts_unique_candidates_per_dataset(tmp_path: Path) -> None:
+    store = AuditStore(tmp_path / "audit.db")
+    trial = {
+        "trial_fingerprint": "candidate-a",
+        "config": {"strategy_name": "first_half_hour_momentum"},
+        "metrics": {"return_pct": -0.5},
+    }
+
+    assert store.record_research_trials("dataset-a", [trial]) == 1
+    assert store.record_research_trials("dataset-a", [trial]) == 0
+    assert store.record_research_trials("dataset-b", [trial]) == 1
+    assert store.research_trial_count("dataset-a") == 1
+    assert store.research_trial_count("dataset-b") == 1
+    store.close()

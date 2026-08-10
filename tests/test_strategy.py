@@ -7,6 +7,7 @@ from grande_alpha.strategy import (
     BarBuilder,
     CloseMomentumStrategy,
     ConservativeEnsembleStrategy,
+    FirstHalfHourMomentumStrategy,
     MomentumStrategy,
     MultiHorizonTrendStrategy,
     OpeningRangeBreakoutStrategy,
@@ -90,6 +91,25 @@ def test_close_momentum_is_inactive_until_final_half_hour() -> None:
     strategy.on_bar(open_bar)
     assert strategy.on_bar(before_close).regime == Regime.FLAT
     assert strategy.on_bar(close_window).regime == Regime.BULLISH
+
+
+def test_first_half_hour_momentum_uses_prior_close_and_fixed_morning_signal() -> None:
+    strategy = FirstHalfHourMomentumStrategy(
+        StrategyConfig(strategy_name="first_half_hour_momentum", close_momentum_bps=15)
+    )
+    prior_close = Bar("QQQ", datetime(2026, 8, 7, 19, 55, tzinfo=UTC), 100, 100, 100, 100, 10)
+    morning_open = Bar("QQQ", datetime(2026, 8, 10, 13, 30, tzinfo=UTC), 100, 101, 100, 101, 10)
+    morning_end = Bar("QQQ", datetime(2026, 8, 10, 13, 55, tzinfo=UTC), 101, 102, 101, 102, 10)
+    midday_reversal = Bar("QQQ", datetime(2026, 8, 10, 18, 0, tzinfo=UTC), 95, 95, 94, 94, 10)
+    close_window = Bar("QQQ", datetime(2026, 8, 10, 19, 30, tzinfo=UTC), 94, 94, 93, 93, 10)
+
+    strategy.on_bar(prior_close)
+    strategy.on_bar(morning_open)
+    strategy.on_bar(morning_end)
+    assert strategy.on_bar(midday_reversal).regime == Regime.FLAT
+    signal = strategy.on_bar(close_window)
+    assert signal.regime == Regime.BULLISH
+    assert "first-half-hour" in signal.reason.lower()
 
 
 def test_opening_breakout_uses_only_completed_opening_range() -> None:

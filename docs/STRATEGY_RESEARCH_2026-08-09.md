@@ -1,12 +1,13 @@
 # Strategy research and 0.6.0 benchmark
 
-## Outcome
+## Outcome — corrected in 0.8.0
 
-This release adds five auditable hypothesis families, not a promise of profit. On the frozen
-40-session benchmark below, closing-window momentum was the only positive candidate after modeled
-costs. It still failed the complete evidence policy because drawdown was 8.88%, only four
-walk-forward folds were available, and the fixed-candidate test folds contained only 18 round
-trips. Its status is **SHADOW_ONLY**. No candidate received a live certificate.
+The previously published `+4.27%` closing-window result was invalid. A bar-count hold calculation
+treated overnight gaps as if no time elapsed, allowing unintended overnight exposure. Version
+0.7 corrected elapsed time and version 0.8 reran the frozen hash. Closing momentum is now `-2.94%`;
+every candidate is negative after modeled costs. All strategies remain **SHADOW_ONLY** and no
+candidate has a live certificate. The old positive number and its static trade image must not be
+used as performance evidence.
 
 ## Frozen dataset and assumptions
 
@@ -41,20 +42,19 @@ The same-data ranking is exploratory, and selecting the best row makes that row 
 | EMA balanced | -4.78% | -$2.39 | 5.00% | 0.52 | 126 | -5.93% | 66 | 0% | -0.64% | 82 |
 | EMA fast | -4.34% | -$2.17 | 4.54% | 0.30 | 87 | -5.80% | 89 | 0% | -0.61% | 62 |
 | EMA slow | -2.14% | -$1.07 | 3.80% | 0.70 | 78 | -3.69% | 59 | 25% | -0.34% | 49 |
-| Closing momentum | +4.27% | +$2.14 | 8.88% | 1.23 | 37 | +3.35% | 94 | 75% | +0.91% | 18 |
+| Closing momentum | -2.94% | -$1.47 | 4.59% | 0.54 | 40 | -4.96% | 47 | 0% | -0.53% | 15 |
 | Multi-horizon trend | -4.83% | -$2.41 | 5.05% | 0.40 | 104 | -6.97% | 64 | 0% | -0.47% | 63 |
 | Opening breakout | -0.66% | -$0.33 | 2.43% | 0.93 | 101 | -3.25% | 81 | 50% | +0.12% | 55 |
 | Agreement ensemble | -5.27% | -$2.63 | 5.56% | 0.40 | 103 | -6.79% | 62 | 25% | -0.45% | 62 |
 
-Every row ended flat. The four available folds are below the policy minimum of five; the built-in
+Every row ended flat. The purged fold set is below the policy minimum of five; the built-in
 5-minute source also falls below the new 120-session breadth gate. A lawful long-history import and
 a genuinely untouched final holdout are required before another promotion attempt.
 
-## Virtual sales timeline
+## Legacy virtual sales timeline — invalidated
 
-The 0.6.1 Replay view adds the interactive version of this plot. Upward triangles are purchases,
-downward triangles are profitable sales, and X markers are losing sales. The static preview uses
-the exact frozen closing-momentum configuration and dataset above.
+The image below is retained only as an audit artifact showing the former behavior. It includes the
+invalidated overnight result and is not a current performance plot.
 
 ![Sandbox virtual trade timeline](images/sandbox_trade_timeline.png)
 

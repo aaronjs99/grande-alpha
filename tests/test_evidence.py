@@ -1,10 +1,13 @@
 from grande_alpha.evidence import (
     candidate_grid,
     cost_stress,
+    deflated_sharpe_ratio,
+    expected_maximum_sharpe,
     parameter_sweep,
     promotion_report,
     random_entry_control,
     strategy_fingerprint,
+    walk_forward,
 )
 from grande_alpha.historical import deterministic_demo
 from grande_alpha.sandbox import SandboxConfig, SandboxReplayEngine
@@ -29,6 +32,7 @@ def test_evidence_pipeline_is_deterministic_and_never_auto_promotes_weak_data() 
     assert {gate.name for gate in report.gates} >= {
         "Closed-trade sample",
         "After-cost quality",
+        "Deflated Sharpe",
         "Random-entry control",
         "Data recency",
     }
@@ -50,3 +54,28 @@ def test_fingerprint_binds_strategy_and_bar_interval() -> None:
     assert strategy_fingerprint(base, "1m") != strategy_fingerprint(
         SandboxConfig(strategy_name="close_momentum"), "1m"
     )
+
+
+def test_deflated_sharpe_penalizes_trial_search_and_negative_returns() -> None:
+    positive = [0.002, -0.0005, 0.0015, 0.0002] * 40
+    negative = [-value for value in positive]
+    trials = [0.2, 0.5, 0.8, 1.1]
+
+    assert expected_maximum_sharpe(trials) > 0
+    assert deflated_sharpe_ratio(positive, trials) > deflated_sharpe_ratio(negative, trials)
+
+
+def test_walk_forward_inserts_a_purged_session_gap() -> None:
+    bundle = deterministic_demo(15, seed=81)
+    config = SandboxConfig()
+    result = walk_forward(
+        bundle,
+        [config],
+        train_sessions=5,
+        test_sessions=2,
+        step_sessions=2,
+        purge_sessions=1,
+    )
+
+    assert result.folds
+    assert all(fold.train_end < fold.test_start for fold in result.folds)

@@ -76,3 +76,23 @@ are small for a neural policy, TQQQ/SQQQ are highly correlated transformations o
 index, and repeated tuning can manufacture attractive backtests. GPU capacity does not create
 statistical information. No model should advance unless later, untouched evidence passes the
 existing Evidence Lab gates after realistic costs.
+
+## Daily exposure benchmarks
+
+Version 0.8 adds causal benchmarks beginning after 200 warm-up sessions. A 20-day trailing TQQQ
+volatility estimate sizes the next close-to-close exposure; the target is 20% annualized volatility,
+the TQQQ weight is capped at 50%, and changes pay 8 bps of modeled cost. The SMA200 variant uses
+only the current and prior QQQ closes. These are full-sample exposure comparisons, not holdout
+alpha tests. Four volatility targets were explored during development, so the 20% row must not be
+described as untouched.
+
+| Full-history benchmark | Return | CAGR | Max DD | Sharpe |
+|---|---:|---:|---:|---:|
+| Cash | 0.0% | 0.0% | 0.0% | 0.00 |
+| Fixed 50% TQQQ | +2,977.3% | 24.4% | 51.8% | 0.87 |
+| 20% volatility-managed TQQQ | +1,325.6% | 18.4% | 29.8% | 0.95 |
+| 20% volatility-managed TQQQ with QQQ SMA200 gate | +726.6% | 14.4% | 24.6% | 0.84 |
+
+The volatility-managed row improved historical risk-adjusted performance and drawdown relative to
+fixed 50% exposure, but its absolute return was lower. Both are dominated by Nasdaq market beta,
+daily leverage, and this sample's long technology bull market. Neither establishes skill.

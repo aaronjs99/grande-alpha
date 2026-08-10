@@ -4,6 +4,7 @@ import math
 import random
 import statistics
 from collections import Counter, defaultdict
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import IntEnum
 
@@ -124,6 +125,18 @@ class OfflineTrainingResult:
     audit_rows: list[ActionAuditRow]
     policy: dict[str, int]
     warnings: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class DailyBenchmarkResult:
+    name: str
+    return_pct: float
+    cagr_pct: float
+    max_drawdown_pct: float
+    sharpe: float
+    average_exposure_pct: float
+    turnover: float
+    modeled_cost_pct: float
 
 
 def _feature_buckets(
@@ -273,3 +286,85 @@ def train_offline_action_policy(
             "The holdout is chronological but one market history is still a small sample of regimes",
         ],
     )
+
+
+def evaluate_daily_benchmarks(
+    bundle: HistoricalBundle,
+    target_volatility: float = 0.20,
+    max_tqqq_weight: float = 0.50,
+    transaction_cost_bps: float = 8.0,
+) -> list[DailyBenchmarkResult]:
+    """Compare cash, fixed exposure, and causal volatility-managed TQQQ baselines."""
+
+    if bundle.interval != "1d" or len(bundle.frames) < 252:
+        raise ValueError("Daily benchmarks require at least 252 aligned daily bars")
+    if not 0 < target_volatility <= 1 or not 0 < max_tqqq_weight <= 1:
+        raise ValueError("Volatility target and maximum TQQQ weight must be in (0,1]")
+    if transaction_cost_bps < 0:
+        raise ValueError("Transaction costs cannot be negative")
+
+    qqq = [frame.qqq.close for frame in bundle.frames]
+    tqqq = [frame.tqqq.close for frame in bundle.frames]
+    tqqq_returns = [0.0] + [tqqq[index] / tqqq[index - 1] - 1.0 for index in range(1, len(tqqq))]
+    warmup = 200
+
+    def realized_tqqq_volatility(index: int) -> float:
+        values = tqqq_returns[index - 19 : index + 1]
+        return statistics.stdev(values) * math.sqrt(252) if len(values) >= 2 else math.inf
+
+    def volatility_weight(index: int) -> float:
+        realized = realized_tqqq_volatility(index)
+        return min(max_tqqq_weight, target_volatility / realized) if realized > 1e-12 else 0.0
+
+    policies: list[tuple[str, Callable[[int], float]]] = [
+        ("Cash", lambda _index: 0.0),
+        (f"Fixed TQQQ {max_tqqq_weight:.0%}", lambda _index: max_tqqq_weight),
+        (f"Vol-managed TQQQ {target_volatility:.0%}", volatility_weight),
+        (
+            f"Vol-managed + QQQ SMA200 {target_volatility:.0%}",
+            lambda index: (
+                volatility_weight(index)
+                if qqq[index] > statistics.fmean(qqq[index - 199 : index + 1])
+                else 0.0
+            ),
+        ),
+    ]
+    years = max((bundle.frames[-1].start - bundle.frames[warmup].start).days / 365.25, 1 / 365.25)
+    results = []
+    for name, policy in policies:
+        equity = peak = 1.0
+        previous_weight = 0.0
+        max_drawdown = turnover = modeled_cost = exposure_sum = 0.0
+        daily_returns = []
+        for index in range(warmup, len(bundle.frames) - 1):
+            weight = policy(index)
+            traded_weight = abs(weight - previous_weight)
+            cost = traded_weight * transaction_cost_bps / 10_000.0
+            daily_return = weight * tqqq_returns[index + 1] - cost
+            equity *= max(0.01, 1.0 + daily_return)
+            peak = max(peak, equity)
+            max_drawdown = max(max_drawdown, 1.0 - equity / peak)
+            turnover += traded_weight
+            modeled_cost += cost
+            exposure_sum += weight
+            daily_returns.append(daily_return)
+            previous_weight = weight
+        deviation = statistics.stdev(daily_returns) if len(daily_returns) >= 2 else 0.0
+        sharpe = (
+            statistics.fmean(daily_returns) / deviation * math.sqrt(252)
+            if deviation > 1e-12
+            else 0.0
+        )
+        results.append(
+            DailyBenchmarkResult(
+                name,
+                (equity - 1.0) * 100.0,
+                (equity ** (1.0 / years) - 1.0) * 100.0,
+                max_drawdown * 100.0,
+                sharpe,
+                exposure_sum / max(1, len(daily_returns)) * 100.0,
+                turnover,
+                modeled_cost * 100.0,
+            )
+        )
+    return results

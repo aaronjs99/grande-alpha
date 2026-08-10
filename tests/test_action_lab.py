@@ -5,6 +5,7 @@ from grande_alpha.action_lab import (
     PairAction,
     TradeCommand,
     apply_action,
+    evaluate_daily_benchmarks,
     train_offline_action_policy,
     valid_action_ids,
 )
@@ -63,3 +64,13 @@ def test_offline_action_policy_uses_chronological_holdout_and_audits_actions() -
     assert all(row.action_id in valid_action_ids(row.before_t, row.before_s) for row in result.audit_rows)
     assert result.test_start > result.train_start
     assert result.state_count > 0
+
+
+def test_daily_benchmarks_include_causal_volatility_managed_policies() -> None:
+    results = evaluate_daily_benchmarks(_daily_bundle())
+    by_name = {result.name: result for result in results}
+
+    assert by_name["Cash"].return_pct == 0
+    assert "Vol-managed TQQQ 20%" in by_name
+    assert "Vol-managed + QQQ SMA200 20%" in by_name
+    assert all(result.max_drawdown_pct >= 0 for result in results)

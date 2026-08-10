@@ -112,6 +112,7 @@ def test_replay_uses_sandbox_aliases_and_next_bar_fills() -> None:
     assert result.fills[0].side == "buy"
     assert result.fills[0].timestamp == frames[5].start
     assert result.fills[-1].side == "sell"
+    assert len(result.daily_returns) == 1
 
 
 def test_force_flat_closes_each_session_without_overnight_exposure() -> None:

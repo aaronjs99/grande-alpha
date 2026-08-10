@@ -61,7 +61,7 @@ def test_public_defaults_are_research_only() -> None:
     assert not config.live_trading_enabled
     assert not config.remote_market_data_enabled
     assert not config.personal_ledger_enabled
-    assert __version__ == "0.7.0"
+    assert __version__ == "0.8.0"
 
 
 @pytest.mark.asyncio
@@ -239,6 +239,7 @@ def test_sandbox_exposes_exact_nine_action_matrix_and_full_history_source(tmp_pa
     assert cells == {f"({t:+d},{s:+d})".replace("+0", "0") for t in (-1, 0, 1) for s in (-1, 0, 1)}
     assert any("full shared history" in widget.source.itemText(index).lower() for index in range(widget.source.count()))
     assert "session end" in widget.force_flat.text().lower()
+    assert widget.daily_benchmark_table.columnCount() == 7
     widget.close()
     store.close()
 

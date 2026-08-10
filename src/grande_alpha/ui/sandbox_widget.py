@@ -35,7 +35,12 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from grande_alpha.action_lab import ALL_PAIR_ACTIONS, OfflineTrainingConfig, train_offline_action_policy
+from grande_alpha.action_lab import (
+    ALL_PAIR_ACTIONS,
+    OfflineTrainingConfig,
+    evaluate_daily_benchmarks,
+    train_offline_action_policy,
+)
 from grande_alpha.evidence import (
     candidate_grid,
     compare_configs,
@@ -43,6 +48,7 @@ from grande_alpha.evidence import (
     parameter_sweep,
     promotion_report,
     random_entry_control,
+    strategy_fingerprint,
     tested_risk_envelope,
     walk_forward,
 )
@@ -94,6 +100,14 @@ PRESETS = {
         no_trade_close_minutes=5,
         max_hold_minutes=30,
         max_entries_per_day=2,
+    ),
+    "First-half-hour momentum research": SandboxConfig(
+        strategy_name="first_half_hour_momentum",
+        close_momentum_bps=15.0,
+        no_trade_open_minutes=0,
+        no_trade_close_minutes=5,
+        max_hold_minutes=30,
+        max_entries_per_day=1,
     ),
     "Multi-horizon trend research": SandboxConfig(
         strategy_name="multi_horizon_trend",
@@ -527,6 +541,10 @@ class SandboxWidget(QWidget):
         )
         self.action_result_label.setWordWrap(True)
         action_layout.addWidget(self.action_result_label)
+        self.daily_benchmark_table = self._table(
+            ["Daily research baseline", "Return", "CAGR", "Max DD", "Sharpe", "Avg exposure", "Turnover"]
+        )
+        action_layout.addWidget(self.daily_benchmark_table)
         action_split = QSplitter(Qt.Orientation.Vertical)
         self.action_summary_table = self._table(["Action", "Commands", "Directional impulse", "Count"])
         self.action_audit_table = self._table(
@@ -771,6 +789,18 @@ class SandboxWidget(QWidget):
             base = await asyncio.to_thread(SandboxReplayEngine(config).run, self.bundle)
             candidates = candidate_grid(config)
             points = await asyncio.to_thread(parameter_sweep, self.bundle, candidates)
+            self.store.record_research_trials(
+                self.bundle.dataset_hash,
+                [
+                    {
+                        "trial_fingerprint": strategy_fingerprint(candidate, self.bundle.interval),
+                        "config": asdict(candidate),
+                        "metrics": asdict(point),
+                    }
+                    for candidate, point in zip(candidates, points, strict=True)
+                ],
+            )
+            total_trial_count = self.store.research_trial_count(self.bundle.dataset_hash)
             stressed = await asyncio.to_thread(cost_stress, self.bundle, config)
             random_control = await asyncio.to_thread(
                 random_entry_control, self.bundle, config, base.return_pct
@@ -792,6 +822,7 @@ class SandboxWidget(QWidget):
                 stressed,
                 walk,
                 random_control,
+                total_trial_count=total_trial_count,
             )
             self.store.record_research_promotion(
                 dataset_hash=report.dataset_hash,
@@ -811,6 +842,7 @@ class SandboxWidget(QWidget):
                     "dataset_hash": report.dataset_hash,
                     "gates": [asdict(g) for g in report.gates],
                     "note": self.notes.text().strip(),
+                    "registered_trial_count": total_trial_count,
                 },
                 "warning" if not report.passed else "info",
             )
@@ -830,6 +862,7 @@ class SandboxWidget(QWidget):
                 raise ValueError("Select Community remote: full shared history (daily) for the action lab")
             training_config = OfflineTrainingConfig()
             result = await asyncio.to_thread(train_offline_action_policy, self.bundle, training_config)
+            benchmarks = await asyncio.to_thread(evaluate_daily_benchmarks, self.bundle)
             self.action_result_label.setText(
                 f"Chronological holdout {result.test_start} → {result.test_end} • "
                 f"return {result.test_return_pct:+.2f}% • max drawdown {result.test_max_drawdown_pct:.2f}% • "
@@ -838,6 +871,22 @@ class SandboxWidget(QWidget):
                 f"TQQQ {result.tqqq_holdout_pct:+.1f}%, SQQQ {result.sqqq_holdout_pct:+.1f}%. "
                 "Research only; no live mode was enabled."
             )
+            self.daily_benchmark_table.setRowCount(len(benchmarks))
+            for row, benchmark in enumerate(benchmarks):
+                self._set_row(
+                    self.daily_benchmark_table,
+                    row,
+                    [
+                        benchmark.name,
+                        f"{benchmark.return_pct:+.1f}%",
+                        f"{benchmark.cagr_pct:+.1f}%",
+                        f"{benchmark.max_drawdown_pct:.1f}%",
+                        f"{benchmark.sharpe:.2f}",
+                        f"{benchmark.average_exposure_pct:.1f}%",
+                        f"{benchmark.turnover:.1f}×",
+                    ],
+                    benchmark.return_pct,
+                )
             self.action_summary_table.setRowCount(9)
             for row, action in enumerate(ALL_PAIR_ACTIONS):
                 self._set_row(
@@ -883,6 +932,7 @@ class SandboxWidget(QWidget):
                     "action_counts": result.action_counts,
                     "training_config": asdict(training_config),
                     "policy": result.policy,
+                    "daily_benchmarks": [asdict(benchmark) for benchmark in benchmarks],
                     "warnings": result.warnings,
                 },
                 "warning",

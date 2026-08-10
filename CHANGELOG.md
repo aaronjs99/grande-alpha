@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.8.0 - 2026-08-09
+
+- Added a paper-faithful first-half-hour QQQ signal that trades only the final half hour.
+- Replaced unpurged fold boundaries with a configurable purged walk-forward gap.
+- Added Probabilistic and Deflated Sharpe calculations, a persistent unique-trial ledger, and evidence-policy version 5.
+- Added causal fixed-exposure, volatility-managed, and volatility-plus-SMA200 daily benchmarks to the Action Lab.
+- Invalidated the legacy positive closing-momentum claim after correcting unintended overnight exposure.
+- Expanded tests and primary-source research documentation; no strategy is promoted for live use.
+
 ## 0.7.0 - 2026-08-09
 
 - Added an exact nine-action `(T,S)` command model with long-only inventory masks and an auditable offline Q-learning lab.

@@ -28,7 +28,7 @@ A public release is ready only when every required item is checked for that exac
 - [ ] A qualified reviewer assesses financial promotion, broker API terms, privacy, consumer-protection, and applicable jurisdictional obligations.
 - [ ] Accessibility keyboard/focus/screen-reader checks are completed and limitations are documented.
 
-The local `0.7.0` build is a community-preview release candidate, not a claim that these external
+The local `0.8.0` build is a research-validation release candidate, not a claim that these external
 launch gates are complete. PyInstaller produced the executable, ZIP, SBOM, and checksum. The
 packaged `--version` entry-point smoke exited successfully, but the executable is unsigned and a
 complete packaged GUI walkthrough on a clean Windows profile remains **not complete**. Signing,

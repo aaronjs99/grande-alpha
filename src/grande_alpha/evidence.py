@@ -15,7 +15,7 @@ from grande_alpha.sandbox import INTERVAL_MINUTES, SandboxConfig, SandboxReplayE
 from grande_alpha.strategy import StrategyConfig
 
 EASTERN = ZoneInfo("America/New_York")
-EVIDENCE_POLICY_VERSION = 4
+EVIDENCE_POLICY_VERSION = 5
 MIN_EVIDENCE_SESSIONS = 120
 STRATEGY_FINGERPRINT_FIELDS = (
     "strategy_name",
@@ -62,6 +62,7 @@ class SensitivityPoint:
     max_drawdown_pct: float
     profit_factor: float
     round_trips: int
+    sharpe: float
 
 
 @dataclass(frozen=True)
@@ -174,7 +175,7 @@ def compare_configs(bundle: HistoricalBundle, configs: dict[str, SandboxConfig])
 
 
 def candidate_grid(base: SandboxConfig, compact: bool = True) -> list[SandboxConfig]:
-    if base.strategy_name == "close_momentum":
+    if base.strategy_name in {"close_momentum", "first_half_hour_momentum"}:
         return [
             replace(base, close_momentum_bps=value)
             for value in sorted(
@@ -266,13 +267,14 @@ def parameter_sweep(bundle: HistoricalBundle, configs: Iterable[SandboxConfig]) 
                 result.max_drawdown_pct,
                 result.profit_factor,
                 result.round_trips,
+                result.sharpe,
             )
         )
     return points
 
 
 def _candidate_label(config: SandboxConfig) -> str:
-    if config.strategy_name == "close_momentum":
+    if config.strategy_name in {"close_momentum", "first_half_hour_momentum"}:
         return f"close threshold {config.close_momentum_bps:.1f} bps"
     if config.strategy_name == "opening_breakout":
         return f"range {config.opening_range_minutes}m; buffer {config.breakout_buffer_bps:.1f} bps"
@@ -313,6 +315,7 @@ def walk_forward(
     train_sessions: int = 20,
     test_sessions: int = 5,
     step_sessions: int = 5,
+    purge_sessions: int = 1,
 ) -> WalkForwardResult:
     names = sorted(_sessions(bundle))
     if len(names) < train_sessions + test_sessions:
@@ -321,9 +324,12 @@ def walk_forward(
         )
     folds = []
     cursor = 0
-    while cursor + train_sessions + test_sessions <= len(names):
+    if purge_sessions < 0:
+        raise ValueError("Purged walk-forward gap cannot be negative")
+    while cursor + train_sessions + purge_sessions + test_sessions <= len(names):
         train_names = names[cursor : cursor + train_sessions]
-        test_names = names[cursor + train_sessions : cursor + train_sessions + test_sessions]
+        test_start = cursor + train_sessions + purge_sessions
+        test_names = names[test_start : test_start + test_sessions]
         train_bundle = _subset(bundle, train_names)
         test_bundle = _subset(bundle, test_names)
         scored = []
@@ -360,6 +366,58 @@ def walk_forward(
         statistics.median(fold.test_profit_factor for fold in folds),
         statistics.median(fold.test_expectancy for fold in folds),
     )
+
+
+def probabilistic_sharpe_ratio(
+    returns: list[float], benchmark_annual_sharpe: float = 0.0, periods_per_year: int = 252
+) -> float:
+    """Probability that Sharpe exceeds a benchmark after skew and kurtosis adjustment."""
+
+    if len(returns) < 3 or periods_per_year < 1:
+        return 0.0
+    deviation = statistics.stdev(returns)
+    if deviation <= 1e-12:
+        return 1.0 if statistics.fmean(returns) > 0 else 0.0
+    period_sharpe = statistics.fmean(returns) / deviation
+    centered = [(value - statistics.fmean(returns)) / deviation for value in returns]
+    skew = statistics.fmean(value**3 for value in centered)
+    kurtosis = statistics.fmean(value**4 for value in centered)
+    benchmark = benchmark_annual_sharpe / math.sqrt(periods_per_year)
+    variance_term = 1.0 - skew * period_sharpe + (kurtosis - 1.0) * period_sharpe**2 / 4.0
+    statistic = (period_sharpe - benchmark) * math.sqrt(len(returns) - 1) / math.sqrt(
+        max(variance_term, 1e-12)
+    )
+    return statistics.NormalDist().cdf(statistic)
+
+
+def expected_maximum_sharpe(
+    trial_annual_sharpes: list[float], periods_per_year: int = 252, total_trials: int | None = None
+) -> float:
+    """Expected maximum Sharpe under multiple independent zero-mean trials."""
+
+    count = max(len(trial_annual_sharpes), total_trials or 0)
+    if count < 2 or periods_per_year < 1:
+        return 0.0
+    period_values = [value / math.sqrt(periods_per_year) for value in trial_annual_sharpes]
+    dispersion = statistics.pstdev(period_values)
+    if dispersion <= 1e-12:
+        return 0.0
+    euler_gamma = 0.5772156649015329
+    normal = statistics.NormalDist()
+    first = normal.inv_cdf(1.0 - 1.0 / count)
+    second = normal.inv_cdf(1.0 - 1.0 / (count * math.e))
+    expected_period = dispersion * ((1.0 - euler_gamma) * first + euler_gamma * second)
+    return expected_period * math.sqrt(periods_per_year)
+
+
+def deflated_sharpe_ratio(
+    returns: list[float],
+    trial_annual_sharpes: list[float],
+    periods_per_year: int = 252,
+    total_trials: int | None = None,
+) -> float:
+    benchmark = expected_maximum_sharpe(trial_annual_sharpes, periods_per_year, total_trials)
+    return probabilistic_sharpe_ratio(returns, benchmark, periods_per_year)
 
 
 def cost_stress(bundle: HistoricalBundle, base: SandboxConfig) -> dict[float, SandboxResult]:
@@ -423,6 +481,7 @@ def promotion_report(
     walk: WalkForwardResult | None,
     random_control: RandomControl,
     now: datetime | None = None,
+    total_trial_count: int | None = None,
 ) -> PromotionReport:
     reference = now or datetime.now(UTC)
     sessions = bundle.quality.sessions if bundle.quality else len(_sessions(bundle))
@@ -441,6 +500,13 @@ def promotion_report(
     else:
         one_sided_p = 1.0
     adjusted_p = min(1.0, one_sided_p * max(1, len(sensitivity)))
+    daily_returns = base_result.daily_returns
+    counted_trials = max(len(sensitivity), total_trial_count or 0)
+    dsr = deflated_sharpe_ratio(
+        daily_returns,
+        [point.sharpe for point in sensitivity],
+        total_trials=counted_trials,
+    )
     gates = [
         PromotionGate(
             "Historical source",
@@ -501,6 +567,12 @@ def promotion_report(
             adjusted_p <= 0.05,
             f"one-sided Bonferroni p={adjusted_p:.4f} across {max(1, len(sensitivity))} candidates",
             "Positive daily P/L survives a 5% familywise correction for every tested candidate",
+        ),
+        PromotionGate(
+            "Deflated Sharpe",
+            dsr >= 0.95,
+            f"DSR probability={dsr:.4f} across {max(1, counted_trials)} registered candidates",
+            "At least 95% probability after selection-bias and non-normality adjustment",
         ),
         PromotionGate(
             "Profit concentration",
