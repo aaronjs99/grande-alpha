@@ -66,7 +66,7 @@ def test_public_defaults_are_research_only() -> None:
     assert config.poll_seconds == 1.0
     assert config.reconcile_seconds == 5.0
     assert config.bar_seconds == 5
-    assert __version__ == "0.9.2"
+    assert __version__ == "0.9.3"
 
 
 def test_main_window_starts_with_independent_low_latency_clocks(tmp_path) -> None:

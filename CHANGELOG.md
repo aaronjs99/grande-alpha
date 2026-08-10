@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.9.3 - 2026-08-10
+
+- Stored oversized Robinhood OAuth material as integrity-verified chunks in Windows Credential Manager.
+- Preserved direct legacy credentials and migrated them without deleting the recoverable originals.
+- Disabled an unsupported MCP session-termination request that produced a false provider 400 warning.
+
 ## 0.9.2 - 2026-08-10
 
 - Added a local Desktop and Start Menu installer using the trusted PowerShell/Python launch path.
