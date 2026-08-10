@@ -28,8 +28,9 @@ A public release is ready only when every required item is checked for that exac
 - [ ] A qualified reviewer assesses financial promotion, broker API terms, privacy, consumer-protection, and applicable jurisdictional obligations.
 - [ ] Accessibility keyboard/focus/screen-reader checks are completed and limitations are documented.
 
-The local `0.8.0` build is a research-validation release candidate, not a claim that these external
-launch gates are complete. PyInstaller produced the executable, ZIP, SBOM, and checksum. The
-packaged `--version` entry-point smoke exited successfully, but the executable is unsigned and a
-complete packaged GUI walkthrough on a clean Windows profile remains **not complete**. Signing,
-malware scanning, and clean-profile testing are required before public binary distribution.
+The local `0.9.1` source application passed a native Windows GUI launch/render/clean-close smoke test.
+PyInstaller produced the executable, ZIP, SBOM, and checksum, but Windows Smart App Control blocked
+the unsigned executable under enterprise signing policy. The release script therefore labels the
+binary candidate as unsigned and also creates a source bundle. Authenticode signing with a trusted
+publisher identity, malware scanning, and clean-profile binary testing remain required before public
+binary distribution.

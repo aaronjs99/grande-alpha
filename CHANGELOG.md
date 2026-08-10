@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.9.1 - 2026-08-09
+
+- Added a readiness doctor and native main-window cadence regression test.
+- Verified the signed-Python source launcher under Windows Smart App Control.
+- Labeled PyInstaller output as an unsigned candidate after Code Integrity correctly blocked it.
+- Added a runnable Windows source release bundle alongside the unsigned binary candidate.
+- Moved source-bundle environments to a short managed runtime path to avoid PySide6 long-path installation failures.
+- Documented the trusted Authenticode signing gate instead of presenting an unsigned executable as public-ready.
+
 ## 0.9.0 - 2026-08-09
 
 - Split batched quote observation from slower portfolio, position, and order reconciliation.
