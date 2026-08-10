@@ -7,6 +7,7 @@ From the repository or Windows source bundle:
 ```powershell
 .\setup.ps1
 .\doctor.ps1 -Full
+.\install-local.ps1
 .\run.ps1
 ```
 
@@ -18,6 +19,10 @@ If the checkout already has `.venv`, the scripts use it. Otherwise, setup create
 at `%LOCALAPPDATA%\GRANDEAlpha\runtime`. Keeping the runtime outside the extracted source tree avoids
 the Windows path-length failure caused by deeply nested PySide6 QML files. For isolated automation,
 set `GRANDE_ALPHA_RUNTIME_DIR` to another short absolute directory before running setup.
+
+`install-local.ps1` creates Desktop and Start Menu shortcuts that launch the source application via
+the trusted system PowerShell and signed Python runtime. The shortcuts point to the current source
+folder, so keep that folder in its installed location.
 
 ## Why the unsigned executable may not start
 

@@ -66,7 +66,7 @@ def test_public_defaults_are_research_only() -> None:
     assert config.poll_seconds == 1.0
     assert config.reconcile_seconds == 5.0
     assert config.bar_seconds == 5
-    assert __version__ == "0.9.1"
+    assert __version__ == "0.9.2"
 
 
 def test_main_window_starts_with_independent_low_latency_clocks(tmp_path) -> None:
@@ -292,6 +292,17 @@ def test_release_labels_unsigned_binary_and_produces_source_bundle() -> None:
     assert "windows-source" in script
     assert "Get-AuthenticodeSignature" in doctor
     assert "SOURCE APP READY" in doctor
+    assert "install-local.ps1" in script
+
+
+def test_local_installer_uses_trusted_launcher_and_both_shortcut_locations() -> None:
+    root = Path(__file__).resolve().parents[1]
+    script = (root / "install-local.ps1").read_text(encoding="utf-8")
+
+    assert "powershell.exe" in script
+    assert "GetFolderPath('Desktop')" in script
+    assert "GetFolderPath('Programs')" in script
+    assert "run.ps1" in script
 
 
 def test_sandbox_exposes_exact_nine_action_matrix_and_full_history_source(tmp_path) -> None:
