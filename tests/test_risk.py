@@ -31,6 +31,10 @@ def intent(ref_id="one", amount=20.0) -> OrderIntent:
     return OrderIntent(ref_id=ref_id, symbol="TQQQ", side="buy", dollar_amount=amount, reason="test")
 
 
+def sell_intent(ref_id="sell-one") -> OrderIntent:
+    return OrderIntent(ref_id=ref_id, symbol="TQQQ", side="sell", quantity=0.5, reason="exit")
+
+
 def test_risk_engine_requires_live_grant() -> None:
     engine = RiskEngine()
     decision = engine.authorize(intent(), quote(), Portfolio(50, 50, 50), 0, NOW)
@@ -79,3 +83,20 @@ def test_expired_grant_fails_closed() -> None:
     engine.arm(grant(expires_at=NOW - timedelta(seconds=1)), portfolio)
     assert not engine.authorize(intent(), quote(), portfolio, 0, NOW).allowed
     assert engine.session_status(NOW) == "LOCKED"
+
+
+def test_close_window_blocks_entries_but_allows_risk_reducing_exit() -> None:
+    close_window = datetime(2026, 8, 10, 19, 55, tzinfo=UTC)  # 15:55 ET Monday
+    engine = RiskEngine(no_trade_close_minutes=10)
+    portfolio = Portfolio(50, 50, 50)
+    engine.arm(
+        grant(
+            starts_at=close_window - timedelta(minutes=1),
+            expires_at=close_window + timedelta(minutes=10),
+        ),
+        portfolio,
+    )
+    current_quote = quote(timestamp=close_window)
+
+    assert not engine.authorize(intent(), current_quote, portfolio, 20, close_window).allowed
+    assert engine.authorize(sell_intent(), current_quote, portfolio, 20, close_window).allowed

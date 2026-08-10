@@ -7,7 +7,7 @@ direction often enough that the leveraged ETF's favorable moves exceed unfavorab
 fees, slippage, and execution errors.
 
 ```text
-QQQ one-minute prices
+completed QQQ prices
         |
   trend + momentum
         |
@@ -21,7 +21,24 @@ after-cost wins minus after-cost losses
 The app does not create money through order frequency, artificial intelligence, the RTX 5070, or
 holding TQQQ and SQQQ simultaneously. Frequent orders can make performance worse.
 
-## Exact baseline rules
+## Finite research library
+
+The application deliberately does not claim to contain “all strategies ever.” Its sandbox has a
+small, auditable library whose hypotheses can be falsified on the same data and cost assumptions:
+
+| Candidate | QQQ signal hypothesis | Important limitation |
+|---|---|---|
+| EMA momentum | Fast trend plus recent momentum agreement | Whipsaws in ranges |
+| Multi-horizon trend | Short, medium, and longer returns agree | Academic evidence is generally at slower horizons |
+| Closing momentum | Rest-of-day direction persists in the final half-hour | Time-specific and sensitive to close execution |
+| Opening breakout | Price clears the completed opening range | False breaks and opening spreads |
+| Conservative ensemble | Multiple causal sleeves agree | Agreement can reduce trades without creating edge |
+
+Every candidate uses only completed bars. The library excludes GPU/RL optimization and any VWAP,
+volume, or spread-dependent alpha until those exact live inputs exist in replay and production.
+Research candidates cannot unlock the live EMA path merely by doing well: fingerprints differ.
+
+## Exact live baseline rules
 
 The implementation in `src/grande_alpha/strategy.py` uses completed QQQ midpoint bars:
 
@@ -37,6 +54,9 @@ The implementation in `src/grande_alpha/strategy.py` uses completed QQQ midpoint
 | Take-profit | +1.5% from reported average price |
 | No new trades after open | First 5 minutes |
 | No new trades before close | Last 10 minutes |
+
+The final ten minutes are an exit window: new entries are blocked, the policy targets cash, and
+risk-reducing sells remain permitted through the 4:00 p.m. Eastern regular-session close.
 
 Decision rules:
 

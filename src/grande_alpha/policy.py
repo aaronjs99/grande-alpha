@@ -68,6 +68,10 @@ class DecisionPolicy:
             Regime.FLAT: None,
         }[signal.regime]
         reason = signal.reason
+        local = timestamp.astimezone(EASTERN)
+        close_cutoff = datetime.combine(local.date(), time(16, 0), tzinfo=EASTERN).timestamp()
+        if local.timestamp() >= close_cutoff - self.config.no_trade_close_minutes * 60:
+            target, reason = None, "Scheduled regular-session flatten window"
         if position is not None:
             if (
                 position.entry_price is not None
@@ -89,3 +93,6 @@ class DecisionPolicy:
             self.config.no_trade_open_minutes,
             self.config.no_trade_close_minutes,
         )
+
+    def exit_window_allowed(self, timestamp: datetime) -> bool:
+        return regular_session_allowed(timestamp, 0, 0)

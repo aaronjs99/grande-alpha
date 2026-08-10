@@ -42,6 +42,7 @@ from grande_alpha.evidence import (
     parameter_sweep,
     promotion_report,
     random_entry_control,
+    tested_risk_envelope,
     walk_forward,
 )
 from grande_alpha.historical import (
@@ -58,6 +59,7 @@ from grande_alpha.sandbox import (
     save_sandbox_config,
 )
 from grande_alpha.storage import AuditStore
+from grande_alpha.strategy import STRATEGY_NAMES
 
 PRESETS = {
     "Balanced research": SandboxConfig(),
@@ -82,6 +84,33 @@ PRESETS = {
         take_profit_pct=0.025,
         max_hold_minutes=90,
         max_entries_per_day=3,
+    ),
+    "Closing momentum research": SandboxConfig(
+        strategy_name="close_momentum",
+        close_momentum_bps=15.0,
+        no_trade_open_minutes=0,
+        no_trade_close_minutes=5,
+        max_hold_minutes=30,
+        max_entries_per_day=2,
+    ),
+    "Multi-horizon trend research": SandboxConfig(
+        strategy_name="multi_horizon_trend",
+        trend_short_bars=3,
+        trend_medium_bars=12,
+        trend_long_bars=36,
+        max_hold_minutes=60,
+    ),
+    "Opening breakout research": SandboxConfig(
+        strategy_name="opening_breakout",
+        opening_range_minutes=30,
+        breakout_buffer_bps=3.0,
+        no_trade_open_minutes=30,
+        max_hold_minutes=90,
+    ),
+    "Agreement ensemble research": SandboxConfig(
+        strategy_name="conservative_ensemble",
+        ensemble_min_votes=2,
+        max_hold_minutes=45,
     ),
 }
 
@@ -203,18 +232,37 @@ class SandboxWidget(QWidget):
 
         signal = QGroupBox("Signal policy")
         signal_form = QFormLayout(signal)
+        self.strategy_name = QComboBox()
+        for key, label in STRATEGY_NAMES.items():
+            self.strategy_name.addItem(label, key)
         self.warmup = self._integer(5, 1000)
         self.fast_ema = self._integer(1, 500)
         self.slow_ema = self._integer(2, 1000)
         self.threshold = self._decimal(0.1, 200, decimals=1, suffix=" bps")
         self.momentum = self._integer(1, 200)
         self.momentum.setSuffix(" bars")
+        self.trend_short = self._integer(1, 200)
+        self.trend_medium = self._integer(2, 500)
+        self.trend_long = self._integer(3, 1000)
+        self.close_momentum = self._decimal(0.1, 500, decimals=1, suffix=" bps")
+        self.opening_range = self._integer(5, 120)
+        self.opening_range.setSuffix(" min")
+        self.breakout_buffer = self._decimal(0, 200, decimals=1, suffix=" bps")
+        self.ensemble_votes = self._integer(1, 4)
         for title, widget in (
+            ("Research strategy", self.strategy_name),
             ("Warm-up", self.warmup),
             ("Fast EMA", self.fast_ema),
             ("Slow EMA", self.slow_ema),
             ("Trend threshold", self.threshold),
             ("Momentum horizon", self.momentum),
+            ("Trend short horizon", self.trend_short),
+            ("Trend medium horizon", self.trend_medium),
+            ("Trend long horizon", self.trend_long),
+            ("Close momentum", self.close_momentum),
+            ("Opening range", self.opening_range),
+            ("Breakout buffer", self.breakout_buffer),
+            ("Ensemble votes", self.ensemble_votes),
         ):
             signal_form.addRow(title, widget)
         layout.addWidget(signal)
@@ -344,9 +392,7 @@ class SandboxWidget(QWidget):
         self.tabs.addTab(self.compare_table, "Comparison")
         sensitivity = QWidget()
         sensitivity_layout = QVBoxLayout(sensitivity)
-        self.sensitivity_table = self._table(
-            ["Fast", "Slow", "Threshold", "Stop", "Return", "Drawdown", "PF", "Trades"]
-        )
+        self.sensitivity_table = self._table(["Strategy", "Candidate", "Return", "Drawdown", "PF", "Trades"])
         sensitivity_layout.addWidget(self.sensitivity_table)
         self.random_label = QLabel("Random-entry control not run.")
         sensitivity_layout.addWidget(self.random_label)
@@ -357,7 +403,7 @@ class SandboxWidget(QWidget):
             [
                 "Train",
                 "Test",
-                "Fast/slow",
+                "Selected strategy",
                 "Train return",
                 "Test return",
                 "Test DD",
@@ -439,6 +485,9 @@ class SandboxWidget(QWidget):
             self.csv_label.setText(self.csv_path.name)
 
     def _apply_config(self, config: SandboxConfig) -> None:
+        strategy_index = self.strategy_name.findData(config.strategy_name)
+        if strategy_index >= 0:
+            self.strategy_name.setCurrentIndex(strategy_index)
         values = {
             self.lookback: config.lookback_days,
             self.initial_cash: config.initial_cash,
@@ -456,6 +505,13 @@ class SandboxWidget(QWidget):
             self.slow_ema: config.slow_ema,
             self.threshold: config.trend_threshold_bps,
             self.momentum: config.momentum_bars,
+            self.trend_short: config.trend_short_bars,
+            self.trend_medium: config.trend_medium_bars,
+            self.trend_long: config.trend_long_bars,
+            self.close_momentum: config.close_momentum_bps,
+            self.opening_range: config.opening_range_minutes,
+            self.breakout_buffer: config.breakout_buffer_bps,
+            self.ensemble_votes: config.ensemble_min_votes,
             self.stop: config.hard_stop_pct * 100,
             self.take_profit: config.take_profit_pct * 100,
             self.max_hold: config.max_hold_minutes,
@@ -485,11 +541,19 @@ class SandboxWidget(QWidget):
             fill_fraction_pct=self.fill_fraction.value(),
             rejection_rate_pct=self.rejection.value(),
             max_volume_participation_pct=self.volume_participation.value(),
+            strategy_name=self.strategy_name.currentData(),
             warmup_bars=self.warmup.value(),
             fast_ema=self.fast_ema.value(),
             slow_ema=self.slow_ema.value(),
             trend_threshold_bps=self.threshold.value(),
             momentum_bars=self.momentum.value(),
+            trend_short_bars=self.trend_short.value(),
+            trend_medium_bars=self.trend_medium.value(),
+            trend_long_bars=self.trend_long.value(),
+            close_momentum_bps=self.close_momentum.value(),
+            opening_range_minutes=self.opening_range.value(),
+            breakout_buffer_bps=self.breakout_buffer.value(),
+            ensemble_min_votes=self.ensemble_votes.value(),
             hard_stop_pct=self.stop.value() / 100,
             take_profit_pct=self.take_profit.value() / 100,
             max_hold_minutes=self.max_hold.value(),
@@ -612,6 +676,7 @@ class SandboxWidget(QWidget):
                 source=self.bundle.source,
                 replay_end=self.bundle.end.isoformat(),
                 gates=[asdict(gate) for gate in report.gates],
+                risk_envelope=tested_risk_envelope(config),
             )
             self._show_evidence(points, walk, report, random_control)
             self.store.receipt(
@@ -631,14 +696,12 @@ class SandboxWidget(QWidget):
             self._busy(False)
 
     def _show_evidence(self, points, walk, report, control) -> None:
-        ordered = sorted(points, key=lambda item: (item.fast_ema, item.slow_ema, item.threshold_bps))
+        ordered = sorted(points, key=lambda item: (item.strategy_name, item.candidate))
         self.sensitivity_table.setRowCount(len(ordered))
         for row, point in enumerate(ordered):
             values = [
-                str(point.fast_ema),
-                str(point.slow_ema),
-                f"{point.threshold_bps:.1f}",
-                f"{point.hard_stop_pct:.2%}",
+                STRATEGY_NAMES.get(point.strategy_name, point.strategy_name),
+                point.candidate,
                 f"{point.return_pct:+.2f}%",
                 f"{point.max_drawdown_pct:.2f}%",
                 f"{point.profit_factor:.2f}",
@@ -656,7 +719,7 @@ class SandboxWidget(QWidget):
             values = [
                 f"{fold.train_start} → {fold.train_end}",
                 f"{fold.test_start} → {fold.test_end}",
-                f"{fold.selected.fast_ema}/{fold.selected.slow_ema}",
+                STRATEGY_NAMES.get(fold.selected.strategy_name, fold.selected.strategy_name),
                 f"{fold.train_return_pct:+.2f}%",
                 f"{fold.test_return_pct:+.2f}%",
                 f"{fold.test_drawdown_pct:.2f}%",

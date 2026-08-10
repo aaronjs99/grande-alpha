@@ -15,7 +15,7 @@ from zoneinfo import ZoneInfo
 from grande_alpha.config import data_dir
 from grande_alpha.historical import HistoricalBundle, ReplayFrame
 from grande_alpha.policy import DecisionPolicy, PolicyConfig, PolicyPosition
-from grande_alpha.strategy import MomentumStrategy, StrategyConfig
+from grande_alpha.strategy import StrategyConfig, build_strategy
 
 EASTERN = ZoneInfo("America/New_York")
 INTERVAL_MINUTES = {"1m": 1, "5m": 5, "15m": 15, "60m": 60, "1d": 390}
@@ -35,11 +35,19 @@ class SandboxConfig:
     rejection_rate_pct: float = 0.0
     max_volume_participation_pct: float = 1.0
     random_seed: int = 7007
+    strategy_name: str = "ema_momentum"
     warmup_bars: int = 24
     fast_ema: int = 8
     slow_ema: int = 21
     trend_threshold_bps: float = 4.0
     momentum_bars: int = 3
+    trend_short_bars: int = 3
+    trend_medium_bars: int = 12
+    trend_long_bars: int = 36
+    close_momentum_bps: float = 15.0
+    opening_range_minutes: int = 30
+    breakout_buffer_bps: float = 3.0
+    ensemble_min_votes: int = 2
     hard_stop_pct: float = 0.008
     take_profit_pct: float = 0.015
     max_hold_minutes: int = 45
@@ -100,6 +108,24 @@ class SandboxConfig:
                 raise ValueError(f"{name.title()} percentage must be in (0,1]")
         if self.max_consecutive_losses < 1 or self.volatility_target_pct < 0:
             raise ValueError("Loss pause must be positive and volatility target cannot be negative")
+        self.strategy_config().validate()
+
+    def strategy_config(self) -> StrategyConfig:
+        return StrategyConfig(
+            strategy_name=self.strategy_name,
+            warmup_bars=self.warmup_bars,
+            fast_ema=self.fast_ema,
+            slow_ema=self.slow_ema,
+            trend_threshold_bps=self.trend_threshold_bps,
+            momentum_bars=self.momentum_bars,
+            trend_short_bars=self.trend_short_bars,
+            trend_medium_bars=self.trend_medium_bars,
+            trend_long_bars=self.trend_long_bars,
+            close_momentum_bps=self.close_momentum_bps,
+            opening_range_minutes=self.opening_range_minutes,
+            breakout_buffer_bps=self.breakout_buffer_bps,
+            ensemble_min_votes=self.ensemble_min_votes,
+        )
 
 
 @dataclass(frozen=True)
@@ -237,15 +263,7 @@ class SandboxReplayEngine:
     def run(self, bundle: HistoricalBundle) -> SandboxResult:
         if len(bundle.frames) < self.config.warmup_bars + 3:
             raise ValueError("The dataset is too short for the selected warm-up")
-        strategy = MomentumStrategy(
-            StrategyConfig(
-                warmup_bars=self.config.warmup_bars,
-                fast_ema=self.config.fast_ema,
-                slow_ema=self.config.slow_ema,
-                trend_threshold_bps=self.config.trend_threshold_bps,
-                momentum_bars=self.config.momentum_bars,
-            )
-        )
+        strategy = build_strategy(self.config.strategy_config())
         cash = self.config.initial_cash
         position: _VirtualPosition | None = None
         scheduled: tuple[int, str | None, str] | None = None
@@ -264,6 +282,9 @@ class SandboxReplayEngine:
 
         def window_allowed(frame: ReplayFrame) -> bool:
             return bundle.interval == "1d" or self.policy.trading_window_allowed(frame.start)
+
+        def exit_window_allowed(frame: ReplayFrame) -> bool:
+            return bundle.interval == "1d" or self.policy.exit_window_allowed(frame.start)
 
         for index, frame in enumerate(bundle.frames):
             day = frame.start.astimezone(EASTERN).date().isoformat()
@@ -284,7 +305,12 @@ class SandboxReplayEngine:
                 if position is not None and window_allowed(frame):
                     scheduled = (index + 1 + self.config.latency_bars, None, "Daily loss pause")
 
-            if scheduled and index >= scheduled[0] and window_allowed(frame):
+            scheduled_is_exit = position is not None and scheduled and scheduled[1] != position.symbol
+            if (
+                scheduled
+                and index >= scheduled[0]
+                and (exit_window_allowed(frame) if scheduled_is_exit else window_allowed(frame))
+            ):
                 cash, position, new_fills, new_events, complete = self._transition(
                     frame,
                     index,
@@ -317,7 +343,8 @@ class SandboxReplayEngine:
                 )
             decision = self.policy.decide(signal, frame.start, policy_position)
             current = position.symbol if position else None
-            if window_allowed(frame) and decision.target_symbol != current:
+            decision_window = exit_window_allowed(frame) if current is not None else window_allowed(frame)
+            if decision_window and decision.target_symbol != current:
                 if scheduled is None or scheduled[1] != decision.target_symbol:
                     scheduled = (
                         index + 1 + self.config.latency_bars,

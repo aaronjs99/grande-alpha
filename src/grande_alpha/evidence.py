@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import random
 import statistics
 from collections.abc import Iterable
@@ -11,10 +12,13 @@ from zoneinfo import ZoneInfo
 
 from grande_alpha.historical import HistoricalBundle, assess_quality
 from grande_alpha.sandbox import INTERVAL_MINUTES, SandboxConfig, SandboxReplayEngine, SandboxResult
+from grande_alpha.strategy import StrategyConfig
 
 EASTERN = ZoneInfo("America/New_York")
-EVIDENCE_POLICY_VERSION = 2
+EVIDENCE_POLICY_VERSION = 4
+MIN_EVIDENCE_SESSIONS = 120
 STRATEGY_FINGERPRINT_FIELDS = (
+    "strategy_name",
     "warmup_bars",
     "fast_ema",
     "slow_ema",
@@ -25,6 +29,13 @@ STRATEGY_FINGERPRINT_FIELDS = (
     "max_hold_minutes",
     "no_trade_open_minutes",
     "no_trade_close_minutes",
+    "trend_short_bars",
+    "trend_medium_bars",
+    "trend_long_bars",
+    "close_momentum_bps",
+    "opening_range_minutes",
+    "breakout_buffer_bps",
+    "ensemble_min_votes",
 )
 
 
@@ -41,6 +52,8 @@ class ComparisonRow:
 
 @dataclass(frozen=True)
 class SensitivityPoint:
+    strategy_name: str
+    candidate: str
     fast_ema: int
     slow_ema: int
     threshold_bps: float
@@ -108,13 +121,38 @@ class PromotionReport:
         return all(gate.passed for gate in self.gates)
 
 
-def strategy_fingerprint(config: object) -> str:
+def _interval_seconds(config: object, interval: str | None) -> int:
+    if interval:
+        if interval.endswith("s"):
+            return int(interval[:-1])
+        return INTERVAL_MINUTES.get(interval, 1) * 60
+    return int(getattr(config, "bar_seconds", 60))
+
+
+def strategy_fingerprint(config: object, interval: str | None = None) -> str:
+    defaults = StrategyConfig()
     payload = {
         "policy_version": EVIDENCE_POLICY_VERSION,
-        **{field: getattr(config, field) for field in STRATEGY_FINGERPRINT_FIELDS},
+        "bar_interval_seconds": _interval_seconds(config, interval),
+        **{
+            field: getattr(config, field, getattr(defaults, field, None))
+            for field in STRATEGY_FINGERPRINT_FIELDS
+        },
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
+
+
+def tested_risk_envelope(config: SandboxConfig) -> dict[str, float | int]:
+    """Maximum live grant compatible with the replayed sizing and stressed spread model."""
+    return {
+        "max_order_notional": config.order_notional,
+        "max_total_exposure": config.initial_cash * config.max_exposure_pct,
+        "max_daily_loss": config.initial_cash * config.max_daily_loss_pct,
+        "max_trades": config.max_entries_per_day,
+        "max_orders_per_minute": 2,
+        "max_spread_bps": config.base_spread_bps * 3.0,
+    }
 
 
 def compare_configs(bundle: HistoricalBundle, configs: dict[str, SandboxConfig]) -> list[ComparisonRow]:
@@ -136,6 +174,52 @@ def compare_configs(bundle: HistoricalBundle, configs: dict[str, SandboxConfig])
 
 
 def candidate_grid(base: SandboxConfig, compact: bool = True) -> list[SandboxConfig]:
+    if base.strategy_name == "close_momentum":
+        return [
+            replace(base, close_momentum_bps=value)
+            for value in sorted(
+                {
+                    max(2.0, base.close_momentum_bps * 0.5),
+                    base.close_momentum_bps,
+                    base.close_momentum_bps * 1.5,
+                }
+            )
+        ]
+    if base.strategy_name == "opening_breakout":
+        return [
+            replace(base, opening_range_minutes=minutes, breakout_buffer_bps=buffer)
+            for minutes in sorted({15, base.opening_range_minutes, 60})
+            for buffer in sorted(
+                {
+                    max(0.0, base.breakout_buffer_bps * 0.5),
+                    base.breakout_buffer_bps,
+                    base.breakout_buffer_bps * 2,
+                }
+            )
+        ]
+    if base.strategy_name == "multi_horizon_trend":
+        return [
+            replace(base, trend_threshold_bps=value)
+            for value in sorted(
+                {
+                    max(0.5, base.trend_threshold_bps * 0.5),
+                    base.trend_threshold_bps,
+                    base.trend_threshold_bps * 2,
+                }
+            )
+        ]
+    if base.strategy_name == "conservative_ensemble":
+        return [
+            replace(base, ensemble_min_votes=votes, trend_threshold_bps=threshold)
+            for votes in sorted({2, base.ensemble_min_votes, 3})
+            for threshold in sorted(
+                {
+                    max(0.5, base.trend_threshold_bps * 0.5),
+                    base.trend_threshold_bps,
+                    base.trend_threshold_bps * 2,
+                }
+            )
+        ]
     fast_values = sorted({max(2, base.fast_ema - 3), base.fast_ema, base.fast_ema + 3})
     slow_values = sorted({max(5, base.slow_ema - 8), base.slow_ema, base.slow_ema + 8})
     thresholds = sorted(
@@ -172,6 +256,8 @@ def parameter_sweep(bundle: HistoricalBundle, configs: Iterable[SandboxConfig]) 
         result = SandboxReplayEngine(config).run(bundle)
         points.append(
             SensitivityPoint(
+                config.strategy_name,
+                _candidate_label(config),
                 config.fast_ema,
                 config.slow_ema,
                 config.trend_threshold_bps,
@@ -183,6 +269,18 @@ def parameter_sweep(bundle: HistoricalBundle, configs: Iterable[SandboxConfig]) 
             )
         )
     return points
+
+
+def _candidate_label(config: SandboxConfig) -> str:
+    if config.strategy_name == "close_momentum":
+        return f"close threshold {config.close_momentum_bps:.1f} bps"
+    if config.strategy_name == "opening_breakout":
+        return f"range {config.opening_range_minutes}m; buffer {config.breakout_buffer_bps:.1f} bps"
+    if config.strategy_name == "multi_horizon_trend":
+        return f"trend threshold {config.trend_threshold_bps:.1f} bps"
+    if config.strategy_name == "conservative_ensemble":
+        return f"votes {config.ensemble_min_votes}; threshold {config.trend_threshold_bps:.1f} bps"
+    return f"EMA {config.fast_ema}/{config.slow_ema}; threshold {config.trend_threshold_bps:.1f} bps"
 
 
 def _sessions(bundle: HistoricalBundle) -> dict[str, list]:
@@ -334,6 +432,15 @@ def promotion_report(
     positive_days = [value for value in base_result.daily_pnl.values() if value > 0]
     concentration = max(positive_days) / sum(positive_days) * 100.0 if positive_days else 100.0
     data_age_days = max(0, (reference - bundle.end).total_seconds() / 86_400)
+    daily_values = list(base_result.daily_pnl.values())
+    if len(daily_values) >= 2 and statistics.stdev(daily_values) > 0:
+        t_stat = statistics.fmean(daily_values) / (
+            statistics.stdev(daily_values) / math.sqrt(len(daily_values))
+        )
+        one_sided_p = 0.5 * math.erfc(t_stat / math.sqrt(2.0))
+    else:
+        one_sided_p = 1.0
+    adjusted_p = min(1.0, one_sided_p * max(1, len(sensitivity)))
     gates = [
         PromotionGate(
             "Historical source",
@@ -341,7 +448,12 @@ def promotion_report(
             bundle.source,
             "Observed or imported market history; synthetic scenarios are ineligible",
         ),
-        PromotionGate("Data breadth", sessions >= 20, f"{sessions} sessions", "At least 20 sessions"),
+        PromotionGate(
+            "Data breadth",
+            sessions >= MIN_EVIDENCE_SESSIONS,
+            f"{sessions} sessions",
+            f"At least {MIN_EVIDENCE_SESSIONS} sessions",
+        ),
         PromotionGate(
             "Data recency",
             data_age_days <= 30,
@@ -385,6 +497,12 @@ def promotion_report(
             "At or above the 75th percentile of seeded random-entry trials",
         ),
         PromotionGate(
+            "Trial-adjusted significance",
+            adjusted_p <= 0.05,
+            f"one-sided Bonferroni p={adjusted_p:.4f} across {max(1, len(sensitivity))} candidates",
+            "Positive daily P/L survives a 5% familywise correction for every tested candidate",
+        ),
+        PromotionGate(
             "Profit concentration",
             concentration <= 50.0,
             f"Best day is {concentration:.1f}% of positive daily P/L",
@@ -395,6 +513,12 @@ def promotion_report(
             base_result.max_drawdown_pct <= 5.0,
             f"{base_result.max_drawdown_pct:.2f}%",
             "At most 5% in research configuration",
+        ),
+        PromotionGate(
+            "Ending flat",
+            base_result.ending_position is None,
+            "No open position" if base_result.ending_position is None else base_result.ending_position.symbol,
+            "Replay ends with no open virtual position",
         ),
     ]
     if walk is None:
@@ -407,6 +531,18 @@ def promotion_report(
             )
         )
     else:
+        base_fingerprint = strategy_fingerprint(base_config, bundle.interval)
+        matching_folds = sum(
+            strategy_fingerprint(fold.selected, bundle.interval) == base_fingerprint for fold in walk.folds
+        )
+        gates.append(
+            PromotionGate(
+                "Exact candidate identity",
+                bool(walk.folds) and matching_folds == len(walk.folds),
+                f"{matching_folds}/{len(walk.folds)} folds selected the certified candidate",
+                "Every training fold selects the exact configuration being certified",
+            )
+        )
         gates.append(
             PromotionGate(
                 "Walk-forward",
@@ -422,4 +558,9 @@ def promotion_report(
             )
         )
     status = "LIVE_REVIEW_ELIGIBLE" if all(gate.passed for gate in gates) else "SHADOW_ONLY"
-    return PromotionReport(status, gates, bundle.dataset_hash, strategy_fingerprint(base_config))
+    return PromotionReport(
+        status,
+        gates,
+        bundle.dataset_hash,
+        strategy_fingerprint(base_config, bundle.interval),
+    )

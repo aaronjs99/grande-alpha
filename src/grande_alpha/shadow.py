@@ -80,7 +80,13 @@ class LiveShadowEngine:
             return []
         fills: list[ShadowFill] = []
         window_allowed = self.policy.trading_window_allowed(timestamp)
-        if self._pending is not None and window_allowed:
+        pending_is_exit = (
+            self.state.position is not None
+            and self._pending
+            and (self._pending[0] != self.state.position.symbol)
+        )
+        pending_window = self.policy.exit_window_allowed(timestamp) if pending_is_exit else window_allowed
+        if self._pending is not None and pending_window:
             target, reason = self._pending
             complete, fill = self._transition(timestamp, target, reason, quotes)
             if fill:
@@ -106,7 +112,10 @@ class LiveShadowEngine:
         )
         decision = self.policy.decide(signal, timestamp, policy_position)
         current = position.symbol if position else None
-        if window_allowed and decision.target_symbol != current and self._pending is None:
+        decision_window = (
+            self.policy.exit_window_allowed(timestamp) if current is not None else window_allowed
+        )
+        if decision_window and decision.target_symbol != current and self._pending is None:
             self._pending = (decision.target_symbol, decision.reason)
         self._mark(quotes)
         return fills

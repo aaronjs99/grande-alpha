@@ -19,9 +19,13 @@ Shadow mode and live order authority are mutually exclusive in both the controll
 shadow while a live grant exists is rejected; authorizing or starting real automation while shadow
 is active is rejected. Stopping shadow never sells a real position because it never owned one.
 
+Because shadow consumes the live controller's signal stream, GRANDE Alpha overwrites its signal,
+exit, and trading-window fields with the current live EMA settings at start. Virtual sizing and
+cost assumptions still come from the sandbox profile. The start receipt records the resulting
+strategy fingerprint so a later audit can detect configuration drift.
+
 ## What shadow validates
 
 Shadow is useful for current data flow, strategy state changes, timing, virtual accounting, and
 operational monitoring. It does not validate real fills, queue position, broker acceptance,
 settled-funds availability, taxes, or profit. A shadow result cannot automatically promote itself.
-

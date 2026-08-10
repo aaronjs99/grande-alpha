@@ -11,6 +11,7 @@ from grande_alpha.controller import TradingController
 from grande_alpha.evidence import EVIDENCE_POLICY_VERSION, strategy_fingerprint
 from grande_alpha.models import Account, LiveGrant, Portfolio, utc_now
 from grande_alpha.privacy import export_diagnostics
+from grande_alpha.sandbox import SandboxConfig
 from grande_alpha.storage import AuditStore
 from grande_alpha.ui.settings_dialog import LIVE_PHRASE, SettingsDialog
 
@@ -57,7 +58,7 @@ def test_public_defaults_are_research_only() -> None:
     assert not config.live_trading_enabled
     assert not config.remote_market_data_enabled
     assert not config.personal_ledger_enabled
-    assert __version__ == "0.5.0"
+    assert __version__ == "0.6.0"
 
 
 @pytest.mark.asyncio
@@ -124,6 +125,14 @@ def test_controller_requires_matching_current_evidence_before_live_authority(tmp
         source="licensed CSV",
         replay_end=now.isoformat(),
         gates=[{"name": "test fixture", "passed": True}],
+        risk_envelope={
+            "max_order_notional": 10.0,
+            "max_total_exposure": 20.0,
+            "max_daily_loss": 2.0,
+            "max_trades": 4,
+            "max_orders_per_minute": 1,
+            "max_spread_bps": 20.0,
+        },
     )
     controller.authorize_live(grant)
     assert controller.snapshot.live_status == "LIVE"
@@ -132,6 +141,39 @@ def test_controller_requires_matching_current_evidence_before_live_authority(tmp
         controller.start_strategy()
     assert controller.snapshot.live_status == "LOCKED"
     assert not controller.snapshot.strategy_running
+    store.close()
+
+
+def test_live_shadow_overrides_saved_research_signal_with_live_settings(tmp_path, monkeypatch) -> None:
+    store = AuditStore(tmp_path / "audit.db")
+    config = AppConfig(
+        broker_connection_enabled=True,
+        fast_ema=5,
+        slow_ema=18,
+        trend_threshold_bps=7.0,
+        max_hold_minutes=33,
+    )
+    monkeypatch.setattr(
+        "grande_alpha.controller.load_sandbox_config",
+        lambda: SandboxConfig(
+            strategy_name="close_momentum",
+            fast_ema=3,
+            slow_ema=10,
+            max_hold_minutes=90,
+        ),
+    )
+    controller = TradingController(DisabledBroker(), config, store)
+    controller.snapshot.connected = True
+    controller.snapshot.account = Account("123456789", "Agentic", "cash", True, "active")
+
+    controller.start_shadow()
+
+    assert controller._shadow is not None
+    shadow = controller._shadow.config
+    assert shadow.strategy_name == "ema_momentum"
+    assert (shadow.fast_ema, shadow.slow_ema) == (5, 18)
+    assert shadow.trend_threshold_bps == 7.0
+    assert shadow.max_hold_minutes == 33
     store.close()
 
 

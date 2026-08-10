@@ -38,8 +38,10 @@ prove that they used identical candles; it does not prove the vendor data is cor
 - Size is limited by order cap, equity exposure, stop-distance risk budget, available cash, and an
   optional volatility target.
 - Daily-loss and consecutive-loss pauses stop new entries. Exits remain possible.
-- The ending virtual position remains open and is marked to the last close by default. Select
-  **force flat at end** only when that assumption matches the experiment.
+- The shared policy targets cash during the configured close window and allows exits through the
+  regular-session close. Missing bars, rejected virtual fills, or a truncated dataset can still
+  leave a position. **Force flat at end** is a last-candle modeling assumption, not a real fill;
+  evidence eligibility always requires an actually flat replay result.
 
 These approximations do not model queue priority, order-book depth, halts, taxes, settlement,
 short-lived quote changes, or the market impact of a real order.
@@ -52,7 +54,8 @@ short-lived quote changes, or the market impact of a real order.
    exposure, turnover/costs, ending position, equity curve, and fill ledger.
 4. Use the slider or Play control to replay the equity state. Selecting a fill exposes its exact
    timestamp, requested quantity, filled fraction, price, cost, reason, and resulting cash.
-5. Compare presets on the same dataset. Then run the [evidence lab](EVIDENCE_LAB.md).
+5. Compare presets on the same dataset. This tournament is exploratory and does not make the
+   winning row out-of-sample. Then run the [evidence lab](EVIDENCE_LAB.md) on the exact candidate.
 6. Load prior configurations from **Saved runs** or export the virtual fills as CSV.
 
 Every completed run stores its configuration, metrics, fills, execution events, note, data source,

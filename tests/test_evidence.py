@@ -42,3 +42,11 @@ def test_execution_rejections_are_audited() -> None:
     assert not result.fills
     assert result.execution_events
     assert {event.status for event in result.execution_events} == {"rejected"}
+
+
+def test_fingerprint_binds_strategy_and_bar_interval() -> None:
+    base = SandboxConfig(strategy_name="ema_momentum")
+    assert strategy_fingerprint(base, "1m") != strategy_fingerprint(base, "5m")
+    assert strategy_fingerprint(base, "1m") != strategy_fingerprint(
+        SandboxConfig(strategy_name="close_momentum"), "1m"
+    )

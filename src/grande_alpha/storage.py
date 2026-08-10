@@ -131,12 +131,21 @@ class AuditStore:
                     status TEXT NOT NULL CHECK(status IN ('SHADOW_ONLY','LIVE_REVIEW_ELIGIBLE')),
                     source TEXT NOT NULL,
                     replay_end TEXT NOT NULL,
-                    gates_json TEXT NOT NULL
+                    gates_json TEXT NOT NULL,
+                    risk_envelope_json TEXT NOT NULL DEFAULT '{}'
                 );
                 CREATE INDEX IF NOT EXISTS idx_research_promotions_fingerprint_time
                     ON research_promotions(strategy_fingerprint,created_at DESC);
                 """
             )
+            promotion_columns = {
+                row["name"]
+                for row in self._connection.execute("PRAGMA table_info(research_promotions)").fetchall()
+            }
+            if "risk_envelope_json" not in promotion_columns:
+                self._connection.execute(
+                    "ALTER TABLE research_promotions ADD COLUMN risk_envelope_json TEXT NOT NULL DEFAULT '{}'"
+                )
 
     def record_quote(self, quote: Quote) -> None:
         with self._lock, self._connection:
@@ -394,6 +403,7 @@ class AuditStore:
         source: str,
         replay_end: str,
         gates: list[dict[str, Any]],
+        risk_envelope: dict[str, float | int],
     ) -> int:
         if status not in {"SHADOW_ONLY", "LIVE_REVIEW_ELIGIBLE"}:
             raise ValueError("Unknown research-promotion status")
@@ -401,8 +411,8 @@ class AuditStore:
             cursor = self._connection.execute(
                 """INSERT INTO research_promotions(
                     created_at,dataset_hash,strategy_fingerprint,policy_version,status,
-                    source,replay_end,gates_json
-                ) VALUES(?,?,?,?,?,?,?,?)""",
+                    source,replay_end,gates_json,risk_envelope_json
+                ) VALUES(?,?,?,?,?,?,?,?,?)""",
                 (
                     utc_now().isoformat(),
                     dataset_hash,
@@ -412,6 +422,7 @@ class AuditStore:
                     source,
                     replay_end,
                     json.dumps(gates, default=str),
+                    json.dumps(risk_envelope, sort_keys=True),
                 ),
             )
             promotion_id = int(cursor.lastrowid)
@@ -424,13 +435,17 @@ class AuditStore:
                 "strategy_fingerprint": strategy_fingerprint,
                 "policy_version": policy_version,
                 "status": status,
+                "risk_envelope": risk_envelope,
             },
             "warning" if status == "SHADOW_ONLY" else "info",
         )
         return promotion_id
 
     def current_live_evidence(
-        self, strategy_fingerprint: str, max_age_days: int = 30
+        self,
+        strategy_fingerprint: str,
+        max_age_days: int = 30,
+        requested_envelope: dict[str, float | int] | None = None,
     ) -> dict[str, Any] | None:
         if max_age_days < 1:
             raise ValueError("Evidence age must be at least one day")
@@ -442,7 +457,29 @@ class AuditStore:
                 ORDER BY created_at DESC,id DESC LIMIT 1""",
                 (strategy_fingerprint, f"-{max_age_days} days"),
             ).fetchone()
-        return dict(row) if row else None
+        if not row:
+            return None
+        evidence = dict(row)
+        try:
+            tested = json.loads(evidence["risk_envelope_json"])
+        except (KeyError, TypeError, json.JSONDecodeError):
+            return None
+        required = {
+            "max_order_notional",
+            "max_total_exposure",
+            "max_daily_loss",
+            "max_trades",
+            "max_orders_per_minute",
+            "max_spread_bps",
+        }
+        if not required <= tested.keys():
+            return None
+        if requested_envelope and any(
+            float(requested_envelope[name]) > float(tested[name]) for name in required
+        ):
+            return None
+        evidence["risk_envelope"] = tested
+        return evidence
 
     def close(self) -> None:
         with self._lock:

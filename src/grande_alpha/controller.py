@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -206,7 +206,7 @@ class TradingController(QObject):
     def authorize_live(self, grant: LiveGrant) -> None:
         if not self.config.live_trading_enabled:
             raise RuntimeError("Real-order controls are disabled. Unlock them deliberately in Settings first")
-        if not self.live_evidence_ready():
+        if not self.live_evidence_ready(grant):
             raise RuntimeError(
                 "Real-order authority requires a current passing evidence certificate for this exact strategy. "
                 "Run the full Evidence Lab on eligible market history; failed or mismatched research stays shadow-only"
@@ -240,9 +240,19 @@ class TradingController(QObject):
         )
         self._emit()
 
-    def live_evidence_ready(self) -> bool:
+    def live_evidence_ready(self, grant: LiveGrant | None = None) -> bool:
         fingerprint = strategy_fingerprint(self.config)
-        return self.store.current_live_evidence(fingerprint) is not None
+        requested = None
+        if grant is not None:
+            requested = {
+                "max_order_notional": grant.max_order_notional,
+                "max_total_exposure": grant.max_total_exposure,
+                "max_daily_loss": grant.max_daily_loss,
+                "max_trades": grant.max_trades,
+                "max_orders_per_minute": grant.max_orders_per_minute,
+                "max_spread_bps": grant.max_spread_bps,
+            }
+        return self.store.current_live_evidence(fingerprint, requested_envelope=requested) is not None
 
     def start_strategy(self) -> None:
         if not self.config.live_trading_enabled:
@@ -272,12 +282,33 @@ class TradingController(QObject):
             raise RuntimeError("Live shadow and real-order authority are mutually exclusive")
         if self._shadow is not None and self._shadow.state.active:
             return
-        self._shadow = LiveShadowEngine(load_sandbox_config())
+        # Shadow consumes the live strategy's signal stream, so its decision and exit
+        # settings must match the live controller. Keep only virtual execution sizing
+        # and cost assumptions from the user's sandbox profile.
+        shadow_config = replace(
+            load_sandbox_config(),
+            strategy_name="ema_momentum",
+            warmup_bars=self.config.warmup_bars,
+            fast_ema=self.config.fast_ema,
+            slow_ema=self.config.slow_ema,
+            trend_threshold_bps=self.config.trend_threshold_bps,
+            momentum_bars=self.config.momentum_bars,
+            hard_stop_pct=self.config.hard_stop_pct,
+            take_profit_pct=self.config.take_profit_pct,
+            max_hold_minutes=self.config.max_hold_minutes,
+            no_trade_open_minutes=self.config.no_trade_open_minutes,
+            no_trade_close_minutes=self.config.no_trade_close_minutes,
+        )
+        self._shadow = LiveShadowEngine(shadow_config)
         self.log(
             "Live shadow started — virtual TQQQS/SQQQS fills only; no order authority granted",
             "warning",
             "shadow_authority",
-            {"run_id": self._shadow.state.run_id, "broker_calls_allowed": False},
+            {
+                "run_id": self._shadow.state.run_id,
+                "broker_calls_allowed": False,
+                "strategy_fingerprint": strategy_fingerprint(shadow_config, f"{self.config.bar_seconds}s"),
+            },
         )
         self._emit()
 

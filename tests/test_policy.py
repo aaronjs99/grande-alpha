@@ -31,3 +31,19 @@ def test_regular_session_gate_is_timezone_aware() -> None:
     eastern = ZoneInfo("America/New_York")
     assert regular_session_allowed(datetime(2026, 8, 3, 10, 0, tzinfo=eastern), 5, 10)
     assert not regular_session_allowed(datetime(2026, 8, 3, 9, 32, tzinfo=eastern), 5, 10)
+
+
+def test_policy_flattens_during_close_window() -> None:
+    eastern = ZoneInfo("America/New_York")
+    timestamp = datetime(2026, 8, 3, 15, 52, tzinfo=eastern)
+    policy = DecisionPolicy(PolicyConfig(no_trade_close_minutes=10))
+    decision = policy.decide(
+        Signal(Regime.BULLISH, 1.0, "trend"),
+        timestamp,
+        PolicyPosition("TQQQ", 100, 101, 5),
+    )
+
+    assert decision.target_symbol is None
+    assert "flatten" in decision.reason.lower()
+    assert not policy.trading_window_allowed(timestamp)
+    assert policy.exit_window_allowed(timestamp)

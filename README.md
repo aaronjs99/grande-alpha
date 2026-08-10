@@ -32,7 +32,7 @@ The executable is written to `dist\GRANDEAlpha\GRANDEAlpha.exe`. See [Quickstart
 
 This is not exchange-colocated high-frequency trading. It is a desktop research and consent-gated automation client. Its baseline strategy observes QQQ-derived signals and may select TQQQ, SQQQ, or cash. The included strategy is an engineering baseline, not a demonstrated edge.
 
-The sandbox models costs, spread, latency, partial fills, volume limits, rejections, and walk-forward evaluation. Evidence results are recorded locally. Only a result that passes every current gate can unlock the separate live-review workflow for the same strategy fingerprint, and that certificate expires after 30 days. It still does not predict future returns or itself authorize an order.
+The sandbox models costs, spread, latency, partial fills, volume limits, rejections, and walk-forward evaluation. It now includes a finite, documented research library: EMA momentum, multi-horizon trend, closing-window momentum, opening-range breakout, and a conservative agreement ensemble. These are hypotheses, not guaranteed edges. Evidence results are recorded locally. Only a result that passes every current gate can unlock the separate live-review workflow for the same strategy fingerprint, bar interval, and tested risk envelope; that certificate expires after 30 days. It still does not predict future returns or itself authorize an order.
 
 ## Broker integration
 
@@ -40,7 +40,7 @@ The optional adapter uses Robinhood's official Trading MCP endpoint and browser 
 
 ## Project status
 
-Version `0.5.0` is a community-preview release candidate. Source tests, packaging, and smoke checks are automated, but public binary distribution still requires maintainer release review, dependency audit, checksums, and code signing where available. See [Public release checklist](docs/PUBLIC_RELEASE_CHECKLIST.md).
+Version `0.6.0` is a community-preview release candidate. The latest 40-session research tournament found one positive candidate, but it failed the complete promotion policy and remains shadow-only. Source tests, packaging, and smoke checks are automated, but public binary distribution still requires maintainer release review, dependency audit, checksums, and code signing where available. See the [strategy research report](docs/STRATEGY_RESEARCH_2026-08-09.md) and [public release checklist](docs/PUBLIC_RELEASE_CHECKLIST.md).
 
 ## Contributing and support
 

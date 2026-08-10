@@ -43,3 +43,8 @@ returns a target and reason; three separate execution boundaries consume that de
 replay writes virtual accounting tables, live shadow records virtual receipts from current quotes,
 and only the live controller may request an official Robinhood review and order. Shadow and live
 authority are mutually exclusive.
+
+The research sandbox selects a finite strategy through a versioned factory. Each strategy accepts
+completed QQQ bars and returns the same bullish, bearish, or flat signal contract. The factory does
+not provide broker access. Live automation remains the explicit EMA baseline; a research strategy's
+different fingerprint cannot authorize that live path.

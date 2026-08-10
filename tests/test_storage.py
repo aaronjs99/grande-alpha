@@ -70,7 +70,29 @@ def test_live_evidence_is_exact_strategy_scoped(tmp_path: Path) -> None:
         source="licensed CSV",
         replay_end="2026-08-09T16:00:00+00:00",
         gates=[{"name": "fixture", "passed": True}],
+        risk_envelope={
+            "max_order_notional": 25.0,
+            "max_total_exposure": 40.0,
+            "max_daily_loss": 2.0,
+            "max_trades": 6,
+            "max_orders_per_minute": 2,
+            "max_spread_bps": 6.0,
+        },
     )
     assert store.current_live_evidence(fingerprint) is not None
     assert store.current_live_evidence("different-strategy") is None
+    assert (
+        store.current_live_evidence(
+            fingerprint,
+            requested_envelope={
+                "max_order_notional": 25.0,
+                "max_total_exposure": 40.0,
+                "max_daily_loss": 2.0,
+                "max_trades": 6,
+                "max_orders_per_minute": 2,
+                "max_spread_bps": 7.0,
+            },
+        )
+        is None
+    )
     store.close()

@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.6.0 - 2026-08-09
+
+- Added a causal research-only strategy library for closing momentum, multi-horizon trend, opening-range breakout, and conservative signal agreement.
+- Added strategy selection and parameter controls to the sandbox, plus same-dataset tournament comparison.
+- Bound evidence certificates to the bar interval, exact strategy candidate, policy version, and tested live-risk envelope.
+- Added trial-adjusted significance, ending-flat, exact-candidate, and 120-session data-breadth gates.
+- Allowed risk-reducing sells through the full regular session while blocking new entries in the configured close window.
+- Forced live-shadow decision settings to match the live EMA signal stream and recorded its fingerprint.
+- Published the complete 40-session tournament, including negative candidates and the close-momentum candidate's failed promotion gates.
+
 ## 0.5.0 - 2026-08-09
 
 - Added persisted, 30-day evidence certificates bound to the exact strategy fingerprint.

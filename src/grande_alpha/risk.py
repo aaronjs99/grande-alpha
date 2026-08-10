@@ -80,7 +80,12 @@ class RiskEngine:
             return RiskDecision(False, "Live authority expired")
         if intent.ref_id in self.seen_ref_ids:
             return RiskDecision(False, "Duplicate order idempotency key")
-        if not self._regular_session_allowed(reference):
+        allowed_window = (
+            regular_session_allowed(reference, 0, 0)
+            if intent.side == "sell"
+            else self._regular_session_allowed(reference)
+        )
+        if not allowed_window:
             return RiskDecision(False, "Outside configured regular-hours trading window")
         if quote.age_seconds(reference) > grant.max_quote_age_seconds:
             return RiskDecision(False, f"Quote is stale ({quote.age_seconds(reference):.1f}s)")
