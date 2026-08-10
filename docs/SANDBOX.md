@@ -11,8 +11,9 @@ engine has no OAuth, account, review, placement, or cancellation dependency.
 | Recent 1-minute cache | 7 calendar days | Short execution inspection |
 | 5-minute cache | 60 calendar days | Several-week robustness checks |
 | Hourly cache | 730 calendar days | Broad regime and walk-forward checks |
-| Combined CSV import | 3,650 days in configuration | Licensed or personally exported long history |
-| Deterministic scenario | 3,650 days | Offline repeatability and software testing only |
+| Full shared-history daily cache | Common history since February 2010 | Offline policy research and long-regime checks |
+| Combined CSV import | 10,000 days in configuration | Licensed or personally exported long history |
+| Deterministic scenario | 10,000 days | Offline repeatability and software testing only |
 
 The built-in market download uses Yahoo's unsupported chart endpoint and writes a dated local cache
 under `%LOCALAPPDATA%\GRANDEAlpha\sandbox_cache`. It is convenient research data, not a licensed
@@ -40,7 +41,9 @@ prove that they used identical candles; it does not prove the vendor data is cor
 - Daily-loss and consecutive-loss pauses stop new entries. Exits remain possible.
 - The shared policy targets cash during the configured close window and allows exits through the
   regular-session close. Missing bars, rejected virtual fills, or a truncated dataset can still
-  leave a position. **Force flat at end** is a last-candle modeling assumption, not a real fill;
+  leave a position. **Close virtual positions at every session end** uses each session's last
+  available candle as a forced modeling fill; it prevents accidental overnight replay exposure
+  but is not evidence that a real closing order would fill at that price.
   evidence eligibility always requires an actually flat replay result.
 
 These approximations do not model queue priority, order-book depth, halts, taxes, settlement,
@@ -61,6 +64,10 @@ short-lived quote changes, or the market impact of a real order.
 5. Compare presets on the same dataset. This tournament is exploratory and does not make the
    winning row out-of-sample. Then run the [evidence lab](EVIDENCE_LAB.md) on the exact candidate.
 6. Load prior configurations from **Saved runs** or export the virtual fills as CSV.
+
+For daily history, select **Community remote: full shared history (daily)** and use the
+**9-action lab** tab. Its learner is deliberately isolated from broker controls and records every
+holdout action. See [Action Lab](ACTION_LAB.md).
 
 Every completed run stores its configuration, metrics, fills, execution events, note, data source,
 and dataset hash in the local audit database. It never changes live settings or authority.

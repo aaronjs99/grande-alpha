@@ -28,4 +28,8 @@ A public release is ready only when every required item is checked for that exac
 - [ ] A qualified reviewer assesses financial promotion, broker API terms, privacy, consumer-protection, and applicable jurisdictional obligations.
 - [ ] Accessibility keyboard/focus/screen-reader checks are completed and limitations are documented.
 
-The local `0.6.1` build is a community-preview release candidate, not a claim that these external launch gates are complete. PyInstaller produced the 0.6.1 executable, ZIP, SBOM, and checksum, but Windows Application Control blocks launch of unsigned artifacts on the build host. Packaged GUI smoke therefore remains **failed/not complete** until the artifact is signed and tested under an approved release policy.
+The local `0.7.0` build is a community-preview release candidate, not a claim that these external
+launch gates are complete. PyInstaller produced the executable, ZIP, SBOM, and checksum. The
+packaged `--version` entry-point smoke exited successfully, but the executable is unsigned and a
+complete packaged GUI walkthrough on a clean Windows profile remains **not complete**. Signing,
+malware scanning, and clean-profile testing are required before public binary distribution.

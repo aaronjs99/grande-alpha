@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.7.0 - 2026-08-09
+
+- Added an exact nine-action `(T,S)` command model with long-only inventory masks and an auditable offline Q-learning lab.
+- Added a full common-history daily QQQ/TQQQ/SQQQ source, local caching, provenance, and a chronological 70/30 holdout.
+- Corrected offline rewards to include causal close-to-next-close exposure and modeled transaction costs.
+- Corrected replay hold duration to use elapsed time and made session-end virtual flattening the safe default.
+- Added the Action Lab matrix, holdout action ledger, research receipts, tests, documentation, and restrained public social assets.
+- Fixed GitHub packaging so CI uses the active runner Python when a local `.venv` is absent.
+
 ## 0.6.1 - 2026-08-09
 
 - Added an interactive sandbox trade timeline with TQQQS/SQQQS price paths and every virtual fill.

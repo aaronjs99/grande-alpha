@@ -1,6 +1,7 @@
 $ErrorActionPreference = 'Stop'
 $ProjectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
-$PythonExe = Join-Path $ProjectRoot '.venv\Scripts\python.exe'
+$VenvPython = Join-Path $ProjectRoot '.venv\Scripts\python.exe'
+$PythonExe = if (Test-Path -LiteralPath $VenvPython) { $VenvPython } else { 'python' }
 $IconIco = Join-Path $ProjectRoot 'assets\brand\grande-alpha.ico'
 $IconPng = Join-Path $ProjectRoot 'src\grande_alpha\assets\app-icon.png'
 

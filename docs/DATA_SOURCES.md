@@ -12,6 +12,13 @@ The user supplies the file and is responsible for its provenance, license, accur
 
 Disabled by default. When enabled, it requests public chart data from an unsupported Yahoo endpoint. It is not an official, contracted, or guaranteed market-data feed and may change, throttle, omit, delay, or correct data. Do not redistribute cached data unless its license permits it. No broker or account data is included in these requests.
 
+The full-history option requests daily QQQ, TQQQ, and SQQQ candles and retains only timestamps
+present in all three series. The practical common inception is limited by the newest fund, not by
+QQQ's older history. The frozen 2026-08-09 cache contains 4,147 aligned daily observations from
+2010-02-11 through 2026-08-07 and SHA-256 prefix `da00f6f963bb1cbc`. Provider-adjusted price
+history may encode splits or later corrections; the content hash proves reproducibility, not
+economic correctness. The endpoint and this snapshot are unsupported and may become stale.
+
 ## Broker data
 
 Available only after explicit broker permission and OAuth. Provider terms, disclosures, entitlement, latency, corrections, and availability apply. Do not treat displayed quotes as exchange-direct or suitable for institutional execution.

@@ -18,8 +18,9 @@ from grande_alpha.config import data_dir
 from grande_alpha.models import Bar, utc_now
 
 YAHOO_CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
-INTERVAL_LIMITS = {"1m": 7, "5m": 60, "15m": 60, "60m": 730, "1d": 3650}
+INTERVAL_LIMITS = {"1m": 7, "5m": 60, "15m": 60, "60m": 730, "1d": 10_000}
 INTERVAL_SECONDS = {"1m": 60, "5m": 300, "15m": 900, "60m": 3600, "1d": 86400}
+SHARED_LEVERAGED_HISTORY_START = datetime(2010, 2, 9, tzinfo=UTC)
 
 
 @dataclass(frozen=True)
@@ -78,10 +79,6 @@ def parse_yahoo_chart(payload: dict[str, Any], expected_symbol: str) -> list[Bar
     if not results:
         raise ValueError(f"No historical data returned for {expected_symbol}")
     result = results[0]
-    if (result.get("events") or {}).get("splits"):
-        raise ValueError(
-            f"{expected_symbol} had a split in the replay window; choose a shorter window to avoid false P/L"
-        )
     timestamps = result.get("timestamp") or []
     indicators = result.get("indicators") or {}
     quotes = indicators.get("quote") or []
@@ -276,7 +273,7 @@ class HistoricalDataProvider:
         )
         if use_cache and cache_path.exists():
             return load_bundle(cache_path)
-        headers = {"User-Agent": "GRANDE-Alpha/0.3 evidence research client"}
+        headers = {"User-Agent": "GRANDE-Alpha/0.7 research client"}
         async with httpx.AsyncClient(timeout=self.timeout_seconds, headers=headers) as client:
             qqq, tqqq, sqqq = await asyncio.gather(
                 self._fetch_symbol(client, "QQQ", days, interval),
@@ -298,6 +295,15 @@ class HistoricalDataProvider:
         if use_cache:
             save_bundle(bundle, cache_path)
         return bundle
+
+    async def fetch_full_daily(self, use_cache: bool = True) -> HistoricalBundle:
+        days = full_history_calendar_days()
+        return await self.fetch(days, "1d", use_cache)
+
+
+def full_history_calendar_days(reference: datetime | None = None) -> int:
+    end = reference or utc_now()
+    return max(1, math.ceil((end - SHARED_LEVERAGED_HISTORY_START).total_seconds() / 86_400) + 2)
 
 
 def load_csv_history(path: Path, interval: str = "1m") -> HistoricalBundle:

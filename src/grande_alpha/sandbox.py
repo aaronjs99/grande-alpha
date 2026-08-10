@@ -59,11 +59,11 @@ class SandboxConfig:
     max_daily_loss_pct: float = 0.04
     max_consecutive_losses: int = 3
     volatility_target_pct: float = 0.30
-    force_flat_at_end: bool = False
+    force_flat_at_end: bool = True
 
     def validate(self) -> None:
-        if not 1 <= self.lookback_days <= 3650:
-            raise ValueError("Lookback must be between 1 and 3650 calendar days")
+        if not 1 <= self.lookback_days <= 10_000:
+            raise ValueError("Lookback must be between 1 and 10000 calendar days")
         if self.initial_cash <= 0 or self.order_notional <= 0:
             raise ValueError("Starting cash and order notional must be positive")
         if self.order_notional > self.initial_cash:
@@ -239,6 +239,7 @@ class _VirtualPosition:
     entry_price: float
     cost_total: float
     entry_index: int
+    entry_time: datetime
 
 
 class SandboxReplayEngine:
@@ -279,6 +280,10 @@ class SandboxReplayEngine:
         consecutive_losses = 0
         bar_minutes = INTERVAL_MINUTES.get(bundle.interval, 1)
         self._bar_minutes = bar_minutes
+        session_last_indices: dict[str, int] = {}
+        for frame_index, replay_frame in enumerate(bundle.frames):
+            session_day = replay_frame.start.astimezone(EASTERN).date().isoformat()
+            session_last_indices[session_day] = frame_index
 
         def window_allowed(frame: ReplayFrame) -> bool:
             return bundle.interval == "1d" or self.policy.trading_window_allowed(frame.start)
@@ -339,7 +344,7 @@ class SandboxReplayEngine:
                     position.symbol,
                     position.entry_price,
                     frame.bar_for_alias(position.symbol).close,
-                    (index - position.entry_index) * bar_minutes,
+                    max(0, int((frame.start - position.entry_time).total_seconds() // 60)),
                 )
             decision = self.policy.decide(signal, frame.start, policy_position)
             current = position.symbol if position else None
@@ -351,6 +356,32 @@ class SandboxReplayEngine:
                         decision.target_symbol,
                         decision.reason,
                     )
+
+            if (
+                position is not None
+                and self.config.force_flat_at_end
+                and index == session_last_indices[day]
+            ):
+                cash, position, new_fills, new_events, _ = self._transition(
+                    frame,
+                    index,
+                    cash,
+                    position,
+                    None,
+                    "Session-end forced virtual flatten",
+                    entries_by_day,
+                    paused_days,
+                    recent_returns,
+                    use_close=True,
+                    bypass_execution_failures=True,
+                )
+                fills.extend(new_fills)
+                events.extend(new_events)
+                for fill in new_fills:
+                    if fill.realized_pnl is not None:
+                        closed_pnl.append(fill.realized_pnl)
+                        consecutive_losses = consecutive_losses + 1 if fill.realized_pnl < 0 else 0
+                scheduled = None
 
             equity = self._equity(cash, position, frame)
             curve.append(EquityPoint(frame.start, equity, cash, position.symbol if position else None))
@@ -520,6 +551,7 @@ class SandboxReplayEngine:
                 position.entry_price,
                 position.cost_total - cost_share,
                 position.entry_index,
+                position.entry_time,
             )
         execution_cost = max(0.0, (raw - price) * quantity) + self.config.commission_per_order
         fraction = quantity / requested
@@ -575,7 +607,7 @@ class SandboxReplayEngine:
         cost = quantity * price + self.config.commission_per_order
         cash -= cost
         execution_cost = max(0.0, (price - raw) * quantity) + self.config.commission_per_order
-        position = _VirtualPosition(target, quantity, price, cost, index)
+        position = _VirtualPosition(target, quantity, price, cost, index, frame.start)
         fraction = quantity / requested
         status = "filled" if fraction >= 0.999999 else "partially_filled"
         fill = SandboxFill(

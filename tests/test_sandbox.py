@@ -12,6 +12,7 @@ from grande_alpha.historical import (
     align_bars,
     assess_quality,
     deterministic_demo,
+    full_history_calendar_days,
     load_bundle,
     parse_yahoo_chart,
     save_bundle,
@@ -52,6 +53,12 @@ def test_yahoo_parser_skips_incomplete_candles() -> None:
     assert len(bars) == 1
     assert bars[0].symbol == "QQQ"
     assert bars[0].close == 100.5
+
+
+def test_full_history_window_covers_shared_2010_inception() -> None:
+    reference = datetime(2026, 8, 9, tzinfo=UTC)
+
+    assert full_history_calendar_days(reference) > 6_000
 
 
 def test_alignment_uses_only_common_timestamps() -> None:
@@ -105,6 +112,37 @@ def test_replay_uses_sandbox_aliases_and_next_bar_fills() -> None:
     assert result.fills[0].side == "buy"
     assert result.fills[0].timestamp == frames[5].start
     assert result.fills[-1].side == "sell"
+
+
+def test_force_flat_closes_each_session_without_overnight_exposure() -> None:
+    bundle = deterministic_demo(3, seed=19)
+    config = SandboxConfig(
+        strategy_name="close_momentum",
+        close_momentum_bps=0.1,
+        warmup_bars=5,
+        fast_ema=1,
+        slow_ema=3,
+        trend_threshold_bps=0.1,
+        momentum_bars=1,
+        no_trade_open_minutes=0,
+        no_trade_close_minutes=0,
+        hard_stop_pct=0.5,
+        take_profit_pct=0.5,
+        max_hold_minutes=10_000,
+        force_flat_at_end=True,
+    )
+
+    result = SandboxReplayEngine(config).run(bundle)
+    open_fill = None
+    for fill in result.fills:
+        if fill.side == "buy":
+            open_fill = fill
+        elif fill.side == "sell" and open_fill is not None:
+            assert fill.timestamp.date() == open_fill.timestamp.date()
+            open_fill = None
+
+    assert open_fill is None
+    assert any(event.reason == "Session-end forced virtual flatten" for event in result.execution_events)
 
 
 def test_demo_is_repeatable_and_config_rejects_lookahead_prone_values() -> None:

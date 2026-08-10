@@ -35,6 +35,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from grande_alpha.action_lab import ALL_PAIR_ACTIONS, OfflineTrainingConfig, train_offline_action_policy
 from grande_alpha.evidence import (
     candidate_grid,
     compare_configs,
@@ -49,6 +50,7 @@ from grande_alpha.historical import (
     HistoricalBundle,
     HistoricalDataProvider,
     deterministic_demo,
+    full_history_calendar_days,
     load_csv_history,
 )
 from grande_alpha.sandbox import (
@@ -160,6 +162,10 @@ class SandboxWidget(QWidget):
         self.source.addItem("Community remote: 1-minute (max 7 days)", ("yahoo", "1m", 7))
         self.source.addItem("Community remote: 5-minute (max 60 days)", ("yahoo", "5m", 60))
         self.source.addItem("Community remote: hourly (max 730 days)", ("yahoo", "60m", 730))
+        self.source.addItem(
+            "Community remote: full shared history (daily)",
+            ("yahoo-full", "1d", full_history_calendar_days()),
+        )
         self.source.addItem("Import aligned CSV", ("csv", "1m", 3650))
         self.source.addItem("Offline deterministic scenario", ("demo", "1m", 3650))
         self.source.currentIndexChanged.connect(self._source_changed)
@@ -282,7 +288,7 @@ class SandboxWidget(QWidget):
         self.daily_loss = self._decimal(0.01, 100, decimals=2, suffix=" %")
         self.loss_pause = self._integer(1, 20)
         self.vol_target = self._decimal(0, 500, decimals=1, suffix=" % annualized")
-        self.force_flat = QCheckBox("Close the final virtual position at the last candle")
+        self.force_flat = QCheckBox("Close virtual positions at every session end")
         for title, widget in (
             ("Hard stop", self.stop),
             ("Take-profit", self.take_profit),
@@ -308,12 +314,15 @@ class SandboxWidget(QWidget):
         self.compare_button.clicked.connect(lambda: asyncio.create_task(self._compare()))
         self.evidence_button = QPushButton("Run full evidence lab")
         self.evidence_button.clicked.connect(lambda: asyncio.create_task(self._evidence()))
+        self.action_lab_button = QPushButton("Train 9-action lab")
+        self.action_lab_button.clicked.connect(lambda: asyncio.create_task(self._action_lab()))
         self.export_button = QPushButton("Export fills CSV")
         self.export_button.clicked.connect(self._export)
         buttons.addWidget(self.run_button, 0, 0)
         buttons.addWidget(self.compare_button, 0, 1)
         buttons.addWidget(self.evidence_button, 1, 0)
         buttons.addWidget(self.export_button, 1, 1)
+        buttons.addWidget(self.action_lab_button, 2, 0, 1, 2)
         layout.addLayout(buttons)
         layout.addStretch()
         config_scroll.setWidget(panel)
@@ -490,6 +499,45 @@ class SandboxWidget(QWidget):
         validation_layout.addWidget(self.walk_table)
         validation_layout.addWidget(self.gates_table)
         self.tabs.addTab(validation, "Walk-forward & gates")
+
+        action_lab = QWidget()
+        action_layout = QVBoxLayout(action_lab)
+        action_intro = QLabel(
+            "Offline research only. The action vector is (T,S), each in {-1,0,+1}: sell, hold, buy. "
+            "State-dependent masks prevent a long-only sandbox from selling inventory it does not own."
+        )
+        action_intro.setWordWrap(True)
+        action_layout.addWidget(action_intro)
+        self.action_matrix = QTableWidget(3, 3)
+        self.action_matrix.setHorizontalHeaderLabels(["S = -1", "S = 0", "S = +1"])
+        self.action_matrix.setVerticalHeaderLabels(["T = -1", "T = 0", "T = +1"])
+        self.action_matrix.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.action_matrix.verticalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.action_matrix.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        for action in ALL_PAIR_ACTIONS:
+            row, column = int(action.t) + 1, int(action.s) + 1
+            item = QTableWidgetItem(f"ID {action.action_id}\n{action.label}")
+            item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self.action_matrix.setItem(row, column, item)
+        self.action_matrix.setMinimumHeight(210)
+        action_layout.addWidget(self.action_matrix)
+        self.action_result_label = QLabel(
+            "Select the full shared-history daily source, then run the nine-action lab. "
+            "Training and holdout periods remain chronologically separated."
+        )
+        self.action_result_label.setWordWrap(True)
+        action_layout.addWidget(self.action_result_label)
+        action_split = QSplitter(Qt.Orientation.Vertical)
+        self.action_summary_table = self._table(["Action", "Commands", "Directional impulse", "Count"])
+        self.action_audit_table = self._table(
+            ["Time", "Action", "Before T/S", "After T/S", "Reward", "Equity"]
+        )
+        action_split.addWidget(self.action_summary_table)
+        action_split.addWidget(self.action_audit_table)
+        action_split.setStretchFactor(0, 1)
+        action_split.setStretchFactor(1, 3)
+        action_layout.addWidget(action_split, 1)
+        self.action_tab_index = self.tabs.addTab(action_lab, "9-action lab")
         results_layout.addWidget(self.tabs, 1)
         self.status = QLabel("Configure a virtual replay. Robinhood is not required.")
         self.status.setWordWrap(True)
@@ -529,16 +577,17 @@ class SandboxWidget(QWidget):
     def _source_changed(self) -> None:
         kind, _, maximum = self.source.currentData()
         self.lookback.setMaximum(maximum)
-        self.lookback.setValue(min(self.lookback.value(), maximum))
+        self.lookback.setEnabled(kind != "yahoo-full")
+        self.lookback.setValue(maximum if kind == "yahoo-full" else min(self.lookback.value(), maximum))
         self.csv_button.setEnabled(kind == "csv")
 
     def set_remote_data_allowed(self, allowed: bool) -> None:
         self.allow_remote_data = allowed
-        for index in range(min(3, self.source.count())):
+        for index in range(self.source.count()):
             item = self.source.model().item(index)
-            if item is not None:
+            if item is not None and str(self.source.itemData(index)[0]).startswith("yahoo"):
                 item.setEnabled(allowed)
-        if not allowed and self.source.currentData()[0] == "yahoo":
+        if not allowed and str(self.source.currentData()[0]).startswith("yahoo"):
             for index in range(self.source.count()):
                 if self.source.itemData(index)[0] == "demo":
                     self.source.setCurrentIndex(index)
@@ -641,7 +690,7 @@ class SandboxWidget(QWidget):
 
     async def _load_bundle(self, config: SandboxConfig) -> HistoricalBundle:
         kind, interval, _ = self.source.currentData()
-        if kind == "yahoo":
+        if kind in {"yahoo", "yahoo-full"}:
             if not self.allow_remote_data:
                 raise RuntimeError("Community remote market data is disabled in Settings")
             if not self._remote_acknowledged:
@@ -657,7 +706,12 @@ class SandboxWidget(QWidget):
                 if answer != QMessageBox.StandardButton.Yes:
                     raise RuntimeError("Remote market-data request declined; no network request was made")
                 self._remote_acknowledged = True
-            return await HistoricalDataProvider().fetch(config.lookback_days, interval)
+            provider = HistoricalDataProvider()
+            return (
+                await provider.fetch_full_daily()
+                if kind == "yahoo-full"
+                else await provider.fetch(config.lookback_days, interval)
+            )
         if kind == "csv":
             if not self.csv_path:
                 raise ValueError("Choose a combined QQQ/TQQQ/SQQQ CSV first")
@@ -761,6 +815,80 @@ class SandboxWidget(QWidget):
                 "warning" if not report.passed else "info",
             )
             self.tabs.setCurrentIndex(3)
+        except Exception as exc:
+            self._error(exc)
+        finally:
+            self._busy(False)
+
+    async def _action_lab(self) -> None:
+        self._busy(True, "Training the nine-action policy on a chronological daily split…")
+        try:
+            config = self._config()
+            config.validate()
+            self.bundle = await self._load_bundle(config)
+            if self.bundle.interval != "1d":
+                raise ValueError("Select Community remote: full shared history (daily) for the action lab")
+            training_config = OfflineTrainingConfig()
+            result = await asyncio.to_thread(train_offline_action_policy, self.bundle, training_config)
+            self.action_result_label.setText(
+                f"Chronological holdout {result.test_start} → {result.test_end} • "
+                f"return {result.test_return_pct:+.2f}% • max drawdown {result.test_max_drawdown_pct:.2f}% • "
+                f"{result.training_rows:,} training transitions • {result.test_rows:,} unseen transitions • "
+                f"{result.state_count} learned states. Holdout benchmarks: QQQ {result.qqq_holdout_pct:+.1f}%, "
+                f"TQQQ {result.tqqq_holdout_pct:+.1f}%, SQQQ {result.sqqq_holdout_pct:+.1f}%. "
+                "Research only; no live mode was enabled."
+            )
+            self.action_summary_table.setRowCount(9)
+            for row, action in enumerate(ALL_PAIR_ACTIONS):
+                self._set_row(
+                    self.action_summary_table,
+                    row,
+                    [
+                        f"ID {action.action_id} {action.label}",
+                        f"T {action.t.name.lower()} / S {action.s.name.lower()}",
+                        f"{action.net_directional_impulse:+d}",
+                        str(result.action_counts.get(action.action_id, 0)),
+                    ],
+                )
+            rows = result.audit_rows[-500:]
+            self.action_audit_table.setRowCount(len(rows))
+            for row, event in enumerate(rows):
+                self._set_row(
+                    self.action_audit_table,
+                    row,
+                    [
+                        event.timestamp[:16],
+                        f"ID {event.action_id} ({event.action_t:+d},{event.action_s:+d})",
+                        f"{event.before_t}/{event.before_s}",
+                        f"{event.after_t}/{event.after_s}",
+                        f"{event.reward_pct:+.3f}%",
+                        f"{event.equity:.4f}×",
+                    ],
+                    event.reward_pct,
+                )
+            self.store.receipt(
+                "sandbox_action_lab",
+                "Nine-action offline research completed",
+                {
+                    "dataset_hash": result.dataset_hash,
+                    "training_rows": result.training_rows,
+                    "test_rows": result.test_rows,
+                    "test_return_pct": result.test_return_pct,
+                    "test_max_drawdown_pct": result.test_max_drawdown_pct,
+                    "holdout_benchmarks_pct": {
+                        "QQQ": result.qqq_holdout_pct,
+                        "TQQQ": result.tqqq_holdout_pct,
+                        "SQQQ": result.sqqq_holdout_pct,
+                    },
+                    "action_counts": result.action_counts,
+                    "training_config": asdict(training_config),
+                    "policy": result.policy,
+                    "warnings": result.warnings,
+                },
+                "warning",
+            )
+            self.tabs.setCurrentIndex(self.action_tab_index)
+            self.status.setText("Nine-action research receipt saved. This result cannot unlock live trading.")
         except Exception as exc:
             self._error(exc)
         finally:
@@ -1037,7 +1165,7 @@ class SandboxWidget(QWidget):
         self.notes.setText(note)
 
     def _busy(self, busy: bool, message: str = "") -> None:
-        for button in (self.run_button, self.compare_button, self.evidence_button):
+        for button in (self.run_button, self.compare_button, self.evidence_button, self.action_lab_button):
             button.setEnabled(not busy)
         if message:
             self.status.setText(message)

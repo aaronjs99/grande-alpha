@@ -1,5 +1,6 @@
 import json
 from datetime import timedelta
+from pathlib import Path
 
 import pytest
 from PySide6.QtWidgets import QApplication, QDialogButtonBox
@@ -60,7 +61,7 @@ def test_public_defaults_are_research_only() -> None:
     assert not config.live_trading_enabled
     assert not config.remote_market_data_enabled
     assert not config.personal_ledger_enabled
-    assert __version__ == "0.6.1"
+    assert __version__ == "0.7.0"
 
 
 @pytest.mark.asyncio
@@ -213,6 +214,31 @@ def test_sandbox_trade_timeline_marks_every_virtual_fill(tmp_path) -> None:
     )
     assert plotted_sales == sum(fill.side == "sell" for fill in result.fills)
     assert "total realized P/L" in widget.sales_summary.text()
+    widget.close()
+    store.close()
+
+
+def test_windows_build_uses_active_python_when_local_venv_is_absent() -> None:
+    root = Path(__file__).resolve().parents[1]
+    script = (root / "build.ps1").read_text(encoding="utf-8")
+
+    assert "Test-Path -LiteralPath $VenvPython" in script
+    assert "else { 'python' }" in script
+
+
+def test_sandbox_exposes_exact_nine_action_matrix_and_full_history_source(tmp_path) -> None:
+    qt_app()
+    store = AuditStore(tmp_path / "audit.db")
+    widget = SandboxWidget(store, allow_remote_data=False)
+
+    cells = {
+        widget.action_matrix.item(row, column).text().splitlines()[-1]
+        for row in range(3)
+        for column in range(3)
+    }
+    assert cells == {f"({t:+d},{s:+d})".replace("+0", "0") for t in (-1, 0, 1) for s in (-1, 0, 1)}
+    assert any("full shared history" in widget.source.itemText(index).lower() for index in range(widget.source.count()))
+    assert "session end" in widget.force_flat.text().lower()
     widget.close()
     store.close()
 
