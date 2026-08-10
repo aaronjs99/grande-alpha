@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import uuid
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
+from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal
 from typing import Any
 
 from PySide6.QtCore import QObject, Signal
@@ -18,6 +20,7 @@ from grande_alpha.action_lab import (
 from grande_alpha.broker.base import Broker, BrokerError
 from grande_alpha.config import AppConfig
 from grande_alpha.evidence import strategy_fingerprint
+from grande_alpha.execution import ExecutionProfile, execution_profile
 from grande_alpha.models import (
     Account,
     BrokerOrder,
@@ -96,6 +99,7 @@ class TradingController(QObject):
                 max_hold_minutes=config.max_hold_minutes,
                 no_trade_open_minutes=config.no_trade_open_minutes,
                 no_trade_close_minutes=config.no_trade_close_minutes,
+                market_hours=config.market_hours,
             )
         )
         self.snapshot = TradingSnapshot()
@@ -171,6 +175,10 @@ class TradingController(QObject):
         bar_changed = config.bar_seconds != self.config.bar_seconds
         trade_cadence_changed = config.trade_every_bars != self.config.trade_every_bars
         self.config = config
+        active_market_hours = (
+            self.risk.grant.market_hours if self.risk.grant is not None else config.market_hours
+        )
+        self.policy = self._policy_for_session(active_market_hours)
         if bar_changed:
             self.bar_builder = BarBuilder("QQQ", config.bar_seconds)
             self.strategy.reset()
@@ -291,6 +299,8 @@ class TradingController(QObject):
             raise RuntimeError(
                 "Robinhood reports zero account value or buying power; live trading stays locked"
             )
+        grant.execution.validate()
+        self.policy = self._policy_for_session(grant.market_hours)
         self.risk.arm(grant, self.snapshot.portfolio)
         self.snapshot.session_expires_at = grant.expires_at
         self.log(
@@ -306,12 +316,16 @@ class TradingController(QObject):
                 "max_trades": grant.max_trades,
                 "max_orders_per_minute": grant.max_orders_per_minute,
                 "max_spread_bps": grant.max_spread_bps,
+                "market_hours": grant.market_hours,
+                "order_type": grant.order_type,
+                "time_in_force": grant.time_in_force,
+                "limit_offset_bps": grant.limit_offset_bps,
             },
         )
         self._emit()
 
     def live_evidence_ready(self, grant: LiveGrant | None = None) -> bool:
-        fingerprint = strategy_fingerprint(self.config)
+        fingerprint = strategy_fingerprint(self.config, execution=grant)
         requested = None
         if grant is not None:
             requested = {
@@ -324,10 +338,17 @@ class TradingController(QObject):
             }
         return self.store.current_live_evidence(fingerprint, requested_envelope=requested) is not None
 
+    def config_evidence_ready(self, config: AppConfig) -> bool:
+        return self.store.current_live_evidence(strategy_fingerprint(config)) is not None
+
+    @property
+    def active_execution_profile(self) -> ExecutionProfile:
+        return self.risk.grant.execution if self.risk.grant is not None else execution_profile(self.config)
+
     def start_strategy(self) -> None:
         if not self.config.live_trading_enabled:
             raise RuntimeError("Real-order controls are disabled in Settings")
-        if not self.live_evidence_ready():
+        if not self.live_evidence_ready(self.risk.grant):
             self.risk.disarm()
             self.snapshot.strategy_running = False
             self._emit()
@@ -370,6 +391,10 @@ class TradingController(QObject):
             no_trade_open_minutes=self.config.no_trade_open_minutes,
             no_trade_close_minutes=self.config.no_trade_close_minutes,
             decision_stride=self.config.trade_every_bars,
+            market_hours=self.config.market_hours,
+            order_type=self.config.order_type,
+            time_in_force=self.config.time_in_force,
+            limit_offset_bps=self.config.limit_offset_bps,
         )
         self._shadow = LiveShadowEngine(shadow_config)
         self.log(
@@ -449,19 +474,77 @@ class TradingController(QObject):
             for order in self.snapshot.orders
         )
 
-    def _inventory_units(self) -> tuple[int, int]:
-        symbols = {
-            position.symbol
-            for position in self._leveraged_positions()
-            if position.quantity > 0
+    def _policy_for_session(self, market_hours: str) -> DecisionPolicy:
+        return DecisionPolicy(
+            PolicyConfig(
+                hard_stop_pct=self.config.hard_stop_pct,
+                take_profit_pct=self.config.take_profit_pct,
+                max_hold_minutes=self.config.max_hold_minutes,
+                no_trade_open_minutes=self.config.no_trade_open_minutes,
+                no_trade_close_minutes=self.config.no_trade_close_minutes,
+                market_hours=market_hours,
+            )
+        )
+
+    @staticmethod
+    def _limit_price(quote: Quote, side: str, offset_bps: float) -> float:
+        if side == "buy":
+            raw = Decimal(str(quote.ask)) * (Decimal("1") + Decimal(str(offset_bps)) / 10_000)
+            return float(raw.quantize(Decimal("0.01"), rounding=ROUND_CEILING))
+        raw = Decimal(str(quote.bid)) * (Decimal("1") - Decimal(str(offset_bps)) / 10_000)
+        return float(raw.quantize(Decimal("0.01"), rounding=ROUND_FLOOR))
+
+    def _execution_intent(
+        self,
+        symbol: str,
+        side: str,
+        quote: Quote,
+        reason: str,
+        *,
+        notional: float | None = None,
+        quantity: float | None = None,
+    ) -> OrderIntent:
+        grant = self.risk.grant
+        if grant is None:
+            raise RuntimeError("No active execution profile")
+        profile = grant.execution
+        common = {
+            "ref_id": str(uuid.uuid4()),
+            "symbol": symbol,
+            "side": side,
+            "reason": reason,
+            "order_type": profile.order_type,
+            "market_hours": profile.market_hours,
+            "time_in_force": profile.time_in_force,
         }
+        if profile.order_type == "market":
+            if side == "buy":
+                return OrderIntent(**common, dollar_amount=round(float(notional or 0), 2))
+            return OrderIntent(**common, quantity=float(quantity or 0))
+        limit_price = self._limit_price(quote, side, profile.limit_offset_bps)
+        if side == "buy":
+            shares = math.floor(float(notional or 0) / limit_price)
+            if shares < 1:
+                raise RuntimeError(
+                    f"The {profile.market_hours} limit route requires a whole share, but the "
+                    f"authorized notional is below one {symbol} share at ${limit_price:.2f}"
+                )
+        else:
+            available = float(quantity or 0)
+            shares = math.floor(available + 1e-9)
+            if shares < 1 or not math.isclose(available, shares, abs_tol=1e-9):
+                raise RuntimeError(
+                    "Automatic limit exits require a whole-share position; use the separately reviewed "
+                    "regular-hours manual flatten for fractional inventory"
+                )
+        return OrderIntent(**common, quantity=float(shares), limit_price=limit_price)
+
+    def _inventory_units(self) -> tuple[int, int]:
+        symbols = {position.symbol for position in self._leveraged_positions() if position.quantity > 0}
         return int("TQQQ" in symbols), int("SQQQ" in symbols)
 
     def _trade_decision_due(self) -> bool:
-        return (
-            self._analysis_sequence - self._last_trade_decision_sequence
-            >= self.config.trade_every_bars
-        )
+        return self._analysis_sequence - self._last_trade_decision_sequence >= self.config.trade_every_bars
 
     def _record_pair_decision(
         self,
@@ -472,6 +555,7 @@ class TradingController(QObject):
         state_feasible: bool,
     ) -> None:
         t_units, s_units = self._inventory_units()
+        route = self.active_execution_profile
         self.snapshot.pair_action_id = action.action_id
         self.snapshot.pair_action_label = action.label
         self.snapshot.last_trade_decision_at = trade_at
@@ -498,6 +582,10 @@ class TradingController(QObject):
                 "decision_stride": self.config.trade_every_bars,
                 "nominal_analysis_seconds": self.config.bar_seconds,
                 "nominal_trade_seconds": self.config.trade_seconds,
+                "market_hours": route.market_hours,
+                "order_type": route.order_type,
+                "time_in_force": route.time_in_force,
+                "limit_offset_bps": route.limit_offset_bps,
                 "state_feasible": state_feasible,
                 "reason": reason,
             },
@@ -587,13 +675,22 @@ class TradingController(QObject):
             if held.sellable_quantity <= 0:
                 self.log(f"Cannot exit {held.symbol}: broker reports zero sellable shares", "error", "risk")
                 return
-            intent = OrderIntent(
-                ref_id=str(uuid.uuid4()),
-                symbol=held.symbol,
-                side="sell",
-                quantity=held.sellable_quantity,
-                reason=reason,
-            )
+            if quote is None:
+                self.log(f"Cannot exit {held.symbol}: no current quote is available", "error", "risk")
+                return
+            try:
+                intent = self._execution_intent(
+                    held.symbol,
+                    "sell",
+                    quote,
+                    reason,
+                    quantity=held.sellable_quantity,
+                )
+            except RuntimeError as exc:
+                self.snapshot.strategy_running = False
+                self.risk.disarm()
+                self.log(f"Automatic exit route blocked: {exc}", "critical", "risk")
+                return
             await self._submit(intent, quote)
             return
 
@@ -611,13 +708,17 @@ class TradingController(QObject):
         if notional < 1.0:
             self.log("No buy submitted: less than $1 of authorized buying power remains", "warning", "risk")
             return
-        intent = OrderIntent(
-            ref_id=str(uuid.uuid4()),
-            symbol=target,
-            side="buy",
-            dollar_amount=round(notional, 2),
-            reason=decision.reason,
-        )
+        try:
+            intent = self._execution_intent(
+                target,
+                "buy",
+                quote,
+                decision.reason,
+                notional=notional,
+            )
+        except RuntimeError as exc:
+            self.log(f"No buy submitted: {exc}", "warning", "risk")
+            return
         await self._submit(intent, quote)
 
     async def _submit(self, intent: OrderIntent, quote: Quote | None) -> BrokerOrder | None:
@@ -632,6 +733,28 @@ class TradingController(QObject):
         if not decision.allowed:
             self.log(f"Order blocked: {decision.reason}", "warning", "risk", intent.as_dict())
             return None
+        if intent.market_hours == "all_day_hours":
+            try:
+                tradability = await self.broker.get_tradability(
+                    self.snapshot.account.account_number,
+                    [intent.symbol],
+                )
+                eligibility = tradability.get(intent.symbol)
+            except Exception as exc:
+                self.snapshot.strategy_running = False
+                self.risk.disarm()
+                self.log(f"24 Hour Market eligibility check failed: {exc}", "error", "risk")
+                return None
+            if eligibility is None or not eligibility.tradeable or not eligibility.all_day_tradeable:
+                self.snapshot.strategy_running = False
+                self.risk.disarm()
+                self.log(
+                    f"Order blocked: {intent.symbol} is not currently eligible for the 24 Hour Market",
+                    "warning",
+                    "risk",
+                    intent.as_dict(),
+                )
+                return None
         self.store.record_intent(intent)
         review = await self.broker.review_order(self.snapshot.account.account_number, intent)
         if review.market_data_disclosure:
@@ -656,7 +779,10 @@ class TradingController(QObject):
             )
             return None
         order = await self.broker.place_order(self.snapshot.account.account_number, intent)
-        self.snapshot.orders = [order, *[item for item in self.snapshot.orders if item.order_id != order.order_id]]
+        self.snapshot.orders = [
+            order,
+            *[item for item in self.snapshot.orders if item.order_id != order.order_id],
+        ]
         self.risk.record_submission(intent)
         self._last_submission_at = utc_now()
         self.store.update_intent(intent.ref_id, order.order_id, order.state)
@@ -700,7 +826,10 @@ class TradingController(QObject):
         if intent.ref_id != review.intent.ref_id or intent.side != "sell":
             raise RuntimeError("Manual flatten preview no longer matches the order")
         order = await self.broker.place_order(self.snapshot.account.account_number, intent)
-        self.snapshot.orders = [order, *[item for item in self.snapshot.orders if item.order_id != order.order_id]]
+        self.snapshot.orders = [
+            order,
+            *[item for item in self.snapshot.orders if item.order_id != order.order_id],
+        ]
         self.store.update_intent(intent.ref_id, order.order_id, order.state)
         self.log(
             f"Manual flatten submitted for {intent.quantity or 0:g} {intent.symbol}; {order.state}",

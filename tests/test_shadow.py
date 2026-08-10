@@ -42,3 +42,26 @@ def test_shadow_module_cannot_call_broker_order_methods() -> None:
     assert "review_order" not in source
     assert "cancel_order" not in source
     assert "from grande_alpha.broker" not in source
+
+
+def test_extended_shadow_uses_the_same_whole_share_limit_profile() -> None:
+    config = SandboxConfig(
+        initial_cash=250,
+        order_notional=200,
+        no_trade_open_minutes=0,
+        no_trade_close_minutes=0,
+        market_hours="extended_hours",
+        order_type="limit",
+        time_in_force="gfd",
+        limit_offset_bps=10,
+    )
+    engine = LiveShadowEngine(config)
+    start = datetime(2026, 8, 3, 12, 0, tzinfo=UTC)  # 08:00 ET
+    signal = Signal(Regime.BULLISH, 1, "bullish")
+
+    assert engine.on_bar(start, signal, _quotes(start)) == []
+    fills = engine.on_bar(start + timedelta(minutes=1), signal, _quotes(start + timedelta(minutes=1)))
+
+    assert fills
+    assert fills[0].quantity == int(fills[0].quantity)
+    assert engine.state.position and engine.state.position.quantity == fills[0].quantity

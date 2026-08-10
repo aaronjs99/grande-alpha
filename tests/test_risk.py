@@ -100,3 +100,50 @@ def test_close_window_blocks_entries_but_allows_risk_reducing_exit() -> None:
 
     assert not engine.authorize(intent(), current_quote, portfolio, 20, close_window).allowed
     assert engine.authorize(sell_intent(), current_quote, portfolio, 20, close_window).allowed
+
+
+def test_extended_session_requires_the_exact_authorized_limit_route() -> None:
+    extended_now = datetime(2026, 8, 10, 12, 0, tzinfo=UTC)  # 08:00 ET Monday
+    portfolio = Portfolio(100, 100, 100)
+    engine = RiskEngine(no_trade_open_minutes=0, no_trade_close_minutes=0)
+    engine.arm(
+        grant(
+            starts_at=extended_now - timedelta(minutes=1),
+            expires_at=extended_now + timedelta(hours=1),
+            market_hours="extended_hours",
+            order_type="limit",
+            time_in_force="gfd",
+            limit_offset_bps=10,
+            max_order_notional=50,
+            max_total_exposure=80,
+        ),
+        portfolio,
+    )
+    current_quote = quote(bid=40.00, ask=40.04, timestamp=extended_now)
+    allowed = OrderIntent(
+        ref_id="extended-limit",
+        symbol="TQQQ",
+        side="buy",
+        reason="test",
+        order_type="limit",
+        quantity=1,
+        limit_price=40.08,
+        market_hours="extended_hours",
+        time_in_force="gfd",
+    )
+    wrong_route = OrderIntent(
+        ref_id="regular-limit",
+        symbol="TQQQ",
+        side="buy",
+        reason="test",
+        order_type="limit",
+        quantity=1,
+        limit_price=40.08,
+        market_hours="regular_hours",
+        time_in_force="gfd",
+    )
+
+    assert engine.authorize(allowed, current_quote, portfolio, 0, extended_now).allowed
+    assert "does not match" in engine.authorize(
+        wrong_route, current_quote, portfolio, 0, extended_now
+    ).reason

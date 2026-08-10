@@ -25,9 +25,10 @@ order or predict future profit. The normal outcome is `SHADOW_ONLY`.
 | Gate | Requirement |
 |---|---|
 | Historical source | Observed or imported market history; synthetic scenarios are ineligible |
+| Trading-session coverage | Dataset covers the complete regular, extended, or 24-hour session selected by the strategy |
 | Data breadth | At least 120 market sessions; use imported licensed history when the built-in source is shorter |
 | Data recency | Final observation no more than 30 days old |
-| Data integrity | Hash-valid, with zero duplicate or missing intraday intervals |
+| Data integrity | Hash-valid, zero duplicate/missing intraday intervals, and at least 95% complete selected sessions |
 | Parameter stability | At least half of neighboring configurations profitable |
 | Cost stress | Positive P/L at 3x modeled costs |
 | Closed-trade sample | At least 30 after-cost round trips |
@@ -42,7 +43,8 @@ order or predict future profit. The normal outcome is `SHADOW_ONLY`.
 | Walk-forward | At least five folds, 60% positive test folds, 20 out-of-sample trades, median profit factor 1.10, and positive median expectancy |
 
 All gates must pass simultaneously. Every pass and failure is stored in the local audit database.
-Changing a fingerprinted signal, exit setting, bar interval, decision stride, or policy version invalidates the
+Changing a fingerprinted signal, exit setting, bar interval, decision stride, execution session,
+order type, time in force, limit offset, or policy version invalidates the
 certificate. A requested live grant cannot exceed the notional, exposure, loss, trade-rate, or
 spread envelope tested by the certificate, and a certificate older than 30 days is ineligible. A pass does not estimate the probability of future profit,
 validate the market-data license, account for tax/settlement restrictions, or authorize real money.

@@ -32,6 +32,10 @@ Source bundles place their managed Python environment at `%LOCALAPPDATA%\GRANDEA
 avoid PySide6 installation failures caused by deeply nested Windows extraction paths. An existing
 developer checkout `.venv` remains preferred.
 
+The local installer assigns a stable Windows application identity to both shortcuts so a taskbar pin
+keeps the GRANDE Alpha logo instead of adopting the Python or PowerShell host icon. The readiness
+doctor reports a mismatch and directs the user to reinstall the shortcuts.
+
 ## What it is—and is not
 
 This is not exchange-colocated high-frequency trading. It is a desktop research and consent-gated automation client with a retail low-latency profile: batched quotes target 1-second polling, account truth reconciles every 5 seconds, signals use completed 5-second analysis bars, and the default pair-action decision occurs every 3 bars (15 seconds). Slow provider calls are coalesced instead of queued. Observation speed does not increase the separately bounded live order rate. Its baseline strategy observes QQQ-derived signals and expresses each TQQQ/SQQQ/cash transition in the exact nine-action `(T,S)` command vocabulary. The included strategy is an engineering baseline, not a demonstrated edge. See [Low-latency execution](docs/LOW_LATENCY_EXECUTION.md).
@@ -44,7 +48,7 @@ The optional adapter uses Robinhood's official Trading MCP endpoint and browser 
 
 ## Project status
 
-Version `0.10.0` makes `t_analysis < t_trade` explicit, records the exact pair command selected on every trade-decision tick, exposes both cadences in the desktop UI, and binds the decision stride into evidence-policy version 6. It retains the credential, menu, account-scope, taskbar, local-installation, and read-only diagnostic work from 0.9.x. Full shared-history daily research aligns 4,147 QQQ/TQQQ/SQQQ sessions from 2010-02-11 through 2026-08-07. The nine-action holdout policy chose cash: 0.00% return and drawdown. On the corrected 40-session intraday benchmark, every tested strategy lost money after modeled costs; the source-faithful first-half-hour rule returned -0.77%. Long-run fixed and volatility-managed TQQQ benchmarks were historically profitable but are Nasdaq exposure, not demonstrated alpha or future-profit evidence. No strategy has a live certificate. See the [0.8 research upgrade](docs/RESEARCH_UPGRADE_2026-08-09.md), [Action Lab methodology](docs/ACTION_LAB.md), and [public release checklist](docs/PUBLIC_RELEASE_CHECKLIST.md).
+Version `0.11.0` adds user-selectable regular, extended, and 24 Hour Market execution profiles while enforcing the provider's actual order matrix. Extended and overnight automation is whole-share limit-only; the exact session, order type, time in force, and limit offset are bound into evidence-policy version 7 and the separately confirmed live grant. Complete overnight evidence requires an appropriate imported dataset, and current 24-hour symbol eligibility is checked before submission. The default remains regular-hours market GFD. Full shared-history daily research aligns 4,147 QQQ/TQQQ/SQQQ sessions from 2010-02-11 through 2026-08-07. The nine-action holdout policy chose cash: 0.00% return and drawdown. On the corrected 40-session intraday benchmark, every tested strategy lost money after modeled costs; the source-faithful first-half-hour rule returned -0.77%. Long-run fixed and volatility-managed TQQQ benchmarks were historically profitable but are Nasdaq exposure, not demonstrated alpha or future-profit evidence. No strategy has a live certificate. See [trading sessions](docs/TRADING_SESSIONS.md), the [0.8 research upgrade](docs/RESEARCH_UPGRADE_2026-08-09.md), [Action Lab methodology](docs/ACTION_LAB.md), and the [public release checklist](docs/PUBLIC_RELEASE_CHECKLIST.md).
 
 ## Contributing and support
 

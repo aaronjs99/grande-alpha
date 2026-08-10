@@ -10,12 +10,20 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
 
+from grande_alpha.execution import execution_profile
 from grande_alpha.historical import HistoricalBundle, assess_quality
-from grande_alpha.sandbox import INTERVAL_MINUTES, SandboxConfig, SandboxReplayEngine, SandboxResult
+from grande_alpha.policy import session_key
+from grande_alpha.sandbox import (
+    INTERVAL_MINUTES,
+    SandboxConfig,
+    SandboxReplayEngine,
+    SandboxResult,
+    interval_minutes,
+)
 from grande_alpha.strategy import StrategyConfig
 
 EASTERN = ZoneInfo("America/New_York")
-EVIDENCE_POLICY_VERSION = 6
+EVIDENCE_POLICY_VERSION = 7
 MIN_EVIDENCE_SESSIONS = 120
 STRATEGY_FINGERPRINT_FIELDS = (
     "strategy_name",
@@ -130,15 +138,22 @@ def _interval_seconds(config: object, interval: str | None) -> int:
     return int(getattr(config, "bar_seconds", 60))
 
 
-def strategy_fingerprint(config: object, interval: str | None = None) -> str:
+def strategy_fingerprint(
+    config: object,
+    interval: str | None = None,
+    execution: object | None = None,
+) -> str:
     defaults = StrategyConfig()
-    decision_stride = int(
-        getattr(config, "decision_stride", getattr(config, "trade_every_bars", 1))
-    )
+    decision_stride = int(getattr(config, "decision_stride", getattr(config, "trade_every_bars", 1)))
+    route = execution_profile(execution or config)
     payload = {
         "policy_version": EVIDENCE_POLICY_VERSION,
         "bar_interval_seconds": _interval_seconds(config, interval),
         "decision_stride": decision_stride,
+        "market_hours": route.market_hours,
+        "order_type": route.order_type,
+        "time_in_force": route.time_in_force,
+        "limit_offset_bps": route.limit_offset_bps,
         **{
             field: getattr(config, field, getattr(defaults, field, None))
             for field in STRATEGY_FINGERPRINT_FIELDS
@@ -292,17 +307,15 @@ def _candidate_label(config: SandboxConfig) -> str:
 def _sessions(bundle: HistoricalBundle) -> dict[str, list]:
     grouped: dict[str, list] = {}
     for frame in bundle.frames:
-        day = frame.start.astimezone(EASTERN).date().isoformat()
+        day = session_key(frame.start, bundle.market_hours)
         grouped.setdefault(day, []).append(frame)
     return grouped
 
 
 def _subset(bundle: HistoricalBundle, session_names: list[str]) -> HistoricalBundle:
     allowed = set(session_names)
-    frames = [
-        frame for frame in bundle.frames if frame.start.astimezone(EASTERN).date().isoformat() in allowed
-    ]
-    quality = assess_quality(frames, bundle.interval)
+    frames = [frame for frame in bundle.frames if session_key(frame.start, bundle.market_hours) in allowed]
+    quality = assess_quality(frames, bundle.interval, bundle.market_hours)
     return HistoricalBundle(
         source=bundle.source,
         downloaded_at=bundle.downloaded_at,
@@ -310,6 +323,7 @@ def _subset(bundle: HistoricalBundle, session_names: list[str]) -> HistoricalBun
         interval=bundle.interval,
         dataset_hash=quality.dataset_hash,
         quality=quality,
+        market_hours=bundle.market_hours,
     )
 
 
@@ -388,8 +402,8 @@ def probabilistic_sharpe_ratio(
     kurtosis = statistics.fmean(value**4 for value in centered)
     benchmark = benchmark_annual_sharpe / math.sqrt(periods_per_year)
     variance_term = 1.0 - skew * period_sharpe + (kurtosis - 1.0) * period_sharpe**2 / 4.0
-    statistic = (period_sharpe - benchmark) * math.sqrt(len(returns) - 1) / math.sqrt(
-        max(variance_term, 1e-12)
+    statistic = (
+        (period_sharpe - benchmark) * math.sqrt(len(returns) - 1) / math.sqrt(max(variance_term, 1e-12))
     )
     return statistics.NormalDist().cdf(statistic)
 
@@ -446,7 +460,7 @@ def random_entry_control(
 ) -> RandomControl:
     rng = random.Random(config.random_seed + 99)
     grouped = _sessions(bundle)
-    hold_bars = max(1, round(config.max_hold_minutes / INTERVAL_MINUTES.get(bundle.interval, 1)))
+    hold_bars = max(1, round(config.max_hold_minutes / interval_minutes(bundle.interval)))
     returns = []
     for _ in range(trials):
         pnl = 0.0
@@ -511,12 +525,22 @@ def promotion_report(
         [point.sharpe for point in sensitivity],
         total_trials=counted_trials,
     )
+    coverage_rank = {"regular_hours": 0, "extended_hours": 1, "all_day_hours": 2}
+    session_covered = coverage_rank.get(bundle.market_hours, -1) >= coverage_rank.get(
+        base_config.market_hours, 99
+    )
     gates = [
         PromotionGate(
             "Historical source",
             "deterministic" not in bundle.source.lower() and "scenario" not in bundle.source.lower(),
             bundle.source,
             "Observed or imported market history; synthetic scenarios are ineligible",
+        ),
+        PromotionGate(
+            "Trading-session coverage",
+            session_covered,
+            f"dataset={bundle.market_hours}; strategy={base_config.market_hours}",
+            "The dataset covers the complete selected broker session",
         ),
         PromotionGate(
             "Data breadth",
@@ -532,9 +556,19 @@ def promotion_report(
         ),
         PromotionGate(
             "Data integrity",
-            bool(bundle.quality and bundle.quality.clean and bundle.quality.missing_intervals == 0),
-            f"{bundle.quality.missing_intervals if bundle.quality else 'unknown'} missing intervals",
-            "Hash-valid with zero duplicate or missing intraday intervals",
+            bool(
+                bundle.quality
+                and bundle.quality.clean
+                and bundle.quality.missing_intervals == 0
+                and bundle.quality.session_coverage_pct >= 95.0
+            ),
+            (
+                f"{bundle.quality.missing_intervals} missing; "
+                f"{bundle.quality.session_coverage_pct:.1f}% complete sessions"
+                if bundle.quality
+                else "unknown"
+            ),
+            "Hash-valid, zero duplicate/missing intraday intervals, and 95% complete sessions",
         ),
         PromotionGate(
             "Parameter stability",

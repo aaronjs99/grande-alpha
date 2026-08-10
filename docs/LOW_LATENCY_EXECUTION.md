@@ -30,7 +30,7 @@ The remote endpoint has not published a performance or order-rate SLA in the cit
 Do not interpret the 0.25-second UI minimum as provider permission, guaranteed throughput, or fresh
 250 ms market data.
 
-Version 0.10 upgrades settings created by older releases to the default 1-second quote, 5-second
+Version 0.11 upgrades settings created by older releases to the default 1-second quote, 5-second
 analysis, 3-analysis-bar trade decision, and 5-second reconciliation profile. Thus nominal
 `t_analysis=5s < t_trade=15s`. After that one-time migration, values selected in Settings are preserved.
 
@@ -48,6 +48,11 @@ fresh and sufficiently narrow quotes, market-hours permission, available exposur
 no open order, Robinhood's order review, a 12-second cooldown, and the session order-rate ceiling.
 The default live envelope allows at most two submissions per minute. A submitted order is immediately
 placed in the local open-order snapshot, then reconciled against Robinhood.
+
+The user also chooses a broker session and compatible order route. Regular hours can use market GFD
+or whole-share limits. Extended and 24 Hour Market routes are whole-share limit-only, and overnight
+eligibility is rechecked before each submission. Those fields are evidence-fingerprinted and
+session-grant-bound. See [Trading sessions and order routes](TRADING_SESSIONS.md).
 
 ## Choosing a profile
 

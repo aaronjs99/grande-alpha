@@ -5,6 +5,7 @@ from abc import ABC, abstractmethod
 from grande_alpha.models import (
     Account,
     BrokerOrder,
+    EquityTradability,
     OrderIntent,
     OrderReview,
     Portfolio,
@@ -36,6 +37,10 @@ class Broker(ABC):
 
     @abstractmethod
     async def get_quotes(self, symbols: list[str]) -> dict[str, Quote]: ...
+
+    async def get_tradability(self, account_number: str, symbols: list[str]) -> dict[str, EquityTradability]:
+        """Return current session eligibility when the provider exposes it."""
+        return {}
 
     @abstractmethod
     async def get_positions(self, account_number: str) -> list[Position]: ...

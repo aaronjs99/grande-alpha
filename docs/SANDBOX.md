@@ -12,27 +12,39 @@ engine has no OAuth, account, review, placement, or cancellation dependency.
 | 5-minute cache | 60 calendar days | Several-week robustness checks |
 | Hourly cache | 730 calendar days | Broad regime and walk-forward checks |
 | Full shared-history daily cache | Common history since February 2010 | Offline policy research and long-regime checks |
-| Combined CSV import | 10,000 days in configuration | Licensed or personally exported long history |
+| Combined custom-second CSV import | 10,000 days in configuration | Exact 1-300 second live-cadence evidence |
+| Combined 1-minute CSV import | 10,000 days in configuration | Licensed or personally exported long history |
 | Deterministic scenario | 10,000 days | Offline repeatability and software testing only |
 
 The built-in market download uses Yahoo's unsupported chart endpoint and writes a dated local cache
 under `%LOCALAPPDATA%\GRANDEAlpha\sandbox_cache`. It is convenient research data, not a licensed
 feed or an execution-quality record. True 6–24 month minute research requires a separate lawful
-dataset. Import one combined CSV with:
+dataset. Extended-session research requests pre/post bars, but the adapter refuses to label that
+source as complete 24-hour coverage. Overnight certification requires an aligned CSV that actually
+contains the full selected session. Import one combined CSV with:
 
 ```text
-timestamp,symbol,open,high,low,close,volume
-2026-08-03T13:30:00+00:00,QQQ,100,101,99,100.5,123456
+timestamp,symbol,open,high,low,close,volume,market_hours
+2026-08-03T13:30:00+00:00,QQQ,100,101,99,100.5,123456,regular_hours
 ```
 
 Include aligned rows for `QQQ`, `TQQQ`, and `SQQQ`. Each run reports aligned bars, sessions,
-missing intervals, duplicates, zero-volume bars, and a SHA-256 content hash. The hash lets two runs
+complete-session coverage, missing intervals, duplicates, zero-volume bars, and a SHA-256 content hash. The hash lets two runs
 prove that they used identical candles; it does not prove the vendor data is correct.
+`market_hours` is optional for regular/extended imports. To claim `all_day_hours`, declare that exact
+value consistently and include both evening and overnight observations; missing intervals are then
+checked across the broker trading-date boundary.
+Choose the custom-second import and set 5 seconds when testing the default `bar_seconds=5` live
+profile. A 1-minute dataset has a different fingerprint and cannot certify that profile.
 
 ## Timing and execution
 
 - Signals use completed QQQ bars only and transitions begin at the next aligned bar.
 - Virtual buys pay modeled half-spread, slippage, and commission; sells receive the inverse.
+- The execution profile matches live vocabulary: regular, extended, or 24 Hour Market; market or
+  whole-share limit where provider-valid; GFD or GTC for limits; and a marketable-limit offset.
+- Modeled limits remain unfilled when costs exceed the configured cap. GFD pending intents clear at
+  the next session; GTC pending intents may carry into the next modeled session.
 - Spread can widen with the candle's intrabar range.
 - Configurable latency, fill fraction, rejection probability, and maximum volume participation
   produce an auditable event even when no fill occurs.
@@ -40,7 +52,7 @@ prove that they used identical candles; it does not prove the vendor data is cor
   optional volatility target.
 - Daily-loss and consecutive-loss pauses stop new entries. Exits remain possible.
 - The shared policy targets cash during the configured close window and allows exits through the
-  regular-session close. Missing bars, rejected virtual fills, or a truncated dataset can still
+  selected session's close. Missing bars, rejected virtual fills, or a truncated dataset can still
   leave a position. **Close virtual positions at every session end** uses each session's last
   available candle as a forced modeling fill; it prevents accidental overnight replay exposure
   but is not evidence that a real closing order would fill at that price.

@@ -4,6 +4,7 @@ import asyncio
 import json
 import webbrowser
 from contextlib import AsyncExitStack
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
@@ -18,6 +19,7 @@ from grande_alpha.config import MCP_URL
 from grande_alpha.models import (
     Account,
     BrokerOrder,
+    EquityTradability,
     OrderIntent,
     OrderReview,
     Portfolio,
@@ -26,6 +28,13 @@ from grande_alpha.models import (
 )
 
 OPEN_STATES = {"new", "queued", "confirmed", "unconfirmed", "partially_filled", "pending_cancelled"}
+
+
+@dataclass
+class _ToolRequest:
+    name: str
+    arguments: dict[str, Any]
+    future: asyncio.Future[Any]
 
 
 def _datetime(value: str | None) -> datetime | None:
@@ -48,14 +57,16 @@ class RobinhoodMCPBroker(Broker):
     def __init__(self, server_url: str = MCP_URL) -> None:
         self.server_url = server_url
         self.storage = CredentialTokenStorage()
-        self._stack: AsyncExitStack | None = None
-        self._session: ClientSession | None = None
         self._tools: dict[str, dict[str, Any]] = {}
-        self._call_lock = asyncio.Lock()
+        self._requests: asyncio.Queue[_ToolRequest | None] | None = None
+        self._worker: asyncio.Task[None] | None = None
+        self._connected = False
+        self._accepting_calls = False
+        self._lifecycle_lock = asyncio.Lock()
 
     @property
     def connected(self) -> bool:
-        return self._session is not None
+        return self._connected and self._worker is not None and not self._worker.done()
 
     @property
     def tools(self) -> set[str]:
@@ -67,8 +78,34 @@ class RobinhoodMCPBroker(Broker):
         self.storage.clear()
 
     async def connect(self) -> None:
-        if self.connected:
-            return
+        async with self._lifecycle_lock:
+            if self.connected:
+                return
+            if self._worker is not None:
+                await self._finish_worker()
+
+            loop = asyncio.get_running_loop()
+            ready: asyncio.Future[None] = loop.create_future()
+            self._requests = asyncio.Queue()
+            self._worker = asyncio.create_task(
+                self._session_owner(ready),
+                name="grande-alpha-robinhood-session",
+            )
+            try:
+                await ready
+            except BaseException:
+                if self._worker is not None and not self._worker.done():
+                    self._worker.cancel()
+                await self._finish_worker()
+                raise
+
+    async def _session_owner(self, ready: asyncio.Future[None]) -> None:
+        """Own the MCP contexts and every session call in one asyncio task.
+
+        AnyIO transport cancel scopes must be exited by the same task that entered them.
+        Public controller methods run in independent GUI timer tasks, so they communicate with
+        this owner through a queue instead of touching ClientSession directly.
+        """
         callback = OAuthCallbackServer()
         callback.start()
 
@@ -95,64 +132,118 @@ class RobinhoodMCPBroker(Broker):
             callback_handler=callback_handler,
             timeout=300.0,
         )
-        stack = AsyncExitStack()
         try:
-            streams = await stack.enter_async_context(
-                streamablehttp_client(
-                    self.server_url,
-                    timeout=30.0,
-                    sse_read_timeout=300.0,
-                    # Robinhood currently rejects the optional MCP DELETE-session request with 400.
-                    # Closing the authenticated HTTP transport is sufficient and avoids a false warning.
-                    terminate_on_close=False,
-                    auth=auth,
+            async with AsyncExitStack() as stack:
+                streams = await stack.enter_async_context(
+                    streamablehttp_client(
+                        self.server_url,
+                        timeout=30.0,
+                        sse_read_timeout=300.0,
+                        # Robinhood currently rejects the optional MCP DELETE-session request with 400.
+                        # Closing the authenticated HTTP transport is sufficient and avoids a false warning.
+                        terminate_on_close=False,
+                        auth=auth,
+                    )
                 )
-            )
-            read_stream, write_stream, _ = streams
-            session = await stack.enter_async_context(ClientSession(read_stream, write_stream))
-            await session.initialize()
-            listing = await session.list_tools()
-            self._tools = {
-                item.name: (item.inputSchema if isinstance(item.inputSchema, dict) else {})
-                for item in listing.tools
-            }
-            required = {
-                "get_accounts",
-                "get_portfolio",
-                "get_equity_quotes",
-                "get_equity_positions",
-                "get_equity_orders",
-                "review_equity_order",
-                "place_equity_order",
-                "cancel_equity_order",
-            }
-            missing = sorted(required - self.tools)
-            if missing:
-                raise BrokerError(f"Robinhood MCP is missing required tools: {', '.join(missing)}")
-            self._stack = stack
-            self._session = session
-        # Cancellation derives from BaseException on supported Python versions. Closing here keeps
-        # the MCP transport from being finalized later by a different task after an OAuth timeout.
-        except BaseException:
-            await stack.aclose()
+                read_stream, write_stream, _ = streams
+                session = await stack.enter_async_context(ClientSession(read_stream, write_stream))
+                await session.initialize()
+                listing = await session.list_tools()
+                self._tools = {
+                    item.name: (item.inputSchema if isinstance(item.inputSchema, dict) else {})
+                    for item in listing.tools
+                }
+                required = {
+                    "get_accounts",
+                    "get_portfolio",
+                    "get_equity_quotes",
+                    "get_equity_tradability",
+                    "get_equity_positions",
+                    "get_equity_orders",
+                    "review_equity_order",
+                    "place_equity_order",
+                    "cancel_equity_order",
+                }
+                missing = sorted(required - self.tools)
+                if missing:
+                    raise BrokerError(f"Robinhood MCP is missing required tools: {', '.join(missing)}")
+
+                self._connected = True
+                self._accepting_calls = True
+                ready.set_result(None)
+                await self._serve_requests(session)
+        except BaseException as exc:
+            if not ready.done():
+                ready.set_exception(exc)
             raise
         finally:
+            self._connected = False
+            self._accepting_calls = False
+            self._tools.clear()
+            self._fail_pending_requests(BrokerError("Robinhood disconnected"))
             callback.stop()
 
+    async def _serve_requests(self, session: ClientSession) -> None:
+        if self._requests is None:
+            raise RuntimeError("Robinhood request queue was not initialized")
+        while True:
+            request = await self._requests.get()
+            if request is None:
+                return
+            if request.future.cancelled():
+                continue
+            try:
+                result = await session.call_tool(request.name, request.arguments)
+            except Exception as exc:
+                if not request.future.done():
+                    request.future.set_exception(exc)
+            else:
+                if not request.future.done():
+                    request.future.set_result(result)
+
+    def _fail_pending_requests(self, exc: Exception) -> None:
+        if self._requests is None:
+            return
+        while True:
+            try:
+                request = self._requests.get_nowait()
+            except asyncio.QueueEmpty:
+                return
+            if request is not None and not request.future.done():
+                request.future.set_exception(exc)
+
+    async def _finish_worker(self) -> None:
+        worker = self._worker
+        self._worker = None
+        try:
+            if worker is not None:
+                await worker
+        finally:
+            self._requests = None
+            self._connected = False
+            self._accepting_calls = False
+            self._tools.clear()
+
     async def disconnect(self) -> None:
-        self._session = None
-        self._tools.clear()
-        if self._stack is not None:
-            await self._stack.aclose()
-            self._stack = None
+        async with self._lifecycle_lock:
+            if self._worker is None:
+                self._connected = False
+                self._accepting_calls = False
+                self._tools.clear()
+                return
+            self._accepting_calls = False
+            if self._requests is not None and not self._worker.done():
+                await self._requests.put(None)
+            await self._finish_worker()
 
     async def _call(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-        if self._session is None:
+        if not self.connected or not self._accepting_calls or self._requests is None:
             raise BrokerError("Robinhood is not connected")
         if name not in self._tools:
             raise BrokerError(f"Robinhood tool is unavailable: {name}")
-        async with self._call_lock:
-            result = await self._session.call_tool(name, arguments)
+        future = asyncio.get_running_loop().create_future()
+        await self._requests.put(_ToolRequest(name, arguments, future))
+        result = await future
         if getattr(result, "isError", False):
             message = "Robinhood tool error"
             for item in getattr(result, "content", []):
@@ -225,6 +316,24 @@ class RobinhoodMCPBroker(Broker):
             )
             quotes[quote.symbol] = quote
         return quotes
+
+    async def get_tradability(self, account_number: str, symbols: list[str]) -> dict[str, EquityTradability]:
+        data = await self._call(
+            "get_equity_tradability",
+            {"account_number": account_number, "symbols": symbols},
+        )
+        results: dict[str, EquityTradability] = {}
+        for row in data.get("results") or []:
+            if not row:
+                continue
+            item = EquityTradability(
+                symbol=str(row.get("symbol", "")).upper(),
+                tradeable=bool(row.get("tradeable")),
+                all_day_tradeable=str(row.get("all_day_tradability", "")).lower() == "tradable",
+                extended_hours_fractional_tradeable=bool(row.get("extended_hours_fractional_tradability")),
+            )
+            results[item.symbol] = item
+        return results
 
     async def get_positions(self, account_number: str) -> list[Position]:
         data = await self._call("get_equity_positions", {"account_number": account_number})

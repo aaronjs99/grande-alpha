@@ -2,7 +2,14 @@ from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
 
 from grande_alpha.models import Regime, Signal
-from grande_alpha.policy import DecisionPolicy, PolicyConfig, PolicyPosition, regular_session_allowed
+from grande_alpha.policy import (
+    DecisionPolicy,
+    PolicyConfig,
+    PolicyPosition,
+    market_session_allowed,
+    regular_session_allowed,
+    session_key,
+)
 
 
 def test_live_and_sandbox_symbol_maps_share_identical_decision_logic() -> None:
@@ -47,3 +54,14 @@ def test_policy_flattens_during_close_window() -> None:
     assert "flatten" in decision.reason.lower()
     assert not policy.trading_window_allowed(timestamp)
     assert policy.exit_window_allowed(timestamp)
+
+
+def test_extended_and_all_day_windows_use_the_selected_broker_session() -> None:
+    eastern = ZoneInfo("America/New_York")
+    premarket = datetime(2026, 8, 3, 8, 0, tzinfo=eastern)
+    overnight = datetime(2026, 8, 2, 22, 0, tzinfo=eastern)  # Monday trading session
+
+    assert not market_session_allowed(premarket, 0, 0, "regular_hours")
+    assert market_session_allowed(premarket, 0, 0, "extended_hours")
+    assert market_session_allowed(overnight, 0, 0, "all_day_hours")
+    assert session_key(overnight, "all_day_hours") == "2026-08-03"

@@ -5,6 +5,8 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
 
+from grande_alpha.execution import ExecutionProfile, execution_profile
+
 
 def utc_now() -> datetime:
     return datetime.now(UTC)
@@ -91,6 +93,14 @@ class Position:
 
 
 @dataclass(frozen=True)
+class EquityTradability:
+    symbol: str
+    tradeable: bool
+    all_day_tradeable: bool
+    extended_hours_fractional_tradeable: bool
+
+
+@dataclass(frozen=True)
 class BrokerOrder:
     order_id: str
     symbol: str
@@ -119,9 +129,39 @@ class OrderIntent:
 
     @property
     def estimated_notional(self) -> float:
-        return float(self.dollar_amount or 0.0)
+        if self.dollar_amount is not None:
+            return float(self.dollar_amount)
+        if self.quantity is not None and self.limit_price is not None:
+            return float(self.quantity * self.limit_price)
+        return 0.0
+
+    def validate(self) -> None:
+        profile = execution_profile(self)
+        if self.side not in {"buy", "sell"}:
+            raise ValueError("Order side must be buy or sell")
+        if self.symbol not in {"TQQQ", "SQQQ"}:
+            raise ValueError("Automatic equity orders are restricted to TQQQ and SQQQ")
+        has_dollars = self.dollar_amount is not None
+        has_quantity = self.quantity is not None
+        if has_dollars == has_quantity:
+            raise ValueError("Specify exactly one of dollar amount or quantity")
+        if self.dollar_amount is not None and self.dollar_amount <= 0:
+            raise ValueError("Dollar amount must be positive")
+        if self.quantity is not None and self.quantity <= 0:
+            raise ValueError("Quantity must be positive")
+        if profile.order_type == "market":
+            if self.limit_price is not None:
+                raise ValueError("Market orders cannot include a limit price")
+        else:
+            if self.dollar_amount is not None:
+                raise ValueError("The Trading MCP accepts limit orders by share quantity only")
+            if self.limit_price is None or self.limit_price <= 0:
+                raise ValueError("Limit orders require a positive limit price")
+            if self.quantity is None or abs(self.quantity - round(self.quantity)) > 1e-9:
+                raise ValueError("The Trading MCP requires whole-share automatic limit orders")
 
     def broker_arguments(self, account_number: str) -> dict[str, str]:
+        self.validate()
         args = {
             "account_number": account_number,
             "symbol": self.symbol,
@@ -164,7 +204,15 @@ class LiveGrant:
     max_orders_per_minute: int
     max_spread_bps: float
     max_quote_age_seconds: float
+    market_hours: str = "regular_hours"
+    order_type: str = "market"
+    time_in_force: str = "gfd"
+    limit_offset_bps: float = 10.0
 
     def active(self, now: datetime | None = None) -> bool:
         reference = now or utc_now()
         return self.starts_at <= reference < self.expires_at
+
+    @property
+    def execution(self) -> ExecutionProfile:
+        return execution_profile(self)

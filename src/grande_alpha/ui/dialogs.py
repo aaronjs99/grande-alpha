@@ -5,10 +5,12 @@ from datetime import timedelta
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QCheckBox,
+    QComboBox,
     QDialog,
     QDialogButtonBox,
     QDoubleSpinBox,
     QFormLayout,
+    QGroupBox,
     QLabel,
     QLineEdit,
     QPlainTextEdit,
@@ -17,6 +19,7 @@ from PySide6.QtWidgets import (
 )
 
 from grande_alpha.config import AppConfig
+from grande_alpha.execution import MARKET_HOURS_LABELS, ORDER_TYPE_LABELS, TIME_IN_FORCE_LABELS
 from grande_alpha.models import Account, LiveGrant, Portfolio, utc_now
 
 
@@ -29,7 +32,9 @@ class LiveGrantDialog(QDialog):
         self.phrase = f"LIVE {account.account_number[-4:]}"
         self.setWindowTitle("Authorize bounded live trading")
         self.setModal(True)
-        self.setMinimumWidth(560)
+        self.setMinimumSize(700, 620)
+        self.resize(720, 650)
+        self.setSizeGripEnabled(True)
 
         layout = QVBoxLayout(self)
         title = QLabel("Real-money automatic orders")
@@ -44,7 +49,8 @@ class LiveGrantDialog(QDialog):
         details.setWordWrap(True)
         layout.addWidget(details)
 
-        form = QFormLayout()
+        risk_group = QGroupBox("Session risk limits")
+        form = QFormLayout(risk_group)
         self.minutes = QSpinBox()
         self.minutes.setRange(5, 240)
         self.minutes.setValue(config.default_session_minutes)
@@ -69,10 +75,39 @@ class LiveGrantDialog(QDialog):
         form.addRow("Max submitted orders", self.max_trades)
         form.addRow("Max orders per minute", self.orders_per_minute)
         form.addRow("Maximum spread", self.max_spread)
-        layout.addLayout(form)
+        layout.addWidget(risk_group)
+
+        route_group = QGroupBox("Order routing")
+        route = QFormLayout(route_group)
+        self.market_hours = QComboBox()
+        for value, label in MARKET_HOURS_LABELS.items():
+            self.market_hours.addItem(label, value)
+        self.market_hours.setCurrentIndex(max(0, self.market_hours.findData(config.market_hours)))
+        self.order_type = QComboBox()
+        for value, label in ORDER_TYPE_LABELS.items():
+            self.order_type.addItem(label, value)
+        self.order_type.setCurrentIndex(max(0, self.order_type.findData(config.order_type)))
+        self.time_in_force = QComboBox()
+        for value, label in TIME_IN_FORCE_LABELS.items():
+            self.time_in_force.addItem(label, value)
+        self.time_in_force.setCurrentIndex(max(0, self.time_in_force.findData(config.time_in_force)))
+        self.limit_offset = QDoubleSpinBox()
+        self.limit_offset.setRange(0, 100)
+        self.limit_offset.setDecimals(1)
+        self.limit_offset.setValue(config.limit_offset_bps)
+        self.limit_offset.setSuffix(" bps")
+        route.addRow("Authorized session", self.market_hours)
+        route.addRow("Authorized order type", self.order_type)
+        route.addRow("Authorized time in force", self.time_in_force)
+        route.addRow("Limit offset", self.limit_offset)
+        layout.addWidget(route_group)
+        self.route_note = QLabel("")
+        self.route_note.setWordWrap(True)
+        layout.addWidget(self.route_note)
 
         self.attest = QCheckBox(
-            "I am trading only my own account and have obtained the immigration/tax guidance I need."
+            "I am trading only my own account and have obtained the immigration/tax guidance\n"
+            "needed for my circumstances."
         )
         layout.addWidget(self.attest)
 
@@ -92,6 +127,10 @@ class LiveGrantDialog(QDialog):
         self.buttons.rejected.connect(self.reject)
         self.confirmation.textChanged.connect(self._validate)
         self.attest.stateChanged.connect(self._validate)
+        self.market_hours.currentIndexChanged.connect(self._route_changed)
+        self.order_type.currentIndexChanged.connect(self._route_changed)
+        self.time_in_force.currentIndexChanged.connect(self._route_changed)
+        self._route_changed()
         layout.addWidget(self.buttons)
 
     def _money(self, value: float, maximum: float) -> QDoubleSpinBox:
@@ -106,6 +145,31 @@ class LiveGrantDialog(QDialog):
         valid = self.attest.isChecked() and self.confirmation.text().strip() == self.phrase
         self.buttons.button(QDialogButtonBox.StandardButton.Ok).setEnabled(valid)
 
+    def _route_changed(self, _value: int | None = None) -> None:
+        outside_regular = self.market_hours.currentData() != "regular_hours"
+        market_index = self.order_type.findData("market")
+        market_item = self.order_type.model().item(market_index)
+        if market_item is not None:
+            market_item.setEnabled(not outside_regular)
+        if outside_regular and self.order_type.currentData() != "limit":
+            self.order_type.setCurrentIndex(self.order_type.findData("limit"))
+        is_market = self.order_type.currentData() == "market"
+        if is_market and self.time_in_force.currentData() != "gfd":
+            self.time_in_force.setCurrentIndex(self.time_in_force.findData("gfd"))
+        self.time_in_force.setEnabled(not is_market)
+        self.limit_offset.setEnabled(not is_market)
+        if is_market:
+            note = "Dollar-based regular-hours market route; fractional fills are possible and price is not guaranteed."
+        else:
+            note = (
+                "Whole-share limit route. The order can partially fill or not fill. GTC can remain working at "
+                "Robinhood for up to 90 days, including if GRANDE Alpha is closed unexpectedly."
+            )
+        if self.market_hours.currentData() == "all_day_hours":
+            note += " TQQQ/SQQQ 24-hour eligibility is checked again before submission."
+        self.route_note.setText(note)
+        self._validate()
+
     def grant(self) -> LiveGrant:
         starts = utc_now()
         return LiveGrant(
@@ -119,6 +183,10 @@ class LiveGrantDialog(QDialog):
             max_orders_per_minute=self.orders_per_minute.value(),
             max_spread_bps=self.max_spread.value(),
             max_quote_age_seconds=self.config.default_max_quote_age_seconds,
+            market_hours=self.market_hours.currentData(),
+            order_type=self.order_type.currentData(),
+            time_in_force=self.time_in_force.currentData(),
+            limit_offset_bps=self.limit_offset.value(),
         )
 
 

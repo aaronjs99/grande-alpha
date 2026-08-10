@@ -496,6 +496,7 @@ class MainWindow(QMainWindow):
             self.config,
             live_evidence_ready=self.controller.live_evidence_ready(),
             parent=self,
+            live_evidence_checker=self.controller.config_evidence_ready,
         )
         if dialog.exec() != dialog.DialogCode.Accepted:
             return
@@ -518,6 +519,10 @@ class MainWindow(QMainWindow):
                 "live_trading_enabled": updated.live_trading_enabled,
                 "remote_market_data_enabled": updated.remote_market_data_enabled,
                 "personal_ledger_enabled": updated.personal_ledger_enabled,
+                "market_hours": updated.market_hours,
+                "order_type": updated.order_type,
+                "time_in_force": updated.time_in_force,
+                "limit_offset_bps": updated.limit_offset_bps,
             },
         )
         asyncio.create_task(
@@ -761,6 +766,7 @@ class MainWindow(QMainWindow):
             self.status.setText(
                 f"{session} • Strategy {'RUNNING' if snapshot.strategy_running else 'STOPPED'} • "
                 f"Shadow {'RUNNING — NO ORDERS' if snapshot.shadow_running else 'OFF'} • "
+                f"Route {self.controller.active_execution_profile.label} • "
                 f"Action {snapshot.pair_action_label} every {self.config.trade_seconds}s nominal • "
                 f"Orders {snapshot.trades_today} • Last broker refresh {refreshed} • {snapshot.signal.reason}"
             )

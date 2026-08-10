@@ -12,7 +12,7 @@ Start with:
 8. [First live-session runbook](MONDAY_RUNBOOK.md) — optional, high-risk, consent-gated broker use.
 9. [Strategy and profit mechanics](STRATEGY_AND_PROFIT.md) — baseline logic and expectancy, without a profit promise.
 10. [Shadow mode](SHADOW_MODE.md) — current broker data with fictional fills.
-11. [Low-latency execution](LOW_LATENCY_EXECUTION.md), [architecture](SYSTEM_ARCHITECTURE.md), and [data sources](DATA_SOURCES.md).
+11. [Trading sessions and order routes](TRADING_SESSIONS.md), [low-latency execution](LOW_LATENCY_EXECUTION.md), [architecture](SYSTEM_ARCHITECTURE.md), and [data sources](DATA_SOURCES.md).
 12. [Troubleshooting](TROUBLESHOOTING.md) and [daily journal](DAILY_JOURNAL_TEMPLATE.md).
 13. [Optional personal ledger](GRANDE_RESEARCH_FUND.md) — disabled by default and never transfers money.
 14. [Public release checklist](PUBLIC_RELEASE_CHECKLIST.md) and [product audit](PRODUCT_AUDIT_2026-08.md).

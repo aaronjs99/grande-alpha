@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.11.0 - 2026-08-10
+
+- Added user-selectable regular, extended, and Robinhood 24 Hour Market routes in Settings, the
+  per-session authority dialog, and the isolated sandbox.
+- Enforced the Trading MCP matrix: extended and overnight routes are limit-only; market orders are
+  regular-hours GFD; automatic limits use whole-share quantities and explicit prices.
+- Derived buy limits from ask plus a configurable offset and sell limits from bid minus that offset,
+  with cent-safe rounding and fail-closed handling when a whole share cannot fit the grant.
+- Bound session, order type, time in force, and limit offset into evidence-policy version 7 and added
+  a complete-session data-coverage gate.
+- Added session-aware risk windows and sandbox grouping, pre/post-market community-data requests,
+  and a hard refusal to claim complete 24-hour evidence from that incomplete source.
+- Added live 24-hour symbol-eligibility checks and preserved pending-order deduplication, broker
+  review, bounded grants, and the STOP + CANCEL path.
+- Moved the authenticated MCP transport, tool calls, and teardown into one dedicated async owner
+  task so connect/disconnect no longer crosses AnyIO cancel-scope task boundaries.
+- Bound Desktop and Start-menu shortcuts to the running app's Windows identity, added a readiness
+  check, and verified that a branded taskbar pin survives close and relaunch.
+
 ## 0.10.0 - 2026-08-10
 
 - Made the analysis and trade clocks explicit: the default completed analysis bar is 5 seconds and

@@ -14,6 +14,7 @@ from grande_alpha.historical import (
     deterministic_demo,
     full_history_calendar_days,
     load_bundle,
+    load_csv_history,
     parse_yahoo_chart,
     save_bundle,
 )
@@ -150,6 +151,7 @@ def test_demo_is_repeatable_and_config_rejects_lookahead_prone_values() -> None:
     first = deterministic_demo(2, seed=9)
     second = deterministic_demo(2, seed=9)
     assert [frame.qqq.close for frame in first.frames] == [frame.qqq.close for frame in second.frames]
+    assert first.quality and first.quality.session_coverage_pct == 100
 
     with pytest.raises(ValueError, match="Fast EMA"):
         SandboxConfig(fast_ema=21, slow_ema=8).validate()
@@ -180,6 +182,27 @@ def test_data_quality_counts_intraday_gaps() -> None:
     ]
     quality = assess_quality(frames, "1m")
     assert quality.missing_intervals == 2
+
+
+def test_all_day_csv_coverage_must_be_explicit_and_crosses_the_trading_date(tmp_path: Path) -> None:
+    path = tmp_path / "all-day.csv"
+    rows = ["timestamp,symbol,open,high,low,close,volume,market_hours"]
+    evening = datetime(2026, 8, 3, 0, 0, tzinfo=UTC)  # Sunday 8 PM ET
+    overnight = datetime(2026, 8, 3, 10, 0, tzinfo=UTC)  # Monday 6 AM ET
+    timestamps = [evening + timedelta(minutes=index) for index in range(15)] + [
+        overnight + timedelta(minutes=index) for index in range(15)
+    ]
+    for timestamp in timestamps:
+        for symbol in ("QQQ", "TQQQ", "SQQQ"):
+            rows.append(f"{timestamp.isoformat()},{symbol},100,101,99,100,1000,all_day_hours")
+    path.write_text("\n".join(rows), encoding="utf-8")
+
+    bundle = load_csv_history(path)
+
+    assert bundle.market_hours == "all_day_hours"
+    assert bundle.quality and bundle.quality.sessions == 1
+    assert bundle.quality.missing_intervals > 0
+    assert bundle.quality.session_coverage_pct == 0
 
 
 def test_sandbox_run_persists_separately_from_live_orders(tmp_path: Path) -> None:

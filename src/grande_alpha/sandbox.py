@@ -13,17 +13,25 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from grande_alpha.config import data_dir
+from grande_alpha.execution import execution_profile
 from grande_alpha.historical import HistoricalBundle, ReplayFrame
-from grande_alpha.policy import DecisionPolicy, PolicyConfig, PolicyPosition
+from grande_alpha.policy import DecisionPolicy, PolicyConfig, PolicyPosition, session_key, session_minutes
 from grande_alpha.strategy import StrategyConfig, build_strategy
 
 EASTERN = ZoneInfo("America/New_York")
-INTERVAL_MINUTES = {"1m": 1, "5m": 5, "15m": 15, "60m": 60, "1d": 390}
+INTERVAL_MINUTES = {"5s": 5 / 60, "1m": 1, "5m": 5, "15m": 15, "60m": 60, "1d": 390}
+
+
+def interval_minutes(interval: str) -> float:
+    if interval.endswith("s") and interval[:-1].isdigit():
+        return int(interval[:-1]) / 60
+    return float(INTERVAL_MINUTES.get(interval, 1))
 
 
 @dataclass
 class SandboxConfig:
     lookback_days: int = 7
+    csv_bar_seconds: int = 5
     initial_cash: float = 50.0
     order_notional: float = 25.0
     slippage_bps: float = 2.0
@@ -34,6 +42,10 @@ class SandboxConfig:
     fill_fraction_pct: float = 100.0
     rejection_rate_pct: float = 0.0
     max_volume_participation_pct: float = 1.0
+    market_hours: str = "regular_hours"
+    order_type: str = "market"
+    time_in_force: str = "gfd"
+    limit_offset_bps: float = 10.0
     random_seed: int = 7007
     strategy_name: str = "ema_momentum"
     warmup_bars: int = 24
@@ -65,8 +77,11 @@ class SandboxConfig:
     force_flat_at_end: bool = True
 
     def validate(self) -> None:
+        execution_profile(self)
         if not 1 <= self.lookback_days <= 10_000:
             raise ValueError("Lookback must be between 1 and 10000 calendar days")
+        if not 1 <= self.csv_bar_seconds <= 300:
+            raise ValueError("CSV bar interval must be between 1 and 300 seconds")
         if self.initial_cash <= 0 or self.order_notional <= 0:
             raise ValueError("Starting cash and order notional must be positive")
         if self.order_notional > self.initial_cash:
@@ -265,6 +280,7 @@ class SandboxReplayEngine:
                 max_hold_minutes=config.max_hold_minutes,
                 no_trade_open_minutes=config.no_trade_open_minutes,
                 no_trade_close_minutes=config.no_trade_close_minutes,
+                market_hours=config.market_hours,
             )
         )
 
@@ -286,11 +302,11 @@ class SandboxReplayEngine:
         previous_prices: dict[str, float] = {}
         consecutive_losses = 0
         session_bar_counts: dict[str, int] = {}
-        bar_minutes = INTERVAL_MINUTES.get(bundle.interval, 1)
+        bar_minutes = interval_minutes(bundle.interval)
         self._bar_minutes = bar_minutes
         session_last_indices: dict[str, int] = {}
         for frame_index, replay_frame in enumerate(bundle.frames):
-            session_day = replay_frame.start.astimezone(EASTERN).date().isoformat()
+            session_day = session_key(replay_frame.start, self.config.market_hours)
             session_last_indices[session_day] = frame_index
 
         def window_allowed(frame: ReplayFrame) -> bool:
@@ -299,8 +315,16 @@ class SandboxReplayEngine:
         def exit_window_allowed(frame: ReplayFrame) -> bool:
             return bundle.interval == "1d" or self.policy.exit_window_allowed(frame.start)
 
+        previous_session: str | None = None
         for index, frame in enumerate(bundle.frames):
-            day = frame.start.astimezone(EASTERN).date().isoformat()
+            day = session_key(frame.start, self.config.market_hours)
+            if (
+                previous_session is not None
+                and day != previous_session
+                and self.config.time_in_force == "gfd"
+            ):
+                scheduled = None
+            previous_session = day
             session_bar_counts[day] = session_bar_counts.get(day, 0) + 1
             starting_equity = self._equity(cash, position, frame)
             day_start_equity.setdefault(day, starting_equity)
@@ -368,11 +392,7 @@ class SandboxReplayEngine:
                             decision.reason,
                         )
 
-            if (
-                position is not None
-                and self.config.force_flat_at_end
-                and index == session_last_indices[day]
-            ):
+            if position is not None and self.config.force_flat_at_end and index == session_last_indices[day]:
                 cash, position, new_fills, new_events, _ = self._transition(
                     frame,
                     index,
@@ -433,7 +453,7 @@ class SandboxReplayEngine:
             for index in range(1, len(curve))
             if curve[index - 1].equity > 0
         ]
-        annualization = math.sqrt(max(1.0, 252 * 390 / bar_minutes))
+        annualization = math.sqrt(max(1.0, 252 * session_minutes(self.config.market_hours) / bar_minutes))
         sharpe = self._risk_adjusted(returns, annualization, downside_only=False)
         sortino = self._risk_adjusted(returns, annualization, downside_only=True)
         turnover_dollars = sum(fill.quantity * fill.price for fill in fills)
@@ -512,7 +532,7 @@ class SandboxReplayEngine:
             if not complete:
                 return cash, position, fills, events, False
         if target is not None and position is None:
-            day = frame.start.astimezone(EASTERN).date().isoformat()
+            day = session_key(frame.start, self.config.market_hours)
             if day in paused_days or entries_by_day.get(day, 0) >= self.config.max_entries_per_day:
                 events.append(ExecutionEvent(frame.start, target, "buy", "risk_blocked", 0, 0, reason))
                 return cash, None, fills, events, True
@@ -523,7 +543,7 @@ class SandboxReplayEngine:
             if fill:
                 fills.append(fill)
                 entries_by_day[day] = entries_by_day.get(day, 0) + 1
-            return cash, position, fills, events, event.status != "rejected"
+            return cash, position, fills, events, event.status not in {"rejected", "limit_unfilled"}
         return cash, position, fills, events, True
 
     def _sell(
@@ -548,9 +568,38 @@ class SandboxReplayEngine:
         bar = frame.bar_for_alias(position.symbol)
         requested = position.quantity
         quantity = self._fillable_quantity(bar, requested, bypass)
+        if self.config.order_type == "limit" and not bypass:
+            quantity = float(math.floor(quantity + 1e-9))
         raw = bar.close if use_close else bar.open
         spread = self._dynamic_spread_bps(bar)
         price = self._execution_price(raw, "sell", spread)
+        if self.config.order_type == "limit" and not bypass:
+            modeled_bid = raw * (1 - spread / 20_000)
+            limit_price = modeled_bid * (1 - self.config.limit_offset_bps / 10_000)
+            if price < limit_price:
+                return (
+                    cash,
+                    position,
+                    None,
+                    ExecutionEvent(
+                        frame.start,
+                        position.symbol,
+                        "sell",
+                        "limit_unfilled",
+                        requested,
+                        0,
+                        reason,
+                    ),
+                    False,
+                )
+        if quantity <= 0:
+            return (
+                cash,
+                position,
+                None,
+                ExecutionEvent(frame.start, position.symbol, "sell", "limit_unfilled", requested, 0, reason),
+                False,
+            )
         cost_share = position.cost_total * (quantity / position.quantity)
         proceeds = quantity * price - self.config.commission_per_order
         cash += proceeds
@@ -607,6 +656,17 @@ class SandboxReplayEngine:
         spread = self._dynamic_spread_bps(bar)
         price = self._execution_price(raw, "buy", spread)
         requested = max(0.0, budget / price)
+        if self.config.order_type == "limit":
+            modeled_ask = raw * (1 + spread / 20_000)
+            limit_price = modeled_ask * (1 + self.config.limit_offset_bps / 10_000)
+            if price > limit_price:
+                return (
+                    cash,
+                    None,
+                    None,
+                    ExecutionEvent(frame.start, target, "buy", "limit_unfilled", requested, 0, reason),
+                )
+            requested = float(math.floor(requested))
         if requested <= 0:
             return cash, None, None, ExecutionEvent(frame.start, target, "buy", "risk_blocked", 0, 0, reason)
         if self.rng.random() < self.config.rejection_rate_pct / 100.0:
@@ -617,6 +677,15 @@ class SandboxReplayEngine:
                 ExecutionEvent(frame.start, target, "buy", "rejected", requested, 0, reason),
             )
         quantity = self._fillable_quantity(bar, requested, False)
+        if self.config.order_type == "limit":
+            quantity = float(math.floor(quantity + 1e-9))
+        if quantity <= 0:
+            return (
+                cash,
+                None,
+                None,
+                ExecutionEvent(frame.start, target, "buy", "limit_unfilled", requested, 0, reason),
+            )
         cost = quantity * price + self.config.commission_per_order
         cash -= cost
         execution_cost = max(0.0, (price - raw) * quantity) + self.config.commission_per_order

@@ -69,6 +69,19 @@ def test_live_and_research_fingerprints_match_only_at_the_same_decision_stride()
     assert strategy_fingerprint(live) != strategy_fingerprint(mismatched, "5s")
 
 
+def test_fingerprint_binds_execution_session_order_type_and_limit_offset() -> None:
+    regular = SandboxConfig()
+    extended = SandboxConfig(market_hours="extended_hours", order_type="limit")
+    wider_limit = SandboxConfig(
+        market_hours="extended_hours",
+        order_type="limit",
+        limit_offset_bps=25,
+    )
+
+    assert strategy_fingerprint(regular) != strategy_fingerprint(extended)
+    assert strategy_fingerprint(extended) != strategy_fingerprint(wider_limit)
+
+
 def test_deflated_sharpe_penalizes_trial_search_and_negative_returns() -> None:
     positive = [0.002, -0.0005, 0.0015, 0.0002] * 40
     negative = [-value for value in positive]

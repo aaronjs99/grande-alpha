@@ -18,8 +18,7 @@ from grande_alpha.controller import TradingController
 from grande_alpha.storage import AuditStore
 from grande_alpha.ui.main_window import MainWindow
 from grande_alpha.ui.onboarding import OnboardingWizard
-
-WINDOWS_APP_USER_MODEL_ID = "AaronJS.GRANDEAlpha"
+from grande_alpha.windows_shortcut import WINDOWS_APP_USER_MODEL_ID
 
 
 def _set_windows_app_identity() -> None:

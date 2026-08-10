@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import replace
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QCheckBox,
+    QComboBox,
     QDialog,
     QDialogButtonBox,
     QDoubleSpinBox,
@@ -19,15 +21,27 @@ from PySide6.QtWidgets import (
 )
 
 from grande_alpha.config import AppConfig
+from grande_alpha.execution import (
+    MARKET_HOURS_LABELS,
+    ORDER_TYPE_LABELS,
+    TIME_IN_FORCE_LABELS,
+)
 
 LIVE_PHRASE = "ENABLE LIVE ORDERS"
 
 
 class SettingsDialog(QDialog):
-    def __init__(self, config: AppConfig, live_evidence_ready: bool = False, parent=None) -> None:
+    def __init__(
+        self,
+        config: AppConfig,
+        live_evidence_ready: bool = False,
+        parent=None,
+        live_evidence_checker: Callable[[AppConfig], bool] | None = None,
+    ) -> None:
         super().__init__(parent)
         self.original = config
         self.live_evidence_ready = live_evidence_ready
+        self.live_evidence_checker = live_evidence_checker
         self.setWindowTitle("GRANDE Alpha settings and permissions")
         self.setMinimumSize(780, 650)
         self.resize(840, 720)
@@ -72,9 +86,7 @@ class SettingsDialog(QDialog):
 
         self.account_scope_status = QLabel("APP VIEW SCOPE  •  ACTIVE AGENTIC ACCOUNT")
         self.account_scope_status.setObjectName("settingsStatus")
-        self.account_scope_status.setStyleSheet(
-            "background:#142b3d;color:#8fd3ff;border:1px solid #315b78;"
-        )
+        self.account_scope_status.setStyleSheet("background:#142b3d;color:#8fd3ff;border:1px solid #315b78;")
         permissions_layout.addWidget(self.account_scope_status)
 
         self.live = QCheckBox("Allow real-order automation for TQQQ/SQQQ")
@@ -147,6 +159,34 @@ class SettingsDialog(QDialog):
         privacy_form.addRow(self.credential_note)
         body_layout.addWidget(privacy)
 
+        routing = QGroupBox("Automatic order route defaults")
+        routing_form = QFormLayout(routing)
+        routing_form.setVerticalSpacing(9)
+        self.market_hours = QComboBox()
+        for value, label in MARKET_HOURS_LABELS.items():
+            self.market_hours.addItem(label, value)
+        self.market_hours.setCurrentIndex(max(0, self.market_hours.findData(config.market_hours)))
+        self.order_type = QComboBox()
+        for value, label in ORDER_TYPE_LABELS.items():
+            self.order_type.addItem(label, value)
+        self.order_type.setCurrentIndex(max(0, self.order_type.findData(config.order_type)))
+        self.time_in_force = QComboBox()
+        for value, label in TIME_IN_FORCE_LABELS.items():
+            self.time_in_force.addItem(label, value)
+        self.time_in_force.setCurrentIndex(max(0, self.time_in_force.findData(config.time_in_force)))
+        self.limit_offset = QDoubleSpinBox()
+        self.limit_offset.setRange(0, 100)
+        self.limit_offset.setDecimals(1)
+        self.limit_offset.setSuffix(" bps")
+        self.limit_offset.setValue(config.limit_offset_bps)
+        routing_form.addRow("Trading session", self.market_hours)
+        routing_form.addRow("Order type", self.order_type)
+        routing_form.addRow("Time in force", self.time_in_force)
+        routing_form.addRow("Marketable-limit offset", self.limit_offset)
+        self.routing_note = self._description("")
+        routing_form.addRow(self.routing_note)
+        body_layout.addWidget(routing)
+
         cadence = QGroupBox("Research cadence — advanced")
         cadence_form = QFormLayout(cadence)
         cadence_form.setVerticalSpacing(9)
@@ -201,6 +241,10 @@ class SettingsDialog(QDialog):
         self.live_phrase.textChanged.connect(self._validate)
         self.bar_seconds.valueChanged.connect(self._update_cadence_note)
         self.trade_every_bars.valueChanged.connect(self._update_cadence_note)
+        self.market_hours.currentIndexChanged.connect(self._update_route_note)
+        self.order_type.currentIndexChanged.connect(self._update_route_note)
+        self.time_in_force.currentIndexChanged.connect(self._update_route_note)
+        self._update_route_note()
         self._validate()
 
     @staticmethod
@@ -219,15 +263,57 @@ class SettingsDialog(QDialog):
             "Quote requests are single-flight and execution remains subject to independent broker and risk gates."
         )
 
+    def _update_route_note(self, _value: int | None = None) -> None:
+        outside_regular = self.market_hours.currentData() != "regular_hours"
+        market_index = self.order_type.findData("market")
+        market_item = self.order_type.model().item(market_index)
+        if market_item is not None:
+            market_item.setEnabled(not outside_regular)
+        if outside_regular and self.order_type.currentData() != "limit":
+            self.order_type.setCurrentIndex(self.order_type.findData("limit"))
+        is_market = self.order_type.currentData() == "market"
+        if is_market and self.time_in_force.currentData() != "gfd":
+            self.time_in_force.setCurrentIndex(self.time_in_force.findData("gfd"))
+        self.time_in_force.setEnabled(not is_market)
+        self.limit_offset.setEnabled(not is_market)
+        if is_market:
+            text = (
+                "Regular-hours market buys use a bounded dollar amount and may produce fractional shares. "
+                "Market orders are GFD and have no guaranteed execution price."
+            )
+        else:
+            text = (
+                "The Trading MCP accepts automatic limit orders by whole-share quantity. GRANDE Alpha derives "
+                "a buy cap from ask + offset and a sell floor from bid − offset. A limit may remain unfilled; "
+                "GTC orders can remain at Robinhood after the app exits."
+            )
+        if self.market_hours.currentData() == "all_day_hours":
+            text += " Current symbol eligibility is rechecked before every 24 Hour Market submission."
+        self.routing_note.setText(text)
+        self._validate()
+
     def _validate(self) -> None:
         enabling_live = self.live.isChecked() and not self.original.live_trading_enabled
+        evidence_ready = self.live_evidence_ready
+        if self.live_evidence_checker is not None:
+            evidence_ready = self.live_evidence_checker(self.updated_config())
+        self.evidence_status.setText(
+            "EVIDENCE GATE  •  READY FOR SEPARATE SESSION REVIEW"
+            if evidence_ready
+            else "EVIDENCE GATE  •  LOCKED — SHADOW ONLY"
+        )
+        self.evidence_status.setStyleSheet(
+            "background:#17301f;color:#80e899;border:1px solid #376d45;"
+            if evidence_ready
+            else "background:#2b2315;color:#ffd27a;border:1px solid #6f5727;"
+        )
         self.live_phrase.setVisible(enabling_live)
         valid = True
         message = ""
         if self.live.isChecked() and not self.broker.isChecked():
             valid = False
             message = "Real-order automation requires the broker connection capability."
-        elif self.live.isChecked() and not self.live_evidence_ready:
+        elif self.live.isChecked() and not evidence_ready:
             valid = False
             message = (
                 "Real-order automation remains shadow-only: run the full Evidence Lab on eligible recent "
@@ -252,4 +338,8 @@ class SettingsDialog(QDialog):
             reconcile_seconds=self.reconcile.value(),
             bar_seconds=self.bar_seconds.value(),
             trade_every_bars=self.trade_every_bars.value(),
+            market_hours=self.market_hours.currentData(),
+            order_type=self.order_type.currentData(),
+            time_in_force=self.time_in_force.currentData(),
+            limit_offset_bps=self.limit_offset.value(),
         )

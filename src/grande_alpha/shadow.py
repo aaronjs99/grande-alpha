@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import Any
 
 from grande_alpha.models import Quote, Signal
-from grande_alpha.policy import DecisionPolicy, PolicyConfig, PolicyPosition
+from grande_alpha.policy import DecisionPolicy, PolicyConfig, PolicyPosition, session_key
 from grande_alpha.sandbox import SandboxConfig
 
 ALIASES = {"TQQQ": "TQQQS", "SQQQ": "SQQQS"}
@@ -66,6 +66,7 @@ class LiveShadowEngine:
                 max_hold_minutes=config.max_hold_minutes,
                 no_trade_open_minutes=config.no_trade_open_minutes,
                 no_trade_close_minutes=config.no_trade_close_minutes,
+                market_hours=config.market_hours,
             )
         )
         self.state = ShadowState(
@@ -74,6 +75,7 @@ class LiveShadowEngine:
             equity=config.initial_cash,
         )
         self._pending: tuple[str | None, str] | None = None
+        self._pending_session: str | None = None
         self._analysis_count = 0
 
     def on_bar(self, timestamp: datetime, signal: Signal, quotes: dict[str, Quote]) -> list[ShadowFill]:
@@ -81,6 +83,14 @@ class LiveShadowEngine:
             return []
         self._analysis_count += 1
         fills: list[ShadowFill] = []
+        current_session = session_key(timestamp, self.config.market_hours)
+        if (
+            self._pending is not None
+            and self.config.time_in_force == "gfd"
+            and self._pending_session != current_session
+        ):
+            self._pending = None
+            self._pending_session = None
         window_allowed = self.policy.trading_window_allowed(timestamp)
         pending_is_exit = (
             self.state.position is not None
@@ -96,6 +106,7 @@ class LiveShadowEngine:
                 self.state.fills.append(fill)
             if complete:
                 self._pending = None
+                self._pending_session = None
 
         position = self.state.position
         marked = None
@@ -120,12 +131,14 @@ class LiveShadowEngine:
             )
             if decision_window and decision.target_symbol != current and self._pending is None:
                 self._pending = (decision.target_symbol, decision.reason)
+                self._pending_session = current_session
         self._mark(quotes)
         return fills
 
     def stop(self, quotes: dict[str, Quote] | None = None) -> ShadowState:
         self.state.active = False
         self._pending = None
+        self._pending_session = None
         if quotes:
             self._mark(quotes)
         return self.state
@@ -145,6 +158,10 @@ class LiveShadowEngine:
             if not quote:
                 return False, None
             price = self._price(quote, "sell")
+            if self.config.order_type == "limit":
+                limit_price = quote.bid * (1 - self.config.limit_offset_bps / 10_000)
+                if price < limit_price:
+                    return False, None
             proceeds = position.quantity * price - self.config.commission_per_order
             realized = proceeds - position.entry_cost
             self.state.cash += proceeds
@@ -166,12 +183,18 @@ class LiveShadowEngine:
         if not quote:
             return False, None
         price = self._price(quote, "buy")
+        if self.config.order_type == "limit":
+            limit_price = quote.ask * (1 + self.config.limit_offset_bps / 10_000)
+            if price > limit_price:
+                return False, None
         budget = min(
             self.config.order_notional,
             self.state.cash * self.config.max_exposure_pct,
             max(0.0, self.state.cash - self.config.commission_per_order),
         )
         quantity = budget / price if price > 0 else 0.0
+        if self.config.order_type == "limit":
+            quantity = float(int(quantity))
         if quantity <= 0:
             return True, None
         cost = quantity * price + self.config.commission_per_order
@@ -182,9 +205,11 @@ class LiveShadowEngine:
         )
 
     def _price(self, quote: Quote, side: str) -> float:
-        modeled_bps = self.config.slippage_bps + self.config.base_spread_bps / 2.0
+        reference = (quote.ask if quote.ask > 0 else quote.mid) if side == "buy" else (
+            quote.bid if quote.bid > 0 else quote.mid
+        )
         direction = 1.0 if side == "buy" else -1.0
-        return quote.mid * (1.0 + direction * modeled_bps / 10_000.0)
+        return reference * (1.0 + direction * self.config.slippage_bps / 10_000.0)
 
     def _mark(self, quotes: dict[str, Quote]) -> None:
         value = self.state.cash

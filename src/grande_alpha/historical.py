@@ -16,10 +16,11 @@ import httpx
 
 from grande_alpha.config import data_dir
 from grande_alpha.models import Bar, utc_now
+from grande_alpha.policy import session_bounds, session_key
 
 YAHOO_CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
 INTERVAL_LIMITS = {"1m": 7, "5m": 60, "15m": 60, "60m": 730, "1d": 10_000}
-INTERVAL_SECONDS = {"1m": 60, "5m": 300, "15m": 900, "60m": 3600, "1d": 86400}
+INTERVAL_SECONDS = {"5s": 5, "1m": 60, "5m": 300, "15m": 900, "60m": 3600, "1d": 86400}
 SHARED_LEVERAGED_HISTORY_START = datetime(2010, 2, 9, tzinfo=UTC)
 
 
@@ -32,6 +33,8 @@ class DataQuality:
     duplicate_timestamps: int
     interval: str
     dataset_hash: str
+    complete_sessions: int = 0
+    session_coverage_pct: float = 0.0
 
     @property
     def clean(self) -> bool:
@@ -61,6 +64,7 @@ class HistoricalBundle:
     interval: str = "1m"
     dataset_hash: str = ""
     quality: DataQuality | None = None
+    market_hours: str = "regular_hours"
 
     @property
     def start(self) -> datetime:
@@ -135,10 +139,18 @@ def dataset_hash(frames: list[ReplayFrame]) -> str:
     return digest.hexdigest()
 
 
-def assess_quality(frames: list[ReplayFrame], interval: str) -> DataQuality:
-    seconds = INTERVAL_SECONDS.get(interval, 60)
-    eastern = ZoneInfo("America/New_York")
-    sessions = {frame.start.astimezone(eastern).date().isoformat() for frame in frames}
+def assess_quality(
+    frames: list[ReplayFrame], interval: str, market_hours: str = "regular_hours"
+) -> DataQuality:
+    seconds = (
+        int(interval[:-1])
+        if interval.endswith("s") and interval[:-1].isdigit()
+        else INTERVAL_SECONDS.get(interval, 60)
+    )
+    grouped: dict[str, list[ReplayFrame]] = {}
+    for frame in frames:
+        grouped.setdefault(session_key(frame.start, market_hours), []).append(frame)
+    sessions = set(grouped)
     missing = 0
     duplicates = 0
     previous: ReplayFrame | None = None
@@ -148,8 +160,8 @@ def assess_quality(frames: list[ReplayFrame], interval: str) -> DataQuality:
             duplicates += 1
         seen.add(frame.start)
         if previous is not None:
-            previous_day = previous.start.astimezone(eastern).date()
-            current_day = frame.start.astimezone(eastern).date()
+            previous_day = session_key(previous.start, market_hours)
+            current_day = session_key(frame.start, market_hours)
             gap = (frame.start - previous.start).total_seconds()
             if previous_day == current_day and gap > seconds * 1.5:
                 missing += max(0, round(gap / seconds) - 1)
@@ -157,6 +169,18 @@ def assess_quality(frames: list[ReplayFrame], interval: str) -> DataQuality:
     zero_volume = sum(
         1 for frame in frames if frame.qqq.volume <= 0 or frame.tqqq.volume <= 0 or frame.sqqq.volume <= 0
     )
+    if interval == "1d":
+        complete_sessions = len(grouped)
+    else:
+        complete_sessions = 0
+        tolerance = seconds * 1.5
+        for session_frames in grouped.values():
+            first, last = session_frames[0].start, session_frames[-1].start
+            opened, closed = session_bounds(first, market_hours)
+            starts_near_open = first.timestamp() <= opened.timestamp() + tolerance
+            ends_near_close = last.timestamp() >= closed.timestamp() - seconds - tolerance
+            complete_sessions += int(starts_near_open and ends_near_close)
+    coverage_pct = complete_sessions / len(grouped) * 100 if grouped else 0.0
     return DataQuality(
         aligned_bars=len(frames),
         sessions=len(sessions),
@@ -165,6 +189,8 @@ def assess_quality(frames: list[ReplayFrame], interval: str) -> DataQuality:
         duplicate_timestamps=duplicates,
         interval=interval,
         dataset_hash=dataset_hash(frames),
+        complete_sessions=complete_sessions,
+        session_coverage_pct=coverage_pct,
     )
 
 
@@ -201,6 +227,7 @@ def save_bundle(bundle: HistoricalBundle, path: Path) -> None:
         "downloaded_at": bundle.downloaded_at.isoformat(),
         "interval": bundle.interval,
         "dataset_hash": bundle.dataset_hash,
+        "market_hours": bundle.market_hours,
         "frames": [
             {
                 "start": frame.start.isoformat(),
@@ -226,7 +253,8 @@ def load_bundle(path: Path) -> HistoricalBundle:
         for row in payload["frames"]
     ]
     interval = str(payload.get("interval", "1m"))
-    quality = assess_quality(frames, interval)
+    market_hours = str(payload.get("market_hours", "regular_hours"))
+    quality = assess_quality(frames, interval, market_hours)
     expected_hash = str(payload.get("dataset_hash") or quality.dataset_hash)
     if expected_hash != quality.dataset_hash:
         raise ValueError("Cached historical dataset hash does not match its contents")
@@ -237,6 +265,7 @@ def load_bundle(path: Path) -> HistoricalBundle:
         interval=interval,
         dataset_hash=quality.dataset_hash,
         quality=quality,
+        market_hours=market_hours,
     )
 
 
@@ -245,7 +274,12 @@ class HistoricalDataProvider:
         self.timeout_seconds = timeout_seconds
 
     async def _fetch_symbol(
-        self, client: httpx.AsyncClient, symbol: str, days: int, interval: str
+        self,
+        client: httpx.AsyncClient,
+        symbol: str,
+        days: int,
+        interval: str,
+        include_pre_post: bool,
     ) -> list[Bar]:
         period2 = int(utc_now().timestamp()) + 60
         period1 = period2 - days * 24 * 60 * 60
@@ -255,35 +289,50 @@ class HistoricalDataProvider:
                 "period1": period1,
                 "period2": period2,
                 "interval": interval,
-                "includePrePost": "false",
+                "includePrePost": "true" if include_pre_post else "false",
                 "events": "div,splits",
             },
         )
         response.raise_for_status()
         return parse_yahoo_chart(response.json(), symbol)
 
-    async def fetch(self, days: int = 7, interval: str = "1m", use_cache: bool = True) -> HistoricalBundle:
+    async def fetch(
+        self,
+        days: int = 7,
+        interval: str = "1m",
+        use_cache: bool = True,
+        market_hours: str = "regular_hours",
+    ) -> HistoricalBundle:
         maximum = INTERVAL_LIMITS.get(interval)
         if maximum is None:
             raise ValueError(f"Unsupported historical interval: {interval}")
         if not 1 <= days <= maximum:
             raise ValueError(f"{interval} historical lookback must be between 1 and {maximum} days")
+        if market_hours not in {"regular_hours", "extended_hours", "all_day_hours"}:
+            raise ValueError(f"Unsupported trading session: {market_hours}")
+        if market_hours == "all_day_hours":
+            raise ValueError(
+                "The community Yahoo adapter does not provide complete Robinhood overnight coverage; "
+                "import a lawfully sourced 24-hour CSV for all-day evidence"
+            )
         cache_path = (
-            data_dir() / "sandbox_cache" / f"yahoo_{interval}_{days}d_{utc_now().date().isoformat()}.json"
+            data_dir()
+            / "sandbox_cache"
+            / f"yahoo_{market_hours}_{interval}_{days}d_{utc_now().date().isoformat()}.json"
         )
         if use_cache and cache_path.exists():
             return load_bundle(cache_path)
         headers = {"User-Agent": "GRANDE-Alpha/0.7 research client"}
         async with httpx.AsyncClient(timeout=self.timeout_seconds, headers=headers) as client:
             qqq, tqqq, sqqq = await asyncio.gather(
-                self._fetch_symbol(client, "QQQ", days, interval),
-                self._fetch_symbol(client, "TQQQ", days, interval),
-                self._fetch_symbol(client, "SQQQ", days, interval),
+                self._fetch_symbol(client, "QQQ", days, interval, market_hours != "regular_hours"),
+                self._fetch_symbol(client, "TQQQ", days, interval, market_hours != "regular_hours"),
+                self._fetch_symbol(client, "SQQQ", days, interval, market_hours != "regular_hours"),
             )
         frames = align_bars(qqq, tqqq, sqqq)
         if len(frames) < 30:
             raise ValueError(f"Only {len(frames)} aligned {interval} candles were available")
-        quality = assess_quality(frames, interval)
+        quality = assess_quality(frames, interval, market_hours)
         bundle = HistoricalBundle(
             source=f"Yahoo Finance chart data ({interval}) — unsupported research source",
             downloaded_at=utc_now(),
@@ -291,6 +340,7 @@ class HistoricalDataProvider:
             interval=interval,
             dataset_hash=quality.dataset_hash,
             quality=quality,
+            market_hours=market_hours,
         )
         if use_cache:
             save_bundle(bundle, cache_path)
@@ -310,12 +360,16 @@ def load_csv_history(path: Path, interval: str = "1m") -> HistoricalBundle:
     """Load long-history rows: timestamp,symbol,open,high,low,close,volume."""
     required = {"timestamp", "symbol", "open", "high", "low", "close"}
     series: dict[str, list[Bar]] = {"QQQ": [], "TQQQ": [], "SQQQ": []}
+    declared_coverage: set[str] = set()
     with path.open("r", encoding="utf-8-sig", newline="") as handle:
         reader = csv.DictReader(handle)
         if not reader.fieldnames or not required <= {name.lower() for name in reader.fieldnames}:
             raise ValueError("CSV needs timestamp,symbol,open,high,low,close and optional volume columns")
         for row in reader:
             normalized = {str(key).lower(): value for key, value in row.items()}
+            declared = str(normalized.get("market_hours") or "").strip()
+            if declared:
+                declared_coverage.add(declared)
             symbol = str(normalized.get("symbol", "")).upper()
             if symbol not in series:
                 continue
@@ -343,7 +397,24 @@ def load_csv_history(path: Path, interval: str = "1m") -> HistoricalBundle:
     frames = align_bars(series["QQQ"], series["TQQQ"], series["SQQQ"])
     if len(frames) < 30:
         raise ValueError(f"CSV produced only {len(frames)} aligned candles")
-    quality = assess_quality(frames, interval)
+    eastern = ZoneInfo("America/New_York")
+    local_times = [frame.start.astimezone(eastern).time() for frame in frames]
+    has_extended = any(value < time(9, 30) or value >= time(16, 0) for value in local_times)
+    if len(declared_coverage) > 1:
+        raise ValueError("CSV market_hours must declare one consistent coverage value")
+    coverage = next(iter(declared_coverage), "")
+    if coverage and coverage not in {"regular_hours", "extended_hours", "all_day_hours"}:
+        raise ValueError("CSV market_hours must be regular_hours, extended_hours, or all_day_hours")
+    if not coverage:
+        coverage = "extended_hours" if has_extended else "regular_hours"
+    if coverage == "all_day_hours":
+        has_evening = any(value >= time(20, 0) for value in local_times)
+        has_early = any(value < time(7, 0) for value in local_times)
+        if not has_evening or not has_early:
+            raise ValueError(
+                "CSV declaring all_day_hours must contain both evening and overnight timestamps"
+            )
+    quality = assess_quality(frames, interval, coverage)
     return HistoricalBundle(
         source=f"Imported CSV: {path.name}",
         downloaded_at=utc_now(),
@@ -351,6 +422,7 @@ def load_csv_history(path: Path, interval: str = "1m") -> HistoricalBundle:
         interval=interval,
         dataset_hash=quality.dataset_hash,
         quality=quality,
+        market_hours=coverage,
     )
 
 

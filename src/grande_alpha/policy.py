@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, time
+from datetime import date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
 from grande_alpha.models import Regime, Signal
@@ -18,6 +18,7 @@ class PolicyConfig:
     max_hold_minutes: int = 45
     no_trade_open_minutes: int = 5
     no_trade_close_minutes: int = 10
+    market_hours: str = "regular_hours"
 
 
 @dataclass(frozen=True)
@@ -35,19 +36,66 @@ class PolicyDecision:
     signal_regime: Regime
 
 
+def trading_date(timestamp: datetime, market_hours: str = "regular_hours") -> date:
+    local = timestamp.astimezone(EASTERN)
+    if market_hours == "all_day_hours" and local.time() >= time(20, 0):
+        return local.date() + timedelta(days=1)
+    return local.date()
+
+
+def session_bounds(timestamp: datetime, market_hours: str) -> tuple[datetime, datetime]:
+    trade_date = trading_date(timestamp, market_hours)
+    if market_hours == "regular_hours":
+        return (
+            datetime.combine(trade_date, time(9, 30), tzinfo=EASTERN),
+            datetime.combine(trade_date, time(16, 0), tzinfo=EASTERN),
+        )
+    if market_hours == "extended_hours":
+        return (
+            datetime.combine(trade_date, time(7, 0), tzinfo=EASTERN),
+            datetime.combine(trade_date, time(20, 0), tzinfo=EASTERN),
+        )
+    if market_hours == "all_day_hours":
+        closed = datetime.combine(trade_date, time(20, 0), tzinfo=EASTERN)
+        return closed - timedelta(days=1), closed
+    raise ValueError(f"Unsupported trading session: {market_hours}")
+
+
+def market_session_allowed(
+    timestamp: datetime,
+    no_trade_open_minutes: int,
+    no_trade_close_minutes: int,
+    market_hours: str = "regular_hours",
+) -> bool:
+    local = timestamp.astimezone(EASTERN)
+    trade_date = trading_date(timestamp, market_hours)
+    if trade_date.weekday() >= 5:
+        return False
+    opened, closed = session_bounds(timestamp, market_hours)
+    start = opened.timestamp() + no_trade_open_minutes * 60
+    end = closed.timestamp() - no_trade_close_minutes * 60
+    return start <= local.timestamp() <= end
+
+
 def regular_session_allowed(
     timestamp: datetime,
     no_trade_open_minutes: int,
     no_trade_close_minutes: int,
 ) -> bool:
-    local = timestamp.astimezone(EASTERN)
-    if local.weekday() >= 5:
-        return False
-    opened = datetime.combine(local.date(), time(9, 30), tzinfo=EASTERN)
-    closed = datetime.combine(local.date(), time(16, 0), tzinfo=EASTERN)
-    start = opened.timestamp() + no_trade_open_minutes * 60
-    end = closed.timestamp() - no_trade_close_minutes * 60
-    return start <= local.timestamp() <= end
+    return market_session_allowed(
+        timestamp,
+        no_trade_open_minutes,
+        no_trade_close_minutes,
+        "regular_hours",
+    )
+
+
+def session_key(timestamp: datetime, market_hours: str = "regular_hours") -> str:
+    return trading_date(timestamp, market_hours).isoformat()
+
+
+def session_minutes(market_hours: str) -> int:
+    return {"regular_hours": 390, "extended_hours": 780, "all_day_hours": 1440}[market_hours]
 
 
 class DecisionPolicy:
@@ -69,9 +117,9 @@ class DecisionPolicy:
         }[signal.regime]
         reason = signal.reason
         local = timestamp.astimezone(EASTERN)
-        close_cutoff = datetime.combine(local.date(), time(16, 0), tzinfo=EASTERN).timestamp()
-        if local.timestamp() >= close_cutoff - self.config.no_trade_close_minutes * 60:
-            target, reason = None, "Scheduled regular-session flatten window"
+        _, closed = session_bounds(timestamp, self.config.market_hours)
+        if local.timestamp() >= closed.timestamp() - self.config.no_trade_close_minutes * 60:
+            target, reason = None, "Scheduled trading-session flatten window"
         if position is not None:
             if (
                 position.entry_price is not None
@@ -88,11 +136,12 @@ class DecisionPolicy:
         return PolicyDecision(target, reason, signal.regime)
 
     def trading_window_allowed(self, timestamp: datetime) -> bool:
-        return regular_session_allowed(
+        return market_session_allowed(
             timestamp,
             self.config.no_trade_open_minutes,
             self.config.no_trade_close_minutes,
+            self.config.market_hours,
         )
 
     def exit_window_allowed(self, timestamp: datetime) -> bool:
-        return regular_session_allowed(timestamp, 0, 0)
+        return market_session_allowed(timestamp, 0, 0, self.config.market_hours)

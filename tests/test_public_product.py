@@ -69,7 +69,45 @@ def test_public_defaults_are_research_only() -> None:
     assert config.bar_seconds == 5
     assert config.trade_every_bars == 3
     assert config.trade_seconds == 15
-    assert __version__ == "0.10.0"
+    assert config.market_hours == "regular_hours"
+    assert config.order_type == "market"
+    assert __version__ == "0.11.0"
+
+
+def test_controller_constructs_whole_share_limit_intents_from_authorized_route(tmp_path) -> None:
+    store = AuditStore(tmp_path / "audit.db")
+    controller = TradingController(DisabledBroker(), AppConfig(), store)
+    now = utc_now()
+    portfolio = Portfolio(500, 500, 500)
+    controller.risk.arm(
+        LiveGrant(
+            account_number="123",
+            starts_at=now - timedelta(minutes=1),
+            expires_at=now + timedelta(minutes=30),
+            max_order_notional=250,
+            max_total_exposure=400,
+            max_daily_loss=20,
+            max_trades=5,
+            max_orders_per_minute=2,
+            max_spread_bps=20,
+            max_quote_age_seconds=8,
+            market_hours="extended_hours",
+            order_type="limit",
+            time_in_force="gfd",
+            limit_offset_bps=10,
+        ),
+        portfolio,
+    )
+    quote = Quote("TQQQ", 100, 100.05, 100.02, now)
+
+    intent = controller._execution_intent("TQQQ", "buy", quote, "test", notional=250)
+
+    assert intent.market_hours == "extended_hours"
+    assert intent.order_type == "limit"
+    assert intent.quantity == 2
+    assert intent.limit_price == 100.16
+    assert intent.dollar_amount is None
+    store.close()
 
 
 def test_main_window_starts_with_independent_low_latency_clocks(tmp_path) -> None:
@@ -196,6 +234,12 @@ def test_settings_dialog_is_scrollable_and_explains_agentic_account_scope() -> N
     assert dialog.credential_note.wordWrap()
     assert "t_analysis = 5s" in dialog.cadence_note.text()
     assert "t_trade = 15s" in dialog.cadence_note.text()
+    dialog.market_hours.setCurrentIndex(dialog.market_hours.findData("extended_hours"))
+    assert dialog.order_type.currentData() == "limit"
+    assert "whole-share" in dialog.routing_note.text()
+    updated = dialog.updated_config()
+    assert updated.market_hours == "extended_hours"
+    assert updated.order_type == "limit"
     dialog.close()
 
 
@@ -243,6 +287,8 @@ async def test_due_trade_tick_records_exact_pair_action_without_forcing_turnover
     assert payload["action_t"] == payload["action_s"] == 0
     assert payload["nominal_analysis_seconds"] == 5
     assert payload["nominal_trade_seconds"] == 15
+    assert payload["market_hours"] == "regular_hours"
+    assert payload["order_type"] == "market"
     store.close()
 
 
@@ -287,7 +333,7 @@ def test_controller_requires_matching_current_evidence_before_live_authority(tmp
     )
     controller.authorize_live(grant)
     assert controller.snapshot.live_status == "LIVE"
-    controller.live_evidence_ready = lambda: False
+    controller.live_evidence_ready = lambda grant=None: False
     with pytest.raises(RuntimeError, match="missing or expired"):
         controller.start_strategy()
     assert controller.snapshot.live_status == "LOCKED"
@@ -399,15 +445,20 @@ def test_local_installer_uses_trusted_launcher_and_both_shortcut_locations() -> 
     assert "GetFolderPath('Desktop')" in script
     assert "GetFolderPath('Programs')" in script
     assert "run.ps1" in script
+    assert "grande_alpha.windows_shortcut" in script
 
 
 def test_windows_app_identity_uses_the_grande_alpha_logo_group() -> None:
     root = Path(__file__).resolve().parents[1]
     app_source = (root / "src" / "grande_alpha" / "app.py").read_text(encoding="utf-8")
+    shortcut_source = (root / "src" / "grande_alpha" / "windows_shortcut.py").read_text(
+        encoding="utf-8"
+    )
 
-    assert 'WINDOWS_APP_USER_MODEL_ID = "AaronJS.GRANDEAlpha"' in app_source
+    assert 'WINDOWS_APP_USER_MODEL_ID = "AaronJS.GRANDEAlpha"' in shortcut_source
     assert "SetCurrentProcessExplicitAppUserModelID" in app_source
     assert "window.setWindowIcon(app.windowIcon())" in app_source
+    assert "System.AppUserModel.ID" in shortcut_source
 
 
 def test_sandbox_exposes_exact_nine_action_matrix_and_full_history_source(tmp_path) -> None:
@@ -421,7 +472,10 @@ def test_sandbox_exposes_exact_nine_action_matrix_and_full_history_source(tmp_pa
         for column in range(3)
     }
     assert cells == {f"({t:+d},{s:+d})".replace("+0", "0") for t in (-1, 0, 1) for s in (-1, 0, 1)}
-    assert any("full shared history" in widget.source.itemText(index).lower() for index in range(widget.source.count()))
+    assert any(
+        "full shared history" in widget.source.itemText(index).lower()
+        for index in range(widget.source.count())
+    )
     assert "session end" in widget.force_flat.text().lower()
     assert widget.daily_benchmark_table.columnCount() == 7
     widget.close()

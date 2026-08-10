@@ -25,10 +25,12 @@ authorization and before strategy start; missing, expired, or mismatched evidenc
 
 1. Select **Authorize Live Session**.
 2. Use a short duration and conservative limits for order notional, total exposure, session loss, trade count, rate, spread, and quote age.
-3. Read the exact account, buying power, expiry, and limits.
-4. Complete the attestation only if it is true.
-5. Type the displayed session phrase and authorize.
-6. Start once and monitor both the app and the broker.
+3. Review the selected regular, extended, or 24 Hour Market route. Extended and overnight routes
+   require whole-share limits; use GTC only if persistence after an app failure is intentional.
+4. Read the exact account, buying power, expiry, and limits.
+5. Complete the attestation only if it is true.
+6. Type the displayed session phrase and authorize.
+7. Start once and monitor both the app and the broker.
 
 Increasing a cap does not increase expected edge; it increases possible exposure.
 

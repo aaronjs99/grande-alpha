@@ -12,6 +12,11 @@
 The launcher uses the trusted Python installation on the machine. Review
 [Windows installation](WINDOWS_INSTALLATION.md) before distributing a binary.
 
+`install-local.ps1` gives the Desktop and Start-menu shortcuts the same Windows identity as the
+running app, and `doctor.ps1` verifies it. If a generic Python or PowerShell item was pinned before
+installation, unpin that stale item once, launch **GRANDE Alpha** from the installed shortcut, and
+pin the branded GRANDE Alpha button.
+
 ## Research session
 
 1. Start with `.\run.ps1` or `Start GRANDE Alpha.cmd`.
@@ -35,6 +40,12 @@ Open **Settings & Permissions** to enable capabilities one at a time:
 - **Real-order automation** is a second permission and requires a current matching Evidence Lab certificate plus an exact typed phrase.
 - **Community remote market data** sends symbol/time-range queries to an unsupported external endpoint.
 - **Personal ledger** shows a local planning ledger; it never transfers funds.
+
+**Automatic order route defaults** chooses regular, extended, or 24 Hour Market behavior without
+granting authority. The choice appears again in every live-session confirmation. Extended and
+overnight routes are whole-share limit-only; a route without matching session-complete evidence
+remains locked. Read [Trading sessions and order routes](TRADING_SESSIONS.md) before changing the
+regular-hours market GFD default.
 
 Removing broker permission disconnects the adapter. Removing real-order permission stops the strategy, revokes live authority, and attempts cancellation. Stored OAuth credentials can be forgotten from the same dialog.
 

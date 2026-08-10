@@ -27,6 +27,22 @@ if (-not (Test-Path -LiteralPath $VenvPython)) {
     $PythonStatus = if ($PythonSignature.Status -eq 'Valid') { 'VALID trusted Python signature' } else { $PythonSignature.Status }
     Write-Check 'Python launcher' $PythonStatus $(if ($PythonSignature.Status -eq 'Valid') { 'Green' } else { 'Yellow' })
 
+    $DesktopShortcut = Join-Path ([Environment]::GetFolderPath('Desktop')) 'GRANDE Alpha.lnk'
+    $StartShortcut = Join-Path (Join-Path ([Environment]::GetFolderPath('Programs')) 'GRANDE Alpha') 'GRANDE Alpha.lnk'
+    $ShortcutPaths = @($DesktopShortcut, $StartShortcut)
+    $ExistingShortcuts = @($ShortcutPaths | Where-Object { Test-Path -LiteralPath $_ })
+    if ($ExistingShortcuts.Count -eq $ShortcutPaths.Count) {
+        & $VenvPython -m grande_alpha.windows_shortcut --check @ExistingShortcuts | Out-Null
+        if ($LASTEXITCODE -eq 0) {
+            Write-Check 'Taskbar identity' 'READY - GRANDE Alpha logo pin' Green
+        } else {
+            Write-Check 'Taskbar identity' 'MISMATCH - rerun .\install-local.ps1' Red
+            $SourceReady = $false
+        }
+    } else {
+        Write-Check 'Taskbar identity' 'NOT INSTALLED - run .\install-local.ps1' DarkGray
+    }
+
     $BrokerState = & $VenvPython -c "import asyncio; from grande_alpha.broker.oauth import CredentialTokenStorage; s=CredentialTokenStorage(); print('CONFIGURED' if asyncio.run(s.get_tokens()) is not None else 'NOT CONFIGURED')"
     if ($LASTEXITCODE -ne 0) { throw 'Broker credential readiness check failed' }
     Write-Check 'Robinhood OAuth' $BrokerState $(if ($BrokerState -eq 'CONFIGURED') { 'Green' } else { 'Yellow' })

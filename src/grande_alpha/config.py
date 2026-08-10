@@ -7,13 +7,15 @@ from pathlib import Path
 
 from platformdirs import user_data_path
 
+from grande_alpha.execution import execution_profile
+
 APP_NAME = "GRANDEAlpha"
 DISPLAY_NAME = "GRANDE Alpha"
 LEGACY_APP_NAME = "MomentumTrader"
 MCP_URL = "https://agent.robinhood.com/mcp/trading"
 ONBOARDING_VERSION = 1
 DISCLOSURE_VERSION = "2026-08"
-CADENCE_VERSION = 2
+CADENCE_VERSION = 3
 
 
 @dataclass
@@ -34,6 +36,12 @@ class AppConfig:
     # One policy action is selected only after this many completed analysis bars.
     # The default therefore gives t_analysis=5s and t_trade=15s.
     trade_every_bars: int = 3
+    # Defaults copied into each separately confirmed live grant. The user can
+    # change them again in the grant dialog before any authority is created.
+    market_hours: str = "regular_hours"
+    order_type: str = "market"
+    time_in_force: str = "gfd"
+    limit_offset_bps: float = 10.0
     warmup_bars: int = 24
     fast_ema: int = 8
     slow_ema: int = 21
@@ -66,6 +74,7 @@ class AppConfig:
             raise ValueError("Analysis bar must be between 1 and 300 seconds")
         if not 2 <= self.trade_every_bars <= 120:
             raise ValueError("Trade decisions must be separated by 2 to 120 analysis bars")
+        execution_profile(self)
 
 
 def migrate_legacy_data(legacy: Path, destination: Path) -> list[Path]:
@@ -126,6 +135,13 @@ def migrate_config_payload(raw: dict) -> dict:
         )
     if version < 2:
         upgraded["trade_every_bars"] = 3
+    if version < 3:
+        upgraded.update(
+            market_hours="regular_hours",
+            order_type="market",
+            time_in_force="gfd",
+            limit_offset_bps=10.0,
+        )
     upgraded["cadence_version"] = CADENCE_VERSION
     return upgraded
 

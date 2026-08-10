@@ -18,6 +18,11 @@ TQQQ and SQQQ seek leveraged or inverse **daily** objectives. Compounding means 
 
 Account type, settled funds, buying power, day-trading rules, good-faith violations, freeriding, market hours, and order eligibility remain broker and jurisdiction dependent. Do not encode a social-media claim about rule changes as product logic. The application trusts current provider responses and fails closed on warnings; it does not determine whether a trade is lawful or suitable.
 
+Regular, extended, and 24 Hour Market selections have different liquidity, volatility, spread,
+fractional-share, and order-type constraints. Extended and overnight automation uses whole-share
+limits; a limit is not guaranteed to fill. GTC orders can remain live at the broker after the desktop
+app exits. Review the exact behavior in [Trading sessions and order routes](TRADING_SESSIONS.md).
+
 ## International, student, employment, and business status
 
 Users with visa, residency, employment-authorization, sanctions, cross-border, or business-classification questions must obtain advice applicable to their facts before enabling automation. The application attestation is a consent checkpoint, not legal clearance. Never use it to manage another person's money, accept outside capital, sell managed-account services, or evade a restriction.

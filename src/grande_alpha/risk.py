@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
 from grande_alpha.models import LiveGrant, OrderIntent, Portfolio, Quote, utc_now
-from grande_alpha.policy import EASTERN, regular_session_allowed
+from grande_alpha.policy import EASTERN, market_session_allowed
 
 
 @dataclass(frozen=True)
@@ -30,6 +30,7 @@ class RiskEngine:
     def arm(self, grant: LiveGrant, portfolio: Portfolio) -> None:
         if grant.account_number == "":
             raise ValueError("Live grant must target an account")
+        grant.execution.validate()
         self.grant = grant
         self.killed = False
         self.trades_today = 0
@@ -60,8 +61,13 @@ class RiskEngine:
             return "EXPIRED"
         return "LIVE"
 
-    def _regular_session_allowed(self, now: datetime) -> bool:
-        return regular_session_allowed(now, self.no_trade_open_minutes, self.no_trade_close_minutes)
+    def _session_allowed(self, now: datetime, market_hours: str) -> bool:
+        return market_session_allowed(
+            now,
+            self.no_trade_open_minutes,
+            self.no_trade_close_minutes,
+            market_hours,
+        )
 
     def authorize(
         self,
@@ -80,17 +86,37 @@ class RiskEngine:
             return RiskDecision(False, "Live authority expired")
         if intent.ref_id in self.seen_ref_ids:
             return RiskDecision(False, "Duplicate order idempotency key")
+        try:
+            intent.validate()
+        except ValueError as exc:
+            return RiskDecision(False, f"Invalid order: {exc}")
+        profile = grant.execution
+        if (
+            intent.market_hours != profile.market_hours
+            or intent.order_type != profile.order_type
+            or intent.time_in_force != profile.time_in_force
+        ):
+            return RiskDecision(False, "Order route does not match the explicitly authorized session")
         allowed_window = (
-            regular_session_allowed(reference, 0, 0)
+            market_session_allowed(reference, 0, 0, profile.market_hours)
             if intent.side == "sell"
-            else self._regular_session_allowed(reference)
+            else self._session_allowed(reference, profile.market_hours)
         )
         if not allowed_window:
-            return RiskDecision(False, "Outside configured regular-hours trading window")
+            return RiskDecision(False, "Outside the explicitly authorized trading-session window")
         if quote.age_seconds(reference) > grant.max_quote_age_seconds:
             return RiskDecision(False, f"Quote is stale ({quote.age_seconds(reference):.1f}s)")
         if quote.spread_bps > grant.max_spread_bps:
             return RiskDecision(False, f"Spread {quote.spread_bps:.1f} bps exceeds limit")
+        if intent.order_type == "limit" and intent.limit_price is not None:
+            if intent.side == "buy":
+                maximum = quote.ask * (1 + grant.limit_offset_bps / 10_000)
+                if intent.limit_price > maximum + 0.010001:
+                    return RiskDecision(False, "Buy limit exceeds the authorized quote offset")
+            else:
+                minimum = quote.bid * (1 - grant.limit_offset_bps / 10_000)
+                if intent.limit_price < minimum - 0.010001:
+                    return RiskDecision(False, "Sell limit exceeds the authorized quote offset")
         if self.drawdown >= grant.max_daily_loss and intent.side != "sell":
             self.disarm()
             return RiskDecision(False, "Daily loss limit reached; session locked")

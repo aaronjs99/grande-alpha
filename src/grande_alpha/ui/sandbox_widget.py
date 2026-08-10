@@ -52,6 +52,7 @@ from grande_alpha.evidence import (
     tested_risk_envelope,
     walk_forward,
 )
+from grande_alpha.execution import MARKET_HOURS_LABELS, ORDER_TYPE_LABELS, TIME_IN_FORCE_LABELS
 from grande_alpha.historical import (
     HistoricalBundle,
     HistoricalDataProvider,
@@ -180,11 +181,15 @@ class SandboxWidget(QWidget):
             "Community remote: full shared history (daily)",
             ("yahoo-full", "1d", full_history_calendar_days()),
         )
-        self.source.addItem("Import aligned CSV", ("csv", "1m", 3650))
+        self.source.addItem("Import aligned CSV: custom 1-300 seconds", ("csv-custom", "custom", 3650))
+        self.source.addItem("Import aligned CSV: 1-minute", ("csv", "1m", 3650))
         self.source.addItem("Offline deterministic scenario", ("demo", "1m", 3650))
         self.source.currentIndexChanged.connect(self._source_changed)
         self.lookback = self._integer(1, 7)
         self.lookback.setSuffix(" days")
+        self.csv_seconds = self._integer(1, 300)
+        self.csv_seconds.setValue(5)
+        self.csv_seconds.setSuffix(" s")
         self.csv_button = QPushButton("Choose CSV…")
         self.csv_button.clicked.connect(self._choose_csv)
         self.csv_label = QLabel("No file selected")
@@ -196,6 +201,7 @@ class SandboxWidget(QWidget):
         self.quality.setWordWrap(True)
         form.addRow("Source", self.source)
         form.addRow("Calendar lookback", self.lookback)
+        form.addRow("Imported bar interval", self.csv_seconds)
         form.addRow("Long-history CSV", csv_row)
         form.addRow("Integrity", self.quality)
         layout.addWidget(data)
@@ -235,6 +241,16 @@ class SandboxWidget(QWidget):
         self.fill_fraction = self._decimal(1, 100, decimals=1, suffix=" %")
         self.rejection = self._decimal(0, 100, decimals=1, suffix=" %")
         self.volume_participation = self._decimal(0.01, 100, decimals=2, suffix=" %")
+        self.market_hours = QComboBox()
+        for value, label in MARKET_HOURS_LABELS.items():
+            self.market_hours.addItem(label, value)
+        self.order_type = QComboBox()
+        for value, label in ORDER_TYPE_LABELS.items():
+            self.order_type.addItem(label, value)
+        self.time_in_force = QComboBox()
+        for value, label in TIME_IN_FORCE_LABELS.items():
+            self.time_in_force.addItem(label, value)
+        self.limit_offset = self._decimal(0, 100, decimals=1, suffix=" bps")
         for title, widget in (
             ("Starting cash", self.initial_cash),
             ("Order cap", self.order_notional),
@@ -246,8 +262,18 @@ class SandboxWidget(QWidget):
             ("Fill fraction", self.fill_fraction),
             ("Rejection probability", self.rejection),
             ("Max volume participation", self.volume_participation),
+            ("Trading session", self.market_hours),
+            ("Order type", self.order_type),
+            ("Time in force", self.time_in_force),
+            ("Limit offset", self.limit_offset),
         ):
             execution_form.addRow(title, widget)
+        self.route_note = QLabel("")
+        self.route_note.setWordWrap(True)
+        execution_form.addRow(self.route_note)
+        self.market_hours.currentIndexChanged.connect(self._route_changed)
+        self.order_type.currentIndexChanged.connect(self._route_changed)
+        self.time_in_force.currentIndexChanged.connect(self._route_changed)
         layout.addWidget(execution)
 
         signal = QGroupBox("Signal policy")
@@ -600,7 +626,8 @@ class SandboxWidget(QWidget):
         self.lookback.setMaximum(maximum)
         self.lookback.setEnabled(kind != "yahoo-full")
         self.lookback.setValue(maximum if kind == "yahoo-full" else min(self.lookback.value(), maximum))
-        self.csv_button.setEnabled(kind == "csv")
+        self.csv_button.setEnabled(kind in {"csv", "csv-custom"})
+        self.csv_seconds.setEnabled(kind == "csv-custom")
 
     def set_remote_data_allowed(self, allowed: bool) -> None:
         self.allow_remote_data = allowed
@@ -631,6 +658,7 @@ class SandboxWidget(QWidget):
             self.strategy_name.setCurrentIndex(strategy_index)
         values = {
             self.lookback: config.lookback_days,
+            self.csv_seconds: config.csv_bar_seconds,
             self.initial_cash: config.initial_cash,
             self.order_notional: config.order_notional,
             self.slippage: config.slippage_bps,
@@ -669,10 +697,48 @@ class SandboxWidget(QWidget):
         for widget, value in values.items():
             widget.setValue(value)
         self.force_flat.setChecked(config.force_flat_at_end)
+        for widget, value in (
+            (self.market_hours, config.market_hours),
+            (self.order_type, config.order_type),
+            (self.time_in_force, config.time_in_force),
+        ):
+            index = widget.findData(value)
+            if index >= 0:
+                widget.setCurrentIndex(index)
+        self.limit_offset.setValue(config.limit_offset_bps)
+        self._route_changed()
+
+    def _route_changed(self, _value: int | None = None) -> None:
+        outside_regular = self.market_hours.currentData() != "regular_hours"
+        market_index = self.order_type.findData("market")
+        market_item = self.order_type.model().item(market_index)
+        if market_item is not None:
+            market_item.setEnabled(not outside_regular)
+        if outside_regular and self.order_type.currentData() != "limit":
+            self.order_type.setCurrentIndex(self.order_type.findData("limit"))
+        is_market = self.order_type.currentData() == "market"
+        if is_market and self.time_in_force.currentData() != "gfd":
+            self.time_in_force.setCurrentIndex(self.time_in_force.findData("gfd"))
+        self.time_in_force.setEnabled(not is_market)
+        self.limit_offset.setEnabled(not is_market)
+        coverage = self.market_hours.currentData()
+        if coverage == "regular_hours":
+            data_note = "Regular-session data is sufficient for this route."
+        elif coverage == "extended_hours":
+            data_note = (
+                "Fetches pre/post-market bars; the evidence fingerprint and coverage gate remain distinct."
+            )
+        else:
+            data_note = "Complete overnight evidence requires an imported 24-hour CSV; Yahoo is rejected."
+        self.route_note.setText(
+            data_note
+            + " Limit profiles use whole shares and record unfilled limits when modeled costs exceed the offset."
+        )
 
     def _config(self) -> SandboxConfig:
         return SandboxConfig(
             lookback_days=self.lookback.value(),
+            csv_bar_seconds=self.csv_seconds.value(),
             initial_cash=self.initial_cash.value(),
             order_notional=self.order_notional.value(),
             slippage_bps=self.slippage.value(),
@@ -683,6 +749,10 @@ class SandboxWidget(QWidget):
             fill_fraction_pct=self.fill_fraction.value(),
             rejection_rate_pct=self.rejection.value(),
             max_volume_participation_pct=self.volume_participation.value(),
+            market_hours=self.market_hours.currentData(),
+            order_type=self.order_type.currentData(),
+            time_in_force=self.time_in_force.currentData(),
+            limit_offset_bps=self.limit_offset.value(),
             strategy_name=self.strategy_name.currentData(),
             decision_stride=self.decision_stride.value(),
             warmup_bars=self.warmup.value(),
@@ -733,11 +803,17 @@ class SandboxWidget(QWidget):
             return (
                 await provider.fetch_full_daily()
                 if kind == "yahoo-full"
-                else await provider.fetch(config.lookback_days, interval)
+                else await provider.fetch(
+                    config.lookback_days,
+                    interval,
+                    market_hours=config.market_hours,
+                )
             )
-        if kind == "csv":
+        if kind in {"csv", "csv-custom"}:
             if not self.csv_path:
                 raise ValueError("Choose a combined QQQ/TQQQ/SQQQ CSV first")
+            if kind == "csv-custom":
+                interval = f"{config.csv_bar_seconds}s"
             return await asyncio.to_thread(load_csv_history, self.csv_path, interval)
         return await asyncio.to_thread(deterministic_demo, config.lookback_days)
 
@@ -1058,6 +1134,7 @@ class SandboxWidget(QWidget):
         if quality:
             self.quality.setText(
                 f"{quality.aligned_bars:,} aligned {quality.interval} bars • {quality.sessions} sessions • "
+                f"{quality.session_coverage_pct:.1f}% complete {self.bundle.market_hours} sessions • "
                 f"{quality.missing_intervals} missing • {quality.duplicate_timestamps} duplicates • "
                 f"{quality.zero_volume_bars} zero-volume • SHA-256 {quality.dataset_hash}"
             )
