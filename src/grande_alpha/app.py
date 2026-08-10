@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import ctypes
 import logging
 import sys
 from importlib.resources import as_file, files
@@ -18,11 +19,24 @@ from grande_alpha.storage import AuditStore
 from grande_alpha.ui.main_window import MainWindow
 from grande_alpha.ui.onboarding import OnboardingWizard
 
+WINDOWS_APP_USER_MODEL_ID = "AaronJS.GRANDEAlpha"
+
+
+def _set_windows_app_identity() -> None:
+    """Give Windows a stable taskbar identity so the packaged logo is used consistently."""
+    if sys.platform != "win32":
+        return
+    try:
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(WINDOWS_APP_USER_MODEL_ID)
+    except (AttributeError, OSError):
+        logging.getLogger(__name__).warning("Windows app identity could not be registered")
+
 
 def main() -> int:
     if "--version" in sys.argv:
         print(f"GRANDE Alpha {__version__}")
         return 0
+    _set_windows_app_identity()
     logging.basicConfig(
         filename=data_dir() / "grande_alpha.log",
         level=logging.INFO,
@@ -61,6 +75,7 @@ def main() -> int:
         broker = RobinhoodMCPBroker()
         controller = TradingController(broker, config, store)
         window = MainWindow(controller, config)
+        window.setWindowIcon(app.windowIcon())
         window.show()
         with loop:
             loop.run_forever()
