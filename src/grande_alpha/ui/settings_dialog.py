@@ -6,6 +6,7 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QDialog,
     QDialogButtonBox,
+    QDoubleSpinBox,
     QFormLayout,
     QGroupBox,
     QLabel,
@@ -78,6 +79,34 @@ class SettingsDialog(QDialog):
         privacy_form.addRow("Credential revocation", self.forget_credentials)
         layout.addWidget(privacy)
 
+        cadence = QGroupBox("Low-latency research cadence")
+        cadence_form = QFormLayout(cadence)
+        self.quote_poll = QDoubleSpinBox()
+        self.quote_poll.setRange(0.25, 5.0)
+        self.quote_poll.setDecimals(2)
+        self.quote_poll.setSingleStep(0.25)
+        self.quote_poll.setSuffix(" s")
+        self.quote_poll.setValue(config.poll_seconds)
+        self.reconcile = QDoubleSpinBox()
+        self.reconcile.setRange(2.0, 60.0)
+        self.reconcile.setDecimals(1)
+        self.reconcile.setSuffix(" s")
+        self.reconcile.setValue(config.reconcile_seconds)
+        self.bar_seconds = QSpinBox()
+        self.bar_seconds.setRange(1, 300)
+        self.bar_seconds.setSuffix(" s")
+        self.bar_seconds.setValue(config.bar_seconds)
+        cadence_form.addRow("Quote request target", self.quote_poll)
+        cadence_form.addRow("Account reconciliation", self.reconcile)
+        cadence_form.addRow("Completed decision bar", self.bar_seconds)
+        cadence_note = QLabel(
+            "Quote requests are single-flight: if Robinhood takes longer than the target, ticks are coalesced. "
+            "This changes observation and decision speed, not the bounded live order-rate limit."
+        )
+        cadence_note.setWordWrap(True)
+        cadence_form.addRow(cadence_note)
+        layout.addWidget(cadence)
+
         self.validation = QLabel("")
         self.validation.setWordWrap(True)
         layout.addWidget(self.validation)
@@ -120,4 +149,7 @@ class SettingsDialog(QDialog):
             remote_market_data_enabled=self.remote_data.isChecked(),
             personal_ledger_enabled=self.personal_ledger.isChecked(),
             market_history_retention_days=self.retention.value(),
+            poll_seconds=self.quote_poll.value(),
+            reconcile_seconds=self.reconcile.value(),
+            bar_seconds=self.bar_seconds.value(),
         )

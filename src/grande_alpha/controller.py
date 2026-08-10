@@ -87,7 +87,8 @@ class TradingController(QObject):
             )
         )
         self.snapshot = TradingSnapshot()
-        self._tick_lock = asyncio.Lock()
+        self._quote_lock = asyncio.Lock()
+        self._reconcile_lock = asyncio.Lock()
         self._last_qqq_timestamp: datetime | None = None
         self._last_submission_at: datetime | None = None
         self._shadow: LiveShadowEngine | None = None
@@ -150,26 +151,67 @@ class TradingController(QObject):
         self.snapshot = TradingSnapshot()
         self._emit()
 
+    def update_config(self, config: AppConfig) -> None:
+        """Apply safe runtime settings; a bar-size change starts a fresh warm-up."""
+        bar_changed = config.bar_seconds != self.config.bar_seconds
+        self.config = config
+        if bar_changed:
+            self.bar_builder = BarBuilder("QQQ", config.bar_seconds)
+            self.strategy.reset()
+            self._last_qqq_timestamp = None
+            self.snapshot.signal = TradeSignal(Regime.FLAT, 0.0, "Cadence changed; warming up")
+            self.log(
+                f"Decision cadence changed to {config.bar_seconds}s completed bars; warm-up reset",
+                "warning",
+                "cadence",
+            )
+
     async def refresh(self, evaluate: bool = True) -> None:
+        """Compatibility full refresh used at connect and after manual actions."""
         if not self.snapshot.connected or self.snapshot.account is None:
             return
-        if self._tick_lock.locked():
+        await self.reconcile()
+        await self.refresh_quotes(evaluate=evaluate)
+
+    async def reconcile(self) -> None:
+        """Refresh slower account truth without coupling it to the quote clock."""
+        if not self.snapshot.connected or self.snapshot.account is None:
             return
-        async with self._tick_lock:
+        if self._reconcile_lock.locked():
+            return
+        async with self._reconcile_lock:
             account_number = self.snapshot.account.account_number
             try:
-                portfolio, quotes, positions, orders = await asyncio.gather(
-                    self.broker.get_portfolio(account_number),
-                    self.broker.get_quotes(["QQQ", "TQQQ", "SQQQ"]),
-                    self.broker.get_positions(account_number),
-                    self.broker.get_orders(account_number),
-                )
+                # Keep these sequential. The MCP adapter intentionally serializes tool calls;
+                # enqueueing all three at once would starve a pending fast quote read behind
+                # the entire reconciliation batch.
+                portfolio = await self.broker.get_portfolio(account_number)
+                positions = await self.broker.get_positions(account_number)
+                orders = await self.broker.get_orders(account_number)
                 self.snapshot.portfolio = portfolio
-                self.snapshot.quotes = quotes
                 self.snapshot.positions = positions
                 self.snapshot.orders = orders
-                self.snapshot.last_refresh = utc_now()
                 self.risk.update_portfolio(portfolio)
+            except Exception as exc:
+                self.log(f"Account reconciliation failed: {exc}", "error", "broker")
+                if self.snapshot.strategy_running:
+                    self.snapshot.strategy_running = False
+                    self.risk.disarm()
+                    self.log("Strategy locked after account reconciliation failure", "critical", "risk")
+            finally:
+                self._emit()
+
+    async def refresh_quotes(self, evaluate: bool = True) -> None:
+        """Read one batched quote snapshot; overlapping timer ticks are coalesced."""
+        if not self.snapshot.connected or self.snapshot.account is None:
+            return
+        if self._quote_lock.locked():
+            return
+        async with self._quote_lock:
+            try:
+                quotes = await self.broker.get_quotes(["QQQ", "TQQQ", "SQQQ"])
+                self.snapshot.quotes = quotes
+                self.snapshot.last_refresh = utc_now()
                 for quote in quotes.values():
                     self.store.record_quote(quote)
                 qqq = quotes.get("QQQ")
@@ -195,11 +237,11 @@ class TradingController(QObject):
                 if evaluate and self.snapshot.strategy_running:
                     await self._evaluate_and_trade()
             except Exception as exc:
-                self.log(f"Refresh failed: {exc}", "error", "broker")
+                self.log(f"Quote refresh failed: {exc}", "error", "broker")
                 if self.snapshot.strategy_running:
                     self.snapshot.strategy_running = False
                     self.risk.disarm()
-                    self.log("Strategy locked after broker refresh failure", "critical", "risk")
+                    self.log("Strategy locked after quote refresh failure", "critical", "risk")
             finally:
                 self._emit()
 
@@ -496,6 +538,7 @@ class TradingController(QObject):
             )
             return None
         order = await self.broker.place_order(self.snapshot.account.account_number, intent)
+        self.snapshot.orders = [order, *[item for item in self.snapshot.orders if item.order_id != order.order_id]]
         self.risk.record_submission(intent)
         self._last_submission_at = utc_now()
         self.store.update_intent(intent.ref_id, order.order_id, order.state)
@@ -539,6 +582,7 @@ class TradingController(QObject):
         if intent.ref_id != review.intent.ref_id or intent.side != "sell":
             raise RuntimeError("Manual flatten preview no longer matches the order")
         order = await self.broker.place_order(self.snapshot.account.account_number, intent)
+        self.snapshot.orders = [order, *[item for item in self.snapshot.orders if item.order_id != order.order_id]]
         self.store.update_intent(intent.ref_id, order.order_id, order.state)
         self.log(
             f"Manual flatten submitted for {intent.quantity or 0:g} {intent.symbol}; {order.state}",

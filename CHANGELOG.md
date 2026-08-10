@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.9.0 - 2026-08-09
+
+- Split batched quote observation from slower portfolio, position, and order reconciliation.
+- Added configurable 0.25-5 second quote targets, 1-300 second completed decision bars, and 2-60 second account reconciliation.
+- Coalesced overlapping quote reads so provider latency creates backpressure instead of request queues.
+- Preserved independent quote-age, spread, open-order, 12-second cooldown, and orders-per-minute gates.
+- Added immediate local open-order state after submission and cadence regression tests.
+- Documented why this is retail low-latency automation rather than exchange-colocated HFT.
+
 ## 0.8.0 - 2026-08-09
 
 - Added a paper-faithful first-half-hour QQQ signal that trades only the final half hour.

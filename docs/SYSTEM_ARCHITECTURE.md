@@ -24,6 +24,7 @@ GRANDE project family
 | Candidate versus approved runtime | `LOCKED`, `LIVE`, `EXPIRED`, and review-blocked states |
 | Simulation boundary | `TQQQS`/`SQQQS` replay engine receives no broker object or live authority |
 | Candidate observation | Live shadow consumes current quotes but has no broker-order dependency |
+| Low-latency observation | Single-flight quote loop is independent of slower account reconciliation |
 
 ## Hard separation
 
@@ -43,6 +44,12 @@ returns a target and reason; three separate execution boundaries consume that de
 replay writes virtual accounting tables, live shadow records virtual receipts from current quotes,
 and only the live controller may request an official Robinhood review and order. Shadow and live
 authority are mutually exclusive.
+
+The runtime uses three clocks. A batched quote request targets the configured fast cadence and drops
+overlapping timer ticks. Completed QQQ bars drive entries. Portfolio, position, and order truth is
+reconciled separately. Broker review, open-order detection, a 12-second submission cooldown, and the
+session's orders-per-minute limit remain independent gates. This is designed to remain stable when
+remote latency exceeds the local timer; it is not an exchange feed or colocated execution engine.
 
 The research sandbox selects a finite strategy through a versioned factory. Each strategy accepts
 completed QQQ bars and returns the same bullish, bearish, or flat signal contract. The factory does

@@ -1,3 +1,4 @@
+import asyncio
 import json
 from datetime import timedelta
 from pathlib import Path
@@ -11,7 +12,7 @@ from grande_alpha.config import AppConfig
 from grande_alpha.controller import TradingController
 from grande_alpha.evidence import EVIDENCE_POLICY_VERSION, strategy_fingerprint
 from grande_alpha.historical import deterministic_demo
-from grande_alpha.models import Account, LiveGrant, Portfolio, utc_now
+from grande_alpha.models import Account, LiveGrant, Portfolio, Quote, utc_now
 from grande_alpha.privacy import export_diagnostics
 from grande_alpha.sandbox import SandboxConfig, SandboxReplayEngine
 from grande_alpha.storage import AuditStore
@@ -61,7 +62,42 @@ def test_public_defaults_are_research_only() -> None:
     assert not config.live_trading_enabled
     assert not config.remote_market_data_enabled
     assert not config.personal_ledger_enabled
-    assert __version__ == "0.8.0"
+    assert config.poll_seconds == 1.0
+    assert config.reconcile_seconds == 5.0
+    assert config.bar_seconds == 5
+    assert __version__ == "0.9.0"
+
+
+class CadenceBroker(DisabledBroker):
+    def __init__(self) -> None:
+        self.quote_calls = 0
+        self.quote_started = asyncio.Event()
+        self.release_quote = asyncio.Event()
+
+    async def get_quotes(self, symbols):
+        self.quote_calls += 1
+        self.quote_started.set()
+        await self.release_quote.wait()
+        now = utc_now()
+        return {symbol: Quote(symbol, 100.0, 100.02, 100.01, now) for symbol in symbols}
+
+
+@pytest.mark.asyncio
+async def test_quote_timer_ticks_are_coalesced_while_provider_is_busy(tmp_path) -> None:
+    store = AuditStore(tmp_path / "audit.db")
+    broker = CadenceBroker()
+    controller = TradingController(broker, AppConfig(), store)
+    controller.snapshot.connected = True
+    controller.snapshot.account = Account("123456789", "Agentic", "cash", True, "active")
+
+    first = asyncio.create_task(controller.refresh_quotes(evaluate=False))
+    await broker.quote_started.wait()
+    await controller.refresh_quotes(evaluate=False)
+    assert broker.quote_calls == 1
+    broker.release_quote.set()
+    await first
+    assert set(controller.snapshot.quotes) == {"QQQ", "TQQQ", "SQQQ"}
+    store.close()
 
 
 @pytest.mark.asyncio
