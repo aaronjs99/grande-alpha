@@ -87,7 +87,7 @@ def test_public_defaults_are_research_only() -> None:
     assert config.market_hours == "regular_hours"
     assert config.order_type == "market"
     assert config.settlement_model == "cash_t1"
-    assert __version__ == "0.12.0"
+    assert __version__ == "0.13.0"
 
 
 def test_controller_constructs_whole_share_limit_intents_from_authorized_route(tmp_path) -> None:

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import math
 import uuid
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal
@@ -36,7 +37,7 @@ from grande_alpha.models import (
 from grande_alpha.models import (
     Signal as TradeSignal,
 )
-from grande_alpha.policy import DecisionPolicy, PolicyConfig, PolicyPosition
+from grande_alpha.policy import EASTERN, DecisionPolicy, PolicyConfig, PolicyPosition, session_bounds
 from grande_alpha.risk import RiskEngine
 from grande_alpha.sandbox import load_sandbox_config
 from grande_alpha.shadow import LiveShadowEngine
@@ -75,12 +76,24 @@ class TradingController(QObject):
     event = Signal(str, str)
     connection_busy = Signal(bool)
 
-    def __init__(self, broker: Broker, config: AppConfig, store: AuditStore) -> None:
+    def __init__(
+        self,
+        broker: Broker,
+        config: AppConfig,
+        store: AuditStore,
+        *,
+        shadow_only_runtime: bool = False,
+        auto_shadow_sleep: Callable[[float], Awaitable[None]] | None = None,
+    ) -> None:
         super().__init__()
         config.validate_cadence()
+        if shadow_only_runtime and config.market_hours != "regular_hours":
+            raise ValueError("Auto-shadow v1 supports regular market hours only")
         self.broker = broker
         self.config = config
         self.store = store
+        self.shadow_only_runtime = shadow_only_runtime
+        self._auto_shadow_sleep = auto_shadow_sleep or asyncio.sleep
         self.risk = RiskEngine(config.no_trade_open_minutes, config.no_trade_close_minutes)
         self.strategy = MomentumStrategy(
             StrategyConfig(
@@ -110,6 +123,133 @@ class TradingController(QObject):
         self._analysis_sequence = 0
         self._last_trade_decision_sequence = 0
         self._shadow: LiveShadowEngine | None = None
+
+    def _require_order_runtime(self, action: str) -> None:
+        if self.shadow_only_runtime:
+            self.log(
+                f"BLOCKED: auto-shadow runtime cannot {action}; no broker write was attempted",
+                "critical",
+                "shadow_only_boundary",
+                {"action": action, "broker_write_attempted": False},
+            )
+            raise RuntimeError(f"Auto-shadow runtime is read-only and cannot {action}")
+
+    def _reset_signal_pipeline(self, reason: str) -> None:
+        self.strategy = MomentumStrategy(
+            StrategyConfig(
+                warmup_bars=self.config.warmup_bars,
+                fast_ema=self.config.fast_ema,
+                slow_ema=self.config.slow_ema,
+                trend_threshold_bps=self.config.trend_threshold_bps,
+                momentum_bars=self.config.momentum_bars,
+            )
+        )
+        self.bar_builder = BarBuilder("QQQ", self.config.bar_seconds)
+        self._last_qqq_timestamp = None
+        self._analysis_sequence = 0
+        self._last_trade_decision_sequence = 0
+        self.snapshot.signal = TradeSignal(Regime.FLAT, 0.0, reason)
+        self.snapshot.last_analysis_at = None
+
+    def _validated_shadow_quotes(
+        self,
+        quotes: dict[str, Quote],
+        reference: datetime | None = None,
+    ) -> dict[str, Quote]:
+        required = {"QQQ", "TQQQ", "SQQQ"}
+        if set(quotes) != required:
+            missing = ", ".join(sorted(required - set(quotes))) or "none"
+            raise BrokerError(f"Auto-shadow requires exact QQQ/TQQQ/SQQQ quotes; missing {missing}")
+        observed = reference or utc_now()
+        timestamps = []
+        for symbol in sorted(required):
+            quote = quotes[symbol]
+            quote.validate()
+            if quote.symbol != symbol:
+                raise BrokerError(f"Auto-shadow quote key/symbol mismatch for {symbol}")
+            age = (observed - quote.timestamp).total_seconds()
+            if age < -2.0 or age > self.config.default_max_quote_age_seconds:
+                raise BrokerError(
+                    f"Auto-shadow {symbol} venue quote is not fresh ({age:.1f}s; "
+                    f"limit {self.config.default_max_quote_age_seconds:.1f}s)"
+                )
+            timestamps.append(quote.timestamp)
+        skew = (max(timestamps) - min(timestamps)).total_seconds()
+        if skew > self.config.default_max_quote_age_seconds:
+            raise BrokerError(f"Auto-shadow quote timestamps are misaligned by {skew:.1f}s")
+        return quotes
+
+    def auto_shadow_start_allowed(self, reference: datetime | None = None) -> bool:
+        if not self.shadow_only_runtime or self.config.market_hours != "regular_hours":
+            return False
+        observed = reference or utc_now()
+        local = observed.astimezone(EASTERN)
+        opened, _closed = session_bounds(observed, "regular_hours")
+        deadline = opened + timedelta(minutes=5)
+        return local.weekday() < 5 and observed < deadline
+
+    def auto_shadow_market_open(self, reference: datetime | None = None) -> datetime:
+        observed = reference or utc_now()
+        opened, _closed = session_bounds(observed, "regular_hours")
+        return opened
+
+    def auto_shadow_session_complete(self, reference: datetime | None = None) -> bool:
+        if not self.shadow_only_runtime:
+            return False
+        observed = reference or utc_now()
+        _opened, closed = session_bounds(observed, "regular_hours")
+        return observed.astimezone(EASTERN).weekday() < 5 and observed >= closed
+
+    def _validate_auto_shadow_config(self) -> None:
+        if not self.config.broker_connection_enabled:
+            raise RuntimeError("Broker read capability is disabled")
+        if self.config.live_trading_enabled is not False:
+            raise RuntimeError("Real-order capability must be disabled for auto-shadow")
+        if self.config.market_hours != "regular_hours":
+            raise RuntimeError("Auto-shadow v1 supports regular market hours only")
+
+    async def _refresh_auto_shadow_account_state(self) -> None:
+        if not self.snapshot.connected or self.snapshot.account is None:
+            raise BrokerError("Auto-shadow could not resolve the exact Agentic account")
+        account_number = self.snapshot.account.account_number
+        portfolio = await self.broker.get_portfolio(account_number)
+        portfolio.validate()
+        positions = await self.broker.get_positions(account_number)
+        orders = await self.broker.get_orders(account_number)
+        for position in positions:
+            if position.symbol.strip().upper() in {"TQQQ", "SQQQ"} and not all(
+                math.isfinite(float(value)) for value in (position.quantity, position.sellable_quantity)
+            ):
+                raise BrokerError(f"Auto-shadow received invalid real position data for {position.symbol}")
+        real_positions = [
+            position
+            for position in positions
+            if position.symbol.strip().upper() in {"TQQQ", "SQQQ"}
+            and abs(position.quantity) > 1e-12
+        ]
+        terminal_order_states = {
+            "filled",
+            "cancelled",
+            "canceled",
+            "rejected",
+            "failed",
+            "expired",
+            "voided",
+        }
+        open_orders = [
+            order
+            for order in orders
+            if order.state.strip().lower() not in terminal_order_states
+        ]
+        if real_positions:
+            symbols = ", ".join(position.symbol for position in real_positions)
+            raise BrokerError(f"Auto-shadow preflight found real leveraged position(s): {symbols}")
+        if open_orders:
+            raise BrokerError(f"Auto-shadow preflight found {len(open_orders)} open Agentic order(s)")
+        self.snapshot.portfolio = portfolio
+        self.snapshot.positions = positions
+        self.snapshot.orders = orders
+        self.risk.update_portfolio(portfolio)
 
     def _emit(self) -> None:
         self.snapshot.live_status = self.risk.session_status()
@@ -141,10 +281,17 @@ class TradingController(QObject):
             await self.broker.connect()
             accounts = await self.broker.get_accounts()
             candidates = [
-                account for account in accounts if account.agentic_allowed and account.state == "active"
+                account
+                for account in accounts
+                if account.agentic_allowed and account.state.strip().lower() == "active"
             ]
             if not candidates:
                 raise BrokerError("No active Robinhood account is enabled for this agent")
+            if self.shadow_only_runtime and len(candidates) != 1:
+                raise BrokerError(
+                    "Auto-shadow requires exactly one active Agentic account; "
+                    f"provider returned {len(candidates)}"
+                )
             candidates.sort(key=lambda item: (item.nickname.lower() != "agentic", item.account_number))
             account = candidates[0]
             self.snapshot.account = account
@@ -164,14 +311,137 @@ class TradingController(QObject):
             self._emit()
 
     async def disconnect(self) -> None:
+        if self.shadow_only_runtime:
+            await self.disconnect_shadow_only("Auto-shadow read-only disconnect")
+            return
         await self.stop_and_cancel("Disconnected by user")
         await self.broker.disconnect()
         self.snapshot = TradingSnapshot()
         self._emit()
 
+    async def disconnect_shadow_only(
+        self,
+        reason: str = "Auto-shadow read-only disconnect",
+        *,
+        flatten_virtual: bool = False,
+    ) -> None:
+        """Disconnect without reviewing, placing, or cancelling any broker order."""
+
+        self.stop_shadow(reason, flatten_virtual=flatten_virtual)
+        self.snapshot.strategy_running = False
+        self.snapshot.session_expires_at = None
+        self.risk.disarm()
+        try:
+            await self.broker.disconnect()
+        finally:
+            self.snapshot = TradingSnapshot()
+            self.log(
+                f"{reason}; broker writes remained BLOCKED",
+                "warning",
+                "shadow_only_boundary",
+                {"broker_write_attempted": False},
+            )
+            self._emit()
+
+    async def auto_start_shadow(self) -> bool:
+        """Connect and start a fresh, read-only live-shadow run."""
+
+        if not self.shadow_only_runtime:
+            raise RuntimeError("Auto-shadow startup requires the shadow-only runtime boundary")
+        self.risk.disarm()
+        self.snapshot.strategy_running = False
+        self.snapshot.session_expires_at = None
+        try:
+            self._validate_auto_shadow_config()
+            if not self.auto_shadow_start_allowed():
+                raise RuntimeError(
+                    "Auto-shadow start window is closed; launch before 9:35 AM ET on a weekday"
+                )
+            await self.connect()
+            await self._refresh_auto_shadow_account_state()
+            opened = self.auto_shadow_market_open()
+            deadline = opened + timedelta(minutes=5)
+            self.log(
+                "AUTO SHADOW WAITING — regular open 9:30 AM ET; writes blocked",
+                "warning",
+                "shadow_only_boundary",
+                {"broker_write_attempted": False, "market_open": opened.isoformat()},
+            )
+            while utc_now() < opened:
+                remaining = max(0.0, (opened - utc_now()).total_seconds())
+                await self._auto_shadow_sleep(min(30.0, remaining))
+
+            self._validate_auto_shadow_config()
+            await self._refresh_auto_shadow_account_state()
+            quotes: dict[str, Quote] | None = None
+            last_quote_error: Exception | None = None
+            while utc_now() < deadline:
+                try:
+                    candidate = await self.broker.get_quotes(["QQQ", "TQQQ", "SQQQ"])
+                    quotes = self._validated_shadow_quotes(candidate)
+                    break
+                except Exception as exc:
+                    last_quote_error = exc
+                    self.log(
+                        f"AUTO SHADOW WAITING for fresh exact venue quotes: {exc}",
+                        "warning",
+                        "shadow_only_boundary",
+                        {"broker_write_attempted": False},
+                    )
+                    remaining = max(0.0, (deadline - utc_now()).total_seconds())
+                    await self._auto_shadow_sleep(min(self.config.poll_seconds, remaining))
+            if quotes is None:
+                raise BrokerError(
+                    "Fresh exact venue quotes were unavailable by 9:35 AM ET"
+                    + (f": {last_quote_error}" if last_quote_error else "")
+                )
+            self.snapshot.quotes = quotes
+            self.snapshot.last_refresh = utc_now()
+            for quote in quotes.values():
+                self.store.record_quote(quote)
+            self._validate_auto_shadow_config()
+            self._reset_signal_pipeline("Auto-shadow clean start; warming up")
+            self.start_shadow()
+            self.log(
+                "AUTO SHADOW ACTIVE — read-only broker data and virtual fills; live writes BLOCKED",
+                "warning",
+                "shadow_only_boundary",
+                {
+                    "account_last4": self.snapshot.account.account_number[-4:],
+                    "market_hours": self.config.market_hours,
+                    "broker_write_attempted": False,
+                },
+            )
+            self._emit()
+            return True
+        except Exception as exc:
+            self.stop_shadow("AUTO SHADOW BLOCKED")
+            self.snapshot.strategy_running = False
+            self.snapshot.session_expires_at = None
+            self.risk.disarm()
+            self.log(
+                f"AUTO SHADOW BLOCKED: {exc}",
+                "critical",
+                "shadow_only_boundary",
+                {"error": str(exc), "broker_write_attempted": False},
+            )
+            try:
+                await self.broker.disconnect()
+            except Exception as disconnect_exc:
+                self.log(
+                    f"AUTO SHADOW BLOCKED: read-only disconnect failed: {disconnect_exc}",
+                    "error",
+                    "shadow_only_boundary",
+                )
+            self.snapshot = TradingSnapshot()
+            self._emit()
+            return False
+
     def update_config(self, config: AppConfig) -> None:
         """Apply safe runtime settings; a bar-size change starts a fresh warm-up."""
         config.validate_cadence()
+        if self.shadow_only_runtime and config.market_hours != "regular_hours":
+            raise ValueError("Auto-shadow v1 cannot switch away from regular market hours")
         config_changed = config != self.config
         bar_changed = config.bar_seconds != self.config.bar_seconds
         trade_cadence_changed = config.trade_every_bars != self.config.trade_every_bars
@@ -243,20 +513,41 @@ class TradingController(QObject):
         if self._reconcile_lock.locked():
             return
         async with self._reconcile_lock:
-            account_number = self.snapshot.account.account_number
             try:
                 # Keep these sequential. The MCP adapter intentionally serializes tool calls;
                 # enqueueing all three at once would starve a pending fast quote read behind
                 # the entire reconciliation batch.
-                portfolio = await self.broker.get_portfolio(account_number)
-                positions = await self.broker.get_positions(account_number)
-                orders = await self.broker.get_orders(account_number)
-                self.snapshot.portfolio = portfolio
-                self.snapshot.positions = positions
-                self.snapshot.orders = orders
-                self.risk.update_portfolio(portfolio)
+                if self.shadow_only_runtime:
+                    await self._refresh_auto_shadow_account_state()
+                else:
+                    account_number = self.snapshot.account.account_number
+                    portfolio = await self.broker.get_portfolio(account_number)
+                    positions = await self.broker.get_positions(account_number)
+                    orders = await self.broker.get_orders(account_number)
+                    self.snapshot.portfolio = portfolio
+                    self.snapshot.positions = positions
+                    self.snapshot.orders = orders
+                    self.risk.update_portfolio(portfolio)
             except Exception as exc:
                 self.log(f"Account reconciliation failed: {exc}", "error", "broker")
+                if self.shadow_only_runtime and self.snapshot.shadow_running:
+                    self.stop_shadow(f"AUTO SHADOW BLOCKED: account truth/invariant failure: {exc}")
+                    self.log(
+                        "AUTO SHADOW BLOCKED: account truth/invariant check failed; "
+                        "virtual execution stopped",
+                        "critical",
+                        "shadow_only_boundary",
+                        {"error": str(exc), "broker_write_attempted": False},
+                    )
+                    try:
+                        await self.broker.disconnect()
+                    except Exception as disconnect_exc:
+                        self.log(
+                            f"AUTO SHADOW BLOCKED: read-only disconnect failed: {disconnect_exc}",
+                            "error",
+                            "shadow_only_boundary",
+                        )
+                    self.snapshot = TradingSnapshot()
                 if self.snapshot.strategy_running:
                     self.snapshot.strategy_running = False
                     self.risk.disarm()
@@ -273,6 +564,8 @@ class TradingController(QObject):
         async with self._quote_lock:
             try:
                 quotes = await self.broker.get_quotes(["QQQ", "TQQQ", "SQQQ"])
+                if self.shadow_only_runtime:
+                    quotes = self._validated_shadow_quotes(quotes)
                 self.snapshot.quotes = quotes
                 self.snapshot.last_refresh = utc_now()
                 for quote in quotes.values():
@@ -303,6 +596,23 @@ class TradingController(QObject):
                     await self._evaluate_and_trade()
             except Exception as exc:
                 self.log(f"Quote refresh failed: {exc}", "error", "broker")
+                if self.shadow_only_runtime and self.snapshot.shadow_running:
+                    self.stop_shadow(f"AUTO SHADOW BLOCKED: quote/data failure: {exc}")
+                    self.log(
+                        "AUTO SHADOW BLOCKED: fresh exact quotes unavailable; virtual execution stopped",
+                        "critical",
+                        "shadow_only_boundary",
+                        {"error": str(exc), "broker_write_attempted": False},
+                    )
+                    try:
+                        await self.broker.disconnect()
+                    except Exception as disconnect_exc:
+                        self.log(
+                            f"AUTO SHADOW BLOCKED: read-only disconnect failed: {disconnect_exc}",
+                            "error",
+                            "shadow_only_boundary",
+                        )
+                    self.snapshot = TradingSnapshot()
                 if self.snapshot.strategy_running:
                     self.snapshot.strategy_running = False
                     self.risk.disarm()
@@ -311,6 +621,7 @@ class TradingController(QObject):
                 self._emit()
 
     def authorize_live(self, grant: LiveGrant) -> None:
+        self._require_order_runtime("authorize live trading")
         if not self.config.live_trading_enabled:
             raise RuntimeError("Real-order controls are disabled. Unlock them deliberately in Settings first")
         try:
@@ -403,6 +714,7 @@ class TradingController(QObject):
         return self.risk.grant.execution if self.risk.grant is not None else execution_profile(self.config)
 
     def start_strategy(self) -> None:
+        self._require_order_runtime("start live trading")
         if not self.config.live_trading_enabled:
             raise RuntimeError("Real-order controls are disabled in Settings")
         if not self.live_evidence_ready(self.risk.grant):
@@ -471,10 +783,50 @@ class TradingController(QObject):
         )
         self._emit()
 
-    def stop_shadow(self, reason: str = "Live shadow stopped by user") -> None:
-        if self._shadow is None or not self._shadow.state.active:
+    def stop_shadow(
+        self,
+        reason: str = "Live shadow stopped by user",
+        *,
+        flatten_virtual: bool = False,
+        timestamp: datetime | None = None,
+    ) -> None:
+        if self._shadow is None:
             return
-        state = self._shadow.stop(self.snapshot.quotes)
+        if not self._shadow.state.active and not flatten_virtual:
+            return
+        starting_position = self._shadow.state.position
+        state = self._shadow.stop(
+            self.snapshot.quotes,
+            flatten_at=(timestamp or utc_now()) if flatten_virtual else None,
+            flatten_reason="AUTO SHADOW DAILY FLAT at regular-session close",
+        )
+        if flatten_virtual:
+            if starting_position is None:
+                self.log(
+                    "AUTO SHADOW DAILY FLAT — virtual ledger was already flat at session close",
+                    "warning",
+                    "shadow_authority",
+                    {"run_id": state.run_id, "ending_position": None},
+                )
+            elif state.position is None:
+                self.log(
+                    f"AUTO SHADOW DAILY FLAT — virtually sold {starting_position.symbol} at session close",
+                    "warning",
+                    "shadow_authority",
+                    {
+                        "run_id": state.run_id,
+                        "ending_position": None,
+                        "flatten_fill": state.fills[-1].as_dict(),
+                    },
+                )
+            else:
+                self.log(
+                    f"AUTO SHADOW DAILY FLAT UNRESOLVED — no usable virtual exit quote for "
+                    f"{state.position.symbol}",
+                    "critical",
+                    "shadow_authority",
+                    {"run_id": state.run_id, "ending_position": state.position.symbol},
+                )
         self.log(
             f"{reason}; virtual equity ${state.equity:,.2f}; P/L ${state.pnl:+,.2f}",
             "warning",
@@ -491,6 +843,19 @@ class TradingController(QObject):
         self._emit()
 
     async def stop_and_cancel(self, reason: str = "STOP + CANCEL pressed") -> None:
+        if self.shadow_only_runtime:
+            self.stop_shadow(f"{reason}; cancellation BLOCKED by auto-shadow runtime")
+            self.snapshot.strategy_running = False
+            self.snapshot.session_expires_at = None
+            self.risk.disarm()
+            self.log(
+                f"BLOCKED: {reason} cannot cancel orders in auto-shadow runtime",
+                "critical",
+                "shadow_only_boundary",
+                {"broker_write_attempted": False, "cancelled": []},
+            )
+            self._emit()
+            return
         self.stop_shadow(reason)
         self.snapshot.strategy_running = False
         self.risk.disarm()
@@ -654,6 +1019,7 @@ class TradingController(QObject):
         )
 
     async def _evaluate_and_trade(self) -> None:
+        self._require_order_runtime("evaluate live orders")
         if not self._live_automation_current():
             return
         if not self._trade_decision_due():
@@ -783,6 +1149,7 @@ class TradingController(QObject):
         await self._submit(intent, quote)
 
     async def _submit(self, intent: OrderIntent, quote: Quote | None) -> BrokerOrder | None:
+        self._require_order_runtime("submit an order")
         if self.snapshot.account is None or self.snapshot.portfolio is None or quote is None:
             return None
         if not self._live_automation_current():
@@ -863,6 +1230,7 @@ class TradingController(QObject):
         return order
 
     async def review_flatten(self, symbol: str) -> tuple[OrderIntent, OrderReview]:
+        self._require_order_runtime("review a flatten order")
         if not self.config.live_trading_enabled:
             raise RuntimeError("Real-order controls are disabled in Settings")
         if self.snapshot.account is None:
@@ -887,6 +1255,7 @@ class TradingController(QObject):
         return intent, review
 
     async def place_reviewed_flatten(self, intent: OrderIntent, review: OrderReview) -> BrokerOrder:
+        self._require_order_runtime("place a flatten order")
         if not self.config.live_trading_enabled:
             raise RuntimeError("Real-order controls are disabled in Settings")
         if self.snapshot.account is None:

@@ -13,6 +13,7 @@ from qasync import QEventLoop
 
 from grande_alpha import __version__
 from grande_alpha.broker import RobinhoodMCPBroker
+from grande_alpha.broker.base import ShadowOnlyBroker
 from grande_alpha.config import ONBOARDING_VERSION, data_dir, load_config, save_config
 from grande_alpha.controller import TradingController
 from grande_alpha.storage import AuditStore
@@ -35,13 +36,15 @@ def main() -> int:
     if "--version" in sys.argv:
         print(f"GRANDE Alpha {__version__}")
         return 0
+    auto_shadow = "--auto-shadow" in sys.argv
+    qt_argv = [argument for argument in sys.argv if argument != "--auto-shadow"]
     _set_windows_app_identity()
     logging.basicConfig(
         filename=data_dir() / "grande_alpha.log",
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
-    app = QApplication(sys.argv)
+    app = QApplication(qt_argv)
     app.setApplicationName("GRANDE Alpha")
     app.setApplicationDisplayName("GRANDE Alpha")
     app.setApplicationVersion(__version__)
@@ -63,6 +66,9 @@ def main() -> int:
     try:
         config = load_config()
         if config.onboarding_version < ONBOARDING_VERSION:
+            if auto_shadow:
+                logging.error("AUTO SHADOW BLOCKED: first-run onboarding is incomplete")
+                return 3
             onboarding = OnboardingWizard(config)
             if onboarding.exec() != QDialog.DialogCode.Accepted:
                 logging.info("First-run onboarding was declined; application remained closed")
@@ -71,9 +77,15 @@ def main() -> int:
             save_config(config)
         store = AuditStore()
         store.prune_market_history(config.market_history_retention_days)
-        broker = RobinhoodMCPBroker()
-        controller = TradingController(broker, config, store)
-        window = MainWindow(controller, config)
+        broker_adapter = RobinhoodMCPBroker(allow_interactive_auth=not auto_shadow)
+        broker = ShadowOnlyBroker(broker_adapter) if auto_shadow else broker_adapter
+        controller = TradingController(
+            broker,
+            config,
+            store,
+            shadow_only_runtime=auto_shadow,
+        )
+        window = MainWindow(controller, config, auto_shadow=auto_shadow)
         window.setWindowIcon(app.windowIcon())
         window.show()
         with loop:
@@ -82,7 +94,8 @@ def main() -> int:
         return 0
     except Exception as exc:
         logging.exception("Fatal startup error")
-        QMessageBox.critical(None, "GRANDE Alpha failed to start", str(exc))
+        if not auto_shadow:
+            QMessageBox.critical(None, "GRANDE Alpha failed to start", str(exc))
         return 1
 
 
