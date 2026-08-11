@@ -87,7 +87,7 @@ def test_public_defaults_are_research_only() -> None:
     assert config.market_hours == "regular_hours"
     assert config.order_type == "market"
     assert config.settlement_model == "cash_t1"
-    assert __version__ == "0.13.0"
+    assert __version__ == "0.14.0"
 
 
 def test_controller_constructs_whole_share_limit_intents_from_authorized_route(tmp_path) -> None:
@@ -382,6 +382,8 @@ def test_settings_dialog_is_scrollable_and_explains_agentic_account_scope() -> N
     assert "LOCKED" in dialog.evidence_status.text()
     assert dialog.remote_data_note.wordWrap()
     assert dialog.credential_note.wordWrap()
+    assert dialog.strategy_name.currentData() == "cash"
+    assert "fail-safe default" in dialog.runtime_strategy_note.text()
     assert "t_analysis = 5s" in dialog.cadence_note.text()
     assert "t_trade = 15s" in dialog.cadence_note.text()
     dialog.market_hours.setCurrentIndex(dialog.market_hours.findData("extended_hours"))
@@ -390,6 +392,7 @@ def test_settings_dialog_is_scrollable_and_explains_agentic_account_scope() -> N
     updated = dialog.updated_config()
     assert updated.market_hours == "extended_hours"
     assert updated.order_type == "limit"
+    assert updated.strategy_name == "cash"
     dialog.close()
 
 
@@ -442,7 +445,10 @@ async def test_due_trade_tick_records_exact_pair_action_without_forcing_turnover
     store.close()
 
 
-def test_controller_requires_matching_current_evidence_before_live_authority(tmp_path) -> None:
+def test_controller_requires_matching_current_evidence_before_live_authority(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setattr("grande_alpha.evidence.RUNTIME_SIZING_PARITY_CERTIFIED", True)
     store = AuditStore(tmp_path / "audit.db")
     config = AppConfig(broker_connection_enabled=True, live_trading_enabled=True)
     controller = TradingController(DisabledBroker(), config, store)
@@ -486,6 +492,7 @@ def test_controller_requires_matching_current_evidence_before_live_authority(tmp
             "max_drawdown_pct": 1.0,
             "ending_position": None,
             "cost_multiplier": 3.0,
+            "forced_flatten_count": 0,
             "holdout_hash": "sealed-holdout-hash",
             "holdout_start": "2026-07-13T13:30:00+00:00",
             "holdout_end": now.isoformat(),
@@ -564,6 +571,7 @@ def test_live_shadow_overrides_saved_research_signal_with_live_settings(tmp_path
     store = AuditStore(tmp_path / "audit.db")
     config = AppConfig(
         broker_connection_enabled=True,
+        strategy_name="ema_momentum",
         fast_ema=5,
         slow_ema=18,
         trend_threshold_bps=7.0,

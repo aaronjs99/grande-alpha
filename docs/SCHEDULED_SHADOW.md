@@ -61,6 +61,12 @@ reconcile account state, wait for the regular-session boundary, require fresh QQ
 and pass its current auto-shadow readiness checks before starting virtual fills. A successful
 Windows task launch alone does not mean shadow started.
 
+The default runtime champion is **CASH / hold**. With that default, scheduled shadow still validates
+quotes, causal bars, receipts, account reconciliation, and the read-only boundary, but it requests
+no leveraged position and should record zero virtual fills. A different supported runtime policy
+must be selected deliberately in Settings; that selection is a research choice, not a profit claim
+or live-order authorization.
+
 Keep the GUI visible and monitored. If OAuth needs renewed consent, the account or quotes disagree,
 another app instance is already running, or any readiness gate fails, the correct outcome is a
 visible blocked state rather than a late or partially checked start. Runtime launcher results are

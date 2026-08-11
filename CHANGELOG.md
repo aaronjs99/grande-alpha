@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.14.0 - 2026-08-11
+
+- Made deterministic CASH / hold the normal and scheduled runtime champion after every existing
+  intraday family produced negative purged out-of-sample returns under three-times modeled costs.
+- Added deliberate runtime-strategy selection in Settings, visible champion labels, safe strategy
+  hot-reload, and migration of older settings to the cash default.
+- Kept research strategies available for explicit shadow experiments without granting real-order
+  authority or making a profitability claim.
+- Aligned controller-driven shadow fills with replay/live causality: a completed-bar decision uses
+  the first available quote of the next bar, with no extra-bar delay or duplicate fill.
+- Timestamped a skewed accepted quote batch at its latest consumed venue observation so a virtual
+  fill can never be recorded before the TQQQ/SQQQ quote that priced it.
+- Made every signal or bar-setting change atomically replace both the strategy and bar builder,
+  discard any partial bucket, and retain only the latest-observation duplicate guard.
+- Upgraded evidence policy to version 9, binding all material execution, sizing, risk, lifecycle,
+  and random-seed fields into the candidate fingerprint.
+- Made cost stress scale static and volatility-driven spread, slippage, and commission components.
+- Rejected evidence that depends on a simulator-only, failure-bypassing forced close.
+- Added an explicit runtime-sizing-parity gate and storage lock; non-cash candidates cannot receive
+  live-review eligibility until replay, shadow, and live use one certified sizing contract.
+- Published the purged, cost-stressed champion tournament while leaving its terminal five-session
+  block untouched for a future frozen candidate.
+
 ## 0.13.0 - 2026-08-11
 
 - Added an opt-in, per-user Windows task that launches GRANDE Alpha at 6:20 AM local time on

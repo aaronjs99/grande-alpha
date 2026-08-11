@@ -5,6 +5,7 @@ import pytest
 from grande_alpha.models import Bar, Quote, Regime
 from grande_alpha.strategy import (
     BarBuilder,
+    CashStrategy,
     CloseMomentumStrategy,
     ConservativeEnsembleStrategy,
     FirstHalfHourMomentumStrategy,
@@ -32,6 +33,17 @@ def test_bar_builder_emits_completed_bar() -> None:
     assert bar.close == pytest.approx(100.2)
     assert bar.high == pytest.approx(100.2)
     assert bar.samples == 2
+
+
+def test_cash_strategy_always_emits_flat_hold_signal() -> None:
+    strategy = build_strategy(StrategyConfig(strategy_name="cash"))
+
+    signals = [strategy.on_bar(bar) for bar in _bars([100.0, 110.0, 90.0])]
+
+    assert isinstance(strategy, CashStrategy)
+    assert all(signal.regime == Regime.FLAT for signal in signals)
+    assert all(signal.confidence == 0.0 for signal in signals)
+    assert all("CASH champion" in signal.reason for signal in signals)
 
 
 def _bars(prices: list[float]) -> list[Bar]:

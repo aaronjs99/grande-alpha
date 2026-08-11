@@ -82,6 +82,33 @@ class LiveShadowEngine:
         self._analysis_count = 0
 
     def on_bar(self, timestamp: datetime, signal: Signal, quotes: dict[str, Quote]) -> list[ShadowFill]:
+        """Advance a synthetic bar trace whose decision fills on the next call."""
+
+        return self._advance(timestamp, signal, quotes, execute_current_decision=False)
+
+    def on_causal_quote(
+        self,
+        timestamp: datetime,
+        signal: Signal,
+        quotes: dict[str, Quote],
+    ) -> list[ShadowFill]:
+        """Execute a completed-bar decision at its first causally available quote.
+
+        The controller calls this only after the analysis bar has completed. ``timestamp``
+        and ``quotes`` therefore describe the first quote/open of the following bar, never
+        a price from inside the bar that produced ``signal``.
+        """
+
+        return self._advance(timestamp, signal, quotes, execute_current_decision=True)
+
+    def _advance(
+        self,
+        timestamp: datetime,
+        signal: Signal,
+        quotes: dict[str, Quote],
+        *,
+        execute_current_decision: bool,
+    ) -> list[ShadowFill]:
         if not self.state.active:
             return []
         self._analysis_count += 1
@@ -140,8 +167,22 @@ class LiveShadowEngine:
                 self.policy.exit_window_allowed(timestamp) if current is not None else window_allowed
             )
             if decision_window and decision.target_symbol != current and self._pending is None:
-                self._pending = (decision.target_symbol, decision.reason)
-                self._pending_session = current_session
+                if execute_current_decision:
+                    complete, fill = self._transition(
+                        timestamp,
+                        decision.target_symbol,
+                        decision.reason,
+                        quotes,
+                    )
+                    if fill:
+                        fills.append(fill)
+                        self.state.fills.append(fill)
+                    if not complete:
+                        self._pending = (decision.target_symbol, decision.reason)
+                        self._pending_session = current_session
+                else:
+                    self._pending = (decision.target_symbol, decision.reason)
+                    self._pending_session = current_session
         self._mark(quotes)
         return fills
 

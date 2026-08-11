@@ -109,6 +109,10 @@ TERM_HELP: dict[str, str] = {
     "Realized profit": "Closed-position profit before the separately entered fees and tax reserve.",
     "Rejection probability": "Chance that a virtual sandbox order is modeled as rejected.",
     "Research strategy": "The signal hypothesis evaluated by the sandbox; it is not a recommendation or guaranteed edge.",
+    "Selected runtime policy": (
+        "The signal policy used by normal and scheduled live-shadow runtime. CASH / hold is the fail-safe "
+        "default and requests no leveraged position."
+    ),
     "Risk budget": "Maximum percentage of sandbox equity risked using entry-to-stop distance.",
     "Run note": "Hypothesis or experiment note saved with the immutable run receipt.",
     "Saved runs": "Previously recorded sandbox configurations that can be loaded for reproduction.",
@@ -150,6 +154,11 @@ TERM_HELP: dict[str, str] = {
     "Parameter stability": "Share of neighboring parameter configurations that remain profitable instead of relying on one tuned setting.",
     "Profit concentration": "Share of positive daily P/L contributed by the single best day; promotion caps it at 50%.",
     "Random-entry control": "Seeded chance-entry benchmark using comparable holding and sizing assumptions.",
+    "Runtime sizing parity": (
+        "Whether replay and shadow/live use the exact same certified position-sizing contract. "
+        "This currently fails non-cash candidates because runtime does not share replay's "
+        "risk-budget and volatility sizing."
+    ),
     "Trading-session coverage": "Whether the evidence dataset covers the complete session selected by the strategy route.",
     "Trial-adjusted significance": "Statistical evidence after correcting for every candidate tried on the dataset.",
     "Walk-forward": "Purged chronological train/test folds that evaluate selections on later unseen sessions.",

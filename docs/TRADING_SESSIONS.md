@@ -24,7 +24,7 @@ it before typing the account-specific confirmation. The resulting live grant bin
 order type, time in force, and limit offset. Any intent that differs is rejected locally before broker
 review.
 
-The sandbox exposes the same fields. Evidence-policy version 8 binds them and the settlement model
+The sandbox exposes the same fields. Evidence-policy version 9 binds them and the settlement model
 into the strategy fingerprint, adds a complete-session-coverage gate, and requires a one-use final
 holdout. Regular data cannot certify an extended or
 overnight route. The community adapter can request pre/post-market bars for extended research, but it

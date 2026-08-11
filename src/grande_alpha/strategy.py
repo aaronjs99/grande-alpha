@@ -10,6 +10,7 @@ from grande_alpha.models import Bar, Quote, Regime, Signal, utc_now
 
 EASTERN = ZoneInfo("America/New_York")
 STRATEGY_NAMES = {
+    "cash": "Cash / hold — runtime champion",
     "ema_momentum": "EMA momentum",
     "multi_horizon_trend": "Multi-horizon trend",
     "close_momentum": "Closing-window momentum",
@@ -98,6 +99,32 @@ class SignalStrategy(Protocol):
     def on_bar(self, bar: Bar) -> Signal: ...
 
     def reset(self) -> None: ...
+
+
+class CashStrategy:
+    """Deterministic fail-safe policy that never requests leveraged exposure."""
+
+    def __init__(self, config: StrategyConfig) -> None:
+        config.validate()
+        self.config = config
+        self.last_signal = Signal(Regime.FLAT, 0.0, "CASH champion — hold; no position target")
+
+    def on_bar(self, bar: Bar) -> Signal:
+        self.last_signal = Signal(
+            Regime.FLAT,
+            0.0,
+            "CASH champion — hold; no position target",
+            timestamp=bar.start,
+        )
+        return self.last_signal
+
+    def reset(self) -> None:
+        self.last_signal = Signal(
+            Regime.FLAT,
+            0.0,
+            "CASH champion reset — hold; no position target",
+            timestamp=utc_now(),
+        )
 
 
 class MomentumStrategy:
@@ -383,6 +410,7 @@ class ConservativeEnsembleStrategy:
 def build_strategy(config: StrategyConfig) -> SignalStrategy:
     config.validate()
     factories = {
+        "cash": CashStrategy,
         "ema_momentum": MomentumStrategy,
         "multi_horizon_trend": MultiHorizonTrendStrategy,
         "close_momentum": CloseMomentumStrategy,

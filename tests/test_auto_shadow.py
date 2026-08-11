@@ -1,4 +1,5 @@
 import asyncio
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -22,6 +23,7 @@ from grande_alpha.models import (
     Signal,
 )
 from grande_alpha.storage import AuditStore
+from grande_alpha.strategy import CashStrategy, MomentumStrategy
 from grande_alpha.ui.main_window import MainWindow
 
 START = datetime(2026, 8, 11, 13, 31, tzinfo=UTC)  # 09:31 ET Tuesday
@@ -146,7 +148,6 @@ async def test_auto_shadow_starts_clean_and_never_reaches_broker_writes(tmp_path
     monkeypatch.setattr("grande_alpha.controller.utc_now", lambda: START)
     broker = AutoShadowBroker()
     controller, store = _controller(tmp_path, broker)
-    controller.strategy.bars.append(Bar("QQQ", START, 1, 1, 1, 1, 1))
     controller._analysis_sequence = 9
     controller._last_trade_decision_sequence = 6
 
@@ -156,7 +157,8 @@ async def test_auto_shadow_starts_clean_and_never_reaches_broker_writes(tmp_path
     assert controller.snapshot.live_status == "LOCKED"
     assert controller.risk.grant is None
     assert not controller.snapshot.strategy_running
-    assert not controller.strategy.bars
+    assert isinstance(controller.strategy, CashStrategy)
+    assert controller.strategy.last_signal.regime == Regime.FLAT
     assert controller._analysis_sequence == controller._last_trade_decision_sequence == 0
     assert set(controller.snapshot.quotes) == {"QQQ", "TQQQ", "SQQQ"}
 
@@ -196,6 +198,127 @@ async def test_auto_shadow_starts_clean_and_never_reaches_broker_writes(tmp_path
     )
     await controller.disconnect()
     assert broker.cancel_calls == 0
+    store.close()
+
+
+@pytest.mark.asyncio
+async def test_default_auto_shadow_cash_champion_emits_hold_and_zero_fills(
+    tmp_path, monkeypatch
+) -> None:
+    clock = FakeClock(START)
+    broker = AutoShadowBroker(quote_clock=lambda: clock.now)
+    monkeypatch.setattr("grande_alpha.controller.utc_now", lambda: clock.now)
+    controller, store = _controller(tmp_path, broker, clock=clock)
+
+    assert await controller.auto_start_shadow()
+    for _ in range(8):
+        clock.now += timedelta(seconds=5)
+        await controller.refresh_quotes(evaluate=False)
+
+    assert isinstance(controller.strategy, CashStrategy)
+    assert controller.snapshot.signal.regime == Regime.FLAT
+    assert controller.snapshot.pair_action_id == 4
+    assert controller.snapshot.pair_action_label == "(0,0)"
+    assert controller._shadow is not None
+    assert controller._shadow.config.strategy_name == "cash"
+    assert controller._shadow.state.position is None
+    assert controller._shadow.state.fills == []
+    assert broker.review_calls == broker.place_calls == broker.cancel_calls == 0
+    store.close()
+
+
+@pytest.mark.asyncio
+async def test_runtime_strategy_change_stops_shadow_and_rebuilds_pipeline(
+    tmp_path, monkeypatch
+) -> None:
+    clock = FakeClock(START)
+    broker = AutoShadowBroker(quote_clock=lambda: clock.now)
+    monkeypatch.setattr("grande_alpha.controller.utc_now", lambda: clock.now)
+    controller, store = _controller(tmp_path, broker, clock=clock)
+
+    assert await controller.auto_start_shadow()
+    prior_shadow = controller._shadow
+    assert prior_shadow is not None and prior_shadow.state.active
+
+    # Seed a partial bar, then prove a signal hot-update discards it while
+    # retaining the duplicate guard for the latest provider observation.
+    clock.now += timedelta(seconds=1)
+    await controller.refresh_quotes(evaluate=False)
+    previous_builder = controller.bar_builder
+    previous_timestamp = controller._last_qqq_timestamp
+    assert previous_builder._prices
+
+    controller.update_config(replace(controller.config, strategy_name="ema_momentum"))
+
+    assert not prior_shadow.state.active
+    assert not controller.snapshot.shadow_running
+    assert isinstance(controller.strategy, MomentumStrategy)
+    assert controller.bar_builder is not previous_builder
+    assert controller.bar_builder._bucket is None
+    assert controller.bar_builder._prices == []
+    assert controller._last_qqq_timestamp == previous_timestamp
+    await controller.refresh_quotes(evaluate=False)
+    assert controller.bar_builder._bucket is None
+    assert controller.bar_builder._prices == []
+    assert controller._analysis_sequence == controller._last_trade_decision_sequence == 0
+    assert controller.snapshot.signal.regime == Regime.FLAT
+    assert broker.review_calls == broker.place_calls == broker.cancel_calls == 0
+    assert any(
+        "previous live-shadow run was stopped" in item["summary"]
+        for item in store.recent_receipts(20)
+    )
+    store.close()
+
+
+@pytest.mark.asyncio
+async def test_deliberate_ema_runtime_still_creates_only_virtual_shadow_fill(
+    tmp_path, monkeypatch
+) -> None:
+    clock = FakeClock(START)
+    broker = AutoShadowBroker(quote_clock=lambda: clock.now)
+
+    async def rising_quotes(symbols: list[str]) -> dict[str, Quote]:
+        step = max(0, int((clock.now - START).total_seconds() // 5))
+        return {
+            symbol: Quote(
+                symbol,
+                (100.0 + step * 0.2 if symbol == "QQQ" else 100.0),
+                (100.02 + step * 0.2 if symbol == "QQQ" else 100.02),
+                (100.01 + step * 0.2 if symbol == "QQQ" else 100.01),
+                clock.now,
+            )
+            for symbol in symbols
+        }
+
+    broker.get_quotes = rising_quotes  # type: ignore[method-assign]
+    monkeypatch.setattr("grande_alpha.controller.utc_now", lambda: clock.now)
+    controller, store = _controller(
+        tmp_path,
+        broker,
+        clock=clock,
+        strategy_name="ema_momentum",
+        warmup_bars=4,
+        fast_ema=1,
+        slow_ema=2,
+        momentum_bars=1,
+        trend_threshold_bps=0.1,
+        trade_every_bars=2,
+        no_trade_open_minutes=0,
+    )
+
+    assert await controller.auto_start_shadow()
+    for _ in range(10):
+        clock.now += timedelta(seconds=5)
+        await controller.refresh_quotes(evaluate=False)
+
+    assert isinstance(controller.strategy, MomentumStrategy)
+    assert controller.snapshot.signal.regime == Regime.BULLISH
+    assert controller._shadow is not None
+    assert controller._shadow.config.strategy_name == "ema_momentum"
+    assert controller._shadow.state.position is not None
+    assert controller._shadow.state.fills
+    assert all(fill.side == "buy" for fill in controller._shadow.state.fills)
+    assert broker.review_calls == broker.place_calls == broker.cancel_calls == 0
     store.close()
 
 
@@ -281,7 +404,13 @@ async def test_auto_shadow_connects_early_waits_without_real_sleep_and_resets_at
     clock = FakeClock(datetime(2026, 8, 11, 13, 20, tzinfo=UTC))  # 06:20 PT / 09:20 ET
     broker = AutoShadowBroker(quote_clock=lambda: clock.now)
     monkeypatch.setattr("grande_alpha.controller.utc_now", lambda: clock.now)
-    controller, store = _controller(tmp_path, broker, clock=clock)
+    controller, store = _controller(
+        tmp_path,
+        broker,
+        clock=clock,
+        strategy_name="ema_momentum",
+    )
+    assert isinstance(controller.strategy, MomentumStrategy)
     controller.strategy.bars.append(Bar("QQQ", clock.now, 1, 1, 1, 1, 1))
     controller._analysis_sequence = 4
 
@@ -501,4 +630,95 @@ async def test_main_window_session_close_uses_read_only_shutdown(tmp_path, monke
     assert broker.cancel_calls == broker.review_calls == broker.place_calls == 0
     assert not controller.snapshot.connected
     assert any("AUTO SHADOW DAILY FLAT" in item["summary"] for item in store.recent_receipts(20))
+    store.close()
+
+
+@pytest.mark.asyncio
+async def test_controller_shadow_fills_completed_bar_decision_at_first_causal_next_open(
+    tmp_path, monkeypatch
+) -> None:
+    bar_seconds = 5
+    first_open = datetime(2026, 8, 11, 14, 0, tzinfo=UTC)  # 10:00 ET
+    clock = FakeClock(first_open)
+
+    class TraceBroker(AutoShadowBroker):
+        async def get_quotes(self, symbols: list[str]) -> dict[str, Quote]:
+            tick = max(0, int((clock.now - first_open).total_seconds() // bar_seconds))
+            mids = {
+                "QQQ": 100.0 + min(tick, 4),
+                "TQQQ": 50.0 + 10.0 * min(tick, 4),
+                "SQQQ": 40.0 - min(tick, 4),
+            }
+            timestamps = {
+                "QQQ": clock.now,
+                "TQQQ": clock.now + timedelta(seconds=2),
+                "SQQQ": clock.now - timedelta(seconds=1),
+            }
+            return {
+                symbol: Quote(
+                    symbol,
+                    mids[symbol] - 0.01,
+                    mids[symbol] + 0.01,
+                    mids[symbol],
+                    timestamps[symbol],
+                )
+                for symbol in symbols
+            }
+
+    class BullishTraceStrategy:
+        def on_bar(self, bar: Bar) -> Signal:
+            return Signal(Regime.BULLISH, 1.0, "synthetic timing trace", timestamp=bar.start)
+
+    monkeypatch.setattr("grande_alpha.controller.utc_now", lambda: clock.now)
+    broker = TraceBroker(quote_clock=lambda: clock.now)
+    controller, store = _controller(
+        tmp_path,
+        broker,
+        bar_seconds=bar_seconds,
+        trade_every_bars=3,
+    )
+    await controller.connect()  # Seeds the first analysis-bar bucket at first_open.
+    controller.strategy = BullishTraceStrategy()
+    controller.start_shadow()
+    assert controller._shadow is not None
+
+    # Completed bars t=0 and t=1 do not yet satisfy the three-bar decision stride.
+    for offset in (1, 2):
+        clock.now = first_open + timedelta(seconds=offset * bar_seconds)
+        await controller.refresh_quotes(evaluate=False)
+        assert controller._shadow.state.fills == []
+
+    # At the quote/open for t+1, BarBuilder emits completed bar t and the decision
+    # fills immediately at that causal quote. It must not wait for the t+2 quote.
+    clock.now = first_open + timedelta(seconds=3 * bar_seconds)
+    await controller.refresh_quotes(evaluate=False)
+    fills = controller._shadow.state.fills
+    assert [(fill.side, fill.symbol, fill.timestamp) for fill in fills] == [
+        ("buy", "TQQQS", clock.now + timedelta(seconds=2))
+    ]
+    assert controller.snapshot.last_analysis_at == clock.now - timedelta(seconds=bar_seconds)
+    assert fills[0].timestamp > controller.snapshot.last_analysis_at
+    assert fills[0].timestamp >= controller.snapshot.quotes["TQQQ"].timestamp
+    assert fills[0].price == pytest.approx((80.0 + 0.01) * (1.0 + 2.0 / 10_000.0))
+
+    clock.now += timedelta(seconds=bar_seconds)
+    await controller.refresh_quotes(evaluate=False)
+    assert len(controller._shadow.state.fills) == 1
+
+    # The timing change must retain the explicit virtual-only daily flatten and
+    # must never cross the read-only broker facade.
+    clock.now = datetime(2026, 8, 11, 20, 0, tzinfo=UTC)
+    controller.snapshot.quotes = {
+        symbol: replace(quote, timestamp=clock.now)
+        for symbol, quote in (await broker.get_quotes(["QQQ", "TQQQ", "SQQQ"])).items()
+    }
+    controller.stop_shadow("synthetic timing trace complete", flatten_virtual=True, timestamp=clock.now)
+    assert controller._shadow.state.position is None
+    assert [(fill.side, fill.symbol) for fill in controller._shadow.state.fills] == [
+        ("buy", "TQQQS"),
+        ("sell", "TQQQS"),
+    ]
+    assert controller._shadow.state.fills[-1].timestamp == clock.now
+    assert broker.review_calls == broker.place_calls == broker.cancel_calls == 0
+    await controller.disconnect_shadow_only()
     store.close()
