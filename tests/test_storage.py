@@ -32,6 +32,7 @@ def _passing_holdout_metrics(
         "max_drawdown_pct": 1.0,
         "ending_position": None,
         "cost_multiplier": 3.0,
+        "forced_flatten_count": 0,
         "holdout_hash": holdout_hash,
         "holdout_start": holdout_start,
         "holdout_end": holdout_end,
@@ -126,7 +127,8 @@ def test_sandbox_fill_ledger_persists_unsettled_cash(tmp_path: Path) -> None:
     store.close()
 
 
-def test_live_evidence_is_exact_strategy_scoped(tmp_path: Path) -> None:
+def test_live_evidence_is_exact_strategy_scoped(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr("grande_alpha.evidence.RUNTIME_SIZING_PARITY_CERTIFIED", True)
     store = AuditStore(tmp_path / "audit.db")
     fingerprint = strategy_fingerprint(AppConfig())
     holdout_id = store.reserve_research_holdout(
@@ -341,6 +343,111 @@ def test_live_certificate_rejects_unrelated_or_losing_holdout(tmp_path: Path) ->
                 risk_envelope={},
                 holdout_id=holdout_id,
             )
+    assert store.current_live_evidence(fingerprint) is None
+    store.close()
+
+
+def test_noncash_certificate_cannot_omit_or_forge_runtime_sizing_parity(tmp_path: Path) -> None:
+    store = AuditStore(tmp_path / "audit.db")
+    fingerprint = strategy_fingerprint(SandboxConfig(strategy_name="ema_momentum"))
+    holdout_id = store.reserve_research_holdout(
+        dataset_hash="sizing-dataset",
+        development_hash="sizing-development",
+        holdout_hash="sizing-holdout",
+        holdout_start="2026-07-01T13:30:00+00:00",
+        holdout_end="2026-08-01T20:00:00+00:00",
+        policy_version=EVIDENCE_POLICY_VERSION,
+    )
+    store.freeze_research_holdout(holdout_id, fingerprint)
+    store.claim_research_holdout(holdout_id, fingerprint)
+    store.consume_research_holdout(
+        holdout_id,
+        fingerprint,
+        _passing_holdout_metrics(
+            "sizing-holdout",
+            "2026-07-01T13:30:00+00:00",
+            "2026-08-01T20:00:00+00:00",
+        ),
+    )
+    envelope = {
+        "max_order_notional": 25.0,
+        "max_total_exposure": 40.0,
+        "max_daily_loss": 2.0,
+        "max_trades": 6,
+        "max_orders_per_minute": 2,
+        "max_spread_bps": 6.0,
+    }
+    omitted = [gate for gate in _passing_gates() if gate["name"] != "Runtime sizing parity"]
+
+    with pytest.raises(ValueError, match="canonical evidence gate"):
+        store.record_research_promotion(
+            dataset_hash="sizing-dataset",
+            strategy_fingerprint=fingerprint,
+            policy_version=EVIDENCE_POLICY_VERSION,
+            status="LIVE_REVIEW_ELIGIBLE",
+            source="licensed CSV",
+            replay_end="2026-08-01T20:00:00+00:00",
+            gates=omitted,
+            risk_envelope=envelope,
+            holdout_id=holdout_id,
+        )
+
+    with pytest.raises(ValueError, match="certified sizing contract"):
+        store.record_research_promotion(
+            dataset_hash="sizing-dataset",
+            strategy_fingerprint=fingerprint,
+            policy_version=EVIDENCE_POLICY_VERSION,
+            status="LIVE_REVIEW_ELIGIBLE",
+            source="licensed CSV",
+            replay_end="2026-08-01T20:00:00+00:00",
+            gates=_passing_gates(),
+            risk_envelope=envelope,
+            holdout_id=holdout_id,
+        )
+    assert store.current_live_evidence(fingerprint) is None
+    store.close()
+
+
+def test_live_certificate_rejects_holdout_that_needed_bypassed_flatten(tmp_path: Path) -> None:
+    store = AuditStore(tmp_path / "audit.db")
+    fingerprint = "candidate-forced-flat"
+    holdout_id = store.reserve_research_holdout(
+        dataset_hash="dataset-forced-flat",
+        development_hash="development-forced-flat",
+        holdout_hash="holdout-forced-flat",
+        holdout_start="2026-07-01T13:30:00+00:00",
+        holdout_end="2026-08-01T20:00:00+00:00",
+        policy_version=EVIDENCE_POLICY_VERSION,
+    )
+    store.freeze_research_holdout(holdout_id, fingerprint)
+    store.claim_research_holdout(holdout_id, fingerprint)
+    metrics = _passing_holdout_metrics(
+        "holdout-forced-flat",
+        "2026-07-01T13:30:00+00:00",
+        "2026-08-01T20:00:00+00:00",
+    )
+    metrics["forced_flatten_count"] = 1
+    store.consume_research_holdout(holdout_id, fingerprint, metrics)
+
+    with pytest.raises(ValueError, match="passing final holdout"):
+        store.record_research_promotion(
+            dataset_hash="dataset-forced-flat",
+            strategy_fingerprint=fingerprint,
+            policy_version=EVIDENCE_POLICY_VERSION,
+            status="LIVE_REVIEW_ELIGIBLE",
+            source="licensed CSV",
+            replay_end="2026-08-01T20:00:00+00:00",
+            gates=_passing_gates(),
+            risk_envelope={
+                "max_order_notional": 25.0,
+                "max_total_exposure": 40.0,
+                "max_daily_loss": 2.0,
+                "max_trades": 6,
+                "max_orders_per_minute": 2,
+                "max_spread_bps": 6.0,
+            },
+            holdout_id=holdout_id,
+        )
     assert store.current_live_evidence(fingerprint) is None
     store.close()
 

@@ -32,7 +32,9 @@ Do not interpret the 0.25-second UI minimum as provider permission, guaranteed t
 
 Version 0.11 upgrades settings created by older releases to the default 1-second quote, 5-second
 analysis, 3-analysis-bar trade decision, and 5-second reconciliation profile. Thus nominal
-`t_analysis=5s < t_trade=15s`. After that one-time migration, values selected in Settings are preserved.
+`t_analysis=5s < t_trade=15s`. Cadence schema v5 also migrates legacy runtime configs with no
+strategy field to the fail-safe `cash` champion. After that one-time migration, values selected in
+Settings are preserved.
 
 At each trade tick, the controller takes the newest completed analysis state whose timestamp is no
 later than the trade tick. It records one command from the exact nine-action vocabulary. The

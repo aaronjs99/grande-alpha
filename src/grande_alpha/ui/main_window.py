@@ -33,6 +33,7 @@ from grande_alpha.config import AppConfig, save_config
 from grande_alpha.controller import TradingController, TradingSnapshot
 from grande_alpha.models import Regime
 from grande_alpha.privacy import export_diagnostics
+from grande_alpha.strategy import STRATEGY_NAMES
 from grande_alpha.ui.dialogs import FundPlanDialog, LiveGrantDialog
 from grande_alpha.ui.glossary import (
     ExplainedLabel,
@@ -545,6 +546,7 @@ class MainWindow(QMainWindow):
                 "live_trading_enabled": updated.live_trading_enabled,
                 "remote_market_data_enabled": updated.remote_market_data_enabled,
                 "personal_ledger_enabled": updated.personal_ledger_enabled,
+                "strategy_name": updated.strategy_name,
                 "market_hours": updated.market_hours,
                 "order_type": updated.order_type,
                 "time_in_force": updated.time_in_force,
@@ -818,10 +820,12 @@ class MainWindow(QMainWindow):
         )
         if not self.config.broker_connection_enabled:
             self.status.setText(
+                f"RUNTIME {STRATEGY_NAMES.get(self.config.strategy_name, self.config.strategy_name)} • "
                 "RESEARCH MODE • Broker capability is off • Local sandbox and CSV import only • No telemetry"
             )
         else:
             self.status.setText(
+                f"Runtime {STRATEGY_NAMES.get(self.config.strategy_name, self.config.strategy_name)} • "
                 f"{session} • Strategy {'RUNNING' if snapshot.strategy_running else 'STOPPED'} • "
                 f"Shadow {'RUNNING — NO ORDERS' if snapshot.shadow_running else 'OFF'} • "
                 f"Route {self.controller.active_execution_profile.label} • "

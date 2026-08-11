@@ -26,6 +26,7 @@ from grande_alpha.execution import (
     ORDER_TYPE_LABELS,
     TIME_IN_FORCE_LABELS,
 )
+from grande_alpha.strategy import STRATEGY_NAMES
 from grande_alpha.ui.glossary import add_explained_row, apply_help, help_hint
 
 LIVE_PHRASE = "ENABLE LIVE ORDERS"
@@ -186,6 +187,23 @@ class SettingsDialog(QDialog):
         privacy_form.addRow(self.credential_note)
         body_layout.addWidget(privacy)
 
+        runtime = QGroupBox("Runtime strategy champion")
+        runtime_form = QFormLayout(runtime)
+        runtime_form.setVerticalSpacing(9)
+        self.strategy_name = QComboBox()
+        self.strategy_name.setAccessibleName("Runtime strategy champion")
+        for value, label in STRATEGY_NAMES.items():
+            self.strategy_name.addItem(label, value)
+        self.strategy_name.setCurrentIndex(max(0, self.strategy_name.findData(config.strategy_name)))
+        add_explained_row(runtime_form, "Selected runtime policy", self.strategy_name)
+        self.runtime_strategy_note = self._description(
+            "CASH / hold is the evidence-backed fail-safe default and requests no TQQQ or SQQQ position. "
+            "Selecting another supported policy is deliberate, changes the evidence fingerprint, and does "
+            "not imply profitability or unlock real orders."
+        )
+        runtime_form.addRow(self.runtime_strategy_note)
+        body_layout.addWidget(runtime)
+
         routing = QGroupBox("Automatic order route defaults")
         routing_form = QFormLayout(routing)
         routing_form.setVerticalSpacing(9)
@@ -266,6 +284,7 @@ class SettingsDialog(QDialog):
         self.broker.stateChanged.connect(self._validate)
         self.live.stateChanged.connect(self._validate)
         self.live_phrase.textChanged.connect(self._validate)
+        self.strategy_name.currentIndexChanged.connect(self._validate)
         self.bar_seconds.valueChanged.connect(self._update_cadence_note)
         self.trade_every_bars.valueChanged.connect(self._update_cadence_note)
         self.market_hours.currentIndexChanged.connect(self._update_route_note)
@@ -368,6 +387,7 @@ class SettingsDialog(QDialog):
             reconcile_seconds=self.reconcile.value(),
             bar_seconds=self.bar_seconds.value(),
             trade_every_bars=self.trade_every_bars.value(),
+            strategy_name=self.strategy_name.currentData(),
             market_hours=self.market_hours.currentData(),
             order_type=self.order_type.currentData(),
             time_in_force=self.time_in_force.currentData(),

@@ -42,7 +42,18 @@ from grande_alpha.risk import RiskEngine
 from grande_alpha.sandbox import load_sandbox_config
 from grande_alpha.shadow import LiveShadowEngine
 from grande_alpha.storage import AuditStore
-from grande_alpha.strategy import BarBuilder, MomentumStrategy, StrategyConfig
+from grande_alpha.strategy import BarBuilder, StrategyConfig, build_strategy
+
+
+def _runtime_strategy_config(config: AppConfig) -> StrategyConfig:
+    return StrategyConfig(
+        strategy_name=config.strategy_name,
+        warmup_bars=config.warmup_bars,
+        fast_ema=config.fast_ema,
+        slow_ema=config.slow_ema,
+        trend_threshold_bps=config.trend_threshold_bps,
+        momentum_bars=config.momentum_bars,
+    )
 
 
 @dataclass
@@ -95,15 +106,7 @@ class TradingController(QObject):
         self.shadow_only_runtime = shadow_only_runtime
         self._auto_shadow_sleep = auto_shadow_sleep or asyncio.sleep
         self.risk = RiskEngine(config.no_trade_open_minutes, config.no_trade_close_minutes)
-        self.strategy = MomentumStrategy(
-            StrategyConfig(
-                warmup_bars=config.warmup_bars,
-                fast_ema=config.fast_ema,
-                slow_ema=config.slow_ema,
-                trend_threshold_bps=config.trend_threshold_bps,
-                momentum_bars=config.momentum_bars,
-            )
-        )
+        self.strategy = build_strategy(_runtime_strategy_config(config))
         self.bar_builder = BarBuilder("QQQ", config.bar_seconds)
         self.policy = DecisionPolicy(
             PolicyConfig(
@@ -135,15 +138,7 @@ class TradingController(QObject):
             raise RuntimeError(f"Auto-shadow runtime is read-only and cannot {action}")
 
     def _reset_signal_pipeline(self, reason: str) -> None:
-        self.strategy = MomentumStrategy(
-            StrategyConfig(
-                warmup_bars=self.config.warmup_bars,
-                fast_ema=self.config.fast_ema,
-                slow_ema=self.config.slow_ema,
-                trend_threshold_bps=self.config.trend_threshold_bps,
-                momentum_bars=self.config.momentum_bars,
-            )
-        )
+        self.strategy = build_strategy(_runtime_strategy_config(self.config))
         self.bar_builder = BarBuilder("QQQ", self.config.bar_seconds)
         self._last_qqq_timestamp = None
         self._analysis_sequence = 0
@@ -448,6 +443,7 @@ class TradingController(QObject):
         signal_changed = any(
             getattr(config, name) != getattr(self.config, name)
             for name in (
+                "strategy_name",
                 "warmup_bars",
                 "fast_ema",
                 "slow_ema",
@@ -459,6 +455,9 @@ class TradingController(QObject):
             self._revoke_live_automation(
                 "Settings changed; the previous live certificate and session grant were revoked"
             )
+        if config_changed and self._shadow is not None and self._shadow.state.active:
+            self.stop_shadow("Settings changed; the previous live-shadow run was stopped")
+        last_qqq_timestamp = self._last_qqq_timestamp
         self.config = config
         self.risk.no_trade_open_minutes = config.no_trade_open_minutes
         self.risk.no_trade_close_minutes = config.no_trade_close_minutes
@@ -466,27 +465,20 @@ class TradingController(QObject):
             self.risk.grant.market_hours if self.risk.grant is not None else config.market_hours
         )
         self.policy = self._policy_for_session(active_market_hours)
-        if signal_changed:
-            self.strategy = MomentumStrategy(
-                StrategyConfig(
-                    warmup_bars=config.warmup_bars,
-                    fast_ema=config.fast_ema,
-                    slow_ema=config.slow_ema,
-                    trend_threshold_bps=config.trend_threshold_bps,
-                    momentum_bars=config.momentum_bars,
-                )
-            )
-        elif bar_changed:
-            self.strategy.reset()
-        if bar_changed:
-            self.bar_builder = BarBuilder("QQQ", config.bar_seconds)
         if bar_changed or signal_changed:
-            self._last_qqq_timestamp = None
-            self._analysis_sequence = 0
-            self._last_trade_decision_sequence = 0
-            self.snapshot.signal = TradeSignal(Regime.FLAT, 0.0, "Settings changed; warming up")
+            reset_reason = (
+                "Settings changed; CASH champion holds no position"
+                if config.strategy_name == "cash"
+                else "Settings changed; warming up"
+            )
+            self._reset_signal_pipeline(reset_reason)
+            # The new builder must not ingest the same provider observation again.
+            # Preserve only the duplicate guard; all partial-bar and strategy state
+            # was discarded by the atomic pipeline reset above.
+            self._last_qqq_timestamp = last_qqq_timestamp
             self.log(
-                f"Signal/cadence settings changed; {config.bar_seconds}s completed-bar warm-up reset",
+                f"Runtime strategy changed/reset to {config.strategy_name}; "
+                f"{config.bar_seconds}s completed-bar pipeline reset",
                 "warning",
                 "cadence",
             )
@@ -583,7 +575,17 @@ class TradingController(QObject):
                         self.store.record_signal(signal)
                         self.log(f"Signal: {signal.regime.value} — {signal.reason}", category="signal")
                         if self._shadow is not None and self._shadow.state.active:
-                            fills = self._shadow.on_bar(bar.start, signal, quotes)
+                            # This quote caused BarBuilder to emit the completed analysis bar,
+                            # so this accepted batch is the first causal quote/open of the
+                            # following bar. Timestamp the virtual decision at the latest exact
+                            # venue observation in the batch so a fill can never be recorded
+                            # before the target quote used to price it.
+                            causal_timestamp = max(quote.timestamp for quote in quotes.values())
+                            if causal_timestamp <= signal.timestamp:
+                                raise BrokerError(
+                                    "Shadow execution batch is not later than the completed analysis bar"
+                                )
+                            fills = self._shadow.on_causal_quote(causal_timestamp, signal, quotes)
                             for fill in fills:
                                 self.log(
                                     f"SHADOW {fill.side.upper()} {fill.quantity:.6f} {fill.symbol} "
@@ -748,7 +750,7 @@ class TradingController(QObject):
         # and cost assumptions from the user's sandbox profile.
         shadow_config = replace(
             load_sandbox_config(),
-            strategy_name="ema_momentum",
+            strategy_name=self.config.strategy_name,
             warmup_bars=self.config.warmup_bars,
             fast_ema=self.config.fast_ema,
             slow_ema=self.config.slow_ema,

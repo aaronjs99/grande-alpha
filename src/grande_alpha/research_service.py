@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass
 
 from grande_alpha.evidence import (
     EVIDENCE_POLICY_VERSION,
@@ -10,6 +10,8 @@ from grande_alpha.evidence import (
     WalkForwardResult,
     candidate_grid,
     cost_stress,
+    cost_stressed_config,
+    forced_flatten_count,
     parameter_sweep,
     promotion_report,
     random_entry_control,
@@ -120,12 +122,7 @@ def run_evidence_lab(
         if holdout_id is not None and holdout_bundle is not None and development_passed:
             store.freeze_research_holdout(holdout_id, selected_fingerprint)
             store.claim_research_holdout(holdout_id, selected_fingerprint)
-            stressed_holdout_config = replace(
-                config,
-                slippage_bps=config.slippage_bps * 3.0,
-                base_spread_bps=config.base_spread_bps * 3.0,
-                commission_per_order=config.commission_per_order * 3.0,
-            )
+            stressed_holdout_config = cost_stressed_config(config, 3.0)
             holdout_result = SandboxReplayEngine(stressed_holdout_config).run(holdout_bundle)
             store.consume_research_holdout(
                 holdout_id,
@@ -133,6 +130,7 @@ def run_evidence_lab(
                 {
                     **holdout_result.metrics(),
                     "cost_multiplier": 3.0,
+                    "forced_flatten_count": forced_flatten_count(holdout_result),
                     "holdout_hash": holdout_bundle.dataset_hash,
                     "holdout_start": holdout_bundle.start.isoformat(),
                     "holdout_end": holdout_bundle.end.isoformat(),

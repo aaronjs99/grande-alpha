@@ -23,7 +23,12 @@ from grande_alpha.sandbox import (
 from grande_alpha.strategy import StrategyConfig
 
 EASTERN = ZoneInfo("America/New_York")
-EVIDENCE_POLICY_VERSION = 8
+EVIDENCE_POLICY_VERSION = 9
+# Non-cash replay uses risk-budget and volatility sizing that shadow/live do not yet share.
+# Cash can satisfy the report-level parity gate only when it never takes exposure, but it
+# cannot satisfy the trade-sample/profit gates. Consequently no current policy-v9 result
+# can truthfully create live-review authority.
+RUNTIME_SIZING_PARITY_CERTIFIED = False
 MIN_EVIDENCE_SESSIONS = 120
 REQUIRED_LIVE_GATE_NAMES = frozenset(
     {
@@ -32,6 +37,7 @@ REQUIRED_LIVE_GATE_NAMES = frozenset(
         "Data breadth",
         "Data recency",
         "Data integrity",
+        "Runtime sizing parity",
         "Parameter stability",
         "Cost stress",
         "Closed-trade sample",
@@ -66,6 +72,36 @@ STRATEGY_FINGERPRINT_FIELDS = (
     "opening_range_minutes",
     "breakout_buffer_bps",
     "ensemble_min_votes",
+)
+SANDBOX_EXECUTION_FINGERPRINT_FIELDS = (
+    "initial_cash",
+    "order_notional",
+    "slippage_bps",
+    "base_spread_bps",
+    "spread_volatility_multiplier",
+    "commission_per_order",
+    "latency_bars",
+    "fill_fraction_pct",
+    "rejection_rate_pct",
+    "max_volume_participation_pct",
+    "random_seed",
+    "max_entries_per_day",
+    "risk_budget_pct",
+    "max_exposure_pct",
+    "max_daily_loss_pct",
+    "max_consecutive_losses",
+    "volatility_target_pct",
+    "force_flat_at_end",
+)
+_CONFIG_FIELD_ALIASES = {
+    "order_notional": "default_max_order_notional",
+    "max_entries_per_day": "default_max_trades",
+}
+FORCED_FLATTEN_REASONS = frozenset(
+    {
+        "Session-end forced virtual flatten",
+        "End of replay forced virtual flatten",
+    }
 )
 
 
@@ -166,9 +202,19 @@ def strategy_fingerprint(
     interval: str | None = None,
     execution: object | None = None,
 ) -> str:
-    defaults = StrategyConfig()
+    strategy_defaults = StrategyConfig()
+    sandbox_defaults = SandboxConfig()
     decision_stride = int(getattr(config, "decision_stride", getattr(config, "trade_every_bars", 1)))
     route = execution_profile(execution or config)
+
+    def config_value(field: str) -> object:
+        if hasattr(config, field):
+            return getattr(config, field)
+        alias = _CONFIG_FIELD_ALIASES.get(field)
+        if alias and hasattr(config, alias):
+            return getattr(config, alias)
+        return getattr(sandbox_defaults, field)
+
     payload = {
         "policy_version": EVIDENCE_POLICY_VERSION,
         "bar_interval_seconds": _interval_seconds(config, interval),
@@ -179,9 +225,10 @@ def strategy_fingerprint(
         "limit_offset_bps": route.limit_offset_bps,
         "settlement_model": getattr(config, "settlement_model", "instant"),
         **{
-            field: getattr(config, field, getattr(defaults, field, None))
+            field: getattr(config, field, getattr(strategy_defaults, field, None))
             for field in STRATEGY_FINGERPRINT_FIELDS
         },
+        **{field: config_value(field) for field in SANDBOX_EXECUTION_FINGERPRINT_FIELDS},
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
@@ -464,16 +511,29 @@ def deflated_sharpe_ratio(
 
 def cost_stress(bundle: HistoricalBundle, base: SandboxConfig) -> dict[float, SandboxResult]:
     return {
-        multiplier: SandboxReplayEngine(
-            replace(
-                base,
-                slippage_bps=base.slippage_bps * multiplier,
-                base_spread_bps=base.base_spread_bps * multiplier,
-                commission_per_order=base.commission_per_order * multiplier,
-            )
-        ).run(bundle)
+        multiplier: SandboxReplayEngine(cost_stressed_config(base, multiplier)).run(bundle)
         for multiplier in (1.0, 2.0, 3.0)
     }
+
+
+def cost_stressed_config(base: SandboxConfig, multiplier: float) -> SandboxConfig:
+    """Scale every monetary execution-cost term, including the dynamic spread term."""
+
+    if not math.isfinite(multiplier) or multiplier <= 0:
+        raise ValueError("Cost multiplier must be finite and positive")
+    return replace(
+        base,
+        slippage_bps=base.slippage_bps * multiplier,
+        base_spread_bps=base.base_spread_bps * multiplier,
+        spread_volatility_multiplier=base.spread_volatility_multiplier * multiplier,
+        commission_per_order=base.commission_per_order * multiplier,
+    )
+
+
+def forced_flatten_count(result: SandboxResult) -> int:
+    """Count executions obtained through the simulator's failure-bypassing EOD path."""
+
+    return sum(event.reason in FORCED_FLATTEN_REASONS for event in result.execution_events)
 
 
 def random_entry_control(
@@ -558,6 +618,13 @@ def promotion_report(
     session_covered = coverage_rank.get(bundle.market_hours, -1) >= coverage_rank.get(
         base_config.market_hours, 99
     )
+    base_forced_flatten_count = forced_flatten_count(base_result)
+    cash_candidate = base_config.strategy_name == "cash"
+    zero_cash_exposure = (
+        cash_candidate
+        and not base_result.fills
+        and math.isclose(base_result.exposure_pct, 0.0, rel_tol=0.0, abs_tol=1e-12)
+    )
     gates = [
         PromotionGate(
             "Historical source",
@@ -598,6 +665,23 @@ def promotion_report(
                 else "unknown"
             ),
             "Hash-valid, zero duplicate/missing intraday intervals, and 95% complete sessions",
+        ),
+        PromotionGate(
+            "Runtime sizing parity",
+            zero_cash_exposure,
+            (
+                "Cash candidate had zero fills and zero exposure"
+                if zero_cash_exposure
+                else (
+                    f"Cash candidate had {len(base_result.fills)} fills and "
+                    f"{base_result.exposure_pct:.2f}% exposure"
+                    if cash_candidate
+                    else "Replay uses risk-budget/volatility sizing; shadow/live do not share "
+                    "the certified sizing contract"
+                )
+            ),
+            "Replay and runtime share the exact certified sizing contract; until then only a "
+            "zero-fill, zero-exposure cash candidate can pass this gate",
         ),
         PromotionGate(
             "Parameter stability",
@@ -655,9 +739,13 @@ def promotion_report(
         ),
         PromotionGate(
             "Ending flat",
-            base_result.ending_position is None,
-            "No open position" if base_result.ending_position is None else base_result.ending_position.symbol,
-            "Replay ends with no open virtual position",
+            base_result.ending_position is None and base_forced_flatten_count == 0,
+            (
+                f"No open position; {base_forced_flatten_count} bypassed EOD flatten(s)"
+                if base_result.ending_position is None
+                else base_result.ending_position
+            ),
+            "Replay ends flat without a forced, execution-failure-bypassing EOD flatten",
         ),
     ]
     if walk is None:
@@ -706,6 +794,7 @@ def promotion_report(
             )
         )
     else:
+        holdout_forced_flatten_count = forced_flatten_count(holdout_result)
         holdout_passed = (
             holdout_result.net_pnl > 0
             and holdout_result.round_trips >= 5
@@ -713,6 +802,7 @@ def promotion_report(
             and holdout_result.expectancy > 0
             and holdout_result.max_drawdown_pct <= 5.0
             and holdout_result.ending_position is None
+            and holdout_forced_flatten_count == 0
         )
         gates.append(
             PromotionGate(
@@ -721,9 +811,10 @@ def promotion_report(
                 f"holdout {holdout_id}; return {holdout_result.return_pct:+.2f}%; "
                 f"{holdout_result.round_trips} trades; PF {holdout_result.profit_factor:.2f}; "
                 f"expectancy ${holdout_result.expectancy:+.4f}; "
-                f"DD {holdout_result.max_drawdown_pct:.2f}%",
+                f"DD {holdout_result.max_drawdown_pct:.2f}%; "
+                f"{holdout_forced_flatten_count} bypassed EOD flatten(s)",
                 "Positive at 3x costs, at least 5 trades, PF 1.10, positive expectancy, "
-                "drawdown at most 5%, and ending flat",
+                "drawdown at most 5%, and ending flat without a bypassed EOD flatten",
             )
         )
     status = "LIVE_REVIEW_ELIGIBLE" if all(gate.passed for gate in gates) else "SHADOW_ONLY"

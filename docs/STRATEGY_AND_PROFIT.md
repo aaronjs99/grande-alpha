@@ -1,5 +1,17 @@
 # Strategy and profit mechanics
 
+## Runtime champion: CASH / hold
+
+Normal and scheduled runtime default to the deterministic **CASH / hold** strategy. It always emits
+a flat regime, maps to the pair action `(0,0)` when no position is held, and requests no TQQQ or
+SQQQ entry. This is the current evidence-backed fail-safe choice: the available intraday benchmark
+did not demonstrate positive after-cost out-of-sample performance. Cash is not a profit guarantee;
+it is the decision not to take modeled leveraged exposure.
+
+Other supported policies remain available as deliberate shadow/research selections. Selecting one
+changes the evidence fingerprint and resets the runtime signal pipeline. It does not establish an
+edge or unlock live authority.
+
 ## How this app can make money
 
 There is only one intended source of trading profit: correctly identifying a short intraday QQQ
@@ -36,11 +48,12 @@ small, auditable library whose hypotheses can be falsified on the same data and 
 
 Every candidate uses only completed bars. The library excludes GPU/RL optimization and any VWAP,
 volume, or spread-dependent alpha until those exact live inputs exist in replay and production.
-Research candidates cannot unlock the live EMA path merely by doing well: fingerprints differ.
+Research candidates cannot unlock a selected runtime path merely by doing well: fingerprints differ.
 
-## Exact live baseline rules
+## Deliberate EMA research-runtime rules
 
-The implementation in `src/grande_alpha/strategy.py` uses completed QQQ midpoint bars:
+When `EMA momentum` is deliberately selected instead of the cash champion, the implementation in
+`src/grande_alpha/strategy.py` uses completed QQQ midpoint bars:
 
 | Parameter | Value |
 |---|---:|
@@ -146,7 +159,7 @@ only from the broker.
 ## Evidence required before increasing size
 
 Do not scale because of one profitable day. Shadow-only operation remains the required engineering
-stage while there is no passing policy-v8 certificate. If a later qualified review permits real
+stage while there is no passing policy-v9 certificate. If a later qualified review permits real
 orders, require at least 20 monitored live sessions and record:
 
 - number of submitted, filled, canceled, and rejected orders;

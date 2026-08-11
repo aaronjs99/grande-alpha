@@ -1,8 +1,16 @@
+from dataclasses import replace
+
+import pytest
+
 from grande_alpha.config import AppConfig
 from grande_alpha.evidence import (
+    SANDBOX_EXECUTION_FINGERPRINT_FIELDS,
+    STRATEGY_FINGERPRINT_FIELDS,
     PromotionReport,
+    RandomControl,
     candidate_grid,
     cost_stress,
+    cost_stressed_config,
     deflated_sharpe_ratio,
     expected_maximum_sharpe,
     parameter_sweep,
@@ -32,6 +40,9 @@ def test_evidence_pipeline_is_deterministic_and_never_auto_promotes_weak_data() 
     assert report.status == "SHADOW_ONLY"
     assert not report.passed
     assert not next(gate for gate in report.gates if gate.name == "Historical source").passed
+    sizing = next(gate for gate in report.gates if gate.name == "Runtime sizing parity")
+    assert not sizing.passed
+    assert "do not share the certified sizing contract" in sizing.observed
     assert report.strategy_fingerprint == strategy_fingerprint(config)
     assert {gate.name for gate in report.gates} >= {
         "Closed-trade sample",
@@ -68,7 +79,7 @@ def test_fingerprint_binds_strategy_and_bar_interval() -> None:
 
 
 def test_live_and_research_fingerprints_match_only_at_the_same_decision_stride() -> None:
-    live = AppConfig(bar_seconds=5, trade_every_bars=3)
+    live = AppConfig(bar_seconds=5, trade_every_bars=3, strategy_name="ema_momentum")
     matching = SandboxConfig(decision_stride=3)
     mismatched = SandboxConfig(decision_stride=1)
 
@@ -87,6 +98,152 @@ def test_fingerprint_binds_execution_session_order_type_and_limit_offset() -> No
 
     assert strategy_fingerprint(regular) != strategy_fingerprint(extended)
     assert strategy_fingerprint(extended) != strategy_fingerprint(wider_limit)
+
+
+@pytest.mark.parametrize(
+    ("field", "mutated"),
+    [
+        ("initial_cash", 60.0),
+        ("order_notional", 20.0),
+        ("slippage_bps", 3.0),
+        ("base_spread_bps", 3.0),
+        ("spread_volatility_multiplier", 0.20),
+        ("commission_per_order", 0.10),
+        ("latency_bars", 1),
+        ("fill_fraction_pct", 80.0),
+        ("rejection_rate_pct", 5.0),
+        ("max_volume_participation_pct", 2.0),
+        ("random_seed", 8008),
+        ("max_entries_per_day", 5),
+        ("risk_budget_pct", 0.02),
+        ("max_exposure_pct", 0.70),
+        ("max_daily_loss_pct", 0.03),
+        ("max_consecutive_losses", 2),
+        ("volatility_target_pct", 0.20),
+        ("force_flat_at_end", False),
+    ],
+)
+def test_fingerprint_binds_every_material_sandbox_execution_field(
+    field: str, mutated: object
+) -> None:
+    base = SandboxConfig()
+
+    assert field in SANDBOX_EXECUTION_FINGERPRINT_FIELDS
+    assert strategy_fingerprint(base) != strategy_fingerprint(replace(base, **{field: mutated}))
+
+
+def test_fingerprint_field_registry_covers_sandbox_behavior_fields() -> None:
+    separately_bound = {
+        "decision_stride",
+        "market_hours",
+        "order_type",
+        "time_in_force",
+        "limit_offset_bps",
+        "settlement_model",
+    }
+    uncovered = (
+        set(SandboxConfig.__dataclass_fields__)
+        - set(SANDBOX_EXECUTION_FINGERPRINT_FIELDS)
+        - set(STRATEGY_FINGERPRINT_FIELDS)
+        - separately_bound
+    )
+
+    assert uncovered == {"lookback_days", "csv_bar_seconds"}
+
+
+def test_cost_stress_scales_static_and_dynamic_cost_components() -> None:
+    base = SandboxConfig(
+        slippage_bps=1.0,
+        base_spread_bps=2.0,
+        spread_volatility_multiplier=0.25,
+        commission_per_order=0.50,
+        latency_bars=2,
+    )
+
+    stressed = cost_stressed_config(base, 3.0)
+
+    assert stressed.slippage_bps == 3.0
+    assert stressed.base_spread_bps == 6.0
+    assert stressed.spread_volatility_multiplier == 0.75
+    assert stressed.commission_per_order == 1.50
+    assert stressed.latency_bars == base.latency_bars
+    with pytest.raises(ValueError, match="finite and positive"):
+        cost_stressed_config(base, float("nan"))
+
+
+def test_forced_bypassed_flatten_cannot_satisfy_flat_evidence() -> None:
+    bundle = deterministic_demo(3, seed=19)
+    config = SandboxConfig(
+        strategy_name="close_momentum",
+        close_momentum_bps=0.1,
+        warmup_bars=5,
+        fast_ema=1,
+        slow_ema=3,
+        trend_threshold_bps=0.1,
+        momentum_bars=1,
+        no_trade_open_minutes=0,
+        no_trade_close_minutes=0,
+        hard_stop_pct=0.5,
+        take_profit_pct=0.5,
+        max_hold_minutes=10_000,
+        force_flat_at_end=True,
+    )
+    replay = SandboxReplayEngine(config).run(bundle)
+    assert replay.ending_position is None
+    assert any("forced virtual flatten" in event.reason.lower() for event in replay.execution_events)
+    passing_numbers = replace(
+        replay,
+        net_pnl=1.0,
+        return_pct=2.0,
+        round_trips=5,
+        profit_factor=1.20,
+        expectancy=0.20,
+        max_drawdown_pct=1.0,
+        ending_position=None,
+    )
+    report = promotion_report(
+        bundle,
+        config,
+        passing_numbers,
+        [],
+        {3.0: passing_numbers},
+        None,
+        RandomControl(1, 0.0, 0.0, 0.0, 0.0),
+        holdout_result=passing_numbers,
+        holdout_id=1,
+    )
+
+    ending = next(gate for gate in report.gates if gate.name == "Ending flat")
+    holdout = next(gate for gate in report.gates if gate.name == "Sealed final holdout")
+    assert not ending.passed
+    assert "bypassed" in ending.observed
+    assert not holdout.passed
+    assert "bypassed" in holdout.observed
+
+
+def test_zero_exposure_cash_can_pass_sizing_parity_but_never_promotion() -> None:
+    bundle = deterministic_demo(2, seed=23)
+    config = SandboxConfig(strategy_name="cash")
+    replay = SandboxReplayEngine(config).run(bundle)
+    report = promotion_report(
+        bundle,
+        config,
+        replay,
+        [],
+        {3.0: replay},
+        None,
+        RandomControl(1, 0.0, 0.0, 0.0, 0.0),
+    )
+
+    sizing = next(gate for gate in report.gates if gate.name == "Runtime sizing parity")
+    closed_trades = next(gate for gate in report.gates if gate.name == "Closed-trade sample")
+    after_cost = next(gate for gate in report.gates if gate.name == "After-cost quality")
+    assert not replay.fills
+    assert replay.exposure_pct == 0.0
+    assert sizing.passed
+    assert not closed_trades.passed
+    assert not after_cost.passed
+    assert report.status == "SHADOW_ONLY"
 
 
 def test_deflated_sharpe_penalizes_trial_search_and_negative_returns() -> None:

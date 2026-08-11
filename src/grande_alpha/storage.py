@@ -634,7 +634,10 @@ class AuditStore:
         if not gates:
             raise ValueError("Research promotion requires at least one evidence gate")
         if status == "LIVE_REVIEW_ELIGIBLE":
-            from grande_alpha.evidence import REQUIRED_LIVE_GATE_NAMES
+            from grande_alpha.evidence import (
+                REQUIRED_LIVE_GATE_NAMES,
+                RUNTIME_SIZING_PARITY_CERTIFIED,
+            )
 
             gate_names = [gate.get("name") for gate in gates if isinstance(gate, dict)]
             if (
@@ -675,6 +678,11 @@ class AuditStore:
                 )
             if not _valid_risk_envelope(risk_envelope):
                 raise ValueError("Live-review eligibility requires a finite positive risk envelope")
+            if not RUNTIME_SIZING_PARITY_CERTIFIED:
+                raise ValueError(
+                    "Live-review eligibility is blocked until non-cash replay and runtime "
+                    "share the certified sizing contract"
+                )
         with self._lock, self._connection:
             cursor = self._connection.execute(
                 """INSERT INTO research_promotions(
@@ -751,10 +759,15 @@ class AuditStore:
     ) -> dict[str, Any] | None:
         # Import locally so the storage layer stays usable during application
         # initialization while still rejecting certificates from an older policy.
-        from grande_alpha.evidence import EVIDENCE_POLICY_VERSION
+        from grande_alpha.evidence import (
+            EVIDENCE_POLICY_VERSION,
+            RUNTIME_SIZING_PARITY_CERTIFIED,
+        )
 
         if max_age_days < 1:
             raise ValueError("Evidence age must be at least one day")
+        if not RUNTIME_SIZING_PARITY_CERTIFIED:
+            return None
         with self._lock:
             row = self._connection.execute(
                 """SELECT p.*,h.dataset_hash AS holdout_dataset_hash,
@@ -831,9 +844,17 @@ def _passing_holdout_metrics(metrics: Any, holdout: Any) -> bool:
         expectancy = float(metrics["expectancy"])
         max_drawdown = float(metrics["max_drawdown_pct"])
         cost_multiplier = float(metrics["cost_multiplier"])
+        forced_flatten_count = float(metrics["forced_flatten_count"])
     except (KeyError, TypeError, ValueError, OverflowError):
         return False
-    finite_values = (net_pnl, round_trips, expectancy, max_drawdown, cost_multiplier)
+    finite_values = (
+        net_pnl,
+        round_trips,
+        expectancy,
+        max_drawdown,
+        cost_multiplier,
+        forced_flatten_count,
+    )
     if not all(math.isfinite(value) for value in finite_values):
         return False
     if math.isnan(profit_factor) or profit_factor == -math.inf:
@@ -849,6 +870,7 @@ def _passing_holdout_metrics(metrics: Any, holdout: Any) -> bool:
         and expectancy > 0
         and 0 <= max_drawdown <= 5.0
         and metrics.get("ending_position") is None
+        and forced_flatten_count == 0
     )
 
 

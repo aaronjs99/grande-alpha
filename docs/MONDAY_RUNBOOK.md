@@ -51,7 +51,7 @@ begin. Keep the application monitored.
 
 ## Later live review, only after evidence passes
 
-The remaining sections are not tomorrow's procedure. Use them only if a future policy-v8 Evidence
+The remaining sections are not tomorrow's procedure. Use them only if a future policy-v9 Evidence
 Lab run produces a current `LIVE_REVIEW_ELIGIBLE` certificate for the exact strategy, cadence,
 execution route, settlement model, and risk envelope, and all personal compliance questions have
 been resolved.

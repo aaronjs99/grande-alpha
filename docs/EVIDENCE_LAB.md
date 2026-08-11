@@ -10,7 +10,8 @@ order or predict future profit. The normal outcome is `SHADOW_ONLY`.
 - **Preset comparison:** every preset runs on the same immutable dataset.
 - **Parameter sensitivity:** strategy-appropriate neighboring parameters show whether the result
   is broad or a single lucky point.
-- **Cost stress:** the candidate reruns at 1x, 2x, and 3x spread, slippage, and commissions.
+- **Cost stress:** the candidate reruns at 1x, 2x, and 3x slippage, commissions, and both
+  the static and volatility-driven spread components.
 - **Random-entry control:** seeded random direction/entry trials provide a basic luck benchmark.
 - **Purged walk-forward:** each fold selects a configuration using earlier training sessions,
   leaves a configurable session gap, and measures it only on later test sessions.
@@ -32,6 +33,7 @@ order or predict future profit. The normal outcome is `SHADOW_ONLY`.
 | Data breadth | At least 120 market sessions; use imported licensed history when the built-in source is shorter |
 | Data recency | Final observation no more than 30 days old |
 | Data integrity | Hash-valid, zero duplicate/missing intraday intervals, and at least 95% complete selected sessions |
+| Runtime sizing parity | Replay and runtime use the exact same certified sizing contract. This currently fails every non-cash candidate because replay applies risk-budget and volatility sizing that shadow/live do not share. Cash passes only with zero fills and zero exposure, then still fails the trade-sample and profit gates. |
 | Parameter stability | At least half of neighboring configurations profitable |
 | Cost stress | Positive P/L at 3x modeled costs |
 | Closed-trade sample | At least 30 after-cost round trips |
@@ -41,10 +43,10 @@ order or predict future profit. The normal outcome is `SHADOW_ONLY`.
 | Deflated Sharpe | At least 95% probability after registered-trial and non-normality adjustment |
 | Profit concentration | No single day over 50% of positive daily P/L |
 | Drawdown | No more than 5% in the research configuration |
-| Ending flat | No virtual position remains open at the end of replay |
+| Ending flat | No virtual position remains open, and the result did not rely on the simulator's failure-bypassing forced close |
 | Exact candidate identity | Every training fold selected the exact configuration being certified |
 | Walk-forward | At least five folds, 60% positive test folds, 20 out-of-sample trades, median profit factor 1.10, and positive median expectancy |
-| Sealed final holdout | The frozen candidate passes one later, purged, one-use holdout at 3x modeled costs with positive P/L, at least 5 round trips, profit factor at least 1.10, positive expectancy, drawdown no more than 5%, and an ending-flat result |
+| Sealed final holdout | The frozen candidate passes one later, purged, one-use holdout at 3x modeled costs with positive P/L, at least 5 round trips, profit factor at least 1.10, positive expectancy, drawdown no more than 5%, and an ending-flat result that did not rely on the simulator's failure-bypassing forced close |
 
 All gates must pass simultaneously. Every pass and failure is stored in the local audit database.
 Changing a fingerprinted signal, exit setting, bar interval, decision stride, execution session,
@@ -86,7 +88,7 @@ replace this final one-use test.
 ## Avoiding false evidence
 
 - Do not choose the best configuration and then describe its training return as out-of-sample.
-- Do not inspect, retune on, or rerun the final holdout. Under policy v8, a claimed holdout is used
+- Do not inspect, retune on, or rerun the final holdout. Under policy v9, a claimed holdout is used
   once and remains consumed even when it fails.
 - Do not ignore rejected fills, open ending positions, costs, negative days, or zero-trade folds.
 - Do not compare two configurations on different hashes.

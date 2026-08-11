@@ -19,10 +19,13 @@ Shadow mode and live order authority are mutually exclusive in both the controll
 shadow while a live grant exists is rejected; authorizing or starting real automation while shadow
 is active is rejected. Stopping shadow never sells a real position because it never owned one.
 
-Because shadow consumes the live controller's signal stream, GRANDE Alpha overwrites its signal,
-exit, and trading-window fields with the current live EMA settings at start. Virtual sizing and
-cost assumptions still come from the sandbox profile. The start receipt records the resulting
-strategy fingerprint so a later audit can detect configuration drift.
+Because shadow consumes the live controller's signal stream, GRANDE Alpha overwrites its strategy,
+signal, exit, and trading-window fields with the selected runtime settings at start. Virtual sizing
+and cost assumptions still come from the sandbox profile. The default runtime champion is
+**CASH / hold**, which emits only a flat signal and requests no TQQQ or SQQQ position. Selecting a
+different supported runtime policy is deliberate, changes the strategy fingerprint, and does not
+imply profitability or unlock real orders. Changing runtime settings stops the active shadow run so
+old virtual execution assumptions cannot continue under a new signal configuration.
 
 ## Tuesday, August 11, 2026 engineering session
 

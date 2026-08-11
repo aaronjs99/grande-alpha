@@ -9,6 +9,7 @@ from pathlib import Path
 from platformdirs import user_data_path
 
 from grande_alpha.execution import execution_profile
+from grande_alpha.strategy import STRATEGY_NAMES
 
 APP_NAME = "GRANDEAlpha"
 DISPLAY_NAME = "GRANDE Alpha"
@@ -16,7 +17,7 @@ LEGACY_APP_NAME = "MomentumTrader"
 MCP_URL = "https://agent.robinhood.com/mcp/trading"
 ONBOARDING_VERSION = 1
 DISCLOSURE_VERSION = "2026-08"
-CADENCE_VERSION = 4
+CADENCE_VERSION = 5
 
 
 @dataclass
@@ -37,6 +38,9 @@ class AppConfig:
     # One policy action is selected only after this many completed analysis bars.
     # The default therefore gives t_analysis=5s and t_trade=15s.
     trade_every_bars: int = 3
+    # Runtime execution champion. Research sandbox presets remain independent.
+    # Legacy files that predate this field migrate to the fail-safe cash policy.
+    strategy_name: str = "cash"
     # Defaults copied into each separately confirmed live grant. The user can
     # change them again in the grant dialog before any authority is created.
     market_hours: str = "regular_hours"
@@ -86,6 +90,8 @@ class AppConfig:
             raise ValueError("Analysis bar must be between 1 and 300 seconds")
         if not 2 <= self.trade_every_bars <= 120:
             raise ValueError("Trade decisions must be separated by 2 to 120 analysis bars")
+        if self.strategy_name not in STRATEGY_NAMES:
+            raise ValueError(f"Unknown runtime strategy: {self.strategy_name}")
         execution_profile(self)
         if self.settlement_model not in {"cash_t1", "instant"}:
             raise ValueError("Settlement model must be cash_t1 or instant")
@@ -158,6 +164,8 @@ def migrate_config_payload(raw: dict) -> dict:
         )
     if version < 4:
         upgraded["settlement_model"] = "cash_t1"
+    if version < 5:
+        upgraded.setdefault("strategy_name", "cash")
     upgraded["cadence_version"] = CADENCE_VERSION
     return upgraded
 

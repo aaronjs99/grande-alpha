@@ -4,6 +4,7 @@ from PySide6.QtCore import Signal
 from PySide6.QtWidgets import QGroupBox, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 
 from grande_alpha.config import AppConfig
+from grande_alpha.strategy import STRATEGY_NAMES
 
 
 class WelcomeWidget(QWidget):
@@ -79,4 +80,8 @@ class WelcomeWidget(QWidget):
         if config.live_trading_enabled:
             enabled.append("real-order controls")
         suffix = ", ".join(enabled) if enabled else "no optional capabilities"
-        self.mode.setText(f"RESEARCH MODE · {suffix}. Local sandbox and CSV import remain available.")
+        champion = STRATEGY_NAMES.get(config.strategy_name, config.strategy_name)
+        self.mode.setText(
+            f"RUNTIME CHAMPION · {champion}. RESEARCH MODE · {suffix}. "
+            "Local sandbox and CSV import remain available; no strategy is guaranteed profitable."
+        )
