@@ -54,8 +54,9 @@ def _number(value: Any, default: float = 0.0) -> float:
 
 
 class RobinhoodMCPBroker(Broker):
-    def __init__(self, server_url: str = MCP_URL) -> None:
+    def __init__(self, server_url: str = MCP_URL, *, allow_interactive_auth: bool = True) -> None:
         self.server_url = server_url
+        self.allow_interactive_auth = allow_interactive_auth
         self.storage = CredentialTokenStorage()
         self._tools: dict[str, dict[str, Any]] = {}
         self._requests: asyncio.Queue[_ToolRequest | None] | None = None
@@ -107,12 +108,21 @@ class RobinhoodMCPBroker(Broker):
         this owner through a queue instead of touching ClientSession directly.
         """
         callback = OAuthCallbackServer()
-        callback.start()
+        if self.allow_interactive_auth:
+            callback.start()
 
         async def redirect_handler(url: str) -> None:
+            if not self.allow_interactive_auth:
+                raise BrokerError(
+                    "Auto-shadow requires cached OAuth credentials; interactive browser consent is blocked"
+                )
             await asyncio.to_thread(webbrowser.open, url, 2)
 
         async def callback_handler() -> tuple[str, str | None]:
+            if not self.allow_interactive_auth:
+                raise BrokerError(
+                    "Auto-shadow requires cached OAuth credentials; OAuth callback is blocked"
+                )
             return await asyncio.to_thread(callback.wait, 300.0)
 
         metadata = OAuthClientMetadata.model_validate(
@@ -181,7 +191,8 @@ class RobinhoodMCPBroker(Broker):
             self._accepting_calls = False
             self._tools.clear()
             self._fail_pending_requests(BrokerError("Robinhood disconnected"))
-            callback.stop()
+            if self.allow_interactive_auth:
+                callback.stop()
 
     async def _serve_requests(self, session: ClientSession) -> None:
         if self._requests is None:
@@ -303,7 +314,13 @@ class RobinhoodMCPBroker(Broker):
             item = row["quote"]
             regular_time = _datetime(item.get("venue_last_trade_time"))
             extended_time = _datetime(item.get("venue_last_non_reg_trade_time"))
-            timestamp = max(filter(None, [regular_time, extended_time]), default=datetime.now(UTC))
+            venue_times = [value for value in (regular_time, extended_time) if value is not None]
+            # A local receive time is not evidence that a venue quote is current.  Missing
+            # venue timestamps therefore make the row unusable instead of manufacturing a
+            # fresh-looking quote, which is especially important for unattended shadow runs.
+            if not venue_times:
+                continue
+            timestamp = max(venue_times)
             last = item.get("last_trade_price")
             if extended_time and (not regular_time or extended_time > regular_time):
                 last = item.get("last_non_reg_trade_price") or last

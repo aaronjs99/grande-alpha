@@ -102,10 +102,17 @@ class MetricCard(QFrame):
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, controller: TradingController, config: AppConfig) -> None:
+    def __init__(
+        self,
+        controller: TradingController,
+        config: AppConfig,
+        *,
+        auto_shadow: bool = False,
+    ) -> None:
         super().__init__()
         self.controller = controller
         self.config = config
+        self.auto_shadow = auto_shadow
         self._snapshot = TradingSnapshot()
         self._chart_times: deque[float] = deque(maxlen=1800)
         self._chart_prices: deque[float] = deque(maxlen=1800)
@@ -127,6 +134,12 @@ class MainWindow(QMainWindow):
         self.reconcile_timer.setInterval(int(config.reconcile_seconds * 1000))
         self.reconcile_timer.timeout.connect(lambda: asyncio.create_task(self.controller.reconcile()))
         self.reconcile_timer.start()
+        self.auto_shadow_close_timer = QTimer(self)
+        self.auto_shadow_close_timer.setInterval(1_000)
+        self.auto_shadow_close_timer.timeout.connect(self._check_auto_shadow_close)
+        if self.auto_shadow:
+            self.auto_shadow_close_timer.start()
+            QTimer.singleShot(0, lambda: asyncio.create_task(self._auto_start_shadow()))
 
     def _build_ui(self) -> None:
         root = QWidget()
@@ -605,6 +618,26 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             QMessageBox.critical(self, "Robinhood connection", str(exc))
 
+    async def _auto_start_shadow(self) -> None:
+        started = await self.controller.auto_start_shadow()
+        if not started:
+            self.status.setText("AUTO SHADOW BLOCKED • No broker writes were attempted")
+
+    def _check_auto_shadow_close(self) -> None:
+        if self.auto_shadow and self.controller.auto_shadow_session_complete():
+            self.auto_shadow_close_timer.stop()
+            asyncio.create_task(self._finish_auto_shadow_session())
+
+    async def _finish_auto_shadow_session(self) -> None:
+        try:
+            await self.controller.disconnect_shadow_only(
+                "AUTO SHADOW COMPLETE at regular-session close (4:00 PM ET)",
+                flatten_virtual=True,
+            )
+        finally:
+            self._closing_after_cleanup = True
+            self.close()
+
     def _authorize(self) -> None:
         if not self._snapshot.account or not self._snapshot.portfolio:
             return
@@ -804,7 +837,11 @@ class MainWindow(QMainWindow):
         shadow = self._snapshot.shadow_running
         broker_enabled = self.config.broker_connection_enabled
         live_enabled = self.config.live_trading_enabled
-        evidence_ready = live_enabled and self.controller.live_evidence_ready()
+        evidence_ready = (
+            not self.controller.shadow_only_runtime
+            and live_enabled
+            and self.controller.live_evidence_ready()
+        )
         self.broker_panel.setVisible(broker_enabled)
         self.connect_button.setVisible(broker_enabled)
         self.shadow_button.setVisible(broker_enabled)
@@ -813,7 +850,9 @@ class MainWindow(QMainWindow):
         self.kill_button.setVisible(evidence_ready)
         self.flatten_button.setVisible(evidence_ready)
         self.mode_badge.setText(
-            "LIVE EVIDENCE READY"
+            "AUTO SHADOW ONLY — WRITES BLOCKED"
+            if self.controller.shadow_only_runtime
+            else "LIVE EVIDENCE READY"
             if evidence_ready
             else "SHADOW ONLY — EVIDENCE REQUIRED"
             if live_enabled
@@ -949,6 +988,10 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event: QCloseEvent) -> None:
         if self._closing_after_cleanup:
             event.accept()
+            return
+        if self.controller.shadow_only_runtime and self._snapshot.connected:
+            event.ignore()
+            asyncio.create_task(self._shutdown_then_close())
             return
         if self._snapshot.connected:
             answer = QMessageBox.question(

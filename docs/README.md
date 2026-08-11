@@ -11,7 +11,7 @@ Start with:
 7. [Latest baseline validation](BASELINE_VALIDATION_2026-08-09.md) — the earlier published negative baseline result.
 8. [First live-session runbook](MONDAY_RUNBOOK.md) — optional, high-risk, consent-gated broker use.
 9. [Strategy and profit mechanics](STRATEGY_AND_PROFIT.md) — baseline logic and expectancy, without a profit promise.
-10. [Shadow mode](SHADOW_MODE.md) — current broker data with fictional fills.
+10. [Shadow mode](SHADOW_MODE.md) and [scheduled weekday shadow](SCHEDULED_SHADOW.md) — current broker data with fictional fills and the optional per-user startup task.
 11. [Command-line companion](CLI.md) — the same sandbox, evidence gates, receipts, and glossary in a wrapping terminal interface.
 12. [Trading sessions and order routes](TRADING_SESSIONS.md), [low-latency execution](LOW_LATENCY_EXECUTION.md), [architecture](SYSTEM_ARCHITECTURE.md), and [data sources](DATA_SOURCES.md).
 13. [Troubleshooting](TROUBLESHOOTING.md) and [daily journal](DAILY_JOURNAL_TEMPLATE.md).

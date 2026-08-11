@@ -30,6 +30,11 @@ A valid engineering result has zero real-order authorization, zero submitted rea
 explainable timing and state transitions, correct `cash_t1` cash buckets, and a reconcilable final
 receipt. Profit is not an acceptance criterion.
 
+For future weekdays, the optional [scheduled live-shadow setup](SCHEDULED_SHADOW.md) can launch the
+application at 6:20 AM local time with `--auto-shadow`. Installation is explicit and per-user; a
+scheduled launch still must pass the application's broker and readiness checks before virtual fills
+begin. Keep the application monitored.
+
 ## Before enabling anything
 
 - Run **Morning Check.cmd**. Continue only if the broker read path passes and the app reports the

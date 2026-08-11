@@ -145,7 +145,23 @@ class LiveShadowEngine:
         self._mark(quotes)
         return fills
 
-    def stop(self, quotes: dict[str, Quote] | None = None) -> ShadowState:
+    def stop(
+        self,
+        quotes: dict[str, Quote] | None = None,
+        *,
+        flatten_at: datetime | None = None,
+        flatten_reason: str = "Virtual end-of-day flatten",
+    ) -> ShadowState:
+        if flatten_at is not None and self.state.position is not None:
+            _complete, fill = self._transition(
+                flatten_at,
+                None,
+                flatten_reason,
+                quotes or {},
+                force_fill=True,
+            )
+            if fill is not None:
+                self.state.fills.append(fill)
         self.state.active = False
         self._pending = None
         self._pending_session = None
@@ -159,6 +175,8 @@ class LiveShadowEngine:
         target: str | None,
         reason: str,
         quotes: dict[str, Quote],
+        *,
+        force_fill: bool = False,
     ) -> tuple[bool, ShadowFill | None]:
         position = self.state.position
         if position:
@@ -168,7 +186,7 @@ class LiveShadowEngine:
             if not quote:
                 return False, None
             price = self._price(quote, "sell")
-            if self.config.order_type == "limit":
+            if self.config.order_type == "limit" and not force_fill:
                 limit_price = quote.bid * (1 - self.config.limit_offset_bps / 10_000)
                 if price < limit_price:
                     return False, None

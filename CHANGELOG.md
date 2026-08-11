@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.13.0 - 2026-08-11
+
+- Added an opt-in, per-user Windows task that launches GRANDE Alpha at 6:20 AM local time on
+  weekdays, can wake an already logged-in sleeping computer, never stores a Windows password,
+  never catches up a missed start, and prevents overlapping runs.
+- Added a dedicated `--auto-shadow` runtime with a broker-level read-only facade that rejects order
+  review, placement, and cancellation regardless of UI or controller state.
+- Required cached noninteractive OAuth, exactly one active Agentic account, no open Agentic orders,
+  no real TQQQ/SQQQ position, a valid reconciled portfolio, and exact fresh venue-timestamped
+  QQQ/TQQQ/SQQQ quotes before an automatic shadow run can begin.
+- Connected at the scheduled pre-open time, waited until 9:30 AM ET, discarded premarket strategy
+  state, and failed closed if readiness was not achieved by 9:35 AM ET.
+- Stopped virtual execution and disconnected without broker writes after data or account transport
+  failure, and automatically ended each scheduled run at the 4:00 PM ET regular-session close.
+- Stopped manufacturing a current timestamp for provider quotes that omit venue timestamps; those
+  rows are now unusable for automatic freshness checks.
+
 ## 0.12.0 - 2026-08-10
 
 - Added a one-use, purged final holdout lifecycle that reserves the unseen block before candidate

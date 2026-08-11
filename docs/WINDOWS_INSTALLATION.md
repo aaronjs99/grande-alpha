@@ -22,7 +22,10 @@ set `GRANDE_ALPHA_RUNTIME_DIR` to another short absolute directory before runnin
 
 `install-local.ps1` creates Desktop and Start Menu shortcuts that launch the source application via
 the trusted system PowerShell and signed Python runtime. The shortcuts point to the current source
-folder, so keep that folder in its installed location.
+folder, so keep that folder in its installed location. It also creates a Start Menu shortcut for
+the optional scheduled-shadow setup; it does not register or enable a task automatically. See
+[Scheduled weekday live shadow](SCHEDULED_SHADOW.md) for the one-time install, status, definition,
+and removal commands.
 
 ## Why the unsigned executable may not start
 

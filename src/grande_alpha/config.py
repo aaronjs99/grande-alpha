@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import shutil
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -69,6 +70,14 @@ class AppConfig:
         return self.bar_seconds * self.trade_every_bars
 
     def validate_cadence(self) -> None:
+        try:
+            max_quote_age = float(self.default_max_quote_age_seconds)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("Maximum quote age must be finite and positive") from exc
+        if isinstance(self.default_max_quote_age_seconds, bool) or not (
+            math.isfinite(max_quote_age) and max_quote_age > 0
+        ):
+            raise ValueError("Maximum quote age must be finite and positive")
         if not 0.25 <= self.poll_seconds <= 5.0:
             raise ValueError("Quote request target must be between 0.25 and 5 seconds")
         if not 2.0 <= self.reconcile_seconds <= 60.0:

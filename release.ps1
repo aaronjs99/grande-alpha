@@ -55,8 +55,9 @@ foreach ($Directory in @('src', 'docs', 'assets', 'tests')) {
 }
 foreach ($File in @(
     'pyproject.toml', 'runtime-path.ps1', 'setup.ps1', 'run.ps1', 'cli.ps1', 'install-local.ps1',
-    'doctor.ps1', 'verify.ps1', 'build.ps1',
-    'Start GRANDE Alpha.cmd', 'GRANDE Alpha CLI.cmd', 'README.md', 'CHANGELOG.md', 'LICENSE', 'NOTICE', 'PRIVACY.md',
+    'doctor.ps1', 'verify.ps1', 'build.ps1', 'manage-shadow-schedule.ps1', 'scheduled-shadow.ps1',
+    'Start GRANDE Alpha.cmd', 'GRANDE Alpha CLI.cmd', 'Scheduled Shadow Setup.cmd',
+    'README.md', 'CHANGELOG.md', 'LICENSE', 'NOTICE', 'PRIVACY.md',
     'SECURITY.md', 'SUPPORT.md', 'CONTRIBUTING.md', 'CODE_OF_CONDUCT.md'
 )) {
     Copy-Item -LiteralPath (Join-Path $ProjectRoot $File) -Destination $SourceRoot
