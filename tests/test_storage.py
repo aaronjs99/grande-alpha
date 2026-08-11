@@ -1,3 +1,4 @@
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -47,6 +48,103 @@ def test_receipts_and_idempotent_intents_are_persisted(tmp_path: Path) -> None:
     store.update_intent(order.ref_id, "broker-1", "queued")
     receipts = store.recent_receipts()
     assert receipts[0]["summary"] == "hello"
+    store.close()
+
+
+def test_order_intent_submission_provenance_migrates_and_is_atomic(tmp_path: Path) -> None:
+    path = tmp_path / "legacy.db"
+    connection = sqlite3.connect(path)
+    connection.execute(
+        """CREATE TABLE order_intents(
+        ref_id TEXT PRIMARY KEY,created_at TEXT NOT NULL,symbol TEXT NOT NULL,
+        side TEXT NOT NULL,reason TEXT NOT NULL,payload_json TEXT NOT NULL,
+        broker_order_id TEXT,broker_state TEXT)"""
+    )
+    connection.commit()
+    connection.close()
+
+    store = AuditStore(path)
+    columns = {
+        row["name"] for row in store._connection.execute("PRAGMA table_info(order_intents)")
+    }
+    assert {
+        "account_number",
+        "authority_id",
+        "strategy_fingerprint",
+        "authorized_notional",
+        "submission_started_at",
+    } <= columns
+    intent = OrderIntent("ref-submit", "TQQQ", "buy", "test", dollar_amount=10.0)
+    store.record_intent(intent)
+    store.mark_intent_submitting(
+        intent.ref_id,
+        account_number="acct-1",
+        authority_id="authority-1",
+        strategy_fingerprint="fingerprint-1",
+        authorized_notional=10.0,
+    )
+
+    unresolved = store.unresolved_order_intents("acct-1")
+    assert [row["ref_id"] for row in unresolved] == [intent.ref_id]
+    assert unresolved[0]["broker_state"] == "submitting"
+    with pytest.raises(ValueError, match="already invoked"):
+        store.mark_intent_submitting(
+            intent.ref_id,
+            account_number="acct-1",
+            authority_id="authority-1",
+            strategy_fingerprint="fingerprint-1",
+            authorized_notional=10.0,
+        )
+    with pytest.raises(ValueError, match="finite and nonnegative"):
+        store.mark_intent_submitting(
+            "missing",
+            account_number="acct-1",
+            authority_id="authority-1",
+            strategy_fingerprint="fingerprint-1",
+            authorized_notional=float("nan"),
+        )
+    store.update_intent(intent.ref_id, None, "submission_uncertain")
+    assert store.unresolved_order_intents("acct-1")
+    store.update_intent(intent.ref_id, "broker-1", "filled")
+    assert store.unresolved_order_intents("acct-1") == []
+    store.close()
+
+
+def test_live_daily_usage_counts_placement_invocations_by_eastern_date(tmp_path: Path) -> None:
+    store = AuditStore(tmp_path / "audit.db")
+    for ref_id, amount in (("late-et", 10.0), ("next-et", 20.0), ("other-account", 99.0)):
+        intent = OrderIntent(ref_id, "TQQQ", "buy", "test", dollar_amount=amount)
+        store.record_intent(intent)
+        store.mark_intent_submitting(
+            ref_id,
+            account_number="acct-2" if ref_id == "other-account" else "acct-1",
+            authority_id="authority-1",
+            strategy_fingerprint="fingerprint-1",
+            authorized_notional=amount,
+        )
+    with store._connection:
+        store._connection.execute(
+            "UPDATE order_intents SET submission_started_at=? WHERE ref_id='late-et'",
+            ("2026-08-12T03:30:00+00:00",),  # Aug 11 at 11:30 PM ET
+        )
+        store._connection.execute(
+            "UPDATE order_intents SET submission_started_at=? WHERE ref_id='next-et'",
+            ("2026-08-12T04:30:00+00:00",),  # Aug 12 at 12:30 AM ET
+        )
+    store.receipt("authority_action", "chain", {"receipt_digest": "digest-2"})
+
+    first = store.live_daily_usage("acct-1", "2026-08-11")
+    second = store.live_daily_usage("acct-1", "2026-08-12")
+
+    assert first == {
+        "daily_notional": 10.0,
+        "submitted_orders": 1,
+        "last_receipt_digest": "digest-2",
+    }
+    assert second["daily_notional"] == 20.0
+    assert second["submitted_orders"] == 1
+    with pytest.raises(ValueError, match="YYYY-MM-DD"):
+        store.live_daily_usage("acct-1", "08/12/2026")
     store.close()
 
 
@@ -160,6 +258,7 @@ def test_live_evidence_is_exact_strategy_scoped(tmp_path: Path, monkeypatch) -> 
         gates=_passing_gates(),
         risk_envelope={
             "max_order_notional": 25.0,
+            "max_daily_notional": 300.0,
             "max_total_exposure": 40.0,
             "max_daily_loss": 2.0,
             "max_trades": 6,
@@ -175,6 +274,7 @@ def test_live_evidence_is_exact_strategy_scoped(tmp_path: Path, monkeypatch) -> 
             fingerprint,
             requested_envelope={
                 "max_order_notional": 25.0,
+                "max_daily_notional": 300.0,
                 "max_total_exposure": 40.0,
                 "max_daily_loss": 2.0,
                 "max_trades": 6,
@@ -189,6 +289,7 @@ def test_live_evidence_is_exact_strategy_scoped(tmp_path: Path, monkeypatch) -> 
             fingerprint,
             requested_envelope={
                 "max_order_notional": float("nan"),
+                "max_daily_notional": 300.0,
                 "max_total_exposure": 40.0,
                 "max_daily_loss": 2.0,
                 "max_trades": 6,
@@ -371,6 +472,7 @@ def test_noncash_certificate_cannot_omit_or_forge_runtime_sizing_parity(tmp_path
     )
     envelope = {
         "max_order_notional": 25.0,
+        "max_daily_notional": 300.0,
         "max_total_exposure": 40.0,
         "max_daily_loss": 2.0,
         "max_trades": 6,
@@ -440,6 +542,7 @@ def test_live_certificate_rejects_holdout_that_needed_bypassed_flatten(tmp_path:
             gates=_passing_gates(),
             risk_envelope={
                 "max_order_notional": 25.0,
+                "max_daily_notional": 300.0,
                 "max_total_exposure": 40.0,
                 "max_daily_loss": 2.0,
                 "max_trades": 6,

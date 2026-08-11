@@ -21,8 +21,9 @@ authoritative. See Robinhood's current [extended-hours](https://robinhood.com/us
 **Settings & Permissions → Automatic order route defaults** stores a default only. It grants no
 authority. **Safety → Authorize Live Session** displays the route again and allows the user to change
 it before typing the account-specific confirmation. The resulting live grant binds the exact session,
-order type, time in force, and limit offset. Any intent that differs is rejected locally before broker
-review.
+order type, time in force, limit offset, account, ticker tuple, and strategy fingerprint. It expires
+within the same Eastern calendar day and is never restored after restart. Any intent that differs is
+rejected locally before broker review.
 
 The sandbox exposes the same fields. Evidence-policy version 9 binds them and the settlement model
 into the strategy fingerprint, adds a complete-session-coverage gate, and requires a one-use final

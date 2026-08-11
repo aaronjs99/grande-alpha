@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
+from grande_alpha.market_calendar import REGULAR_OPEN, regular_session_times
 from grande_alpha.models import Regime, Signal
 
 EASTERN = ZoneInfo("America/New_York")
@@ -46,9 +47,18 @@ def trading_date(timestamp: datetime, market_hours: str = "regular_hours") -> da
 def session_bounds(timestamp: datetime, market_hours: str) -> tuple[datetime, datetime]:
     trade_date = trading_date(timestamp, market_hours)
     if market_hours == "regular_hours":
+        session = regular_session_times(trade_date)
+        if session is None:
+            # Preserve the established tuple API while representing a closed
+            # session as a zero-length interval.  market_session_allowed also
+            # rejects it explicitly, so the shared endpoint cannot admit the
+            # exact boundary instant.
+            closed = datetime.combine(trade_date, REGULAR_OPEN, tzinfo=EASTERN)
+            return closed, closed
+        opened_at, closed_at = session
         return (
-            datetime.combine(trade_date, time(9, 30), tzinfo=EASTERN),
-            datetime.combine(trade_date, time(16, 0), tzinfo=EASTERN),
+            datetime.combine(trade_date, opened_at, tzinfo=EASTERN),
+            datetime.combine(trade_date, closed_at, tzinfo=EASTERN),
         )
     if market_hours == "extended_hours":
         return (
@@ -70,6 +80,8 @@ def market_session_allowed(
     local = timestamp.astimezone(EASTERN)
     trade_date = trading_date(timestamp, market_hours)
     if trade_date.weekday() >= 5:
+        return False
+    if market_hours == "regular_hours" and regular_session_times(trade_date) is None:
         return False
     opened, closed = session_bounds(timestamp, market_hours)
     start = opened.timestamp() + no_trade_open_minutes * 60

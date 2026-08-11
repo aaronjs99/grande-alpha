@@ -1,10 +1,22 @@
 from __future__ import annotations
 
+import random
 import uuid
+from collections import deque
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from typing import Any
 
+from grande_alpha.candidate_execution import (
+    annualized_volatility,
+    contract_from_config,
+    daily_loss_reached,
+    effective_spread_bps,
+    execution_price,
+    fillable_quantity,
+    next_consecutive_losses,
+    size_entry,
+)
 from grande_alpha.models import Quote, Signal
 from grande_alpha.policy import DecisionPolicy, PolicyConfig, PolicyPosition, session_key
 from grande_alpha.sandbox import SandboxConfig
@@ -24,6 +36,10 @@ class ShadowFill:
     reason: str
     cash_after: float
     unsettled_cash_after: float = 0.0
+    commission: float = 0.0
+    requested_quantity: float = 0.0
+    fill_fraction: float = 1.0
+    execution_cost: float = 0.0
 
     def as_dict(self) -> dict[str, Any]:
         values = asdict(self)
@@ -53,33 +69,55 @@ class ShadowState:
     fills: list[ShadowFill] = field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class _PendingTransition:
+    target: str | None
+    reason: str
+    due_analysis_count: int
+    session: str
+
+
 class LiveShadowEngine:
     """Live-quote virtual executor. This module has no broker dependency by design."""
 
-    def __init__(self, config: SandboxConfig) -> None:
+    def __init__(self, config: SandboxConfig, *, bar_minutes: float | None = None) -> None:
         config.validate()
         self.config = config
+        self.contract = contract_from_config(config)
         self.policy = DecisionPolicy(
             PolicyConfig(
                 bullish_symbol="TQQQS",
                 bearish_symbol="SQQQS",
-                hard_stop_pct=config.hard_stop_pct,
-                take_profit_pct=config.take_profit_pct,
-                max_hold_minutes=config.max_hold_minutes,
-                no_trade_open_minutes=config.no_trade_open_minutes,
-                no_trade_close_minutes=config.no_trade_close_minutes,
-                market_hours=config.market_hours,
+                hard_stop_pct=self.contract.hard_stop_pct,
+                take_profit_pct=self.contract.take_profit_pct,
+                max_hold_minutes=self.contract.max_hold_minutes,
+                no_trade_open_minutes=self.contract.no_trade_open_minutes,
+                no_trade_close_minutes=self.contract.no_trade_close_minutes,
+                market_hours=self.contract.market_hours,
             )
         )
         self.state = ShadowState(
-            starting_cash=config.initial_cash,
-            cash=config.initial_cash,
-            equity=config.initial_cash,
+            starting_cash=self.contract.initial_cash,
+            cash=self.contract.initial_cash,
+            equity=self.contract.initial_cash,
         )
-        self._pending: tuple[str | None, str] | None = None
-        self._pending_session: str | None = None
+        self._pending: _PendingTransition | None = None
         self._current_session: str | None = None
         self._analysis_count = 0
+        self._bar_minutes = (
+            float(bar_minutes)
+            if bar_minutes is not None
+            else max(float(config.csv_bar_seconds) / 60.0, 1.0 / 60.0)
+        )
+        if self._bar_minutes <= 0:
+            raise ValueError("Analysis bar duration must be positive")
+        self._rng = random.Random(self.contract.random_seed)
+        self._entries_by_session: dict[str, int] = {}
+        self._session_start_equity: dict[str, float] = {}
+        self._paused_sessions: set[str] = set()
+        self._consecutive_losses = 0
+        self._recent_returns = {"TQQQS": deque(maxlen=30), "SQQQS": deque(maxlen=30)}
+        self._previous_prices: dict[str, float] = {}
 
     def on_bar(self, timestamp: datetime, signal: Signal, quotes: dict[str, Quote]) -> list[ShadowFill]:
         """Advance a synthetic bar trace whose decision fills on the next call."""
@@ -92,12 +130,7 @@ class LiveShadowEngine:
         signal: Signal,
         quotes: dict[str, Quote],
     ) -> list[ShadowFill]:
-        """Execute a completed-bar decision at its first causally available quote.
-
-        The controller calls this only after the analysis bar has completed. ``timestamp``
-        and ``quotes`` therefore describe the first quote/open of the following bar, never
-        a price from inside the bar that produced ``signal``.
-        """
+        """Execute a completed-bar decision at its first causally available quote."""
 
         return self._advance(timestamp, signal, quotes, execute_current_decision=True)
 
@@ -113,37 +146,70 @@ class LiveShadowEngine:
             return []
         self._analysis_count += 1
         fills: list[ShadowFill] = []
-        current_session = session_key(timestamp, self.config.market_hours)
+        current_session = session_key(timestamp, self.contract.market_hours)
         if self._current_session is None:
             self._current_session = current_session
         elif current_session != self._current_session:
-            if self.config.settlement_model == "cash_t1":
+            if self.contract.settlement_model == "cash_t1":
                 self.state.cash += self.state.unsettled_cash
                 self.state.unsettled_cash = 0.0
             self._current_session = current_session
+            self._consecutive_losses = 0
         if (
             self._pending is not None
-            and self.config.time_in_force == "gfd"
-            and self._pending_session != current_session
+            and self.contract.time_in_force == "gfd"
+            and self._pending.session != current_session
         ):
             self._pending = None
-            self._pending_session = None
+
+        self._update_returns(quotes)
+        self._mark(quotes)
+        self._session_start_equity.setdefault(current_session, self.state.equity)
+        if daily_loss_reached(
+            self.contract,
+            session_start_equity=self._session_start_equity[current_session],
+            current_equity=self.state.equity,
+        ):
+            self._paused_sessions.add(current_session)
+            if self.state.position is not None and self._pending is None:
+                self._pending = _PendingTransition(
+                    None,
+                    "Daily loss pause",
+                    self._analysis_count + 1 + self.contract.latency_bars,
+                    current_session,
+                )
+
         window_allowed = self.policy.trading_window_allowed(timestamp)
-        pending_is_exit = (
+        pending_is_exit = bool(
             self.state.position is not None
-            and self._pending
-            and (self._pending[0] != self.state.position.symbol)
+            and self._pending is not None
+            and self._pending.target != self.state.position.symbol
         )
         pending_window = self.policy.exit_window_allowed(timestamp) if pending_is_exit else window_allowed
-        if self._pending is not None and pending_window:
-            target, reason = self._pending
-            complete, fill = self._transition(timestamp, target, reason, quotes)
+        if (
+            self._pending is not None
+            and self._analysis_count >= self._pending.due_analysis_count
+            and pending_window
+        ):
+            complete, fill = self._transition(
+                timestamp,
+                self._pending.target,
+                self._pending.reason,
+                quotes,
+            )
             if fill:
                 fills.append(fill)
                 self.state.fills.append(fill)
+                self._record_realized(fill, current_session)
             if complete:
                 self._pending = None
-                self._pending_session = None
+            elif self._pending is not None:
+                self._pending = _PendingTransition(
+                    self._pending.target,
+                    self._pending.reason,
+                    self._analysis_count + 1,
+                    current_session,
+                )
 
         position = self.state.position
         marked = None
@@ -160,29 +226,56 @@ class LiveShadowEngine:
             if position
             else None
         )
-        if self._analysis_count % self.config.decision_stride == 0:
+        if self._analysis_count % self.contract.decision_stride == 0:
             decision = self.policy.decide(signal, timestamp, policy_position)
             current = position.symbol if position else None
             decision_window = (
                 self.policy.exit_window_allowed(timestamp) if current is not None else window_allowed
             )
-            if decision_window and decision.target_symbol != current and self._pending is None:
-                if execute_current_decision:
+            entry_blocked = (
+                current is None
+                and decision.target_symbol is not None
+                and (
+                    current_session in self._paused_sessions
+                    or self._entries_by_session.get(current_session, 0)
+                    >= self.contract.max_entries_per_day
+                )
+            )
+            if (
+                decision_window
+                and not entry_blocked
+                and decision.target_symbol != current
+                and self._pending is None
+            ):
+                due = self._analysis_count + self.contract.latency_bars
+                if not execute_current_decision:
+                    due += 1
+                pending = _PendingTransition(
+                    decision.target_symbol,
+                    decision.reason,
+                    due,
+                    current_session,
+                )
+                if due <= self._analysis_count:
                     complete, fill = self._transition(
                         timestamp,
-                        decision.target_symbol,
-                        decision.reason,
+                        pending.target,
+                        pending.reason,
                         quotes,
                     )
                     if fill:
                         fills.append(fill)
                         self.state.fills.append(fill)
+                        self._record_realized(fill, current_session)
                     if not complete:
-                        self._pending = (decision.target_symbol, decision.reason)
-                        self._pending_session = current_session
+                        self._pending = _PendingTransition(
+                            pending.target,
+                            pending.reason,
+                            self._analysis_count + 1,
+                            current_session,
+                        )
                 else:
-                    self._pending = (decision.target_symbol, decision.reason)
-                    self._pending_session = current_session
+                    self._pending = pending
         self._mark(quotes)
         return fills
 
@@ -205,7 +298,6 @@ class LiveShadowEngine:
                 self.state.fills.append(fill)
         self.state.active = False
         self._pending = None
-        self._pending_session = None
         if quotes:
             self._mark(quotes)
         return self.state
@@ -226,53 +318,110 @@ class LiveShadowEngine:
             quote = quotes.get(UNDERLYING[position.symbol])
             if not quote:
                 return False, None
-            price = self._price(quote, "sell")
-            if self.config.order_type == "limit" and not force_fill:
-                limit_price = quote.bid * (1 - self.config.limit_offset_bps / 10_000)
+            if not force_fill and self._rng.random() < self.contract.rejection_rate_pct / 100.0:
+                return False, None
+            spread = effective_spread_bps(self.contract, quoted_spread_bps=quote.spread_bps)
+            price = execution_price(
+                self.contract,
+                reference_price=quote.mid,
+                side="sell",
+                spread_bps=spread,
+            )
+            if self.contract.order_type == "limit" and not force_fill:
+                modeled_bid = quote.mid * (1 - spread / 20_000)
+                limit_price = modeled_bid * (1 - self.contract.limit_offset_bps / 10_000)
                 if price < limit_price:
                     return False, None
-            proceeds = position.quantity * price - self.config.commission_per_order
-            realized = proceeds - position.entry_cost
-            if self.config.settlement_model == "cash_t1":
+            requested = position.quantity
+            quantity = (
+                requested
+                if force_fill
+                else fillable_quantity(self.contract, requested_quantity=requested)
+            )
+            if quantity <= 0:
+                return False, None
+            cost_share = position.entry_cost * (quantity / position.quantity)
+            proceeds = quantity * price - self.contract.commission_per_order
+            realized = proceeds - cost_share
+            if self.contract.settlement_model == "cash_t1":
                 self.state.unsettled_cash += proceeds
             else:
                 self.state.cash += proceeds
+            remaining = position.quantity - quantity
             self.state.position = None
+            if remaining > 1e-9:
+                self.state.position = ShadowPosition(
+                    position.symbol,
+                    remaining,
+                    position.entry_price,
+                    position.entry_time,
+                    position.entry_cost - cost_share,
+                )
+            execution_cost = max(0.0, (quote.mid - price) * quantity) + self.contract.commission_per_order
             fill = ShadowFill(
                 timestamp,
                 position.symbol,
                 "sell",
-                position.quantity,
+                quantity,
                 price,
                 realized,
                 reason or "Shadow exit",
                 self.state.cash,
                 self.state.unsettled_cash,
+                self.contract.commission_per_order,
+                requested,
+                quantity / requested,
+                execution_cost,
             )
-            return target is None, fill
+            return target is None and self.state.position is None, fill
         if target is None:
+            return True, None
+        current_session = session_key(timestamp, self.contract.market_hours)
+        if (
+            current_session in self._paused_sessions
+            or self._entries_by_session.get(current_session, 0) >= self.contract.max_entries_per_day
+        ):
             return True, None
         quote = quotes.get(UNDERLYING[target])
         if not quote:
             return False, None
-        price = self._price(quote, "buy")
-        if self.config.order_type == "limit":
-            limit_price = quote.ask * (1 + self.config.limit_offset_bps / 10_000)
+        spread = effective_spread_bps(self.contract, quoted_spread_bps=quote.spread_bps)
+        price = execution_price(
+            self.contract,
+            reference_price=quote.mid,
+            side="buy",
+            spread_bps=spread,
+        )
+        if self.contract.order_type == "limit":
+            modeled_ask = quote.mid * (1 + spread / 20_000)
+            limit_price = modeled_ask * (1 + self.contract.limit_offset_bps / 10_000)
             if price > limit_price:
                 return False, None
-        budget = min(
-            self.config.order_notional,
-            self.state.cash * self.config.max_exposure_pct,
-            max(0.0, self.state.cash - self.config.commission_per_order),
+        realized = annualized_volatility(
+            tuple(self._recent_returns[target]),
+            bar_minutes=self._bar_minutes,
+            market_hours=self.contract.market_hours,
         )
-        quantity = budget / price if price > 0 else 0.0
-        if self.config.order_type == "limit":
-            quantity = float(int(quantity))
-        if quantity <= 0:
+        sizing = size_entry(
+            self.contract,
+            equity=self.state.equity,
+            settled_cash=self.state.cash,
+            price=price,
+            realized_volatility=realized,
+        )
+        requested = sizing.requested_quantity
+        if requested <= 0:
             return True, None
-        cost = quantity * price + self.config.commission_per_order
+        if self._rng.random() < self.contract.rejection_rate_pct / 100.0:
+            return False, None
+        quantity = sizing.fillable_quantity
+        if quantity <= 0:
+            return False, None
+        cost = quantity * price + self.contract.commission_per_order
         self.state.cash -= cost
         self.state.position = ShadowPosition(target, quantity, price, timestamp, cost)
+        self._entries_by_session[current_session] = self._entries_by_session.get(current_session, 0) + 1
+        execution_cost = max(0.0, (price - quote.mid) * quantity) + self.contract.commission_per_order
         return True, ShadowFill(
             timestamp,
             target,
@@ -283,16 +432,32 @@ class LiveShadowEngine:
             reason or "Shadow entry",
             self.state.cash,
             self.state.unsettled_cash,
+            self.contract.commission_per_order,
+            requested,
+            quantity / requested,
+            execution_cost,
         )
 
-    def _price(self, quote: Quote, side: str) -> float:
-        reference = (
-            (quote.ask if quote.ask > 0 else quote.mid)
-            if side == "buy"
-            else (quote.bid if quote.bid > 0 else quote.mid)
+    def _record_realized(self, fill: ShadowFill, current_session: str) -> None:
+        if fill.realized_pnl is None:
+            return
+        self._consecutive_losses = next_consecutive_losses(
+            self._consecutive_losses,
+            fill.realized_pnl,
         )
-        direction = 1.0 if side == "buy" else -1.0
-        return reference * (1.0 + direction * self.config.slippage_bps / 10_000.0)
+        if self._consecutive_losses >= self.contract.max_consecutive_losses:
+            self._paused_sessions.add(current_session)
+
+    def _update_returns(self, quotes: dict[str, Quote]) -> None:
+        for alias, underlying in UNDERLYING.items():
+            quote = quotes.get(underlying)
+            if quote is None:
+                continue
+            mark = quote.mid
+            previous = self._previous_prices.get(alias)
+            if previous is not None and previous > 0:
+                self._recent_returns[alias].append(mark / previous - 1.0)
+            self._previous_prices[alias] = mark
 
     def _mark(self, quotes: dict[str, Quote]) -> None:
         value = self.state.cash + self.state.unsettled_cash

@@ -30,7 +30,7 @@ from grande_alpha.models import Account, LiveGrant, Portfolio, Position, Quote, 
 from grande_alpha.privacy import export_diagnostics
 from grande_alpha.sandbox import SandboxConfig, SandboxReplayEngine
 from grande_alpha.storage import AuditStore
-from grande_alpha.ui.dialogs import LiveGrantDialog
+from grande_alpha.ui.dialogs import AuthorityControlPanel, LiveGrantDialog
 from grande_alpha.ui.glossary import TERM_HELP, ExplainedLabel, GlossaryDialog
 from grande_alpha.ui.main_window import MainWindow
 from grande_alpha.ui.sandbox_widget import SandboxWidget
@@ -87,7 +87,7 @@ def test_public_defaults_are_research_only() -> None:
     assert config.market_hours == "regular_hours"
     assert config.order_type == "market"
     assert config.settlement_model == "cash_t1"
-    assert __version__ == "0.14.0"
+    assert __version__ == "0.15.0"
 
 
 def test_controller_constructs_whole_share_limit_intents_from_authorized_route(tmp_path) -> None:
@@ -107,6 +107,7 @@ def test_controller_constructs_whole_share_limit_intents_from_authorized_route(t
             max_orders_per_minute=2,
             max_spread_bps=20,
             max_quote_age_seconds=8,
+            strategy_fingerprint="a" * 64,
             market_hours="extended_hours",
             order_type="limit",
             time_in_force="gfd",
@@ -326,13 +327,49 @@ def test_settings_sandbox_and_live_grant_expose_contextual_help(tmp_path) -> Non
     assert {"Session duration", "Max session loss", "Authorized session"} <= grant_terms
     authorize = grant.buttons.button(QDialogButtonBox.StandardButton.Ok)
     assert not authorize.isEnabled()
-    assert "Check the attestation" in authorize.toolTip()
+    assert "fingerprint" in authorize.toolTip()
     assert any("cannot continuously recycle" in label.text() for label in grant.findChildren(QLabel))
 
     grant.close()
     sandbox.close()
     store.close()
     settings.close()
+
+
+def test_live_grant_binds_exact_scope_and_control_panel_exposes_pause_revoke() -> None:
+    qt_app()
+    account = Account("123456789", "Agentic", "cash", True, "active")
+    fingerprint = "a" * 64
+    dialog = LiveGrantDialog(
+        account,
+        Portfolio(100, 100, 100),
+        AppConfig(),
+        strategy_fingerprint=fingerprint,
+    )
+    dialog.attest.setChecked(True)
+    dialog.confirmation.setText(dialog.phrase)
+
+    assert dialog.buttons.button(QDialogButtonBox.StandardButton.Ok).isEnabled()
+    grant = dialog.grant()
+    assert grant.account_number == account.account_number
+    assert grant.allowed_symbols == ("TQQQ", "SQQQ")
+    assert grant.strategy_fingerprint == fingerprint
+    assert grant.max_daily_notional == dialog.max_daily_notional.value()
+    assert "never remembered" in dialog.scope_note.text()
+
+    events = []
+    panel = AuthorityControlPanel()
+    panel.pause_requested.connect(lambda: events.append("pause"))
+    panel.revoke_requested.connect(lambda: events.append("revoke"))
+    panel.set_authority_state("LIVE", grant, daily_notional_used=10, submitted_orders=1)
+    panel.pause_button.click()
+    panel.revoke_button.click()
+    assert events == ["pause", "revoke"]
+    assert "TQQQ, SQQQ" in panel.status.text()
+    assert not panel.revoke_button.isHidden()
+
+    panel.close()
+    dialog.close()
 
 
 def test_sandbox_restores_latest_evidence_receipt_with_next_step(tmp_path) -> None:
@@ -449,6 +486,7 @@ def test_controller_requires_matching_current_evidence_before_live_authority(
     tmp_path, monkeypatch
 ) -> None:
     monkeypatch.setattr("grande_alpha.evidence.RUNTIME_SIZING_PARITY_CERTIFIED", True)
+    monkeypatch.setattr("grande_alpha.controller.market_session_allowed", lambda *args, **kwargs: True)
     store = AuditStore(tmp_path / "audit.db")
     config = AppConfig(broker_connection_enabled=True, live_trading_enabled=True)
     controller = TradingController(DisabledBroker(), config, store)
@@ -466,6 +504,7 @@ def test_controller_requires_matching_current_evidence_before_live_authority(
         max_orders_per_minute=1,
         max_spread_bps=20.0,
         max_quote_age_seconds=8.0,
+        strategy_fingerprint=strategy_fingerprint(config),
     )
     with pytest.raises(RuntimeError, match="evidence certificate"):
         controller.authorize_live(grant)
@@ -508,6 +547,7 @@ def test_controller_requires_matching_current_evidence_before_live_authority(
         gates=[{"name": name, "passed": True} for name in sorted(REQUIRED_LIVE_GATE_NAMES)],
         risk_envelope={
             "max_order_notional": 10.0,
+            "max_daily_notional": 80.0,
             "max_total_exposure": 20.0,
             "max_daily_loss": 2.0,
             "max_trades": 4,
@@ -516,6 +556,12 @@ def test_controller_requires_matching_current_evidence_before_live_authority(
         },
         holdout_id=holdout_id,
     )
+    controller.snapshot.last_reconcile_at = now
+    controller.snapshot.quotes = {
+        "QQQ": Quote("QQQ", 99.99, 100.01, 100.0, now),
+        "TQQQ": Quote("TQQQ", 49.99, 50.01, 50.0, now),
+        "SQQQ": Quote("SQQQ", 39.99, 40.01, 40.0, now),
+    }
     controller.authorize_live(grant)
     assert controller.snapshot.live_status == "LIVE"
 
@@ -537,7 +583,8 @@ def test_controller_requires_matching_current_evidence_before_live_authority(
     store.close()
 
 
-def test_cash_account_rejects_instant_settlement_live_authority(tmp_path) -> None:
+def test_cash_account_rejects_instant_settlement_live_authority(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr("grande_alpha.controller.market_session_allowed", lambda *args, **kwargs: True)
     store = AuditStore(tmp_path / "audit.db")
     config = AppConfig(
         broker_connection_enabled=True,
@@ -560,6 +607,7 @@ def test_cash_account_rejects_instant_settlement_live_authority(tmp_path) -> Non
         max_orders_per_minute=1,
         max_spread_bps=20.0,
         max_quote_age_seconds=8.0,
+        strategy_fingerprint=strategy_fingerprint(config),
     )
 
     with pytest.raises(RuntimeError, match=r"T\+1 settlement"):

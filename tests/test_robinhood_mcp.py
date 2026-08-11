@@ -39,6 +39,7 @@ class TaskBoundContext:
 class FakeSession:
     def __init__(self) -> None:
         self.call_tasks = []
+        self.timeouts = []
 
     async def initialize(self) -> None:
         return None
@@ -48,8 +49,9 @@ class FakeSession:
             tools=[SimpleNamespace(name=name, inputSchema={}) for name in REQUIRED_TOOLS]
         )
 
-    async def call_tool(self, name, arguments):
+    async def call_tool(self, name, arguments, *, read_timeout_seconds=None):
         self.call_tasks.append(asyncio.current_task())
+        self.timeouts.append(read_timeout_seconds)
         assert name == "get_accounts"
         assert arguments == {}
         return SimpleNamespace(
@@ -90,6 +92,7 @@ async def test_mcp_transport_calls_and_teardown_share_one_owner_task(monkeypatch
     assert transport.owner is session_context.owner
     assert transport.owner is not caller
     assert session.call_tasks == [transport.owner]
+    assert session.timeouts[0].total_seconds() == 10
 
 
 @pytest.mark.asyncio
@@ -145,3 +148,38 @@ async def test_quote_uses_latest_real_venue_timestamp(monkeypatch) -> None:
     quote = (await broker.get_quotes(["QQQ"]))["QQQ"]
     assert quote.last == 100.03
     assert quote.timestamp.isoformat() == "2026-08-11T13:30:01+00:00"
+
+
+@pytest.mark.asyncio
+async def test_paginated_order_set_fails_closed(monkeypatch) -> None:
+    broker = RobinhoodMCPBroker("https://example.invalid/mcp")
+
+    async def fake_call(_name, _arguments):
+        return {"orders": [], "next_page_token": "more"}
+
+    monkeypatch.setattr(broker, "_call", fake_call)
+
+    with pytest.raises(Exception, match="paginated order set"):
+        await broker.get_orders("agentic")
+
+
+@pytest.mark.asyncio
+async def test_order_without_stable_id_fails_closed(monkeypatch) -> None:
+    broker = RobinhoodMCPBroker("https://example.invalid/mcp")
+
+    async def fake_call(_name, _arguments):
+        return {
+            "orders": [
+                {
+                    "id": "",
+                    "symbol": "TQQQ",
+                    "side": "buy",
+                    "state": "queued",
+                }
+            ]
+        }
+
+    monkeypatch.setattr(broker, "_call", fake_call)
+
+    with pytest.raises(Exception, match="stable order id"):
+        await broker.get_orders("agentic")

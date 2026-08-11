@@ -19,6 +19,25 @@ The installed command is also available as `grande-alpha-cli` when its Python Sc
 on `PATH`. Every table wraps to the terminal width; `--width N` gives explicit control without
 truncating long evidence requirements.
 
+## Read-only broker readiness
+
+The companion Morning Check invokes a separate read-only broker diagnostic:
+
+```powershell
+.\Morning Check.cmd
+```
+
+It discovers accounts and fails unless exactly one active Agentic account exists. Through a
+structural read-only broker facade, it fetches only that account's portfolio, positions, orders, and
+the exact QQQ/TQQQ/SQQQ quote batch. Each quote must contain valid prices, its matching symbol, a
+fresh venue timestamp, and bounded timestamp skew. Recognized terminal order states are normalized;
+unknown states are reported open for the downstream flat/order-free preflight. The report prints
+`Read-only boundary: ENFORCED (review/place/cancel blocked)` and `Write tools called: 0`.
+
+This diagnostic may trigger provider OAuth, whose granted scope can be broader than the calls made by
+the diagnostic. It does not grant or restore live authority, create an evidence certificate, or
+claim the account is suitable for trading.
+
 ## Run the sandbox
 
 The default source is deterministic and offline. It can verify mechanics but can never create an

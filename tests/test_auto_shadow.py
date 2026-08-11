@@ -173,6 +173,7 @@ async def test_auto_shadow_starts_clean_and_never_reaches_broker_writes(tmp_path
         1,
         20,
         8,
+        strategy_fingerprint="a" * 64,
     )
     with pytest.raises(RuntimeError, match="read-only"):
         controller.authorize_live(grant)

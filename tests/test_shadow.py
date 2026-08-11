@@ -1,6 +1,9 @@
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import pytest
+
+from grande_alpha.candidate_execution import contract_from_config
 from grande_alpha.models import Quote, Regime, Signal
 from grande_alpha.sandbox import SandboxConfig
 from grande_alpha.shadow import LiveShadowEngine
@@ -102,3 +105,28 @@ def test_cash_shadow_does_not_recycle_sale_proceeds_until_next_session() -> None
     next_session_buy = engine.on_bar(tuesday + timedelta(minutes=1), bearish, _quotes(tuesday))
     assert next_session_buy and next_session_buy[0].side == "buy"
     assert engine.state.unsettled_cash == 0.0
+
+
+def test_shadow_uses_the_contract_risk_volatility_and_fill_sizing() -> None:
+    config = SandboxConfig(
+        initial_cash=100,
+        order_notional=80,
+        risk_budget_pct=0.02,
+        hard_stop_pct=0.10,
+        max_exposure_pct=0.50,
+        volatility_target_pct=0.20,
+        fill_fraction_pct=50,
+        decision_stride=1,
+        no_trade_open_minutes=0,
+        no_trade_close_minutes=0,
+    )
+    engine = LiveShadowEngine(config, bar_minutes=1)
+    start = datetime(2026, 8, 3, 14, 0, tzinfo=UTC)
+    bullish = Signal(Regime.BULLISH, 1, "bullish")
+
+    fill = engine.on_causal_quote(start, bullish, _quotes(start))[0]
+
+    # With no volatility history: min($80, $20 risk, $50 exposure) and 50% fill.
+    assert fill.requested_quantity == pytest.approx(20 / fill.price)
+    assert fill.quantity == pytest.approx(fill.requested_quantity * 0.5)
+    assert engine.contract == contract_from_config(config)

@@ -11,6 +11,17 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from grande_alpha.candidate_execution import (
+    annualized_volatility,
+    contract_from_config,
+    daily_loss_reached,
+    effective_spread_bps,
+    execution_price,
+    fillable_quantity,
+    next_consecutive_losses,
+    observed_range_bps,
+    size_entry,
+)
 from grande_alpha.config import data_dir
 from grande_alpha.execution import execution_profile
 from grande_alpha.historical import HistoricalBundle, ReplayFrame
@@ -129,6 +140,7 @@ class SandboxConfig:
                 raise ValueError(f"{name.title()} percentage must be in (0,1]")
         if self.max_consecutive_losses < 1 or self.volatility_target_pct < 0:
             raise ValueError("Loss pause must be positive and volatility target cannot be negative")
+        contract_from_config(self)
         self.strategy_config().validate()
 
     def strategy_config(self) -> StrategyConfig:
@@ -275,17 +287,18 @@ class SandboxReplayEngine:
     def __init__(self, config: SandboxConfig) -> None:
         config.validate()
         self.config = config
-        self.rng = random.Random(config.random_seed)
+        self.contract = contract_from_config(config)
+        self.rng = random.Random(self.contract.random_seed)
         self.policy = DecisionPolicy(
             PolicyConfig(
                 bullish_symbol="TQQQS",
                 bearish_symbol="SQQQS",
-                hard_stop_pct=config.hard_stop_pct,
-                take_profit_pct=config.take_profit_pct,
-                max_hold_minutes=config.max_hold_minutes,
-                no_trade_open_minutes=config.no_trade_open_minutes,
-                no_trade_close_minutes=config.no_trade_close_minutes,
-                market_hours=config.market_hours,
+                hard_stop_pct=self.contract.hard_stop_pct,
+                take_profit_pct=self.contract.take_profit_pct,
+                max_hold_minutes=self.contract.max_hold_minutes,
+                no_trade_open_minutes=self.contract.no_trade_open_minutes,
+                no_trade_close_minutes=self.contract.no_trade_close_minutes,
+                market_hours=self.contract.market_hours,
             )
         )
 
@@ -293,7 +306,7 @@ class SandboxReplayEngine:
         if len(bundle.frames) < self.config.warmup_bars + 3:
             raise ValueError("The dataset is too short for the selected warm-up")
         strategy = build_strategy(self.config.strategy_config())
-        cash = self.config.initial_cash
+        cash = self.contract.initial_cash
         unsettled_cash = 0.0
         position: _VirtualPosition | None = None
         scheduled: tuple[int, str | None, str] | None = None
@@ -306,13 +319,15 @@ class SandboxReplayEngine:
         curve: list[EquityPoint] = []
         recent_returns = {"TQQQS": deque(maxlen=30), "SQQQS": deque(maxlen=30)}
         previous_prices: dict[str, float] = {}
+        previous_range_bps = {"TQQQS": 0.0, "SQQQS": 0.0}
+        previous_volume: dict[str, float | None] = {"TQQQS": None, "SQQQS": None}
         consecutive_losses = 0
         session_bar_counts: dict[str, int] = {}
         bar_minutes = interval_minutes(bundle.interval)
         self._bar_minutes = bar_minutes
         session_last_indices: dict[str, int] = {}
         for frame_index, replay_frame in enumerate(bundle.frames):
-            session_day = session_key(replay_frame.start, self.config.market_hours)
+            session_day = session_key(replay_frame.start, self.contract.market_hours)
             session_last_indices[session_day] = frame_index
 
         def window_allowed(frame: ReplayFrame) -> bool:
@@ -323,9 +338,11 @@ class SandboxReplayEngine:
 
         previous_session: str | None = None
         for index, frame in enumerate(bundle.frames):
-            day = session_key(frame.start, self.config.market_hours)
+            day = session_key(frame.start, self.contract.market_hours)
+            if previous_session is not None and day != previous_session:
+                consecutive_losses = 0
             if (
-                self.config.settlement_model == "cash_t1"
+                self.contract.settlement_model == "cash_t1"
                 and previous_session is not None
                 and day != previous_session
                 and abs(unsettled_cash) > 1e-12
@@ -335,27 +352,21 @@ class SandboxReplayEngine:
             if (
                 previous_session is not None
                 and day != previous_session
-                and self.config.time_in_force == "gfd"
+                and self.contract.time_in_force == "gfd"
             ):
                 scheduled = None
             previous_session = day
             session_bar_counts[day] = session_bar_counts.get(day, 0) + 1
             starting_equity = self._equity(cash, unsettled_cash, position, frame)
             day_start_equity.setdefault(day, starting_equity)
-            for alias in ("TQQQS", "SQQQS"):
-                mark = frame.bar_for_alias(alias).close
-                if alias in previous_prices and previous_prices[alias] > 0:
-                    recent_returns[alias].append(mark / previous_prices[alias] - 1.0)
-                previous_prices[alias] = mark
-
-            if (
-                day_start_equity[day] > 0
-                and (day_start_equity[day] - starting_equity) / day_start_equity[day]
-                >= self.config.max_daily_loss_pct
+            if daily_loss_reached(
+                self.contract,
+                session_start_equity=day_start_equity[day],
+                current_equity=starting_equity,
             ):
                 paused_days.add(day)
                 if position is not None and window_allowed(frame):
-                    scheduled = (index + 1 + self.config.latency_bars, None, "Daily loss pause")
+                    scheduled = (index + 1 + self.contract.latency_bars, None, "Daily loss pause")
 
             scheduled_is_exit = position is not None and scheduled and scheduled[1] != position.symbol
             if (
@@ -374,14 +385,18 @@ class SandboxReplayEngine:
                     entries_by_day,
                     paused_days,
                     recent_returns,
+                    previous_range_bps,
+                    previous_volume,
                 )
                 fills.extend(new_fills)
                 events.extend(new_events)
                 for fill in new_fills:
                     if fill.realized_pnl is not None:
                         closed_pnl.append(fill.realized_pnl)
-                        consecutive_losses = consecutive_losses + 1 if fill.realized_pnl < 0 else 0
-                        if consecutive_losses >= self.config.max_consecutive_losses:
+                        consecutive_losses = next_consecutive_losses(
+                            consecutive_losses, fill.realized_pnl
+                        )
+                        if consecutive_losses >= self.contract.max_consecutive_losses:
                             paused_days.add(day)
                 scheduled = None if complete else (index + 1, scheduled[1], scheduled[2])
 
@@ -394,7 +409,7 @@ class SandboxReplayEngine:
                     frame.bar_for_alias(position.symbol).close,
                     max(0, int((frame.start - position.entry_time).total_seconds() // 60)),
                 )
-            decision_due = session_bar_counts[day] % self.config.decision_stride == 0
+            decision_due = session_bar_counts[day] % self.contract.decision_stride == 0
             if decision_due:
                 decision = self.policy.decide(signal, frame.start, policy_position)
                 current = position.symbol if position else None
@@ -402,12 +417,12 @@ class SandboxReplayEngine:
                 if decision_window and decision.target_symbol != current:
                     if scheduled is None or scheduled[1] != decision.target_symbol:
                         scheduled = (
-                            index + 1 + self.config.latency_bars,
+                            index + 1 + self.contract.latency_bars,
                             decision.target_symbol,
                             decision.reason,
                         )
 
-            if position is not None and self.config.force_flat_at_end and index == session_last_indices[day]:
+            if position is not None and self.contract.force_flat_at_end and index == session_last_indices[day]:
                 cash, unsettled_cash, position, new_fills, new_events, _ = self._transition(
                     frame,
                     index,
@@ -419,6 +434,8 @@ class SandboxReplayEngine:
                     entries_by_day,
                     paused_days,
                     recent_returns,
+                    previous_range_bps,
+                    previous_volume,
                     use_close=True,
                     bypass_execution_failures=True,
                 )
@@ -427,8 +444,24 @@ class SandboxReplayEngine:
                 for fill in new_fills:
                     if fill.realized_pnl is not None:
                         closed_pnl.append(fill.realized_pnl)
-                        consecutive_losses = consecutive_losses + 1 if fill.realized_pnl < 0 else 0
+                        consecutive_losses = next_consecutive_losses(
+                            consecutive_losses, fill.realized_pnl
+                        )
                 scheduled = None
+
+            # Opening fills may use only observations from a previously completed frame.
+            for alias in ("TQQQS", "SQQQS"):
+                completed_bar = frame.bar_for_alias(alias)
+                mark = completed_bar.close
+                if alias in previous_prices and previous_prices[alias] > 0:
+                    recent_returns[alias].append(mark / previous_prices[alias] - 1.0)
+                previous_prices[alias] = mark
+                previous_range_bps[alias] = observed_range_bps(
+                    completed_bar.open,
+                    completed_bar.high,
+                    completed_bar.low,
+                )
+                previous_volume[alias] = completed_bar.volume if completed_bar.volume > 0 else None
 
             equity = self._equity(cash, unsettled_cash, position, frame)
             curve.append(
@@ -442,7 +475,7 @@ class SandboxReplayEngine:
             )
 
         ending_position = position.symbol if position else None
-        if position is not None and self.config.force_flat_at_end:
+        if position is not None and self.contract.force_flat_at_end:
             final_frame = bundle.frames[-1]
             cash, unsettled_cash, position, new_fills, new_events, _ = self._transition(
                 final_frame,
@@ -455,6 +488,8 @@ class SandboxReplayEngine:
                 entries_by_day,
                 paused_days,
                 recent_returns,
+                previous_range_bps,
+                previous_volume,
                 use_close=True,
                 bypass_execution_failures=True,
             )
@@ -484,16 +519,16 @@ class SandboxReplayEngine:
             for index in range(1, len(curve))
             if curve[index - 1].equity > 0
         ]
-        annualization = math.sqrt(max(1.0, 252 * session_minutes(self.config.market_hours) / bar_minutes))
+        annualization = math.sqrt(max(1.0, 252 * session_minutes(self.contract.market_hours) / bar_minutes))
         sharpe = self._risk_adjusted(returns, annualization, downside_only=False)
         sortino = self._risk_adjusted(returns, annualization, downside_only=True)
         turnover_dollars = sum(fill.quantity * fill.price for fill in fills)
         execution_cost = sum(fill.execution_cost for fill in fills)
-        daily_pnl = self._daily_pnl(curve, self.config.market_hours)
+        daily_pnl = self._daily_pnl(curve, self.contract.market_hours)
         daily_returns = self._daily_returns(
             curve,
-            self.config.initial_cash,
-            self.config.market_hours,
+            self.contract.initial_cash,
+            self.contract.market_hours,
         )
         warnings = ["Historical replay is not evidence of future profitability"]
         if not closed_pnl:
@@ -502,7 +537,7 @@ class SandboxReplayEngine:
             warnings.append(f"Replay ended holding {ending_position}; final P/L includes unrealized value")
         if bundle.quality and bundle.quality.missing_intervals:
             warnings.append(f"Dataset has {bundle.quality.missing_intervals} missing intraday intervals")
-        if self.config.settlement_model == "cash_t1":
+        if self.contract.settlement_model == "cash_t1":
             warnings.append(
                 "Cash-account model: sale proceeds become spendable at the next observed trading session"
             )
@@ -511,10 +546,10 @@ class SandboxReplayEngine:
             source=bundle.source,
             start=bundle.start,
             end=bundle.end,
-            initial_cash=self.config.initial_cash,
+            initial_cash=self.contract.initial_cash,
             final_equity=final_equity,
-            net_pnl=final_equity - self.config.initial_cash,
-            return_pct=(final_equity / self.config.initial_cash - 1.0) * 100.0,
+            net_pnl=final_equity - self.contract.initial_cash,
+            return_pct=(final_equity / self.contract.initial_cash - 1.0) * 100.0,
             max_drawdown_pct=max_drawdown * 100.0,
             round_trips=len(closed_pnl),
             win_rate=win_rate * 100.0,
@@ -528,7 +563,7 @@ class SandboxReplayEngine:
             expectancy=expectancy,
             average_win=statistics.fmean(wins) if wins else 0.0,
             average_loss=statistics.fmean(losses) if losses else 0.0,
-            turnover=turnover_dollars / self.config.initial_cash,
+            turnover=turnover_dollars / self.contract.initial_cash,
             exposure_pct=sum(point.position_symbol is not None for point in curve) / len(curve) * 100.0,
             max_drawdown_bars=max_drawdown_bars,
             sharpe=sharpe,
@@ -552,6 +587,8 @@ class SandboxReplayEngine:
         entries_by_day: dict[str, int],
         paused_days: set[str],
         recent_returns: dict[str, deque[float]],
+        previous_range_bps: dict[str, float],
+        previous_volume: dict[str, float | None],
         use_close: bool = False,
         bypass_execution_failures: bool = False,
     ) -> tuple[
@@ -573,6 +610,8 @@ class SandboxReplayEngine:
                 reason,
                 use_close,
                 bypass_execution_failures,
+                previous_range_bps[position.symbol],
+                previous_volume[position.symbol],
             )
             events.append(event)
             if fill:
@@ -580,8 +619,8 @@ class SandboxReplayEngine:
             if not complete:
                 return cash, unsettled_cash, position, fills, events, False
         if target is not None and position is None:
-            day = session_key(frame.start, self.config.market_hours)
-            if day in paused_days or entries_by_day.get(day, 0) >= self.config.max_entries_per_day:
+            day = session_key(frame.start, self.contract.market_hours)
+            if day in paused_days or entries_by_day.get(day, 0) >= self.contract.max_entries_per_day:
                 events.append(ExecutionEvent(frame.start, target, "buy", "risk_blocked", 0, 0, reason))
                 return cash, unsettled_cash, None, fills, events, True
             cash, position, fill, event = self._buy(
@@ -592,6 +631,8 @@ class SandboxReplayEngine:
                 target,
                 reason,
                 recent_returns[target],
+                previous_range_bps[target],
+                previous_volume[target],
                 use_close,
             )
             events.append(event)
@@ -617,6 +658,8 @@ class SandboxReplayEngine:
         reason: str,
         use_close: bool,
         bypass: bool,
+        prior_range_bps: float,
+        prior_volume: float | None,
     ) -> tuple[
         float,
         float,
@@ -625,7 +668,7 @@ class SandboxReplayEngine:
         ExecutionEvent,
         bool,
     ]:
-        if not bypass and self.rng.random() < self.config.rejection_rate_pct / 100.0:
+        if not bypass and self.rng.random() < self.contract.rejection_rate_pct / 100.0:
             return (
                 cash,
                 unsettled_cash,
@@ -638,15 +681,16 @@ class SandboxReplayEngine:
             )
         bar = frame.bar_for_alias(position.symbol)
         requested = position.quantity
-        quantity = self._fillable_quantity(bar, requested, bypass)
-        if self.config.order_type == "limit" and not bypass:
+        available_volume = bar.volume if use_close and bar.volume > 0 else prior_volume
+        quantity = self._fillable_quantity(available_volume, requested, bypass)
+        if self.contract.whole_shares_required and not bypass:
             quantity = float(math.floor(quantity + 1e-9))
         raw = bar.close if use_close else bar.open
-        spread = self._dynamic_spread_bps(bar)
+        spread = self._dynamic_spread_bps(bar, prior_range_bps, use_close)
         price = self._execution_price(raw, "sell", spread)
-        if self.config.order_type == "limit" and not bypass:
+        if self.contract.order_type == "limit" and not bypass:
             modeled_bid = raw * (1 - spread / 20_000)
-            limit_price = modeled_bid * (1 - self.config.limit_offset_bps / 10_000)
+            limit_price = modeled_bid * (1 - self.contract.limit_offset_bps / 10_000)
             if price < limit_price:
                 return (
                     cash,
@@ -674,8 +718,8 @@ class SandboxReplayEngine:
                 False,
             )
         cost_share = position.cost_total * (quantity / position.quantity)
-        proceeds = quantity * price - self.config.commission_per_order
-        if self.config.settlement_model == "cash_t1":
+        proceeds = quantity * price - self.contract.commission_per_order
+        if self.contract.settlement_model == "cash_t1":
             unsettled_cash += proceeds
         else:
             cash += proceeds
@@ -691,7 +735,7 @@ class SandboxReplayEngine:
                 position.entry_index,
                 position.entry_time,
             )
-        execution_cost = max(0.0, (raw - price) * quantity) + self.config.commission_per_order
+        execution_cost = max(0.0, (raw - price) * quantity) + self.contract.commission_per_order
         fraction = quantity / requested
         status = "filled" if next_position is None else "partially_filled"
         fill = SandboxFill(
@@ -700,7 +744,7 @@ class SandboxReplayEngine:
             "sell",
             quantity,
             price,
-            self.config.commission_per_order,
+            self.contract.commission_per_order,
             realized,
             reason,
             cash,
@@ -721,22 +765,32 @@ class SandboxReplayEngine:
         target: str,
         reason: str,
         recent_returns: deque[float],
+        prior_range_bps: float,
+        prior_volume: float | None,
         use_close: bool,
     ) -> tuple[float, _VirtualPosition | None, SandboxFill | None, ExecutionEvent]:
         bar = frame.bar_for_alias(target)
         raw = bar.close if use_close else bar.open
         equity = cash + unsettled_cash
-        risk_notional = equity * self.config.risk_budget_pct / self.config.hard_stop_pct
-        exposure_cap = equity * self.config.max_exposure_pct
-        volatility_scale = self._volatility_scale(recent_returns)
-        budget = min(self.config.order_notional, risk_notional, exposure_cap) * volatility_scale
-        budget = min(budget, cash - self.config.commission_per_order)
-        spread = self._dynamic_spread_bps(bar)
+        spread = self._dynamic_spread_bps(bar, prior_range_bps, use_close)
         price = self._execution_price(raw, "buy", spread)
-        requested = max(0.0, budget / price)
-        if self.config.order_type == "limit":
+        realized = annualized_volatility(
+            tuple(recent_returns),
+            bar_minutes=self._bar_minutes,
+            market_hours=self.contract.market_hours,
+        )
+        sizing = size_entry(
+            self.contract,
+            equity=equity,
+            settled_cash=cash,
+            price=price,
+            realized_volatility=realized,
+            available_volume=(bar.volume if use_close and bar.volume > 0 else prior_volume),
+        )
+        requested = sizing.requested_quantity
+        if self.contract.order_type == "limit":
             modeled_ask = raw * (1 + spread / 20_000)
-            limit_price = modeled_ask * (1 + self.config.limit_offset_bps / 10_000)
+            limit_price = modeled_ask * (1 + self.contract.limit_offset_bps / 10_000)
             if price > limit_price:
                 return (
                     cash,
@@ -744,19 +798,16 @@ class SandboxReplayEngine:
                     None,
                     ExecutionEvent(frame.start, target, "buy", "limit_unfilled", requested, 0, reason),
                 )
-            requested = float(math.floor(requested))
         if requested <= 0:
             return cash, None, None, ExecutionEvent(frame.start, target, "buy", "risk_blocked", 0, 0, reason)
-        if self.rng.random() < self.config.rejection_rate_pct / 100.0:
+        if self.rng.random() < self.contract.rejection_rate_pct / 100.0:
             return (
                 cash,
                 None,
                 None,
                 ExecutionEvent(frame.start, target, "buy", "rejected", requested, 0, reason),
             )
-        quantity = self._fillable_quantity(bar, requested, False)
-        if self.config.order_type == "limit":
-            quantity = float(math.floor(quantity + 1e-9))
+        quantity = sizing.fillable_quantity
         if quantity <= 0:
             return (
                 cash,
@@ -764,9 +815,9 @@ class SandboxReplayEngine:
                 None,
                 ExecutionEvent(frame.start, target, "buy", "limit_unfilled", requested, 0, reason),
             )
-        cost = quantity * price + self.config.commission_per_order
+        cost = quantity * price + self.contract.commission_per_order
         cash -= cost
-        execution_cost = max(0.0, (price - raw) * quantity) + self.config.commission_per_order
+        execution_cost = max(0.0, (price - raw) * quantity) + self.contract.commission_per_order
         position = _VirtualPosition(target, quantity, price, cost, index, frame.start)
         fraction = quantity / requested
         status = "filled" if fraction >= 0.999999 else "partially_filled"
@@ -776,7 +827,7 @@ class SandboxReplayEngine:
             "buy",
             quantity,
             price,
-            self.config.commission_per_order,
+            self.contract.commission_per_order,
             None,
             reason,
             cash,
@@ -792,31 +843,36 @@ class SandboxReplayEngine:
             ExecutionEvent(frame.start, target, "buy", status, requested, quantity, reason),
         )
 
-    def _fillable_quantity(self, bar, requested: float, bypass: bool) -> float:
+    def _fillable_quantity(
+        self,
+        available_volume: float | None,
+        requested: float,
+        bypass: bool,
+    ) -> float:
         if bypass:
             return requested
-        fraction_cap = requested * self.config.fill_fraction_pct / 100.0
-        volume_cap = (
-            bar.volume * self.config.max_volume_participation_pct / 100.0 if bar.volume > 0 else requested
+        return fillable_quantity(
+            self.contract,
+            requested_quantity=requested,
+            available_volume=available_volume,
         )
-        return max(0.0, min(requested, fraction_cap, volume_cap))
 
-    def _dynamic_spread_bps(self, bar) -> float:
-        range_bps = (bar.high - bar.low) / max(bar.open, 1e-9) * 10_000.0
-        return self.config.base_spread_bps + range_bps * self.config.spread_volatility_multiplier
+    def _dynamic_spread_bps(self, bar, prior_range_bps: float, use_close: bool) -> float:
+        range_bps = (
+            observed_range_bps(bar.open, bar.high, bar.low) if use_close else prior_range_bps
+        )
+        return effective_spread_bps(
+            self.contract,
+            range_bps=range_bps,
+        )
 
     def _execution_price(self, price: float, side: str, spread_bps: float) -> float:
-        direction = 1.0 if side == "buy" else -1.0
-        total_bps = self.config.slippage_bps + spread_bps / 2.0
-        return price * (1.0 + direction * total_bps / 10_000.0)
-
-    def _volatility_scale(self, returns: deque[float]) -> float:
-        if self.config.volatility_target_pct <= 0 or len(returns) < 10:
-            return 1.0
-        realized = statistics.pstdev(returns) * math.sqrt(252 * 390 / self._bar_minutes)
-        if realized <= 1e-9:
-            return 1.0
-        return min(1.0, self.config.volatility_target_pct / realized)
+        return execution_price(
+            self.contract,
+            reference_price=price,
+            side=side,
+            spread_bps=spread_bps,
+        )
 
     @staticmethod
     def _equity(

@@ -51,6 +51,11 @@ def test_runtime_strategy_name_must_be_supported() -> None:
         AppConfig(strategy_name="unregistered").validate_cadence()
 
 
+def test_default_daily_notional_must_be_finite_and_positive() -> None:
+    with pytest.raises(ValueError, match="Maximum daily notional"):
+        AppConfig(default_max_daily_notional=float("inf")).validate_cadence()
+
+
 def test_legacy_data_is_copied_without_deleting_originals(tmp_path: Path) -> None:
     legacy = tmp_path / "MomentumTrader"
     destination = tmp_path / "GRANDEAlpha"

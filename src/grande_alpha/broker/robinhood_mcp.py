@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import itertools
 import json
 import webbrowser
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from mcp import ClientSession
@@ -27,7 +28,17 @@ from grande_alpha.models import (
     Quote,
 )
 
-OPEN_STATES = {"new", "queued", "confirmed", "unconfirmed", "partially_filled", "pending_cancelled"}
+TOOL_PRIORITIES = {
+    "cancel_equity_order": 0,
+    "place_equity_order": 1,
+    "review_equity_order": 2,
+}
+TOOL_TIMEOUT_SECONDS = {
+    "cancel_equity_order": 10.0,
+    "place_equity_order": 20.0,
+    "review_equity_order": 15.0,
+}
+DEFAULT_TOOL_TIMEOUT_SECONDS = 10.0
 
 
 @dataclass
@@ -35,6 +46,7 @@ class _ToolRequest:
     name: str
     arguments: dict[str, Any]
     future: asyncio.Future[Any]
+    timeout_seconds: float
 
 
 def _datetime(value: str | None) -> datetime | None:
@@ -59,7 +71,8 @@ class RobinhoodMCPBroker(Broker):
         self.allow_interactive_auth = allow_interactive_auth
         self.storage = CredentialTokenStorage()
         self._tools: dict[str, dict[str, Any]] = {}
-        self._requests: asyncio.Queue[_ToolRequest | None] | None = None
+        self._requests: asyncio.PriorityQueue[tuple[int, int, _ToolRequest | None]] | None = None
+        self._request_sequence = itertools.count()
         self._worker: asyncio.Task[None] | None = None
         self._connected = False
         self._accepting_calls = False
@@ -87,7 +100,7 @@ class RobinhoodMCPBroker(Broker):
 
             loop = asyncio.get_running_loop()
             ready: asyncio.Future[None] = loop.create_future()
-            self._requests = asyncio.Queue()
+            self._requests = asyncio.PriorityQueue()
             self._worker = asyncio.create_task(
                 self._session_owner(ready),
                 name="grande-alpha-robinhood-session",
@@ -198,13 +211,25 @@ class RobinhoodMCPBroker(Broker):
         if self._requests is None:
             raise RuntimeError("Robinhood request queue was not initialized")
         while True:
-            request = await self._requests.get()
+            _priority, _sequence, request = await self._requests.get()
             if request is None:
                 return
             if request.future.cancelled():
                 continue
             try:
-                result = await session.call_tool(request.name, request.arguments)
+                result = await session.call_tool(
+                    request.name,
+                    request.arguments,
+                    read_timeout_seconds=timedelta(seconds=request.timeout_seconds),
+                )
+            except TimeoutError:
+                if not request.future.done():
+                    request.future.set_exception(
+                        BrokerError(
+                            f"Robinhood {request.name} timed out after "
+                            f"{request.timeout_seconds:.0f}s; the remote outcome is unknown"
+                        )
+                    )
             except Exception as exc:
                 if not request.future.done():
                     request.future.set_exception(exc)
@@ -217,7 +242,7 @@ class RobinhoodMCPBroker(Broker):
             return
         while True:
             try:
-                request = self._requests.get_nowait()
+                _priority, _sequence, request = self._requests.get_nowait()
             except asyncio.QueueEmpty:
                 return
             if request is not None and not request.future.done():
@@ -244,7 +269,7 @@ class RobinhoodMCPBroker(Broker):
                 return
             self._accepting_calls = False
             if self._requests is not None and not self._worker.done():
-                await self._requests.put(None)
+                await self._requests.put((-100, next(self._request_sequence), None))
             await self._finish_worker()
 
     async def _call(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -253,7 +278,15 @@ class RobinhoodMCPBroker(Broker):
         if name not in self._tools:
             raise BrokerError(f"Robinhood tool is unavailable: {name}")
         future = asyncio.get_running_loop().create_future()
-        await self._requests.put(_ToolRequest(name, arguments, future))
+        timeout_seconds = TOOL_TIMEOUT_SECONDS.get(name, DEFAULT_TOOL_TIMEOUT_SECONDS)
+        priority = TOOL_PRIORITIES.get(name, 10)
+        await self._requests.put(
+            (
+                priority,
+                next(self._request_sequence),
+                _ToolRequest(name, arguments, future, timeout_seconds),
+            )
+        )
         result = await future
         if getattr(result, "isError", False):
             message = "Robinhood tool error"
@@ -391,7 +424,18 @@ class RobinhoodMCPBroker(Broker):
 
     async def get_orders(self, account_number: str) -> list[BrokerOrder]:
         data = await self._call("get_equity_orders", {"account_number": account_number})
-        return [self._parse_order(row) for row in data.get("orders") or [] if row]
+        if data.get("has_more") is True or any(
+            data.get(key) for key in ("next_page_token", "next_cursor", "cursor")
+        ):
+            raise BrokerError(
+                "Robinhood returned a paginated order set that GRANDE Alpha cannot prove complete"
+            )
+        orders = [self._parse_order(row) for row in data.get("orders") or [] if row]
+        if any(not order.order_id for order in orders):
+            raise BrokerError("Robinhood returned an order without a stable order id")
+        if len({order.order_id for order in orders}) != len(orders):
+            raise BrokerError("Robinhood returned duplicate order ids")
+        return orders
 
     async def review_order(self, account_number: str, intent: OrderIntent) -> OrderReview:
         arguments = intent.broker_arguments(account_number)

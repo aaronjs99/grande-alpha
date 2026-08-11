@@ -122,6 +122,49 @@ def test_replay_uses_sandbox_aliases_and_next_bar_fills() -> None:
     assert len(result.daily_returns) == 1
 
 
+def test_opening_fill_does_not_use_that_bars_future_range_or_volume() -> None:
+    start = datetime(2026, 8, 3, 13, 30, tzinfo=UTC)
+    normal = []
+    shocked = []
+    for index in range(30):
+        timestamp = start + timedelta(minutes=index)
+        qqq = _bar("QQQ", timestamp, 100 + index)
+        ordinary_tqqq = Bar("TQQQ", timestamp, 50, 50, 50, 50, 1, volume=100)
+        future_tqqq = ordinary_tqqq
+        if index == 5:
+            future_tqqq = Bar("TQQQ", timestamp, 50, 100, 1, 80, 1, volume=1)
+        sqqq = _bar("SQQQ", timestamp, 40)
+        normal.append(ReplayFrame(timestamp, qqq, ordinary_tqqq, sqqq))
+        shocked.append(ReplayFrame(timestamp, qqq, future_tqqq, sqqq))
+    config = SandboxConfig(
+        initial_cash=100,
+        order_notional=50,
+        warmup_bars=5,
+        fast_ema=1,
+        slow_ema=3,
+        trend_threshold_bps=0.1,
+        momentum_bars=1,
+        hard_stop_pct=0.5,
+        take_profit_pct=0.5,
+        max_hold_minutes=100,
+        no_trade_open_minutes=0,
+        no_trade_close_minutes=0,
+        spread_volatility_multiplier=1.0,
+        max_volume_participation_pct=1.0,
+    )
+
+    ordinary_fill = SandboxReplayEngine(config).run(
+        HistoricalBundle("normal", start, normal)
+    ).fills[0]
+    shocked_fill = SandboxReplayEngine(config).run(
+        HistoricalBundle("shocked", start, shocked)
+    ).fills[0]
+
+    assert ordinary_fill.timestamp == shocked_fill.timestamp == normal[5].start
+    assert shocked_fill.price == pytest.approx(ordinary_fill.price)
+    assert shocked_fill.quantity == pytest.approx(ordinary_fill.quantity)
+
+
 def test_all_day_statistics_group_by_trading_session_not_calendar_midnight() -> None:
     curve = [
         EquityPoint(datetime(2026, 8, 4, 1, 0, tzinfo=UTC), 100.0, 100.0, None),

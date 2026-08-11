@@ -34,7 +34,7 @@ from grande_alpha.controller import TradingController, TradingSnapshot
 from grande_alpha.models import Regime
 from grande_alpha.privacy import export_diagnostics
 from grande_alpha.strategy import STRATEGY_NAMES
-from grande_alpha.ui.dialogs import FundPlanDialog, LiveGrantDialog
+from grande_alpha.ui.dialogs import AuthorityControlPanel, FundPlanDialog, LiveGrantDialog
 from grande_alpha.ui.glossary import (
     ExplainedLabel,
     GlossaryDialog,
@@ -164,7 +164,7 @@ class MainWindow(QMainWindow):
         self.connect_button.setAccessibleName("Connect or disconnect Robinhood")
         self.connect_button.setToolTip("Connect to the consented Robinhood provider session")
         self.connect_button.clicked.connect(lambda: asyncio.create_task(self._connect()))
-        self.authorize_button = QPushButton("Authorize Live Session")
+        self.authorize_button = QPushButton("Authorize && Start Live Session")
         self.authorize_button.setObjectName("primary")
         self.authorize_button.clicked.connect(self._authorize)
         self.start_button = QPushButton("Start Strategy")
@@ -174,7 +174,7 @@ class MainWindow(QMainWindow):
         self.shadow_button.clicked.connect(self._toggle_shadow)
         self.kill_button = QPushButton("STOP + CANCEL")
         self.kill_button.setObjectName("danger")
-        self.kill_button.clicked.connect(lambda: asyncio.create_task(self.controller.stop_and_cancel()))
+        self.kill_button.clicked.connect(lambda: asyncio.create_task(self._stop_and_cancel()))
         self.flatten_button = QPushButton("Flatten Position")
         self.flatten_button.setObjectName("flatten")
         self.flatten_button.clicked.connect(lambda: asyncio.create_task(self._flatten()))
@@ -220,6 +220,13 @@ class MainWindow(QMainWindow):
         ):
             cards.addWidget(card, 0, column)
         broker_layout.addLayout(cards)
+        self.authority_controls = AuthorityControlPanel()
+        self.authority_controls.pause_requested.connect(self._pause_authority)
+        self.authority_controls.resume_requested.connect(self._resume_authority)
+        self.authority_controls.revoke_requested.connect(
+            lambda: asyncio.create_task(self._revoke_authority())
+        )
+        broker_layout.addWidget(self.authority_controls)
 
         top = QSplitter(Qt.Orientation.Horizontal)
         self.market_splitter = top
@@ -273,6 +280,8 @@ class MainWindow(QMainWindow):
         )
         fund_layout.addWidget(self.fund_table)
         self.tabs.addTab(self.welcome_widget, "Getting Started")
+        self.live_readiness_table = self._table(["Gate", "Status", "Observed", "Next action"])
+        self.tabs.addTab(self.live_readiness_table, "Live Readiness")
         self.sandbox_widget = SandboxWidget(
             self.controller.store, allow_remote_data=self.config.remote_market_data_enabled
         )
@@ -383,13 +392,13 @@ class MainWindow(QMainWindow):
             self.research_actions.append(action)
 
         self.safety_menu = menu_bar.addMenu("Safety")
-        self.authorize_action = self._action("Authorize Live Session…", self._authorize)
+        self.authorize_action = self._action("Authorize && Start Live Session…", self._authorize)
         self.safety_menu.addAction(self.authorize_action)
         self.start_strategy_action = self._action("Start Live Strategy", self._start_strategy)
         self.safety_menu.addAction(self.start_strategy_action)
         self.stop_cancel_action = self._action(
             "STOP + CANCEL Agentic Orders",
-            lambda _checked=False: asyncio.create_task(self.controller.stop_and_cancel()),
+            lambda _checked=False: asyncio.create_task(self._stop_and_cancel()),
             "Ctrl+Shift+X",
         )
         self.safety_menu.addAction(self.stop_cancel_action)
@@ -643,18 +652,57 @@ class MainWindow(QMainWindow):
     def _authorize(self) -> None:
         if not self._snapshot.account or not self._snapshot.portfolio:
             return
-        dialog = LiveGrantDialog(self._snapshot.account, self._snapshot.portfolio, self.config, self)
+        dialog = LiveGrantDialog(
+            self._snapshot.account,
+            self._snapshot.portfolio,
+            self.config,
+            self,
+            strategy_fingerprint=self.controller.current_strategy_fingerprint(),
+        )
         if dialog.exec() == dialog.DialogCode.Accepted:
             try:
                 self.controller.authorize_live(dialog.grant())
+                self.controller.start_strategy()
             except Exception as exc:
-                QMessageBox.critical(self, "Live authority not granted", str(exc))
+                QMessageBox.critical(self, "Live session did not start", str(exc))
 
     def _start_strategy(self) -> None:
         try:
             self.controller.start_strategy()
         except Exception as exc:
             QMessageBox.warning(self, "Strategy remains stopped", str(exc))
+
+    def _pause_authority(self) -> None:
+        try:
+            self.controller.pause_live_authority()
+        except Exception as exc:
+            QMessageBox.warning(self, "Authority was not paused", str(exc))
+
+    def _resume_authority(self) -> None:
+        try:
+            self.controller.resume_live_authority()
+        except Exception as exc:
+            QMessageBox.warning(self, "Authority was not resumed", str(exc))
+
+    async def _revoke_authority(self) -> None:
+        verified = await self.controller.revoke_live_authority()
+        if not verified:
+            QMessageBox.critical(
+                self,
+                "Cancellation not verified",
+                "Authority is revoked and new orders are locked, but every prior order could not be "
+                "verified terminal. Check Robinhood immediately and retry STOP + CANCEL.",
+            )
+
+    async def _stop_and_cancel(self) -> None:
+        verified = await self.controller.stop_and_cancel()
+        if not verified:
+            QMessageBox.critical(
+                self,
+                "Cancellation not verified",
+                "New orders are locked, but every prior order could not be verified terminal. "
+                "Check Robinhood immediately and retry STOP + CANCEL.",
+            )
 
     def _toggle_shadow(self) -> None:
         try:
@@ -793,6 +841,12 @@ class MainWindow(QMainWindow):
         self.session_card.value.setStyleSheet(
             "color:#00e507" if snapshot.live_status == "LIVE" else "color:#8fa4b8"
         )
+        self.authority_controls.set_authority_state(
+            snapshot.live_status,
+            self.controller.risk.grant,
+            daily_notional_used=self.controller.risk.daily_notional_used,
+            submitted_orders=self.controller.risk.trades_today,
+        )
         self.signal_card.value.setText(snapshot.signal.regime.value.upper())
         signal_color = {Regime.BULLISH: "#00e507", Regime.BEARISH: "#ff697d", Regime.FLAT: "#f2c14e"}
         self.signal_card.value.setStyleSheet(f"color:{signal_color[snapshot.signal.regime]}")
@@ -814,6 +868,7 @@ class MainWindow(QMainWindow):
         self._update_quotes(snapshot)
         self._update_positions(snapshot)
         self._update_orders(snapshot)
+        self._update_live_readiness()
         self._update_chart(snapshot)
         refreshed = (
             snapshot.last_refresh.astimezone().strftime("%I:%M:%S %p") if snapshot.last_refresh else "never"
@@ -851,8 +906,8 @@ class MainWindow(QMainWindow):
         self.shadow_button.setVisible(broker_enabled)
         self.authorize_button.setVisible(evidence_ready)
         self.start_button.setVisible(evidence_ready)
-        self.kill_button.setVisible(evidence_ready)
-        self.flatten_button.setVisible(evidence_ready)
+        self.kill_button.setVisible(broker_enabled and connected)
+        self.flatten_button.setVisible(broker_enabled and (connected or bool(self._snapshot.positions)))
         self.mode_badge.setText(
             "AUTO SHADOW ONLY — WRITES BLOCKED"
             if self.controller.shadow_only_runtime
@@ -885,8 +940,8 @@ class MainWindow(QMainWindow):
         self.start_strategy_action.setEnabled(
             evidence_ready and live and not self._snapshot.strategy_running and not shadow
         )
-        self.stop_cancel_action.setEnabled(evidence_ready and connected)
-        self.flatten_action.setEnabled(evidence_ready and bool(self._snapshot.positions))
+        self.stop_cancel_action.setEnabled(connected)
+        self.flatten_action.setEnabled(connected and bool(self._snapshot.positions))
 
     def _update_quotes(self, snapshot: TradingSnapshot) -> None:
         symbols = [symbol for symbol in ("QQQ", "TQQQ", "SQQQ") if symbol in snapshot.quotes]
@@ -903,6 +958,25 @@ class MainWindow(QMainWindow):
             ]
             for column, value in enumerate(values):
                 self.quotes_table.setItem(row, column, QTableWidgetItem(value))
+
+    def _update_live_readiness(self) -> None:
+        rows = self.controller.live_readiness()
+        self.live_readiness_table.setRowCount(len(rows))
+        for row_index, row in enumerate(rows):
+            values = [row["gate"], row["status"], row["observed"], row["action"]]
+            for column, value in enumerate(values):
+                item = QTableWidgetItem(value)
+                if column == 1:
+                    item.setForeground(
+                        QColor(
+                            "#00e507"
+                            if value == "PASS"
+                            else "#f2c14e"
+                            if value == "USER ACTION"
+                            else "#ff697d"
+                        )
+                    )
+                self.live_readiness_table.setItem(row_index, column, item)
 
     def _update_positions(self, snapshot: TradingSnapshot) -> None:
         self.positions_table.setRowCount(len(snapshot.positions))
@@ -1016,6 +1090,12 @@ class MainWindow(QMainWindow):
     async def _shutdown_then_close(self) -> None:
         try:
             await self.controller.disconnect()
-        finally:
-            self._closing_after_cleanup = True
-            self.close()
+        except Exception as exc:
+            QMessageBox.critical(
+                self,
+                "Exit blocked — broker cleanup is not verified",
+                f"{exc}\n\nGRANDE Alpha will remain open. Check Robinhood, then retry STOP + CANCEL.",
+            )
+            return
+        self._closing_after_cleanup = True
+        self.close()

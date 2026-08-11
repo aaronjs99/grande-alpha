@@ -97,7 +97,7 @@ class SettingsDialog(QDialog):
         self.account_scope_status.setStyleSheet("background:#142b3d;color:#8fd3ff;border:1px solid #315b78;")
         permissions_layout.addWidget(self.account_scope_status)
 
-        self.live = QCheckBox("Allow real-order automation for TQQQ/SQQQ")
+        self.live = QCheckBox("Make bounded real-order session controls available")
         self.live.setAccessibleName("Allow real-order automation")
         self.live.setChecked(config.live_trading_enabled)
         apply_help(
@@ -129,9 +129,10 @@ class SettingsDialog(QDialog):
         self.live_phrase.setVisible(not config.live_trading_enabled)
         permissions_layout.addWidget(self.live_phrase)
         self.live_note = self._description(
-            "This grants no standing authority. Every launch remains locked. Each live session still requires "
-            "a current matching evidence certificate, account-specific limits, expiry, attestation, and typed "
-            "confirmation."
+            "This grants no standing or remembered money-moving authority. Every launch remains locked. Each "
+            "session requires a current matching evidence certificate, exact account/ticker/route/strategy "
+            "scope, daily expiry, numeric caps, attestation, and typed confirmation. Active sessions must keep "
+            "Pause and Revoke controls visible."
         )
         permissions_layout.addWidget(self.live_note)
         body_layout.addWidget(permissions)

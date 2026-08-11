@@ -71,6 +71,10 @@ TERM_HELP: dict[str, str] = {
         "Maximum price concession used to construct automatic whole-share limit orders from the current bid or ask."
     ),
     "Max order notional": "Maximum dollars that any single order may expose during the authorized session.",
+    "Max daily notional": (
+        "Maximum gross dollars across all submitted buys and sells during the session, including reserved "
+        "authorizations awaiting submission or release."
+    ),
     "Max orders per minute": "Hard ceiling on submitted order requests within any rolling minute.",
     "Max session loss": "Loss threshold that blocks new entries for the remainder of the authorized session.",
     "Max submitted orders": "Maximum number of order submissions allowed before the live grant locks.",

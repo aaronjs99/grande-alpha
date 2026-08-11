@@ -24,6 +24,13 @@ process-scoped PowerShell bypass, so it works even when local `.ps1` files are b
 machine's normal execution policy. It verifies the source runtime, taskbar identity, stored OAuth
 path, Robinhood read path, and local evidence state. It never reviews, places, or cancels an order.
 
+The broker readiness step runs through a facade that structurally blocks review, placement, and
+cancellation methods. It passes only when the provider returns exactly one active Agentic account,
+one valid portfolio response, exact QQQ/TQQQ/SQQQ quotes with real fresh venue timestamps, and
+readable positions and orders. Order states are normalized; only recognized terminal states are
+closed, so an unknown provider state is conservatively reported as open. Output explicitly reports
+the enforced read-only boundary and `Write tools called: 0`.
+
 A successful result ends with `READY FOR RESEARCH AND LIVE SHADOW`. Real-order controls remain
 locked unless the exact current strategy has a fully passing evidence certificate and the user later
 completes a separate bounded live-session confirmation.

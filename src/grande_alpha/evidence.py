@@ -6,10 +6,11 @@ import math
 import random
 import statistics
 from collections.abc import Iterable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, fields, replace
 from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
 
+from grande_alpha.candidate_execution import CandidateExecutionContract, contract_from_config
 from grande_alpha.execution import execution_profile
 from grande_alpha.historical import HistoricalBundle, assess_quality
 from grande_alpha.policy import session_key
@@ -73,30 +74,9 @@ STRATEGY_FINGERPRINT_FIELDS = (
     "breakout_buffer_bps",
     "ensemble_min_votes",
 )
-SANDBOX_EXECUTION_FINGERPRINT_FIELDS = (
-    "initial_cash",
-    "order_notional",
-    "slippage_bps",
-    "base_spread_bps",
-    "spread_volatility_multiplier",
-    "commission_per_order",
-    "latency_bars",
-    "fill_fraction_pct",
-    "rejection_rate_pct",
-    "max_volume_participation_pct",
-    "random_seed",
-    "max_entries_per_day",
-    "risk_budget_pct",
-    "max_exposure_pct",
-    "max_daily_loss_pct",
-    "max_consecutive_losses",
-    "volatility_target_pct",
-    "force_flat_at_end",
+SANDBOX_EXECUTION_FINGERPRINT_FIELDS = tuple(
+    field.name for field in fields(CandidateExecutionContract) if field.name != "contract_version"
 )
-_CONFIG_FIELD_ALIASES = {
-    "order_notional": "default_max_order_notional",
-    "max_entries_per_day": "default_max_trades",
-}
 FORCED_FLATTEN_REASONS = frozenset(
     {
         "Session-end forced virtual flatten",
@@ -203,32 +183,27 @@ def strategy_fingerprint(
     execution: object | None = None,
 ) -> str:
     strategy_defaults = StrategyConfig()
-    sandbox_defaults = SandboxConfig()
-    decision_stride = int(getattr(config, "decision_stride", getattr(config, "trade_every_bars", 1)))
     route = execution_profile(execution or config)
-
-    def config_value(field: str) -> object:
-        if hasattr(config, field):
-            return getattr(config, field)
-        alias = _CONFIG_FIELD_ALIASES.get(field)
-        if alias and hasattr(config, alias):
-            return getattr(config, alias)
-        return getattr(sandbox_defaults, field)
+    contract = contract_from_config(config)
+    if execution is not None:
+        contract = replace(
+            contract,
+            market_hours=route.market_hours,
+            order_type=route.order_type,
+            time_in_force=route.time_in_force,
+            limit_offset_bps=route.limit_offset_bps,
+        )
+        contract.validate()
 
     payload = {
         "policy_version": EVIDENCE_POLICY_VERSION,
         "bar_interval_seconds": _interval_seconds(config, interval),
-        "decision_stride": decision_stride,
-        "market_hours": route.market_hours,
-        "order_type": route.order_type,
-        "time_in_force": route.time_in_force,
-        "limit_offset_bps": route.limit_offset_bps,
-        "settlement_model": getattr(config, "settlement_model", "instant"),
+        "execution_contract": contract.canonical_payload(),
+        "execution_contract_fingerprint": contract.fingerprint,
         **{
             field: getattr(config, field, getattr(strategy_defaults, field, None))
             for field in STRATEGY_FINGERPRINT_FIELDS
         },
-        **{field: config_value(field) for field in SANDBOX_EXECUTION_FINGERPRINT_FIELDS},
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
@@ -236,13 +211,17 @@ def strategy_fingerprint(
 
 def tested_risk_envelope(config: SandboxConfig) -> dict[str, float | int]:
     """Maximum live grant compatible with the replayed sizing and stressed spread model."""
+    contract = contract_from_config(config)
     return {
-        "max_order_notional": config.order_notional,
-        "max_total_exposure": config.initial_cash * config.max_exposure_pct,
-        "max_daily_loss": config.initial_cash * config.max_daily_loss_pct,
-        "max_trades": config.max_entries_per_day,
+        "max_order_notional": contract.order_notional,
+        # Entry plus exit turnover for every permitted entry. Partial-fill retries remain
+        # bounded by the same aggregate filled quantity in the shared virtual contract.
+        "max_daily_notional": 2.0 * contract.order_notional * contract.max_entries_per_day,
+        "max_total_exposure": contract.initial_cash * contract.max_exposure_pct,
+        "max_daily_loss": contract.initial_cash * contract.max_daily_loss_pct,
+        "max_trades": contract.max_entries_per_day,
         "max_orders_per_minute": 2,
-        "max_spread_bps": config.base_spread_bps * 3.0,
+        "max_spread_bps": contract.base_spread_bps * 3.0,
     }
 
 
@@ -668,9 +647,11 @@ def promotion_report(
         ),
         PromotionGate(
             "Runtime sizing parity",
-            zero_cash_exposure,
+            RUNTIME_SIZING_PARITY_CERTIFIED or zero_cash_exposure,
             (
-                "Cash candidate had zero fills and zero exposure"
+                "Certified immutable execution contract shared by replay, shadow, and runtime"
+                if RUNTIME_SIZING_PARITY_CERTIFIED
+                else "Cash candidate had zero fills and zero exposure"
                 if zero_cash_exposure
                 else (
                     f"Cash candidate had {len(base_result.fills)} fills and "
@@ -680,8 +661,8 @@ def promotion_report(
                     "the certified sizing contract"
                 )
             ),
-            "Replay and runtime share the exact certified sizing contract; until then only a "
-            "zero-fill, zero-exposure cash candidate can pass this gate",
+            "Replay, shadow, and runtime share the exact immutable execution contract; until "
+            "certified, only a zero-fill, zero-exposure cash candidate can pass this gate",
         ),
         PromotionGate(
             "Parameter stability",

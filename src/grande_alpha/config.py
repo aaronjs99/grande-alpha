@@ -62,6 +62,7 @@ class AppConfig:
     no_trade_close_minutes: int = 10
     default_session_minutes: int = 60
     default_max_order_notional: float = 25.0
+    default_max_daily_notional: float = 50.0
     default_max_total_exposure: float = 40.0
     default_max_daily_loss: float = 2.0
     default_max_trades: int = 6
@@ -74,6 +75,14 @@ class AppConfig:
         return self.bar_seconds * self.trade_every_bars
 
     def validate_cadence(self) -> None:
+        try:
+            max_daily_notional = float(self.default_max_daily_notional)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("Maximum daily notional must be finite and positive") from exc
+        if isinstance(self.default_max_daily_notional, bool) or not (
+            math.isfinite(max_daily_notional) and max_daily_notional > 0
+        ):
+            raise ValueError("Maximum daily notional must be finite and positive")
         try:
             max_quote_age = float(self.default_max_quote_age_seconds)
         except (TypeError, ValueError, OverflowError) as exc:

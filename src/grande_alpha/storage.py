@@ -4,9 +4,11 @@ import json
 import math
 import sqlite3
 import threading
-from datetime import datetime
+from datetime import date, datetime
+from numbers import Real
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from grande_alpha.config import data_dir
 from grande_alpha.models import Bar, OrderIntent, Quote, Signal, utc_now
@@ -71,7 +73,12 @@ class AuditStore:
                     reason TEXT NOT NULL,
                     payload_json TEXT NOT NULL,
                     broker_order_id TEXT,
-                    broker_state TEXT
+                    broker_state TEXT,
+                    account_number TEXT,
+                    authority_id TEXT,
+                    strategy_fingerprint TEXT,
+                    authorized_notional REAL NOT NULL DEFAULT 0,
+                    submission_started_at TEXT
                 );
                 CREATE TABLE IF NOT EXISTS research_fund (
                     id INTEGER PRIMARY KEY,
@@ -194,6 +201,26 @@ class AuditStore:
                 self._connection.execute(
                     "ALTER TABLE sandbox_fills ADD COLUMN unsettled_cash_after REAL NOT NULL DEFAULT 0"
                 )
+            order_intent_columns = {
+                row["name"]
+                for row in self._connection.execute("PRAGMA table_info(order_intents)").fetchall()
+            }
+            intent_migrations = {
+                "account_number": "TEXT",
+                "authority_id": "TEXT",
+                "strategy_fingerprint": "TEXT",
+                "authorized_notional": "REAL NOT NULL DEFAULT 0",
+                "submission_started_at": "TEXT",
+            }
+            for column, declaration in intent_migrations.items():
+                if column not in order_intent_columns:
+                    self._connection.execute(
+                        f"ALTER TABLE order_intents ADD COLUMN {column} {declaration}"
+                    )
+            self._connection.execute(
+                """CREATE INDEX IF NOT EXISTS idx_order_intents_account_submission
+                ON order_intents(account_number,submission_started_at)"""
+            )
 
     def record_quote(self, quote: Quote) -> None:
         with self._lock, self._connection:
@@ -252,6 +279,116 @@ class AuditStore:
                 "UPDATE order_intents SET broker_order_id=?, broker_state=? WHERE ref_id=?",
                 (order_id, state, ref_id),
             )
+
+    def mark_intent_submitting(
+        self,
+        ref_id: str,
+        *,
+        account_number: str,
+        authority_id: str,
+        strategy_fingerprint: str,
+        authorized_notional: float,
+    ) -> None:
+        """Durably record a placement invocation before any broker network write."""
+
+        identifiers = {
+            "intent reference": ref_id,
+            "account number": account_number,
+            "authority id": authority_id,
+            "strategy fingerprint": strategy_fingerprint,
+        }
+        if any(not isinstance(value, str) or not value.strip() for value in identifiers.values()):
+            raise ValueError("Submission provenance identifiers must be nonempty strings")
+        if (
+            isinstance(authorized_notional, bool)
+            or not isinstance(authorized_notional, Real)
+            or not math.isfinite(float(authorized_notional))
+            or float(authorized_notional) < 0
+        ):
+            raise ValueError("Authorized notional must be finite and nonnegative")
+        with self._lock, self._connection:
+            cursor = self._connection.execute(
+                """UPDATE order_intents
+                SET account_number=?,authority_id=?,strategy_fingerprint=?,
+                    authorized_notional=?,submission_started_at=?,broker_state='submitting'
+                WHERE ref_id=? AND submission_started_at IS NULL""",
+                (
+                    account_number.strip(),
+                    authority_id.strip(),
+                    strategy_fingerprint.strip(),
+                    float(authorized_notional),
+                    utc_now().isoformat(),
+                    ref_id.strip(),
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError("Order intent is missing or placement was already invoked")
+
+    def unresolved_order_intents(self, account_number: str) -> list[dict[str, Any]]:
+        """Return uncertain placements, including legacy rows with unknown account ownership."""
+
+        if not isinstance(account_number, str) or not account_number.strip():
+            raise ValueError("Account number must be a nonempty string")
+        with self._lock:
+            rows = self._connection.execute(
+                """SELECT * FROM order_intents
+                WHERE lower(trim(COALESCE(broker_state,''))) IN ('submitting','submission_uncertain')
+                AND (account_number=? OR account_number IS NULL)
+                ORDER BY created_at,ref_id""",
+                (account_number.strip(),),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def live_daily_usage(self, account_number: str, et_date: str) -> dict[str, float | int | str]:
+        """Restore placement-attempt usage and receipt-chain state for an ET trading date."""
+
+        if not isinstance(account_number, str) or not account_number.strip():
+            raise ValueError("Account number must be a nonempty string")
+        try:
+            requested_date = date.fromisoformat(et_date)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Trading date must use YYYY-MM-DD") from exc
+        with self._lock:
+            rows = self._connection.execute(
+                """SELECT submission_started_at,authorized_notional FROM order_intents
+                WHERE account_number=? AND submission_started_at IS NOT NULL""",
+                (account_number.strip(),),
+            ).fetchall()
+            receipt = self._connection.execute(
+                """SELECT payload_json FROM receipts WHERE category='authority_action'
+                ORDER BY id DESC LIMIT 1"""
+            ).fetchone()
+        eastern = ZoneInfo("America/New_York")
+        daily_notional = 0.0
+        submitted_orders = 0
+        for row in rows:
+            try:
+                submitted_at = datetime.fromisoformat(row["submission_started_at"])
+                notional = float(row["authorized_notional"])
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise ValueError("Stored submission provenance is invalid") from exc
+            if submitted_at.tzinfo is None or not math.isfinite(notional) or notional < 0:
+                raise ValueError("Stored submission provenance is invalid")
+            if submitted_at.astimezone(eastern).date() == requested_date:
+                daily_notional += notional
+                submitted_orders += 1
+        last_digest = ""
+        if receipt is not None:
+            try:
+                payload = json.loads(receipt["payload_json"])
+            except (TypeError, json.JSONDecodeError) as exc:
+                raise ValueError("Stored authority receipt is invalid") from exc
+            if not isinstance(payload, dict):
+                raise ValueError("Stored authority receipt is invalid")
+            digest = payload.get("receipt_digest", "")
+            if digest is not None and not isinstance(digest, str):
+                raise ValueError("Stored authority receipt digest is invalid")
+            last_digest = digest or ""
+        return {
+            "daily_notional": daily_notional,
+            "submitted_orders": submitted_orders,
+            "last_receipt_digest": last_digest,
+        }
 
     def recent_receipts(self, limit: int = 200) -> list[dict[str, Any]]:
         with self._lock:
@@ -876,6 +1013,7 @@ def _passing_holdout_metrics(metrics: Any, holdout: Any) -> bool:
 
 _RISK_ENVELOPE_FIELDS = {
     "max_order_notional",
+    "max_daily_notional",
     "max_total_exposure",
     "max_daily_loss",
     "max_trades",

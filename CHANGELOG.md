@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.15.0 - 2026-08-11
+
+- Added session-scoped live-pilot machinery with typed, non-persistent authority bound to one
+  Agentic account, the exact TQQQ/SQQQ ticker set, order route, candidate fingerprint,
+  Eastern-day expiry, and explicit order, turnover, exposure, loss, rate, spread, and quote-age
+  limits.
+- Added fresh account, position, order, and venue-timestamp quote preflight; durable intent
+  provenance before broker placement; conservative restart restoration of daily placement usage;
+  and hash-chained authority-action receipts.
+- Added visible pause and revoke controls while retaining fail-closed reconciliation, unknown-order,
+  stale-data, settings-change, and expired-authority locks.
+- Made every autonomous exit one-shot, revoking authority after one known placement response so
+  stale position data cannot trigger a duplicate sell. The daily-loss transition is additionally
+  liquidation-only: it can only sell existing leveraged inventory and never add exposure.
+- Restricted live authorization/start to the regular-session entry window and atomically discarded
+  all pre-start/premarket signal state before the live warm-up begins.
+- Added a recurring U.S. cash-equity holiday and scheduled early-close calendar, while continuing to
+  fail closed because emergency closures, venue outages, and symbol halts need current provider data.
+- Hardened Morning Check behind a structural read-only broker facade, exact-one Agentic-account
+  selection, exact fresh venue-quote validation, and conservative unknown-order-state handling.
+- Added a shared immutable candidate execution/sizing contract for replay, live shadow, and bounded
+  runtime order preparation, without presenting simulated execution assumptions as broker facts.
+- Kept deterministic CASH / hold as the normal and scheduled champion. The non-cash runtime-sizing
+  parity gate remains false, no strategy currently receives live authority, and this release makes
+  no profitability or investment-performance guarantee.
+
 ## 0.14.0 - 2026-08-11
 
 - Made deterministic CASH / hold the normal and scheduled runtime champion after every existing
