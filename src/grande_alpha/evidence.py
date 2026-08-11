@@ -23,8 +23,30 @@ from grande_alpha.sandbox import (
 from grande_alpha.strategy import StrategyConfig
 
 EASTERN = ZoneInfo("America/New_York")
-EVIDENCE_POLICY_VERSION = 7
+EVIDENCE_POLICY_VERSION = 8
 MIN_EVIDENCE_SESSIONS = 120
+REQUIRED_LIVE_GATE_NAMES = frozenset(
+    {
+        "Historical source",
+        "Trading-session coverage",
+        "Data breadth",
+        "Data recency",
+        "Data integrity",
+        "Parameter stability",
+        "Cost stress",
+        "Closed-trade sample",
+        "After-cost quality",
+        "Random-entry control",
+        "Trial-adjusted significance",
+        "Deflated Sharpe",
+        "Profit concentration",
+        "Drawdown",
+        "Ending flat",
+        "Exact candidate identity",
+        "Walk-forward",
+        "Sealed final holdout",
+    }
+)
 STRATEGY_FINGERPRINT_FIELDS = (
     "strategy_name",
     "warmup_bars",
@@ -124,6 +146,7 @@ class PromotionReport:
     dataset_hash: str
     strategy_fingerprint: str
     policy_version: int = EVIDENCE_POLICY_VERSION
+    holdout_id: int | None = None
 
     @property
     def passed(self) -> bool:
@@ -154,6 +177,7 @@ def strategy_fingerprint(
         "order_type": route.order_type,
         "time_in_force": route.time_in_force,
         "limit_offset_bps": route.limit_offset_bps,
+        "settlement_model": getattr(config, "settlement_model", "instant"),
         **{
             field: getattr(config, field, getattr(defaults, field, None))
             for field in STRATEGY_FINGERPRINT_FIELDS
@@ -468,6 +492,9 @@ def random_entry_control(
             if len(frames) < 3:
                 continue
             entries = min(config.max_entries_per_day, max(1, len(frames) // hold_bars))
+            if config.settlement_model == "cash_t1":
+                settled_tranches = max(1, int(config.initial_cash // config.order_notional))
+                entries = min(entries, settled_tranches)
             choices = sorted(rng.sample(range(1, len(frames) - 1), min(entries, len(frames) - 2)))
             for entry_index in choices:
                 exit_index = min(len(frames) - 1, entry_index + hold_bars)
@@ -500,6 +527,8 @@ def promotion_report(
     random_control: RandomControl,
     now: datetime | None = None,
     total_trial_count: int | None = None,
+    holdout_result: SandboxResult | None = None,
+    holdout_id: int | None = None,
 ) -> PromotionReport:
     reference = now or datetime.now(UTC)
     sessions = bundle.quality.sessions if bundle.quality else len(_sessions(bundle))
@@ -667,10 +696,41 @@ def promotion_report(
                 "At least 5 folds, 60% positive, 20 test trades, median PF 1.10, positive expectancy",
             )
         )
+    if holdout_result is None or holdout_id is None:
+        gates.append(
+            PromotionGate(
+                "Sealed final holdout",
+                False,
+                "Not reserved and consumed",
+                "One frozen candidate must pass one later, purged, sealed holdout at 3x modeled costs",
+            )
+        )
+    else:
+        holdout_passed = (
+            holdout_result.net_pnl > 0
+            and holdout_result.round_trips >= 5
+            and holdout_result.profit_factor >= 1.10
+            and holdout_result.expectancy > 0
+            and holdout_result.max_drawdown_pct <= 5.0
+            and holdout_result.ending_position is None
+        )
+        gates.append(
+            PromotionGate(
+                "Sealed final holdout",
+                holdout_passed,
+                f"holdout {holdout_id}; return {holdout_result.return_pct:+.2f}%; "
+                f"{holdout_result.round_trips} trades; PF {holdout_result.profit_factor:.2f}; "
+                f"expectancy ${holdout_result.expectancy:+.4f}; "
+                f"DD {holdout_result.max_drawdown_pct:.2f}%",
+                "Positive at 3x costs, at least 5 trades, PF 1.10, positive expectancy, "
+                "drawdown at most 5%, and ending flat",
+            )
+        )
     status = "LIVE_REVIEW_ELIGIBLE" if all(gate.passed for gate in gates) else "SHADOW_ONLY"
     return PromotionReport(
         status,
         gates,
         bundle.dataset_hash,
         strategy_fingerprint(base_config, bundle.interval),
+        holdout_id=holdout_id,
     )

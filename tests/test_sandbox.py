@@ -19,7 +19,8 @@ from grande_alpha.historical import (
     save_bundle,
 )
 from grande_alpha.models import Bar
-from grande_alpha.sandbox import SandboxConfig, SandboxReplayEngine
+from grande_alpha.policy import session_key
+from grande_alpha.sandbox import EquityPoint, SandboxConfig, SandboxReplayEngine
 from grande_alpha.storage import AuditStore
 
 
@@ -113,7 +114,56 @@ def test_replay_uses_sandbox_aliases_and_next_bar_fills() -> None:
     assert result.fills[0].side == "buy"
     assert result.fills[0].timestamp == frames[5].start
     assert result.fills[-1].side == "sell"
+    assert result.fills[-1].unsettled_cash_after > 0
+    assert result.final_unsettled_cash > 0
+    assert result.final_equity == pytest.approx(
+        result.equity_curve[-1].cash + result.equity_curve[-1].unsettled_cash
+    )
     assert len(result.daily_returns) == 1
+
+
+def test_all_day_statistics_group_by_trading_session_not_calendar_midnight() -> None:
+    curve = [
+        EquityPoint(datetime(2026, 8, 4, 1, 0, tzinfo=UTC), 100.0, 100.0, None),
+        EquityPoint(datetime(2026, 8, 4, 14, 0, tzinfo=UTC), 110.0, 110.0, None),
+    ]
+
+    assert {session_key(point.timestamp, "all_day_hours") for point in curve} == {"2026-08-04"}
+    assert SandboxReplayEngine._daily_pnl(curve, "all_day_hours") == {"2026-08-04": 10.0}
+    assert SandboxReplayEngine._daily_returns(curve, 100.0, "all_day_hours") == pytest.approx([0.1])
+
+
+def test_negative_unsettled_sale_debit_posts_on_next_session() -> None:
+    bundle = deterministic_demo(4, seed=9)
+    config = SandboxConfig(
+        initial_cash=100,
+        order_notional=10,
+        commission_per_order=30,
+        warmup_bars=5,
+        fast_ema=1,
+        slow_ema=3,
+        trend_threshold_bps=0.1,
+        momentum_bars=1,
+        hard_stop_pct=0.5,
+        take_profit_pct=0.5,
+        max_hold_minutes=100,
+        max_entries_per_day=10,
+        no_trade_open_minutes=0,
+        no_trade_close_minutes=0,
+        force_flat_at_end=True,
+        settlement_model="cash_t1",
+    )
+    result = SandboxReplayEngine(config).run(bundle)
+    first_sell = next(fill for fill in result.fills if fill.side == "sell")
+    assert first_sell.unsettled_cash_after < 0
+    first_day = session_key(first_sell.timestamp, config.market_hours)
+    next_session_point = next(
+        point
+        for point in result.equity_curve
+        if session_key(point.timestamp, config.market_hours) != first_day
+    )
+    assert next_session_point.unsettled_cash == 0.0
+    assert next_session_point.cash == pytest.approx(first_sell.cash_after + first_sell.unsettled_cash_after)
 
 
 def test_force_flat_closes_each_session_without_overnight_exposure() -> None:

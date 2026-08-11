@@ -19,6 +19,9 @@ order or predict future profit. The normal outcome is `SHADOW_ONLY`.
   evaluated, so previously registered trials cannot disappear from the reported search count.
 - **Trial-adjusted significance:** applies both a Bonferroni familywise correction and the
   Deflated Sharpe Ratio's selection-bias, skew, and kurtosis adjustment.
+- **One-use final holdout:** evidence-policy version 8 reserves a later chronological block before
+  candidate evaluation, freezes it to the selected strategy fingerprint, claims it before reading
+  its result, and records that result permanently after one evaluation.
 
 ## Current gates
 
@@ -41,6 +44,7 @@ order or predict future profit. The normal outcome is `SHADOW_ONLY`.
 | Ending flat | No virtual position remains open at the end of replay |
 | Exact candidate identity | Every training fold selected the exact configuration being certified |
 | Walk-forward | At least five folds, 60% positive test folds, 20 out-of-sample trades, median profit factor 1.10, and positive median expectancy |
+| Sealed final holdout | The frozen candidate passes one later, purged, one-use holdout at 3x modeled costs with positive P/L, at least 5 round trips, profit factor at least 1.10, positive expectancy, drawdown no more than 5%, and an ending-flat result |
 
 All gates must pass simultaneously. Every pass and failure is stored in the local audit database.
 Changing a fingerprinted signal, exit setting, bar interval, decision stride, execution session,
@@ -51,10 +55,39 @@ validate the market-data license, account for tax/settlement restrictions, or au
 Before any live review, preserve a final dataset period that was not used to invent, select, or tune
 the strategy.
 
+## Policy v8 final-holdout lifecycle
+
+The seal is an auditable database lifecycle, not encryption. The app records the full dataset hash,
+development hash, holdout hash and dates, policy version, and selected strategy fingerprint.
+
+```text
+RESERVED -> FROZEN -> EVALUATING -> CONSUMED
+```
+
+- `RESERVED` fixes the later chronological block before candidate evaluation begins. If the
+  development-only gates fail, the block remains reserved and unread rather than being wasted.
+- `FROZEN` binds that block to exactly one selected strategy fingerprint, and occurs only after all
+  non-holdout gates pass.
+- `EVALUATING` is claimed atomically before the holdout result is calculated, so a crash or bad
+  result cannot make the same block look unused.
+- `CONSUMED` stores the metrics whether the gate passes or fails. The same dataset/date block cannot
+  be reserved again under another candidate or policy version.
+
+At the live-authority boundary, storage independently requires the complete canonical gate set,
+recomputes the final-holdout thresholds from the consumed metrics, binds the full dataset and final
+timestamp to the holdout record, and permits at most one promotion receipt for that holdout. Caller-
+supplied `passed` labels alone are never sufficient.
+
+Changing a parameter after the reveal creates a new candidate; it does not justify another attempt
+on the consumed block. A new evaluation requires genuinely later untouched data and a new sealed
+holdout. Walk-forward folds and neighboring-parameter tests remain development evidence and do not
+replace this final one-use test.
+
 ## Avoiding false evidence
 
 - Do not choose the best configuration and then describe its training return as out-of-sample.
-- Do not rerun the final holdout repeatedly until it passes.
+- Do not inspect, retune on, or rerun the final holdout. Under policy v8, a claimed holdout is used
+  once and remains consumed even when it fails.
 - Do not ignore rejected fills, open ending positions, costs, negative days, or zero-trade folds.
 - Do not compare two configurations on different hashes.
 - Record failed experiments as well as successful ones.

@@ -49,7 +49,14 @@ async def test_broker_check_exercises_reads_and_never_order_methods() -> None:
     result = await check_broker(broker)
 
     assert result.active_agentic_accounts == 1
+    assert result.selected_account == "Agentic ****3456"
+    assert result.account_type == "cash"
+    assert result.total_value == 100.0
+    assert result.buying_power == 100.0
     assert result.quote_symbols == ("QQQ", "SQQQ", "TQQQ")
+    assert result.position_count == 0
+    assert result.order_count == 0
+    assert result.open_order_count == 0
     assert broker.calls == [
         "connect",
         "get_accounts",

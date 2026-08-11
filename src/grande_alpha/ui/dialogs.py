@@ -49,6 +49,21 @@ class LiveGrantDialog(QDialog):
         )
         details.setWordWrap(True)
         layout.addWidget(details)
+        if account.account_type.lower() == "cash":
+            cash_notice = QLabel(
+                "Cash-account constraint: sale proceeds generally do not restore spendable buying "
+                "power until settlement. A small cash account cannot continuously recycle the same "
+                "dollars through intraday entries; Robinhood-reported buying power remains authoritative."
+            )
+            cash_notice.setObjectName("validationWarning")
+            cash_notice.setWordWrap(True)
+            apply_help(
+                cash_notice,
+                "Cash-account settlement",
+                "U.S. equity sales normally settle on the next trading day. Until then, those proceeds "
+                "may be unavailable for another purchase in a cash account.",
+            )
+            layout.addWidget(cash_notice)
         layout.addWidget(help_hint())
 
         risk_group = QGroupBox("Session risk limits")

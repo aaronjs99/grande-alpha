@@ -172,22 +172,51 @@ class TradingController(QObject):
     def update_config(self, config: AppConfig) -> None:
         """Apply safe runtime settings; a bar-size change starts a fresh warm-up."""
         config.validate_cadence()
+        config_changed = config != self.config
         bar_changed = config.bar_seconds != self.config.bar_seconds
         trade_cadence_changed = config.trade_every_bars != self.config.trade_every_bars
+        signal_changed = any(
+            getattr(config, name) != getattr(self.config, name)
+            for name in (
+                "warmup_bars",
+                "fast_ema",
+                "slow_ema",
+                "trend_threshold_bps",
+                "momentum_bars",
+            )
+        )
+        if config_changed and (self.risk.grant is not None or self.snapshot.strategy_running):
+            self._revoke_live_automation(
+                "Settings changed; the previous live certificate and session grant were revoked"
+            )
         self.config = config
+        self.risk.no_trade_open_minutes = config.no_trade_open_minutes
+        self.risk.no_trade_close_minutes = config.no_trade_close_minutes
         active_market_hours = (
             self.risk.grant.market_hours if self.risk.grant is not None else config.market_hours
         )
         self.policy = self._policy_for_session(active_market_hours)
+        if signal_changed:
+            self.strategy = MomentumStrategy(
+                StrategyConfig(
+                    warmup_bars=config.warmup_bars,
+                    fast_ema=config.fast_ema,
+                    slow_ema=config.slow_ema,
+                    trend_threshold_bps=config.trend_threshold_bps,
+                    momentum_bars=config.momentum_bars,
+                )
+            )
+        elif bar_changed:
+            self.strategy.reset()
         if bar_changed:
             self.bar_builder = BarBuilder("QQQ", config.bar_seconds)
-            self.strategy.reset()
+        if bar_changed or signal_changed:
             self._last_qqq_timestamp = None
             self._analysis_sequence = 0
             self._last_trade_decision_sequence = 0
-            self.snapshot.signal = TradeSignal(Regime.FLAT, 0.0, "Cadence changed; warming up")
+            self.snapshot.signal = TradeSignal(Regime.FLAT, 0.0, "Settings changed; warming up")
             self.log(
-                f"Decision cadence changed to {config.bar_seconds}s completed bars; warm-up reset",
+                f"Signal/cadence settings changed; {config.bar_seconds}s completed-bar warm-up reset",
                 "warning",
                 "cadence",
             )
@@ -284,6 +313,10 @@ class TradingController(QObject):
     def authorize_live(self, grant: LiveGrant) -> None:
         if not self.config.live_trading_enabled:
             raise RuntimeError("Real-order controls are disabled. Unlock them deliberately in Settings first")
+        try:
+            grant.validate()
+        except ValueError as exc:
+            raise RuntimeError(f"Invalid live-session limits: {exc}") from exc
         if not self.live_evidence_ready(grant):
             raise RuntimeError(
                 "Real-order authority requires a current passing evidence certificate for this exact strategy. "
@@ -295,11 +328,12 @@ class TradingController(QObject):
             raise RuntimeError("Connect and refresh the Agentic account first")
         if grant.account_number != self.snapshot.account.account_number:
             raise RuntimeError("Grant account does not match the connected Agentic account")
+        if self.snapshot.account.account_type.lower() == "cash" and self.config.settlement_model != "cash_t1":
+            raise RuntimeError("Cash-account authority requires the T+1 settlement evidence model")
         if self.snapshot.portfolio.total_value <= 0 or self.snapshot.portfolio.buying_power <= 0:
             raise RuntimeError(
                 "Robinhood reports zero account value or buying power; live trading stays locked"
             )
-        grant.execution.validate()
         self.policy = self._policy_for_session(grant.market_hours)
         self.risk.arm(grant, self.snapshot.portfolio)
         self.snapshot.session_expires_at = grant.expires_at
@@ -337,6 +371,29 @@ class TradingController(QObject):
                 "max_spread_bps": grant.max_spread_bps,
             }
         return self.store.current_live_evidence(fingerprint, requested_envelope=requested) is not None
+
+    def _revoke_live_automation(self, reason: str) -> None:
+        had_authority = self.risk.grant is not None or self.snapshot.strategy_running
+        self.snapshot.strategy_running = False
+        self.snapshot.session_expires_at = None
+        self.risk.disarm()
+        if had_authority:
+            self.log(reason, "critical", "authority")
+        self._emit()
+
+    def _live_automation_current(self) -> bool:
+        if self.risk.session_status() != "LIVE":
+            self._revoke_live_automation("Automatic trading stopped because live authority is not active")
+            return False
+        if not self.config.live_trading_enabled:
+            self._revoke_live_automation("Automatic trading stopped because real-order controls are disabled")
+            return False
+        if not self.live_evidence_ready(self.risk.grant):
+            self._revoke_live_automation(
+                "Automatic trading stopped because the exact evidence certificate is missing or expired"
+            )
+            return False
+        return True
 
     def config_evidence_ready(self, config: AppConfig) -> bool:
         return self.store.current_live_evidence(strategy_fingerprint(config)) is not None
@@ -395,6 +452,11 @@ class TradingController(QObject):
             order_type=self.config.order_type,
             time_in_force=self.config.time_in_force,
             limit_offset_bps=self.config.limit_offset_bps,
+            settlement_model=(
+                "cash_t1"
+                if self.snapshot.account.account_type.lower() == "cash"
+                else self.config.settlement_model
+            ),
         )
         self._shadow = LiveShadowEngine(shadow_config)
         self.log(
@@ -592,8 +654,7 @@ class TradingController(QObject):
         )
 
     async def _evaluate_and_trade(self) -> None:
-        if self.risk.session_status() != "LIVE":
-            self.snapshot.strategy_running = False
+        if not self._live_automation_current():
             return
         if not self._trade_decision_due():
             return
@@ -724,6 +785,8 @@ class TradingController(QObject):
     async def _submit(self, intent: OrderIntent, quote: Quote | None) -> BrokerOrder | None:
         if self.snapshot.account is None or self.snapshot.portfolio is None or quote is None:
             return None
+        if not self._live_automation_current():
+            return None
         decision = self.risk.authorize(
             intent,
             quote,
@@ -755,6 +818,8 @@ class TradingController(QObject):
                     intent.as_dict(),
                 )
                 return None
+            if not self._live_automation_current():
+                return None
         self.store.record_intent(intent)
         review = await self.broker.review_order(self.snapshot.account.account_number, intent)
         if review.market_data_disclosure:
@@ -777,6 +842,9 @@ class TradingController(QObject):
                 "critical",
                 "order_review",
             )
+            return None
+        if not self._live_automation_current():
+            self.store.update_intent(intent.ref_id, None, "blocked_evidence_revoked")
             return None
         order = await self.broker.place_order(self.snapshot.account.account_number, intent)
         self.snapshot.orders = [

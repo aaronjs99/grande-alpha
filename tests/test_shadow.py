@@ -65,3 +65,40 @@ def test_extended_shadow_uses_the_same_whole_share_limit_profile() -> None:
     assert fills
     assert fills[0].quantity == int(fills[0].quantity)
     assert engine.state.position and engine.state.position.quantity == fills[0].quantity
+
+
+def test_cash_shadow_does_not_recycle_sale_proceeds_until_next_session() -> None:
+    config = SandboxConfig(
+        initial_cash=50,
+        order_notional=50,
+        max_exposure_pct=1.0,
+        risk_budget_pct=1.0,
+        hard_stop_pct=0.5,
+        decision_stride=1,
+        no_trade_open_minutes=0,
+        no_trade_close_minutes=0,
+        settlement_model="cash_t1",
+    )
+    engine = LiveShadowEngine(config)
+    monday = datetime(2026, 8, 3, 14, 0, tzinfo=UTC)
+    bullish = Signal(Regime.BULLISH, 1, "bullish")
+    bearish = Signal(Regime.BEARISH, 1, "bearish")
+
+    engine.on_bar(monday, bullish, _quotes(monday))
+    buy = engine.on_bar(monday + timedelta(minutes=1), bullish, _quotes(monday))[0]
+    assert buy.side == "buy"
+    engine.on_bar(monday + timedelta(minutes=2), bearish, _quotes(monday))
+    sell = engine.on_bar(monday + timedelta(minutes=3), bearish, _quotes(monday))[0]
+    assert sell.side == "sell"
+    assert engine.state.cash < 1.0
+    assert engine.state.unsettled_cash > 49.0
+
+    # The pending reversal cannot buy with Monday's unsettled sale proceeds.
+    assert engine.on_bar(monday + timedelta(minutes=4), bearish, _quotes(monday)) == []
+    assert engine.state.position is None
+
+    tuesday = monday + timedelta(days=1)
+    engine.on_bar(tuesday, bearish, _quotes(tuesday))
+    next_session_buy = engine.on_bar(tuesday + timedelta(minutes=1), bearish, _quotes(tuesday))
+    assert next_session_buy and next_session_buy[0].side == "buy"
+    assert engine.state.unsettled_cash == 0.0

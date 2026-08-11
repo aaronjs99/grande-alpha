@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.12.0 - 2026-08-10
+
+- Added a one-use, purged final holdout lifecycle that reserves the unseen block before candidate
+  work, freezes the exact strategy fingerprint, claims the block before reading it, and permanently
+  consumes or invalidates it after one evaluation.
+- Required every live-review certificate to include a current-policy, consumed holdout for the exact
+  strategy and to pass the holdout after three-times modeled execution costs.
+- Modeled cash-account T+1 settlement in replay and live shadow: sale proceeds remain equity but
+  cannot fund another purchase until the next observed trading session.
+- Forced cash Agentic accounts to use the T+1 model for shadow and real-order eligibility, while
+  retaining broker-reported buying power as the authority for any future submitted order.
+- Added a read-only `Morning Check.cmd` preflight that verifies the local app and Robinhood read path
+  without reviewing, placing, modifying, or canceling an order.
+- Revoked live authority on every runtime-settings change and revalidated the exact current evidence
+  immediately before each automatic decision, broker review, and final placement call.
+- Rejected non-finite or malformed grants, quotes, order sizes, portfolio values, exposure values, and
+  stored risk envelopes at the model, risk-engine, and evidence-storage trust boundaries.
+- Rebuilt the live signal strategy and reset its warm-up whenever fingerprinted signal settings change,
+  keeping the running implementation aligned with its evidence certificate.
+- Made the connected account card identify cash accounts and added settlement warnings to the
+  live-session permission flow, sandbox controls, glossary, runbooks, and product documentation.
+
 ## 0.11.0 - 2026-08-10
 
 - Added user-selectable regular, extended, and Robinhood 24 Hour Market routes in Settings, the

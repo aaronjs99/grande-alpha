@@ -1,5 +1,6 @@
 import asyncio
 import json
+from dataclasses import replace
 from datetime import timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -10,6 +11,7 @@ from PySide6.QtWidgets import (
     QApplication,
     QDialogButtonBox,
     QHeaderView,
+    QLabel,
     QScrollArea,
     QTableWidget,
 )
@@ -18,7 +20,11 @@ from grande_alpha import __version__
 from grande_alpha.broker.base import Broker
 from grande_alpha.config import AppConfig
 from grande_alpha.controller import TradingController
-from grande_alpha.evidence import EVIDENCE_POLICY_VERSION, strategy_fingerprint
+from grande_alpha.evidence import (
+    EVIDENCE_POLICY_VERSION,
+    REQUIRED_LIVE_GATE_NAMES,
+    strategy_fingerprint,
+)
 from grande_alpha.historical import deterministic_demo
 from grande_alpha.models import Account, LiveGrant, Portfolio, Position, Quote, Regime, Signal, utc_now
 from grande_alpha.privacy import export_diagnostics
@@ -80,7 +86,8 @@ def test_public_defaults_are_research_only() -> None:
     assert config.trade_seconds == 15
     assert config.market_hours == "regular_hours"
     assert config.order_type == "market"
-    assert __version__ == "0.11.0"
+    assert config.settlement_model == "cash_t1"
+    assert __version__ == "0.12.0"
 
 
 def test_controller_constructs_whole_share_limit_intents_from_authorized_route(tmp_path) -> None:
@@ -162,6 +169,10 @@ def test_main_window_exposes_complete_desktop_navigation(tmp_path) -> None:
     )
     assert not window.refresh_action.isEnabled()
     assert not window.flatten_action.isEnabled()
+    controller.snapshot.account = Account("123456789", "Agentic", "cash", True, "active")
+    window._on_snapshot(controller.snapshot)
+    assert "CASH" in window.account_card.title.text()
+    assert "cash account" in window.account_card.toolTip().lower()
 
     window.close()
     store.close()
@@ -269,6 +280,7 @@ def test_settings_sandbox_and_live_grant_expose_contextual_help(tmp_path) -> Non
     sandbox = SandboxWidget(store, allow_remote_data=False)
     sandbox_terms = {label.text() for label in sandbox.findChildren(ExplainedLabel)}
     assert {"Source", "Slippage / side", "Hard stop", "Research strategy"} <= sandbox_terms
+    assert "Unsettled cash" in TERM_HELP
     assert sandbox.evidence_button.toolTip()
     assert sandbox.gates_table.horizontalHeaderItem(0).toolTip()
     assert sandbox.promotion_label.toolTip()
@@ -300,10 +312,7 @@ def test_settings_sandbox_and_live_grant_expose_contextual_help(tmp_path) -> Non
     assert "0/1 gates passed" in sandbox.promotion_label.text()
     assert "not a progress score" in sandbox.evidence_overview.text()
     assert "Use at least 120 complete market sessions" in sandbox.gate_inspector.toPlainText()
-    assert (
-        sandbox.gates_table.horizontalHeader().sectionResizeMode(0)
-        == QHeaderView.ResizeMode.Interactive
-    )
+    assert sandbox.gates_table.horizontalHeader().sectionResizeMode(0) == QHeaderView.ResizeMode.Interactive
     assert sandbox.gates_table.columnWidth(1) < sandbox.gates_table.columnWidth(2)
     sandbox.gates_table.horizontalHeader().resizeSection(1, 92)
     assert sandbox.gates_table.columnWidth(1) == 92
@@ -318,6 +327,7 @@ def test_settings_sandbox_and_live_grant_expose_contextual_help(tmp_path) -> Non
     authorize = grant.buttons.button(QDialogButtonBox.StandardButton.Ok)
     assert not authorize.isEnabled()
     assert "Check the attestation" in authorize.toolTip()
+    assert any("cannot continuously recycle" in label.text() for label in grant.findChildren(QLabel))
 
     grant.close()
     sandbox.close()
@@ -410,7 +420,7 @@ async def test_due_trade_tick_records_exact_pair_action_without_forcing_turnover
     )
     now = utc_now().replace(hour=16, minute=0, second=0, microsecond=0)
     monkeypatch.setattr("grande_alpha.controller.utc_now", lambda: now)
-    controller.risk.session_status = lambda: "LIVE"
+    controller._live_automation_current = lambda: True
     controller.snapshot.signal = Signal(Regime.BULLISH, 1.0, "Test bullish signal", now)
     controller.snapshot.last_analysis_at = now
     controller.snapshot.positions = [Position("TQQQ", 0.1, 0.1, 100.0)]
@@ -454,14 +464,41 @@ def test_controller_requires_matching_current_evidence_before_live_authority(tmp
     with pytest.raises(RuntimeError, match="evidence certificate"):
         controller.authorize_live(grant)
 
+    fingerprint = strategy_fingerprint(config)
+    holdout_id = store.reserve_research_holdout(
+        dataset_hash="market-history-hash",
+        development_hash="development-history-hash",
+        holdout_hash="sealed-holdout-hash",
+        holdout_start="2026-07-13T13:30:00+00:00",
+        holdout_end=now.isoformat(),
+        policy_version=EVIDENCE_POLICY_VERSION,
+    )
+    store.freeze_research_holdout(holdout_id, fingerprint)
+    store.claim_research_holdout(holdout_id, fingerprint)
+    store.consume_research_holdout(
+        holdout_id,
+        fingerprint,
+        {
+            "net_pnl": 1.0,
+            "round_trips": 5,
+            "profit_factor": 1.2,
+            "expectancy": 0.2,
+            "max_drawdown_pct": 1.0,
+            "ending_position": None,
+            "cost_multiplier": 3.0,
+            "holdout_hash": "sealed-holdout-hash",
+            "holdout_start": "2026-07-13T13:30:00+00:00",
+            "holdout_end": now.isoformat(),
+        },
+    )
     store.record_research_promotion(
         dataset_hash="market-history-hash",
-        strategy_fingerprint=strategy_fingerprint(config),
+        strategy_fingerprint=fingerprint,
         policy_version=EVIDENCE_POLICY_VERSION,
         status="LIVE_REVIEW_ELIGIBLE",
         source="licensed CSV",
         replay_end=now.isoformat(),
-        gates=[{"name": "test fixture", "passed": True}],
+        gates=[{"name": name, "passed": True} for name in sorted(REQUIRED_LIVE_GATE_NAMES)],
         risk_envelope={
             "max_order_notional": 10.0,
             "max_total_exposure": 20.0,
@@ -470,14 +507,56 @@ def test_controller_requires_matching_current_evidence_before_live_authority(tmp
             "max_orders_per_minute": 1,
             "max_spread_bps": 20.0,
         },
+        holdout_id=holdout_id,
     )
     controller.authorize_live(grant)
     assert controller.snapshot.live_status == "LIVE"
-    controller.live_evidence_ready = lambda grant=None: False
-    with pytest.raises(RuntimeError, match="missing or expired"):
-        controller.start_strategy()
+
+    controller.snapshot.strategy_running = True
+    controller.update_config(replace(config, fast_ema=config.fast_ema + 1))
     assert controller.snapshot.live_status == "LOCKED"
     assert not controller.snapshot.strategy_running
+    assert controller.risk.grant is None
+    assert controller.strategy.config.fast_ema == config.fast_ema + 1
+    assert controller.strategy.last_signal.regime == Regime.FLAT
+
+    controller.update_config(config)
+    controller.authorize_live(grant)
+    controller.snapshot.strategy_running = True
+    controller.live_evidence_ready = lambda grant=None: False
+    asyncio.run(controller._evaluate_and_trade())
+    assert controller.snapshot.live_status == "LOCKED"
+    assert not controller.snapshot.strategy_running
+    store.close()
+
+
+def test_cash_account_rejects_instant_settlement_live_authority(tmp_path) -> None:
+    store = AuditStore(tmp_path / "audit.db")
+    config = AppConfig(
+        broker_connection_enabled=True,
+        live_trading_enabled=True,
+        settlement_model="instant",
+    )
+    controller = TradingController(DisabledBroker(), config, store)
+    now = utc_now()
+    controller.snapshot.account = Account("123456789", "Agentic", "cash", True, "active")
+    controller.snapshot.portfolio = Portfolio(100.0, 100.0, 100.0)
+    controller.live_evidence_ready = lambda grant=None: True
+    grant = LiveGrant(
+        account_number="123456789",
+        starts_at=now,
+        expires_at=now + timedelta(hours=1),
+        max_order_notional=10.0,
+        max_total_exposure=20.0,
+        max_daily_loss=2.0,
+        max_trades=4,
+        max_orders_per_minute=1,
+        max_spread_bps=20.0,
+        max_quote_age_seconds=8.0,
+    )
+
+    with pytest.raises(RuntimeError, match=r"T\+1 settlement"):
+        controller.authorize_live(grant)
     store.close()
 
 
@@ -512,6 +591,7 @@ def test_live_shadow_overrides_saved_research_signal_with_live_settings(tmp_path
     assert shadow.trend_threshold_bps == 7.0
     assert shadow.max_hold_minutes == 33
     assert shadow.decision_stride == config.trade_every_bars
+    assert shadow.settlement_model == "cash_t1"
     store.close()
 
 
@@ -587,15 +667,26 @@ def test_local_installer_uses_trusted_launcher_and_both_shortcut_locations() -> 
     assert "GetFolderPath('Desktop')" in script
     assert "GetFolderPath('Programs')" in script
     assert "run.ps1" in script
+    assert "GRANDE Alpha Morning Check.lnk" in script
+    assert "Morning Check.cmd" in script
     assert "grande_alpha.windows_shortcut" in script
+
+
+def test_morning_check_is_explicitly_read_only_and_runs_broker_diagnostics() -> None:
+    root = Path(__file__).resolve().parents[1]
+    script = (root / "morning-check.ps1").read_text(encoding="utf-8")
+    launcher = (root / "Morning Check.cmd").read_text(encoding="utf-8")
+
+    assert "doctor.ps1') -Broker" in script
+    assert "grande_alpha.cli status" in script
+    assert "cannot submit, review, or cancel an order" in script
+    assert "ExecutionPolicy Bypass" in launcher
 
 
 def test_windows_app_identity_uses_the_grande_alpha_logo_group() -> None:
     root = Path(__file__).resolve().parents[1]
     app_source = (root / "src" / "grande_alpha" / "app.py").read_text(encoding="utf-8")
-    shortcut_source = (root / "src" / "grande_alpha" / "windows_shortcut.py").read_text(
-        encoding="utf-8"
-    )
+    shortcut_source = (root / "src" / "grande_alpha" / "windows_shortcut.py").read_text(encoding="utf-8")
 
     assert 'WINDOWS_APP_USER_MODEL_ID = "AaronJS.GRANDEAlpha"' in shortcut_source
     assert "SetCurrentProcessExplicitAppUserModelID" in app_source

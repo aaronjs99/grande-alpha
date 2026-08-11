@@ -10,7 +10,6 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any
-from zoneinfo import ZoneInfo
 
 from grande_alpha.config import data_dir
 from grande_alpha.execution import execution_profile
@@ -18,7 +17,6 @@ from grande_alpha.historical import HistoricalBundle, ReplayFrame
 from grande_alpha.policy import DecisionPolicy, PolicyConfig, PolicyPosition, session_key, session_minutes
 from grande_alpha.strategy import StrategyConfig, build_strategy
 
-EASTERN = ZoneInfo("America/New_York")
 INTERVAL_MINUTES = {"5s": 5 / 60, "1m": 1, "5m": 5, "15m": 15, "60m": 60, "1d": 390}
 
 
@@ -46,6 +44,7 @@ class SandboxConfig:
     order_type: str = "market"
     time_in_force: str = "gfd"
     limit_offset_bps: float = 10.0
+    settlement_model: str = "cash_t1"
     random_seed: int = 7007
     strategy_name: str = "ema_momentum"
     warmup_bars: int = 24
@@ -78,6 +77,8 @@ class SandboxConfig:
 
     def validate(self) -> None:
         execution_profile(self)
+        if self.settlement_model not in {"cash_t1", "instant"}:
+            raise ValueError("Settlement model must be cash_t1 or instant")
         if not 1 <= self.lookback_days <= 10_000:
             raise ValueError("Lookback must be between 1 and 10000 calendar days")
         if not 1 <= self.csv_bar_seconds <= 300:
@@ -162,6 +163,7 @@ class SandboxFill:
     requested_quantity: float = 0.0
     fill_fraction: float = 1.0
     execution_cost: float = 0.0
+    unsettled_cash_after: float = 0.0
 
     def as_dict(self) -> dict[str, Any]:
         values = asdict(self)
@@ -191,6 +193,7 @@ class EquityPoint:
     equity: float
     cash: float
     position_symbol: str | None
+    unsettled_cash: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -225,6 +228,7 @@ class SandboxResult:
     ending_position: str | None = None
     daily_pnl: dict[str, float] = field(default_factory=dict)
     daily_returns: list[float] = field(default_factory=list)
+    final_unsettled_cash: float = 0.0
 
     def metrics(self) -> dict[str, Any]:
         return {
@@ -250,6 +254,7 @@ class SandboxResult:
             "sqqqs_buy_hold_pct": self.sqqqs_buy_hold_pct,
             "daily_pnl": self.daily_pnl,
             "daily_returns": self.daily_returns,
+            "final_unsettled_cash": self.final_unsettled_cash,
             "warnings": self.warnings,
         }
 
@@ -289,6 +294,7 @@ class SandboxReplayEngine:
             raise ValueError("The dataset is too short for the selected warm-up")
         strategy = build_strategy(self.config.strategy_config())
         cash = self.config.initial_cash
+        unsettled_cash = 0.0
         position: _VirtualPosition | None = None
         scheduled: tuple[int, str | None, str] | None = None
         entries_by_day: dict[str, int] = {}
@@ -319,6 +325,14 @@ class SandboxReplayEngine:
         for index, frame in enumerate(bundle.frames):
             day = session_key(frame.start, self.config.market_hours)
             if (
+                self.config.settlement_model == "cash_t1"
+                and previous_session is not None
+                and day != previous_session
+                and abs(unsettled_cash) > 1e-12
+            ):
+                cash += unsettled_cash
+                unsettled_cash = 0.0
+            if (
                 previous_session is not None
                 and day != previous_session
                 and self.config.time_in_force == "gfd"
@@ -326,7 +340,7 @@ class SandboxReplayEngine:
                 scheduled = None
             previous_session = day
             session_bar_counts[day] = session_bar_counts.get(day, 0) + 1
-            starting_equity = self._equity(cash, position, frame)
+            starting_equity = self._equity(cash, unsettled_cash, position, frame)
             day_start_equity.setdefault(day, starting_equity)
             for alias in ("TQQQS", "SQQQS"):
                 mark = frame.bar_for_alias(alias).close
@@ -349,10 +363,11 @@ class SandboxReplayEngine:
                 and index >= scheduled[0]
                 and (exit_window_allowed(frame) if scheduled_is_exit else window_allowed(frame))
             ):
-                cash, position, new_fills, new_events, complete = self._transition(
+                cash, unsettled_cash, position, new_fills, new_events, complete = self._transition(
                     frame,
                     index,
                     cash,
+                    unsettled_cash,
                     position,
                     scheduled[1],
                     scheduled[2],
@@ -393,10 +408,11 @@ class SandboxReplayEngine:
                         )
 
             if position is not None and self.config.force_flat_at_end and index == session_last_indices[day]:
-                cash, position, new_fills, new_events, _ = self._transition(
+                cash, unsettled_cash, position, new_fills, new_events, _ = self._transition(
                     frame,
                     index,
                     cash,
+                    unsettled_cash,
                     position,
                     None,
                     "Session-end forced virtual flatten",
@@ -414,16 +430,25 @@ class SandboxReplayEngine:
                         consecutive_losses = consecutive_losses + 1 if fill.realized_pnl < 0 else 0
                 scheduled = None
 
-            equity = self._equity(cash, position, frame)
-            curve.append(EquityPoint(frame.start, equity, cash, position.symbol if position else None))
+            equity = self._equity(cash, unsettled_cash, position, frame)
+            curve.append(
+                EquityPoint(
+                    frame.start,
+                    equity,
+                    cash,
+                    position.symbol if position else None,
+                    unsettled_cash,
+                )
+            )
 
         ending_position = position.symbol if position else None
         if position is not None and self.config.force_flat_at_end:
             final_frame = bundle.frames[-1]
-            cash, position, new_fills, new_events, _ = self._transition(
+            cash, unsettled_cash, position, new_fills, new_events, _ = self._transition(
                 final_frame,
                 len(bundle.frames),
                 cash,
+                unsettled_cash,
                 position,
                 None,
                 "End of replay forced virtual flatten",
@@ -437,7 +462,13 @@ class SandboxReplayEngine:
             events.extend(new_events)
             closed_pnl.extend(fill.realized_pnl for fill in new_fills if fill.realized_pnl is not None)
             ending_position = None
-            curve[-1] = EquityPoint(final_frame.start, cash, cash, None)
+            curve[-1] = EquityPoint(
+                final_frame.start,
+                cash + unsettled_cash,
+                cash,
+                None,
+                unsettled_cash,
+            )
 
         final_equity = curve[-1].equity
         max_drawdown, max_drawdown_bars = self._drawdown(curve)
@@ -458,8 +489,12 @@ class SandboxReplayEngine:
         sortino = self._risk_adjusted(returns, annualization, downside_only=True)
         turnover_dollars = sum(fill.quantity * fill.price for fill in fills)
         execution_cost = sum(fill.execution_cost for fill in fills)
-        daily_pnl = self._daily_pnl(curve)
-        daily_returns = self._daily_returns(curve, self.config.initial_cash)
+        daily_pnl = self._daily_pnl(curve, self.config.market_hours)
+        daily_returns = self._daily_returns(
+            curve,
+            self.config.initial_cash,
+            self.config.market_hours,
+        )
         warnings = ["Historical replay is not evidence of future profitability"]
         if not closed_pnl:
             warnings.insert(0, "No complete virtual round trips occurred with these settings")
@@ -467,6 +502,10 @@ class SandboxReplayEngine:
             warnings.append(f"Replay ended holding {ending_position}; final P/L includes unrealized value")
         if bundle.quality and bundle.quality.missing_intervals:
             warnings.append(f"Dataset has {bundle.quality.missing_intervals} missing intraday intervals")
+        if self.config.settlement_model == "cash_t1":
+            warnings.append(
+                "Cash-account model: sale proceeds become spendable at the next observed trading session"
+            )
         return SandboxResult(
             run_id=str(uuid.uuid4()),
             source=bundle.source,
@@ -498,6 +537,7 @@ class SandboxReplayEngine:
             ending_position=ending_position,
             daily_pnl=daily_pnl,
             daily_returns=daily_returns,
+            final_unsettled_cash=unsettled_cash,
         )
 
     def _transition(
@@ -505,6 +545,7 @@ class SandboxReplayEngine:
         frame: ReplayFrame,
         index: int,
         cash: float,
+        unsettled_cash: float,
         position: _VirtualPosition | None,
         target: str | None,
         reason: str,
@@ -515,6 +556,7 @@ class SandboxReplayEngine:
         bypass_execution_failures: bool = False,
     ) -> tuple[
         float,
+        float,
         _VirtualPosition | None,
         list[SandboxFill],
         list[ExecutionEvent],
@@ -523,41 +565,70 @@ class SandboxReplayEngine:
         fills: list[SandboxFill] = []
         events: list[ExecutionEvent] = []
         if position is not None and position.symbol != target:
-            cash, position, fill, event, complete = self._sell(
-                frame, cash, position, reason, use_close, bypass_execution_failures
+            cash, unsettled_cash, position, fill, event, complete = self._sell(
+                frame,
+                cash,
+                unsettled_cash,
+                position,
+                reason,
+                use_close,
+                bypass_execution_failures,
             )
             events.append(event)
             if fill:
                 fills.append(fill)
             if not complete:
-                return cash, position, fills, events, False
+                return cash, unsettled_cash, position, fills, events, False
         if target is not None and position is None:
             day = session_key(frame.start, self.config.market_hours)
             if day in paused_days or entries_by_day.get(day, 0) >= self.config.max_entries_per_day:
                 events.append(ExecutionEvent(frame.start, target, "buy", "risk_blocked", 0, 0, reason))
-                return cash, None, fills, events, True
+                return cash, unsettled_cash, None, fills, events, True
             cash, position, fill, event = self._buy(
-                frame, index, cash, target, reason, recent_returns[target], use_close
+                frame,
+                index,
+                cash,
+                unsettled_cash,
+                target,
+                reason,
+                recent_returns[target],
+                use_close,
             )
             events.append(event)
             if fill:
                 fills.append(fill)
                 entries_by_day[day] = entries_by_day.get(day, 0) + 1
-            return cash, position, fills, events, event.status not in {"rejected", "limit_unfilled"}
-        return cash, position, fills, events, True
+            return (
+                cash,
+                unsettled_cash,
+                position,
+                fills,
+                events,
+                event.status not in {"rejected", "limit_unfilled"},
+            )
+        return cash, unsettled_cash, position, fills, events, True
 
     def _sell(
         self,
         frame: ReplayFrame,
         cash: float,
+        unsettled_cash: float,
         position: _VirtualPosition,
         reason: str,
         use_close: bool,
         bypass: bool,
-    ) -> tuple[float, _VirtualPosition | None, SandboxFill | None, ExecutionEvent, bool]:
+    ) -> tuple[
+        float,
+        float,
+        _VirtualPosition | None,
+        SandboxFill | None,
+        ExecutionEvent,
+        bool,
+    ]:
         if not bypass and self.rng.random() < self.config.rejection_rate_pct / 100.0:
             return (
                 cash,
+                unsettled_cash,
                 position,
                 None,
                 ExecutionEvent(
@@ -579,6 +650,7 @@ class SandboxReplayEngine:
             if price < limit_price:
                 return (
                     cash,
+                    unsettled_cash,
                     position,
                     None,
                     ExecutionEvent(
@@ -595,6 +667,7 @@ class SandboxReplayEngine:
         if quantity <= 0:
             return (
                 cash,
+                unsettled_cash,
                 position,
                 None,
                 ExecutionEvent(frame.start, position.symbol, "sell", "limit_unfilled", requested, 0, reason),
@@ -602,7 +675,10 @@ class SandboxReplayEngine:
             )
         cost_share = position.cost_total * (quantity / position.quantity)
         proceeds = quantity * price - self.config.commission_per_order
-        cash += proceeds
+        if self.config.settlement_model == "cash_t1":
+            unsettled_cash += proceeds
+        else:
+            cash += proceeds
         realized = proceeds - cost_share
         remaining = position.quantity - quantity
         next_position = None
@@ -631,15 +707,17 @@ class SandboxReplayEngine:
             requested,
             fraction,
             execution_cost,
+            unsettled_cash,
         )
         event = ExecutionEvent(frame.start, position.symbol, "sell", status, requested, quantity, reason)
-        return cash, next_position, fill, event, next_position is None
+        return cash, unsettled_cash, next_position, fill, event, next_position is None
 
     def _buy(
         self,
         frame: ReplayFrame,
         index: int,
         cash: float,
+        unsettled_cash: float,
         target: str,
         reason: str,
         recent_returns: deque[float],
@@ -647,7 +725,7 @@ class SandboxReplayEngine:
     ) -> tuple[float, _VirtualPosition | None, SandboxFill | None, ExecutionEvent]:
         bar = frame.bar_for_alias(target)
         raw = bar.close if use_close else bar.open
-        equity = cash
+        equity = cash + unsettled_cash
         risk_notional = equity * self.config.risk_budget_pct / self.config.hard_stop_pct
         exposure_cap = equity * self.config.max_exposure_pct
         volatility_scale = self._volatility_scale(recent_returns)
@@ -705,6 +783,7 @@ class SandboxReplayEngine:
             requested,
             fraction,
             execution_cost,
+            unsettled_cash,
         )
         return (
             cash,
@@ -740,10 +819,15 @@ class SandboxReplayEngine:
         return min(1.0, self.config.volatility_target_pct / realized)
 
     @staticmethod
-    def _equity(cash: float, position: _VirtualPosition | None, frame: ReplayFrame) -> float:
+    def _equity(
+        cash: float,
+        unsettled_cash: float,
+        position: _VirtualPosition | None,
+        frame: ReplayFrame,
+    ) -> float:
         if position is None:
-            return cash
-        return cash + position.quantity * frame.bar_for_alias(position.symbol).close
+            return cash + unsettled_cash
+        return cash + unsettled_cash + position.quantity * frame.bar_for_alias(position.symbol).close
 
     @staticmethod
     def _drawdown(curve: list[EquityPoint]) -> tuple[float, int]:
@@ -770,19 +854,21 @@ class SandboxReplayEngine:
         return statistics.fmean(returns) / deviation * annualization if deviation > 1e-12 else 0.0
 
     @staticmethod
-    def _daily_pnl(curve: list[EquityPoint]) -> dict[str, float]:
+    def _daily_pnl(curve: list[EquityPoint], market_hours: str) -> dict[str, float]:
         grouped: dict[str, list[float]] = {}
         for point in curve:
-            grouped.setdefault(point.timestamp.astimezone(EASTERN).date().isoformat(), []).append(
-                point.equity
-            )
+            grouped.setdefault(session_key(point.timestamp, market_hours), []).append(point.equity)
         return {day: values[-1] - values[0] for day, values in grouped.items() if values}
 
     @staticmethod
-    def _daily_returns(curve: list[EquityPoint], initial_equity: float) -> list[float]:
+    def _daily_returns(
+        curve: list[EquityPoint],
+        initial_equity: float,
+        market_hours: str,
+    ) -> list[float]:
         ending_equity: dict[str, float] = {}
         for point in curve:
-            day = point.timestamp.astimezone(EASTERN).date().isoformat()
+            day = session_key(point.timestamp, market_hours)
             ending_equity[day] = point.equity
         previous = initial_equity
         returns = []

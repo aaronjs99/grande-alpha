@@ -76,6 +76,14 @@ TERM_HELP: dict[str, str] = {
     "Max submitted orders": "Maximum number of order submissions allowed before the live grant locks.",
     "Max total exposure": "Maximum combined market value GRANDE Alpha may hold during the authorized session.",
     "Max volume participation": "Maximum share of a candle's reported volume available to a modeled fill.",
+    "Settlement model": (
+        "Controls whether virtual sale proceeds may be reused immediately or remain unsettled until "
+        "the next observed trading session. Cash-account evidence should use the T+1 model."
+    ),
+    "Unsettled cash": (
+        "Virtual equity from completed sales that still counts toward account value but cannot fund "
+        "another cash-account purchase until the next modeled trading session."
+    ),
     "Maximum entries": "Maximum number of new virtual positions the strategy may open per trading day.",
     "Maximum exposure": "Maximum percentage of sandbox equity that may be allocated to a position.",
     "Maximum hold": "Longest time a position may remain open before a modeled time exit.",
@@ -231,7 +239,9 @@ def apply_help(widget: QWidget, term: str, explanation: str | None = None) -> No
 
 
 def help_hint() -> QLabel:
-    label = QLabel("Tip: dashed-underlined terms explain themselves on hover or click. Press F1 for the glossary.")
+    label = QLabel(
+        "Tip: dashed-underlined terms explain themselves on hover or click. Press F1 for the glossary."
+    )
     label.setObjectName("settingsDescription")
     label.setWordWrap(True)
     label.setAccessibleName("Glossary help tip")

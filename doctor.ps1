@@ -43,9 +43,9 @@ if (-not (Test-Path -LiteralPath $VenvPython)) {
         Write-Check 'Taskbar identity' 'NOT INSTALLED - run .\install-local.ps1' DarkGray
     }
 
-    $BrokerState = & $VenvPython -c "import asyncio; from grande_alpha.broker.oauth import CredentialTokenStorage; s=CredentialTokenStorage(); print('CONFIGURED' if asyncio.run(s.get_tokens()) is not None else 'NOT CONFIGURED')"
+    $BrokerState = & $VenvPython -c "import asyncio; from grande_alpha.broker.oauth import CredentialTokenStorage; s=CredentialTokenStorage(); print('STORED - run -Broker to verify' if asyncio.run(s.get_tokens()) is not None else 'NOT STORED')"
     if ($LASTEXITCODE -ne 0) { throw 'Broker credential readiness check failed' }
-    Write-Check 'Robinhood OAuth' $BrokerState $(if ($BrokerState -eq 'CONFIGURED') { 'Green' } else { 'Yellow' })
+    Write-Check 'Robinhood OAuth' $BrokerState Yellow
 }
 
 if (Test-Path -LiteralPath $Candidate) {

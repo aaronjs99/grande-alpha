@@ -51,6 +51,7 @@ intervals; it sends no broker or account data.
 
 ## Understanding an evidence count
 
-`8/16 gates passed` is not 50% progress toward trading. The policy is conjunctive: every gate must
+`8/18 gates passed` (or any partial count from a legacy receipt) is not a percentage of progress
+toward trading. The current policy is conjunctive: every canonical gate must
 pass on one eligible run. Synthetic source, inadequate breadth, weak trial-adjusted statistics, or a
 missing walk-forward test cannot be averaged away by strong execution-cost or drawdown results.
