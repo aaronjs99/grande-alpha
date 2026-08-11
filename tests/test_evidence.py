@@ -11,7 +11,7 @@ from grande_alpha.evidence import (
     strategy_fingerprint,
     walk_forward,
 )
-from grande_alpha.historical import deterministic_demo
+from grande_alpha.historical import deterministic_demo, split_final_holdout
 from grande_alpha.research_service import run_evidence_lab
 from grande_alpha.sandbox import SandboxConfig, SandboxReplayEngine
 from grande_alpha.storage import AuditStore
@@ -133,4 +133,44 @@ def test_shared_gui_cli_evidence_service_records_one_explainable_result(tmp_path
         }
         for gate in lab.report.gates
     ]
+    assert not next(gate for gate in lab.report.gates if gate.name == "Sealed final holdout").passed
+    store.close()
+
+
+def test_chronological_final_holdout_is_later_and_purged() -> None:
+    bundle = deterministic_demo(40, seed=92)
+    split = split_final_holdout(bundle, holdout_sessions=5, purge_sessions=1)
+
+    assert split.development.end < split.holdout.start
+    assert len(split.purged_sessions) == 1
+    assert split.development.dataset_hash != split.holdout.dataset_hash
+    assert split.development.frames[-1].start < split.holdout.frames[0].start
+
+
+def test_evidence_service_reserves_before_candidate_evaluation(tmp_path, monkeypatch) -> None:
+    store = AuditStore(tmp_path / "evidence.db")
+    bundle = deterministic_demo(40, seed=93)
+    config = SandboxConfig()
+    observed_status: list[str] = []
+    original_candidate_grid = candidate_grid
+
+    def assert_reserved(value):
+        with store._lock:
+            row = store._connection.execute(
+                "SELECT status FROM research_holdouts ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+        observed_status.append(row["status"] if row else "missing")
+        return original_candidate_grid(value)[:1]
+
+    monkeypatch.setattr("grande_alpha.research_service.candidate_grid", assert_reserved)
+    lab = run_evidence_lab(bundle, config, store)
+
+    assert observed_status == ["RESERVED"]
+    assert lab.holdout_id is not None
+    saved = store.research_holdout(lab.holdout_id)
+    assert saved is not None and saved["status"] == "RESERVED"
+    assert saved["selected_fingerprint"] is None
+    assert saved["metrics"] == {}
+    assert lab.holdout is None
+    assert lab.report.status == "SHADOW_ONLY"
     store.close()

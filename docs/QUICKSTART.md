@@ -17,6 +17,17 @@ running app, and `doctor.ps1` verifies it. If a generic Python or PowerShell ite
 installation, unpin that stale item once, launch **GRANDE Alpha** from the installed shortcut, and
 pin the branded GRANDE Alpha button.
 
+## Morning check
+
+Double-click **Morning Check.cmd** before opening the app. It launches a read-only check using a
+process-scoped PowerShell bypass, so it works even when local `.ps1` files are blocked by the
+machine's normal execution policy. It verifies the source runtime, taskbar identity, stored OAuth
+path, Robinhood read path, and local evidence state. It never reviews, places, or cancels an order.
+
+A successful result ends with `READY FOR RESEARCH AND LIVE SHADOW`. Real-order controls remain
+locked unless the exact current strategy has a fully passing evidence certificate and the user later
+completes a separate bounded live-session confirmation.
+
 ## Research session
 
 1. Start with `.\run.ps1` or `Start GRANDE Alpha.cmd`.
@@ -76,7 +87,7 @@ For the matching terminal research and inspection surface, see the [command-line
 To authenticate and validate the complete provider read path without invoking any write method:
 
 ```powershell
-.\doctor.ps1 -Broker
+.\Morning Check.cmd
 ```
 
 This may open Robinhood in your browser. It reads account discovery, one portfolio response,

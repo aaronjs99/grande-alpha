@@ -69,6 +69,11 @@ from grande_alpha.ui.glossary import (
 )
 from grande_alpha.ui.table_layout import configure_adjustable_columns, reset_column_widths
 
+SETTLEMENT_MODEL_LABELS = {
+    "cash_t1": "Cash account (sale proceeds available next session)",
+    "instant": "Immediate reuse (margin/research assumption)",
+}
+
 PRESETS = {
     "Balanced research": SandboxConfig(),
     "Fast / reactive": SandboxConfig(
@@ -243,6 +248,9 @@ class SandboxWidget(QWidget):
         self.fill_fraction = self._decimal(1, 100, decimals=1, suffix=" %")
         self.rejection = self._decimal(0, 100, decimals=1, suffix=" %")
         self.volume_participation = self._decimal(0.01, 100, decimals=2, suffix=" %")
+        self.settlement_model = QComboBox()
+        for value, label in SETTLEMENT_MODEL_LABELS.items():
+            self.settlement_model.addItem(label, value)
         self.market_hours = QComboBox()
         for value, label in MARKET_HOURS_LABELS.items():
             self.market_hours.addItem(label, value)
@@ -264,6 +272,7 @@ class SandboxWidget(QWidget):
             ("Fill fraction", self.fill_fraction),
             ("Rejection probability", self.rejection),
             ("Max volume participation", self.volume_participation),
+            ("Settlement model", self.settlement_model),
             ("Trading session", self.market_hours),
             ("Order type", self.order_type),
             ("Time in force", self.time_in_force),
@@ -393,6 +402,7 @@ class SandboxWidget(QWidget):
             ("sortino", "Sortino"),
             ("exposure", "Exposure"),
             ("cost", "Execution cost"),
+            ("unsettled", "Unsettled cash"),
         ]
         for index, (key, title) in enumerate(names):
             card = QGroupBox(title)
@@ -561,7 +571,9 @@ class SandboxWidget(QWidget):
         self.gate_inspector = QPlainTextEdit()
         self.gate_inspector.setReadOnly(True)
         self.gate_inspector.setMaximumHeight(145)
-        self.gate_inspector.setPlaceholderText("Select an evidence gate to see why it matters and what to do next.")
+        self.gate_inspector.setPlaceholderText(
+            "Select an evidence gate to see why it matters and what to do next."
+        )
         validation_layout.addWidget(self.gate_inspector)
         self.tabs.addTab(validation, "Walk-forward & gates")
 
@@ -728,6 +740,7 @@ class SandboxWidget(QWidget):
             (self.market_hours, config.market_hours),
             (self.order_type, config.order_type),
             (self.time_in_force, config.time_in_force),
+            (self.settlement_model, config.settlement_model),
         ):
             index = widget.findData(value)
             if index >= 0:
@@ -776,6 +789,7 @@ class SandboxWidget(QWidget):
             fill_fraction_pct=self.fill_fraction.value(),
             rejection_rate_pct=self.rejection.value(),
             max_volume_participation_pct=self.volume_participation.value(),
+            settlement_model=self.settlement_model.currentData(),
             market_hours=self.market_hours.currentData(),
             order_type=self.order_type.currentData(),
             time_in_force=self.time_in_force.currentData(),
@@ -1149,6 +1163,7 @@ class SandboxWidget(QWidget):
             "sortino": f"{result.sortino:+.2f}",
             "exposure": f"{result.exposure_pct:.1f}%",
             "cost": f"${result.total_execution_cost:.2f}",
+            "unsettled": f"${result.final_unsettled_cash:,.2f}",
         }
         for key, value in values.items():
             self.metric_labels[key].setText(value)
@@ -1267,7 +1282,8 @@ class SandboxWidget(QWidget):
         self.trade_cursor_line.setValue(point.timestamp.timestamp())
         self.status.setText(
             f"Replay {index + 1}/{len(self.result.equity_curve)} • {point.timestamp.astimezone():%b %d %I:%M %p} • "
-            f"equity ${point.equity:,.2f} • {point.position_symbol or 'cash'}"
+            f"equity ${point.equity:,.2f} • settled ${point.cash:,.2f} • "
+            f"unsettled ${point.unsettled_cash:,.2f} • {point.position_symbol or 'cash'}"
         )
 
     def _toggle_replay(self) -> None:

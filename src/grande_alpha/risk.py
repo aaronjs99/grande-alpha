@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from collections import deque
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -28,9 +29,8 @@ class RiskEngine:
         self.session_date: str | None = None
 
     def arm(self, grant: LiveGrant, portfolio: Portfolio) -> None:
-        if grant.account_number == "":
-            raise ValueError("Live grant must target an account")
-        grant.execution.validate()
+        grant.validate()
+        portfolio.validate()
         self.grant = grant
         self.killed = False
         self.trades_today = 0
@@ -81,6 +81,11 @@ class RiskEngine:
         grant = self.grant
         if self.killed or grant is None:
             return RiskDecision(False, "Live authority is locked")
+        try:
+            grant.validate()
+        except ValueError as exc:
+            self.disarm()
+            return RiskDecision(False, f"Invalid live grant: {exc}")
         if not grant.active(reference):
             self.disarm()
             return RiskDecision(False, "Live authority expired")
@@ -88,8 +93,14 @@ class RiskEngine:
             return RiskDecision(False, "Duplicate order idempotency key")
         try:
             intent.validate()
+            quote.validate()
+            portfolio.validate()
         except ValueError as exc:
-            return RiskDecision(False, f"Invalid order: {exc}")
+            return RiskDecision(False, f"Invalid live input: {exc}")
+        if quote.symbol != intent.symbol:
+            return RiskDecision(False, "Quote symbol does not match the order")
+        if not math.isfinite(float(current_exposure)) or current_exposure < 0:
+            return RiskDecision(False, "Current exposure must be finite and nonnegative")
         profile = grant.execution
         if (
             intent.market_hours != profile.market_hours

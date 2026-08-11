@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import sqlite3
 import threading
 from datetime import datetime
@@ -106,7 +107,8 @@ class AuditStore:
                     commission REAL NOT NULL,
                     realized_pnl REAL,
                     reason TEXT NOT NULL,
-                    cash_after REAL NOT NULL
+                    cash_after REAL NOT NULL,
+                    unsettled_cash_after REAL NOT NULL DEFAULT 0
                 );
                 CREATE INDEX IF NOT EXISTS idx_sandbox_fills_run ON sandbox_fills(run_id,id);
                 CREATE TABLE IF NOT EXISTS sandbox_execution_events (
@@ -147,6 +149,24 @@ class AuditStore:
                 );
                 CREATE INDEX IF NOT EXISTS idx_research_trials_dataset
                     ON research_trials(dataset_hash,id);
+                CREATE TABLE IF NOT EXISTS research_holdouts (
+                    id INTEGER PRIMARY KEY,
+                    created_at TEXT NOT NULL,
+                    dataset_hash TEXT NOT NULL,
+                    development_hash TEXT NOT NULL,
+                    holdout_hash TEXT NOT NULL,
+                    holdout_start TEXT NOT NULL,
+                    holdout_end TEXT NOT NULL,
+                    policy_version INTEGER NOT NULL,
+                    status TEXT NOT NULL CHECK(status IN (
+                        'RESERVED','FROZEN','EVALUATING','CONSUMED','INVALID'
+                    )),
+                    selected_fingerprint TEXT,
+                    evaluation_started_at TEXT,
+                    consumed_at TEXT,
+                    metrics_json TEXT NOT NULL DEFAULT '{}',
+                    UNIQUE(dataset_hash,holdout_start,holdout_end)
+                );
                 """
             )
             promotion_columns = {
@@ -156,6 +176,23 @@ class AuditStore:
             if "risk_envelope_json" not in promotion_columns:
                 self._connection.execute(
                     "ALTER TABLE research_promotions ADD COLUMN risk_envelope_json TEXT NOT NULL DEFAULT '{}'"
+                )
+            if "holdout_id" not in promotion_columns:
+                self._connection.execute("ALTER TABLE research_promotions ADD COLUMN holdout_id INTEGER")
+            self._connection.execute(
+                """CREATE UNIQUE INDEX IF NOT EXISTS idx_research_holdouts_hash
+                ON research_holdouts(holdout_hash)"""
+            )
+            self._connection.execute(
+                """CREATE UNIQUE INDEX IF NOT EXISTS idx_research_promotions_holdout
+                ON research_promotions(holdout_id) WHERE holdout_id IS NOT NULL"""
+            )
+            sandbox_fill_columns = {
+                row["name"] for row in self._connection.execute("PRAGMA table_info(sandbox_fills)").fetchall()
+            }
+            if "unsettled_cash_after" not in sandbox_fill_columns:
+                self._connection.execute(
+                    "ALTER TABLE sandbox_fills ADD COLUMN unsettled_cash_after REAL NOT NULL DEFAULT 0"
                 )
 
     def record_quote(self, quote: Quote) -> None:
@@ -355,8 +392,8 @@ class AuditStore:
             self._connection.executemany(
                 """INSERT INTO sandbox_fills(
                     run_id,filled_at,symbol,side,quantity,price,commission,
-                    realized_pnl,reason,cash_after
-                ) VALUES(?,?,?,?,?,?,?,?,?,?)""",
+                    realized_pnl,reason,cash_after,unsettled_cash_after
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
                 [
                     (
                         run_id,
@@ -369,6 +406,7 @@ class AuditStore:
                         fill["realized_pnl"],
                         fill["reason"],
                         fill["cash_after"],
+                        fill.get("unsettled_cash_after", 0.0),
                     )
                     for fill in fills
                 ],
@@ -406,9 +444,7 @@ class AuditStore:
 
     def sandbox_run(self, run_id: str) -> dict[str, Any] | None:
         with self._lock:
-            row = self._connection.execute(
-                "SELECT * FROM sandbox_runs WHERE run_id=?", (run_id,)
-            ).fetchone()
+            row = self._connection.execute("SELECT * FROM sandbox_runs WHERE run_id=?", (run_id,)).fetchone()
             if row is None:
                 return None
             fills = self._connection.execute(
@@ -424,9 +460,7 @@ class AuditStore:
         result["events"] = [dict(value) for value in events]
         return result
 
-    def record_research_trials(
-        self, dataset_hash: str, trials: list[dict[str, Any]]
-    ) -> int:
+    def record_research_trials(self, dataset_hash: str, trials: list[dict[str, Any]]) -> int:
         """Commit unique candidate trials before promotion statistics are evaluated."""
 
         with self._lock, self._connection:
@@ -457,6 +491,131 @@ class AuditStore:
             ).fetchone()
         return int(row["count"] if row else 0)
 
+    def reserve_research_holdout(
+        self,
+        *,
+        dataset_hash: str,
+        development_hash: str,
+        holdout_hash: str,
+        holdout_start: str,
+        holdout_end: str,
+        policy_version: int,
+    ) -> int:
+        """Reserve an unseen chronological block before candidate evaluation begins."""
+
+        with self._lock:
+            try:
+                with self._connection:
+                    cursor = self._connection.execute(
+                        """INSERT INTO research_holdouts(
+                            created_at,dataset_hash,development_hash,holdout_hash,
+                            holdout_start,holdout_end,policy_version,status
+                        ) VALUES(?,?,?,?,?,?,?,'RESERVED')""",
+                        (
+                            utc_now().isoformat(),
+                            dataset_hash,
+                            development_hash,
+                            holdout_hash,
+                            holdout_start,
+                            holdout_end,
+                            policy_version,
+                        ),
+                    )
+                    return int(cursor.lastrowid)
+            except sqlite3.IntegrityError as exc:
+                existing = self._connection.execute(
+                    """SELECT * FROM research_holdouts
+                    WHERE holdout_hash=? OR (
+                        dataset_hash=? AND holdout_start=? AND holdout_end=?
+                    ) ORDER BY id LIMIT 1""",
+                    (holdout_hash, dataset_hash, holdout_start, holdout_end),
+                ).fetchone()
+                if existing is not None and all(
+                    (
+                        existing["dataset_hash"] == dataset_hash,
+                        existing["development_hash"] == development_hash,
+                        existing["holdout_hash"] == holdout_hash,
+                        existing["holdout_start"] == holdout_start,
+                        existing["holdout_end"] == holdout_end,
+                        int(existing["policy_version"]) == policy_version,
+                        existing["status"] == "RESERVED",
+                    )
+                ):
+                    return int(existing["id"])
+                raise ValueError("This final holdout was already reserved or consumed") from exc
+
+    def freeze_research_holdout(self, holdout_id: int, selected_fingerprint: str) -> None:
+        if not selected_fingerprint:
+            raise ValueError("A selected strategy fingerprint is required")
+        with self._lock, self._connection:
+            cursor = self._connection.execute(
+                """UPDATE research_holdouts
+                SET status='FROZEN',selected_fingerprint=?
+                WHERE id=? AND status='RESERVED'""",
+                (selected_fingerprint, holdout_id),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError("Final holdout is not available to freeze")
+
+    def claim_research_holdout(self, holdout_id: int, selected_fingerprint: str) -> None:
+        """Atomically make a frozen holdout unavailable before its data is evaluated."""
+
+        with self._lock, self._connection:
+            cursor = self._connection.execute(
+                """UPDATE research_holdouts
+                SET status='EVALUATING',evaluation_started_at=?
+                WHERE id=? AND status='FROZEN' AND selected_fingerprint=?""",
+                (utc_now().isoformat(), holdout_id, selected_fingerprint),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError("Final holdout is not frozen for this exact strategy")
+
+    def consume_research_holdout(
+        self,
+        holdout_id: int,
+        selected_fingerprint: str,
+        metrics: dict[str, Any],
+    ) -> None:
+        if not metrics:
+            raise ValueError("Final holdout metrics are required before consumption")
+        with self._lock, self._connection:
+            cursor = self._connection.execute(
+                """UPDATE research_holdouts
+                SET status='CONSUMED',consumed_at=?,metrics_json=?
+                WHERE id=? AND status='EVALUATING' AND selected_fingerprint=?""",
+                (
+                    utc_now().isoformat(),
+                    json.dumps(metrics, sort_keys=True, default=str),
+                    holdout_id,
+                    selected_fingerprint,
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError("Final holdout was not claimed or was already consumed")
+
+    def invalidate_research_holdout(self, holdout_id: int) -> None:
+        with self._lock, self._connection:
+            self._connection.execute(
+                """UPDATE research_holdouts SET status='INVALID'
+                WHERE id=? AND status IN ('RESERVED','FROZEN','EVALUATING')""",
+                (holdout_id,),
+            )
+
+    def research_holdout(self, holdout_id: int) -> dict[str, Any] | None:
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT * FROM research_holdouts WHERE id=?", (holdout_id,)
+            ).fetchone()
+        if row is None:
+            return None
+        result = dict(row)
+        try:
+            metrics = json.loads(result.pop("metrics_json"))
+        except (TypeError, json.JSONDecodeError):
+            metrics = {}
+        result["metrics"] = metrics if isinstance(metrics, dict) else {}
+        return result
+
     def record_research_promotion(
         self,
         *,
@@ -468,21 +627,60 @@ class AuditStore:
         replay_end: str,
         gates: list[dict[str, Any]],
         risk_envelope: dict[str, float | int],
+        holdout_id: int | None = None,
     ) -> int:
         if status not in {"SHADOW_ONLY", "LIVE_REVIEW_ELIGIBLE"}:
             raise ValueError("Unknown research-promotion status")
         if not gates:
             raise ValueError("Research promotion requires at least one evidence gate")
-        if status == "LIVE_REVIEW_ELIGIBLE" and not all(
-            bool(gate.get("passed", False)) for gate in gates
-        ):
-            raise ValueError("Live-review eligibility requires every recorded gate to pass")
+        if status == "LIVE_REVIEW_ELIGIBLE":
+            from grande_alpha.evidence import REQUIRED_LIVE_GATE_NAMES
+
+            gate_names = [gate.get("name") for gate in gates if isinstance(gate, dict)]
+            if (
+                len(gate_names) != len(gates)
+                or len(gate_names) != len(set(gate_names))
+                or set(gate_names) != REQUIRED_LIVE_GATE_NAMES
+                or not all(gate.get("passed") is True for gate in gates)
+            ):
+                raise ValueError("Live-review eligibility requires every canonical evidence gate to pass")
+        if status == "LIVE_REVIEW_ELIGIBLE":
+            with self._lock:
+                holdout = self._connection.execute(
+                    """SELECT status,dataset_hash,holdout_hash,holdout_start,holdout_end,
+                    selected_fingerprint,policy_version,metrics_json
+                    FROM research_holdouts WHERE id=?""",
+                    (holdout_id,),
+                ).fetchone()
+                existing_promotion = self._connection.execute(
+                    "SELECT id FROM research_promotions WHERE holdout_id=?",
+                    (holdout_id,),
+                ).fetchone()
+            try:
+                holdout_metrics = json.loads(holdout["metrics_json"]) if holdout else {}
+            except (TypeError, json.JSONDecodeError):
+                holdout_metrics = {}
+            if (
+                holdout is None
+                or holdout["status"] != "CONSUMED"
+                or holdout["dataset_hash"] != dataset_hash
+                or holdout["selected_fingerprint"] != strategy_fingerprint
+                or int(holdout["policy_version"]) != policy_version
+                or holdout["holdout_end"] != replay_end
+                or existing_promotion is not None
+                or not _passing_holdout_metrics(holdout_metrics, holdout)
+            ):
+                raise ValueError(
+                    "Live-review eligibility requires one unused passing final holdout for the exact dataset and strategy"
+                )
+            if not _valid_risk_envelope(risk_envelope):
+                raise ValueError("Live-review eligibility requires a finite positive risk envelope")
         with self._lock, self._connection:
             cursor = self._connection.execute(
                 """INSERT INTO research_promotions(
                     created_at,dataset_hash,strategy_fingerprint,policy_version,status,
-                    source,replay_end,gates_json,risk_envelope_json
-                ) VALUES(?,?,?,?,?,?,?,?,?)""",
+                    source,replay_end,gates_json,risk_envelope_json,holdout_id
+                ) VALUES(?,?,?,?,?,?,?,?,?,?)""",
                 (
                     utc_now().isoformat(),
                     dataset_hash,
@@ -493,6 +691,7 @@ class AuditStore:
                     replay_end,
                     json.dumps(gates, default=str),
                     json.dumps(risk_envelope, sort_keys=True),
+                    holdout_id,
                 ),
             )
             promotion_id = int(cursor.lastrowid)
@@ -506,6 +705,7 @@ class AuditStore:
                 "policy_version": policy_version,
                 "status": status,
                 "risk_envelope": risk_envelope,
+                "holdout_id": holdout_id,
             },
             "warning" if status == "SHADOW_ONLY" else "info",
         )
@@ -549,15 +749,27 @@ class AuditStore:
         max_age_days: int = 30,
         requested_envelope: dict[str, float | int] | None = None,
     ) -> dict[str, Any] | None:
+        # Import locally so the storage layer stays usable during application
+        # initialization while still rejecting certificates from an older policy.
+        from grande_alpha.evidence import EVIDENCE_POLICY_VERSION
+
         if max_age_days < 1:
             raise ValueError("Evidence age must be at least one day")
         with self._lock:
             row = self._connection.execute(
-                """SELECT * FROM research_promotions
-                WHERE strategy_fingerprint=? AND status='LIVE_REVIEW_ELIGIBLE'
-                AND julianday(created_at) >= julianday('now', ?)
-                ORDER BY created_at DESC,id DESC LIMIT 1""",
-                (strategy_fingerprint, f"-{max_age_days} days"),
+                """SELECT p.*,h.dataset_hash AS holdout_dataset_hash,
+                h.holdout_hash AS sealed_holdout_hash,h.holdout_start AS sealed_holdout_start,
+                h.holdout_end AS sealed_holdout_end,h.metrics_json AS holdout_metrics_json
+                FROM research_promotions AS p
+                JOIN research_holdouts AS h ON h.id=p.holdout_id
+                WHERE p.strategy_fingerprint=? AND p.status='LIVE_REVIEW_ELIGIBLE'
+                AND h.status='CONSUMED'
+                AND h.selected_fingerprint=p.strategy_fingerprint
+                AND h.policy_version=p.policy_version
+                AND p.policy_version=?
+                AND julianday(p.created_at) >= julianday('now', ?)
+                ORDER BY p.created_at DESC,p.id DESC LIMIT 1""",
+                (strategy_fingerprint, EVIDENCE_POLICY_VERSION, f"-{max_age_days} days"),
             ).fetchone()
         if not row:
             return None
@@ -565,31 +777,98 @@ class AuditStore:
         try:
             tested = json.loads(evidence["risk_envelope_json"])
             gates = json.loads(evidence["gates_json"])
+            holdout_metrics = json.loads(evidence["holdout_metrics_json"])
         except (KeyError, TypeError, json.JSONDecodeError):
             return None
-        if not isinstance(gates, list) or not gates or not all(
-            isinstance(gate, dict) and bool(gate.get("passed", False)) for gate in gates
+        from grande_alpha.evidence import REQUIRED_LIVE_GATE_NAMES
+
+        gate_names = (
+            [gate.get("name") for gate in gates if isinstance(gate, dict)] if isinstance(gates, list) else []
+        )
+        if (
+            not isinstance(gates, list)
+            or not gates
+            or len(gate_names) != len(gates)
+            or len(gate_names) != len(set(gate_names))
+            or set(gate_names) != REQUIRED_LIVE_GATE_NAMES
+            or not all(gate.get("passed") is True for gate in gates)
+            or evidence["dataset_hash"] != evidence["holdout_dataset_hash"]
+            or evidence["replay_end"] != evidence["sealed_holdout_end"]
+            or not _passing_holdout_metrics(
+                holdout_metrics,
+                {
+                    "holdout_hash": evidence["sealed_holdout_hash"],
+                    "holdout_start": evidence["sealed_holdout_start"],
+                    "holdout_end": evidence["sealed_holdout_end"],
+                },
+            )
         ):
             return None
-        if not isinstance(tested, dict):
+        if not _valid_risk_envelope(tested):
             return None
-        required = {
-            "max_order_notional",
-            "max_total_exposure",
-            "max_daily_loss",
-            "max_trades",
-            "max_orders_per_minute",
-            "max_spread_bps",
-        }
-        if not required <= tested.keys():
-            return None
-        if requested_envelope and any(
-            float(requested_envelope[name]) > float(tested[name]) for name in required
-        ):
-            return None
+        if requested_envelope is not None:
+            if not _valid_risk_envelope(requested_envelope):
+                return None
+            if any(float(requested_envelope[name]) > float(tested[name]) for name in _RISK_ENVELOPE_FIELDS):
+                return None
         evidence["risk_envelope"] = tested
         return evidence
 
     def close(self) -> None:
         with self._lock:
             self._connection.close()
+
+
+def _passing_holdout_metrics(metrics: Any, holdout: Any) -> bool:
+    """Recompute the immutable final-holdout pass at the storage trust boundary."""
+
+    if not isinstance(metrics, dict):
+        return False
+    try:
+        net_pnl = float(metrics["net_pnl"])
+        round_trips = float(metrics["round_trips"])
+        profit_factor = float(metrics["profit_factor"])
+        expectancy = float(metrics["expectancy"])
+        max_drawdown = float(metrics["max_drawdown_pct"])
+        cost_multiplier = float(metrics["cost_multiplier"])
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return False
+    finite_values = (net_pnl, round_trips, expectancy, max_drawdown, cost_multiplier)
+    if not all(math.isfinite(value) for value in finite_values):
+        return False
+    if math.isnan(profit_factor) or profit_factor == -math.inf:
+        return False
+    return bool(
+        metrics.get("holdout_hash") == holdout["holdout_hash"]
+        and metrics.get("holdout_start") == holdout["holdout_start"]
+        and metrics.get("holdout_end") == holdout["holdout_end"]
+        and math.isclose(cost_multiplier, 3.0, rel_tol=0.0, abs_tol=1e-12)
+        and net_pnl > 0
+        and round_trips >= 5
+        and profit_factor >= 1.10
+        and expectancy > 0
+        and 0 <= max_drawdown <= 5.0
+        and metrics.get("ending_position") is None
+    )
+
+
+_RISK_ENVELOPE_FIELDS = {
+    "max_order_notional",
+    "max_total_exposure",
+    "max_daily_loss",
+    "max_trades",
+    "max_orders_per_minute",
+    "max_spread_bps",
+}
+
+
+def _valid_risk_envelope(envelope: Any) -> bool:
+    if not isinstance(envelope, dict) or not _RISK_ENVELOPE_FIELDS <= envelope.keys():
+        return False
+    try:
+        values = {name: float(envelope[name]) for name in _RISK_ENVELOPE_FIELDS}
+    except (TypeError, ValueError, OverflowError):
+        return False
+    if not all(math.isfinite(value) and value > 0 for value in values.values()):
+        return False
+    return all(values[name].is_integer() for name in ("max_trades", "max_orders_per_minute"))

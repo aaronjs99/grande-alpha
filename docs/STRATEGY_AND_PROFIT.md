@@ -56,6 +56,12 @@ The implementation in `src/grande_alpha/strategy.py` uses completed QQQ midpoint
 | No new trades after open | First 5 minutes |
 | No new trades before close | Last 10 minutes |
 
+In live and live-shadow operation, the application builds those 5-second bars locally from the
+quote midpoints it observes. The current remote-history adapter's finest interval is 1 minute; it
+does not provide native 5-second history. Therefore, 1-minute replay results cannot validate the
+5-second baseline, and a 5-second CSV is relevant only if its provenance shows genuinely observed
+or source-provided 5-second bars. Resampling a 1-minute candle does not recover the missing path.
+
 The final ten minutes are an exit window: new entries are blocked, the policy targets cash, and
 risk-reducing sells remain permitted through the 4:00 p.m. Eastern regular-session close.
 
@@ -106,6 +112,19 @@ expectancy per trade
 Positive expectancy must be demonstrated by the account's realized fills; it cannot be assumed
 from the source code.
 
+## What `cash_t1` changes for a $50 cash ledger
+
+The default research and shadow settlement model permits buys only from settled cash. When a
+virtual position is sold, net proceeds move to unsettled cash. They remain part of total equity but
+are unavailable for another entry until the next observed market session, when the model releases
+them back to settled cash.
+
+If one $50 tranche is used for a round trip, that tranche is normally unavailable for another entry
+that session. Smaller tranches permit more independent entries only until each settled tranche has
+been used. The `instant` option is a research counterfactual, not evidence that a broker will permit
+same-session reuse. Real buying power, settlement timing, restrictions, and order acceptance come
+only from the broker.
+
 ## What tends to help
 
 - A persistent directional QQQ move with liquid, narrow TQQQ/SQQQ spreads.
@@ -126,7 +145,9 @@ from the source code.
 
 ## Evidence required before increasing size
 
-Do not scale because of one profitable day. Require at least 20 live sessions and record:
+Do not scale because of one profitable day. Shadow-only operation remains the required engineering
+stage while there is no passing policy-v8 certificate. If a later qualified review permits real
+orders, require at least 20 monitored live sessions and record:
 
 - number of submitted, filled, canceled, and rejected orders;
 - actual entry and exit prices;
@@ -142,14 +163,16 @@ acceptable, and no unresolved control failure occurred. Reduce size or stop if t
 
 ## What “success” means for a first evaluation
 
-Success is not a target dollar profit. It is:
+For tomorrow's shadow-only engineering session, success is not a target dollar profit. It is:
 
 - Robinhood and app data matched;
-- one bounded session was authorized correctly;
-- every signal and order matched the documented rules;
+- no real-order session was authorized and no real order was submitted;
+- every signal and virtual fill matched the documented rules;
 - no limit or warning was bypassed;
-- the session ended with no unknown order or position;
-- realized results were recorded honestly.
+- settled and unsettled cash moved according to `cash_t1`;
+- the session ended with no unknown broker order or position;
+- virtual results and data gaps were recorded honestly.
 
-A profitable session with an unexplained order is a failed system test. A small losing session in
-which every control behaved correctly is useful evidence, but it still does not prove an edge.
+A profitable shadow session with an unexplained transition is a failed system test. A small losing
+session in which every control behaved correctly is useful engineering evidence, but it still does
+not prove an edge or guarantee future profit.

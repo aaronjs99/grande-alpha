@@ -3,9 +3,39 @@ from pathlib import Path
 import pytest
 
 from grande_alpha.config import AppConfig
-from grande_alpha.evidence import EVIDENCE_POLICY_VERSION, strategy_fingerprint
+from grande_alpha.evidence import (
+    EVIDENCE_POLICY_VERSION,
+    REQUIRED_LIVE_GATE_NAMES,
+    strategy_fingerprint,
+)
+from grande_alpha.historical import deterministic_demo
 from grande_alpha.models import OrderIntent
+from grande_alpha.sandbox import SandboxConfig, SandboxReplayEngine
 from grande_alpha.storage import AuditStore
+
+
+def _passing_gates() -> list[dict[str, object]]:
+    return [{"name": name, "passed": True} for name in sorted(REQUIRED_LIVE_GATE_NAMES)]
+
+
+def _passing_holdout_metrics(
+    holdout_hash: str,
+    holdout_start: str,
+    holdout_end: str,
+) -> dict[str, object]:
+    return {
+        "net_pnl": 1.0,
+        "return_pct": 2.0,
+        "round_trips": 5,
+        "profit_factor": 1.2,
+        "expectancy": 0.2,
+        "max_drawdown_pct": 1.0,
+        "ending_position": None,
+        "cost_multiplier": 3.0,
+        "holdout_hash": holdout_hash,
+        "holdout_start": holdout_start,
+        "holdout_end": holdout_end,
+    }
 
 
 def test_receipts_and_idempotent_intents_are_persisted(tmp_path: Path) -> None:
@@ -61,9 +91,63 @@ def test_research_fund_never_allocates_losses_and_rejects_duplicate_confirmation
     store.close()
 
 
+def test_sandbox_fill_ledger_persists_unsettled_cash(tmp_path: Path) -> None:
+    store = AuditStore(tmp_path / "audit.db")
+    bundle = deterministic_demo(2, seed=9)
+    config = SandboxConfig(
+        warmup_bars=5,
+        fast_ema=1,
+        slow_ema=3,
+        trend_threshold_bps=0.1,
+        momentum_bars=1,
+        hard_stop_pct=0.5,
+        take_profit_pct=0.5,
+        max_hold_minutes=100,
+        max_entries_per_day=10,
+        no_trade_open_minutes=0,
+        no_trade_close_minutes=0,
+        force_flat_at_end=True,
+        settlement_model="cash_t1",
+    )
+    result = SandboxReplayEngine(config).run(bundle)
+    store.record_sandbox_run(
+        result.run_id,
+        result.source,
+        result.start.isoformat(),
+        result.end.isoformat(),
+        config.__dict__,
+        result.metrics(),
+        [fill.as_dict() for fill in result.fills],
+    )
+
+    saved = store.sandbox_run(result.run_id)
+    assert saved is not None
+    assert saved["fills"][-1]["unsettled_cash_after"] > 0
+    store.close()
+
+
 def test_live_evidence_is_exact_strategy_scoped(tmp_path: Path) -> None:
     store = AuditStore(tmp_path / "audit.db")
     fingerprint = strategy_fingerprint(AppConfig())
+    holdout_id = store.reserve_research_holdout(
+        dataset_hash="hash-1",
+        development_hash="development-1",
+        holdout_hash="holdout-1",
+        holdout_start="2026-07-01T13:30:00+00:00",
+        holdout_end="2026-08-09T16:00:00+00:00",
+        policy_version=EVIDENCE_POLICY_VERSION,
+    )
+    store.freeze_research_holdout(holdout_id, fingerprint)
+    store.claim_research_holdout(holdout_id, fingerprint)
+    store.consume_research_holdout(
+        holdout_id,
+        fingerprint,
+        _passing_holdout_metrics(
+            "holdout-1",
+            "2026-07-01T13:30:00+00:00",
+            "2026-08-09T16:00:00+00:00",
+        ),
+    )
     store.record_research_promotion(
         dataset_hash="hash-1",
         strategy_fingerprint=fingerprint,
@@ -71,7 +155,7 @@ def test_live_evidence_is_exact_strategy_scoped(tmp_path: Path) -> None:
         status="LIVE_REVIEW_ELIGIBLE",
         source="licensed CSV",
         replay_end="2026-08-09T16:00:00+00:00",
-        gates=[{"name": "fixture", "passed": True}],
+        gates=_passing_gates(),
         risk_envelope={
             "max_order_notional": 25.0,
             "max_total_exposure": 40.0,
@@ -80,6 +164,7 @@ def test_live_evidence_is_exact_strategy_scoped(tmp_path: Path) -> None:
             "max_orders_per_minute": 2,
             "max_spread_bps": 6.0,
         },
+        holdout_id=holdout_id,
     )
     assert store.current_live_evidence(fingerprint) is not None
     assert store.current_live_evidence("different-strategy") is None
@@ -97,12 +182,118 @@ def test_live_evidence_is_exact_strategy_scoped(tmp_path: Path) -> None:
         )
         is None
     )
+    assert (
+        store.current_live_evidence(
+            fingerprint,
+            requested_envelope={
+                "max_order_notional": float("nan"),
+                "max_total_exposure": 40.0,
+                "max_daily_loss": 2.0,
+                "max_trades": 6,
+                "max_orders_per_minute": 2,
+                "max_spread_bps": 6.0,
+            },
+        )
+        is None
+    )
+    with store._connection:
+        store._connection.execute(
+            "UPDATE research_promotions SET policy_version=?",
+            (EVIDENCE_POLICY_VERSION - 1,),
+        )
+        store._connection.execute(
+            "UPDATE research_holdouts SET policy_version=?",
+            (EVIDENCE_POLICY_VERSION - 1,),
+        )
+    assert store.current_live_evidence(fingerprint) is None
+    store.close()
+
+
+def test_final_holdout_is_one_use_and_exact_strategy_scoped(tmp_path: Path) -> None:
+    store = AuditStore(tmp_path / "audit.db")
+    holdout_id = store.reserve_research_holdout(
+        dataset_hash="dataset-a",
+        development_hash="development-a",
+        holdout_hash="holdout-a",
+        holdout_start="2026-07-01T13:30:00+00:00",
+        holdout_end="2026-08-01T20:00:00+00:00",
+        policy_version=EVIDENCE_POLICY_VERSION,
+    )
+    assert (
+        store.reserve_research_holdout(
+            dataset_hash="dataset-a",
+            development_hash="development-a",
+            holdout_hash="holdout-a",
+            holdout_start="2026-07-01T13:30:00+00:00",
+            holdout_end="2026-08-01T20:00:00+00:00",
+            policy_version=EVIDENCE_POLICY_VERSION,
+        )
+        == holdout_id
+    )
+    with pytest.raises(ValueError, match="already reserved"):
+        store.reserve_research_holdout(
+            dataset_hash="different-development-dataset",
+            development_hash="different-development",
+            holdout_hash="holdout-a",
+            holdout_start="2026-07-01T13:30:00+00:00",
+            holdout_end="2026-08-01T20:00:00+00:00",
+            policy_version=EVIDENCE_POLICY_VERSION,
+        )
+    store.freeze_research_holdout(holdout_id, "candidate-a")
+    with pytest.raises(ValueError, match="exact strategy"):
+        store.claim_research_holdout(holdout_id, "candidate-b")
+    store.claim_research_holdout(holdout_id, "candidate-a")
+    store.consume_research_holdout(holdout_id, "candidate-a", {"return_pct": 2.0})
+
+    with pytest.raises(ValueError, match="already consumed"):
+        store.consume_research_holdout(holdout_id, "candidate-a", {"return_pct": 3.0})
+    with pytest.raises(ValueError, match="already reserved"):
+        store.reserve_research_holdout(
+            dataset_hash="dataset-a",
+            development_hash="development-a",
+            holdout_hash="holdout-a",
+            holdout_start="2026-07-01T13:30:00+00:00",
+            holdout_end="2026-08-01T20:00:00+00:00",
+            policy_version=EVIDENCE_POLICY_VERSION,
+        )
+    with pytest.raises(ValueError, match="already reserved"):
+        store.reserve_research_holdout(
+            dataset_hash="dataset-a",
+            development_hash="development-a",
+            holdout_hash="holdout-a",
+            holdout_start="2026-07-01T13:30:00+00:00",
+            holdout_end="2026-08-01T20:00:00+00:00",
+            policy_version=EVIDENCE_POLICY_VERSION + 1,
+        )
+    saved = store.research_holdout(holdout_id)
+    assert saved is not None
+    assert saved["status"] == "CONSUMED"
+    assert saved["selected_fingerprint"] == "candidate-a"
+    assert saved["metrics"]["return_pct"] == 2.0
+    store.close()
+
+
+def test_live_evidence_cannot_be_recorded_without_consumed_holdout(tmp_path: Path) -> None:
+    store = AuditStore(tmp_path / "audit.db")
+    with pytest.raises(ValueError, match="passing final holdout"):
+        store.record_research_promotion(
+            dataset_hash="dataset-a",
+            strategy_fingerprint="candidate-a",
+            policy_version=EVIDENCE_POLICY_VERSION,
+            status="LIVE_REVIEW_ELIGIBLE",
+            source="fixture",
+            replay_end="2026-08-10T20:00:00+00:00",
+            gates=_passing_gates(),
+            risk_envelope={},
+        )
     store.close()
 
 
 def test_live_evidence_receipt_fails_closed_when_any_gate_failed(tmp_path: Path) -> None:
     store = AuditStore(tmp_path / "audit.db")
-    with pytest.raises(ValueError, match="every recorded gate"):
+    failed = _passing_gates()
+    failed[0]["passed"] = False
+    with pytest.raises(ValueError, match="canonical evidence gate"):
         store.record_research_promotion(
             dataset_hash="hash-1",
             strategy_fingerprint="candidate-1",
@@ -110,9 +301,47 @@ def test_live_evidence_receipt_fails_closed_when_any_gate_failed(tmp_path: Path)
             status="LIVE_REVIEW_ELIGIBLE",
             source="fixture",
             replay_end="2026-08-10T20:00:00+00:00",
-            gates=[{"name": "fixture", "passed": False}],
+            gates=failed,
             risk_envelope={},
         )
+    store.close()
+
+
+def test_live_certificate_rejects_unrelated_or_losing_holdout(tmp_path: Path) -> None:
+    store = AuditStore(tmp_path / "audit.db")
+    fingerprint = "candidate-a"
+    holdout_id = store.reserve_research_holdout(
+        dataset_hash="dataset-a",
+        development_hash="development-a",
+        holdout_hash="holdout-a",
+        holdout_start="2026-07-01T13:30:00+00:00",
+        holdout_end="2026-08-01T20:00:00+00:00",
+        policy_version=EVIDENCE_POLICY_VERSION,
+    )
+    store.freeze_research_holdout(holdout_id, fingerprint)
+    store.claim_research_holdout(holdout_id, fingerprint)
+    losing = _passing_holdout_metrics(
+        "holdout-a",
+        "2026-07-01T13:30:00+00:00",
+        "2026-08-01T20:00:00+00:00",
+    )
+    losing["net_pnl"] = -99.0
+    store.consume_research_holdout(holdout_id, fingerprint, losing)
+
+    for dataset_hash in ("DIFFERENT-DATASET", "dataset-a"):
+        with pytest.raises(ValueError, match="passing final holdout"):
+            store.record_research_promotion(
+                dataset_hash=dataset_hash,
+                strategy_fingerprint=fingerprint,
+                policy_version=EVIDENCE_POLICY_VERSION,
+                status="LIVE_REVIEW_ELIGIBLE",
+                source="licensed CSV",
+                replay_end="2026-08-01T20:00:00+00:00",
+                gates=_passing_gates(),
+                risk_envelope={},
+                holdout_id=holdout_id,
+            )
+    assert store.current_live_evidence(fingerprint) is None
     store.close()
 
 

@@ -1,5 +1,7 @@
 from datetime import UTC, datetime, timedelta
 
+import pytest
+
 from grande_alpha.models import LiveGrant, OrderIntent, Portfolio, Quote
 from grande_alpha.risk import RiskEngine
 
@@ -65,6 +67,32 @@ def test_stale_or_wide_quote_is_blocked() -> None:
     wide = quote(bid=40, ask=41)
     assert "stale" in engine.authorize(intent(), stale, portfolio, 0, NOW).reason.lower()
     assert "spread" in engine.authorize(intent(), wide, portfolio, 0, NOW).reason.lower()
+
+
+def test_non_finite_live_inputs_fail_closed() -> None:
+    engine = RiskEngine()
+    portfolio = Portfolio(50, 50, 50)
+    with pytest.raises(ValueError, match="finite and positive"):
+        engine.arm(grant(max_order_notional=float("nan")), portfolio)
+
+    engine.arm(grant(), portfolio)
+    assert not engine.authorize(intent(amount=float("nan")), quote(), portfolio, 0, NOW).allowed
+    assert not engine.authorize(intent(), quote(bid=float("nan")), portfolio, 0, NOW).allowed
+    assert not engine.authorize(intent(), quote(), portfolio, float("nan"), NOW).allowed
+
+
+def test_grossly_malformed_live_inputs_return_structured_rejections() -> None:
+    engine = RiskEngine()
+    portfolio = Portfolio(50, 50, 50)
+    with pytest.raises(ValueError, match="must be numeric"):
+        engine.arm(grant(max_order_notional="25"), portfolio)
+
+    engine.arm(grant(), portfolio)
+    malformed_quote = Quote("TQQQ", 40.0, 40.04, 40.02, None)
+    malformed_portfolio = Portfolio(50, None, 50)
+    assert "timestamp" in engine.authorize(intent(), malformed_quote, portfolio, 0, NOW).reason
+    assert "numeric" in engine.authorize(intent(), quote(), malformed_portfolio, 0, NOW).reason
+    assert "numeric" in engine.authorize(intent(amount="20"), quote(), portfolio, 0, NOW).reason
 
 
 def test_duplicate_ref_id_is_blocked() -> None:
@@ -144,6 +172,4 @@ def test_extended_session_requires_the_exact_authorized_limit_route() -> None:
     )
 
     assert engine.authorize(allowed, current_quote, portfolio, 0, extended_now).allowed
-    assert "does not match" in engine.authorize(
-        wrong_route, current_quote, portfolio, 0, extended_now
-    ).reason
+    assert "does not match" in engine.authorize(wrong_route, current_quote, portfolio, 0, extended_now).reason

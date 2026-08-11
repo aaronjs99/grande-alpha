@@ -2,8 +2,10 @@ $ErrorActionPreference = 'Stop'
 $ProjectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 . (Join-Path $ProjectRoot 'runtime-path.ps1')
 $PowerShell = (Get-Command powershell.exe -ErrorAction Stop).Source
+$CommandPrompt = (Get-Command cmd.exe -ErrorAction Stop).Source
 $Icon = Join-Path $ProjectRoot 'assets\brand\grande-alpha.ico'
 $Launcher = Join-Path $ProjectRoot 'run.ps1'
+$MorningCheck = Join-Path $ProjectRoot 'Morning Check.cmd'
 
 & (Join-Path $ProjectRoot 'setup.ps1')
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -32,7 +34,21 @@ foreach ($ShortcutPath in @(
     Write-Host "Installed shortcut: $ShortcutPath" -ForegroundColor Green
 }
 
+foreach ($ShortcutPath in @(
+    (Join-Path $Desktop 'GRANDE Alpha Morning Check.lnk'),
+    (Join-Path $StartMenu 'GRANDE Alpha Morning Check.lnk')
+)) {
+    $Shortcut = $Shell.CreateShortcut($ShortcutPath)
+    $Shortcut.TargetPath = $CommandPrompt
+    $Shortcut.Arguments = "/c `"`"$MorningCheck`"`""
+    $Shortcut.WorkingDirectory = $ProjectRoot
+    $Shortcut.IconLocation = "$Icon,0"
+    $Shortcut.Description = 'Read-only GRANDE Alpha and Robinhood morning readiness check'
+    $Shortcut.Save()
+    Write-Host "Installed shortcut: $ShortcutPath" -ForegroundColor Green
+}
+
 & (Join-Path $ProjectRoot 'doctor.ps1')
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-Write-Host 'Local installation complete. Start GRANDE Alpha from the Desktop or Start menu.' -ForegroundColor Green
+Write-Host 'Local installation complete. Run GRANDE Alpha Morning Check, then start GRANDE Alpha.' -ForegroundColor Green

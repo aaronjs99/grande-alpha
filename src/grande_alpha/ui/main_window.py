@@ -292,13 +292,9 @@ class MainWindow(QMainWindow):
         menu_bar.setNativeMenuBar(False)
 
         self.file_menu = menu_bar.addMenu("File")
-        self.export_action = self._action(
-            "Export redacted support diagnostics…", self._export_diagnostics
-        )
+        self.export_action = self._action("Export redacted support diagnostics…", self._export_diagnostics)
         self.file_menu.addAction(self.export_action)
-        self.settings_action = self._action(
-            "Settings && Permissions…", self._open_settings, "Ctrl+,"
-        )
+        self.settings_action = self._action("Settings && Permissions…", self._open_settings, "Ctrl+,")
         self.file_menu.addAction(self.settings_action)
         self.file_menu.addSeparator()
         self.exit_action = self._action("Exit", self.close, "Ctrl+Q")
@@ -328,9 +324,7 @@ class MainWindow(QMainWindow):
         )
         self.view_menu.addAction(self.fund_view_action)
         self.view_menu.addSeparator()
-        self.reset_layout_action = self._action(
-            "Reset Window && Table Columns", self._reset_layout
-        )
+        self.reset_layout_action = self._action("Reset Window && Table Columns", self._reset_layout)
         self.view_menu.addAction(self.reset_layout_action)
         self.full_screen_action = self._action("Full Screen", self._toggle_full_screen, "F11")
         self.full_screen_action.setCheckable(True)
@@ -390,21 +384,15 @@ class MainWindow(QMainWindow):
         )
         self.safety_menu.addAction(self.flatten_action)
         self.safety_menu.addSeparator()
-        self.safety_explainer_action = self._action(
-            "Explain Safety Locks…", self._show_safety_help
-        )
+        self.safety_explainer_action = self._action("Explain Safety Locks…", self._show_safety_help)
         self.safety_menu.addAction(self.safety_explainer_action)
 
         self.help_menu = menu_bar.addMenu("Help")
         self.quickstart_action = self._action("Quick Start…", self._show_quickstart)
         self.help_menu.addAction(self.quickstart_action)
-        self.glossary_action = self._action(
-            "Terminology && Glossary…", self._show_glossary, "F1"
-        )
+        self.glossary_action = self._action("Terminology && Glossary…", self._show_glossary, "F1")
         self.help_menu.addAction(self.glossary_action)
-        self.account_scope_action = self._action(
-            "Account Scope && Privacy…", self._show_account_scope
-        )
+        self.account_scope_action = self._action("Account Scope && Privacy…", self._show_account_scope)
         self.help_menu.addAction(self.account_scope_action)
         self.help_menu.addSeparator()
         self.about_action = self._action("About GRANDE Alpha", self._about)
@@ -742,9 +730,21 @@ class MainWindow(QMainWindow):
     def _on_snapshot(self, snapshot: TradingSnapshot) -> None:
         self._snapshot = snapshot
         if snapshot.account:
+            account_type = snapshot.account.account_type.strip().upper() or "UNKNOWN"
+            self.account_card.title.setText(f"Agentic account • {account_type}")
             self.account_card.value.setText(f"{snapshot.account.nickname} {snapshot.account.masked}")
+            self.account_card.setToolTip(
+                "GRANDE Alpha deliberately selects the active Agentic account for broker views and orders. "
+                + (
+                    "This is a cash account: broker-reported buying power reflects whether sale proceeds are settled."
+                    if account_type == "CASH"
+                    else "Account permissions and current broker buying power remain authoritative."
+                )
+            )
         else:
+            self.account_card.title.setText("Agentic account")
             self.account_card.value.setText("Disconnected")
+            self.account_card.setToolTip("Connect Robinhood to resolve the active Agentic account.")
         if snapshot.portfolio:
             self.value_card.value.setText(f"${snapshot.portfolio.total_value:,.2f}")
             self.buying_power_card.value.setText(f"${snapshot.portfolio.buying_power:,.2f}")
@@ -833,9 +833,7 @@ class MainWindow(QMainWindow):
         self.flatten_button.setEnabled(bool(self._snapshot.positions))
         self.fund_view_action.setVisible(self.config.personal_ledger_enabled)
         self.broker_connect_action.setEnabled(broker_enabled)
-        self.broker_connect_action.setText(
-            "Disconnect Robinhood" if connected else "Connect Robinhood…"
-        )
+        self.broker_connect_action.setText("Disconnect Robinhood" if connected else "Connect Robinhood…")
         self.refresh_action.setEnabled(broker_enabled and connected)
         self.shadow_action.setEnabled(broker_enabled and connected and (shadow or not live))
         self.shadow_action.setText("Stop Live Shadow" if shadow else "Start Live Shadow")

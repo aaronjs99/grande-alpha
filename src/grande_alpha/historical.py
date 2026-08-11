@@ -75,6 +75,55 @@ class HistoricalBundle:
         return self.frames[-1].start
 
 
+@dataclass(frozen=True)
+class ChronologicalHoldoutSplit:
+    development: HistoricalBundle
+    holdout: HistoricalBundle
+    purged_sessions: tuple[str, ...]
+
+
+def _bundle_for_sessions(bundle: HistoricalBundle, sessions: list[str]) -> HistoricalBundle:
+    allowed = set(sessions)
+    frames = [frame for frame in bundle.frames if session_key(frame.start, bundle.market_hours) in allowed]
+    if not frames:
+        raise ValueError("Historical subset cannot be empty")
+    quality = assess_quality(frames, bundle.interval, bundle.market_hours)
+    return HistoricalBundle(
+        source=bundle.source,
+        downloaded_at=bundle.downloaded_at,
+        frames=frames,
+        interval=bundle.interval,
+        dataset_hash=quality.dataset_hash,
+        quality=quality,
+        market_hours=bundle.market_hours,
+    )
+
+
+def split_final_holdout(
+    bundle: HistoricalBundle,
+    holdout_sessions: int = 20,
+    purge_sessions: int = 1,
+) -> ChronologicalHoldoutSplit:
+    """Freeze a later session block while keeping an embargo after development data."""
+
+    if holdout_sessions < 1 or purge_sessions < 0:
+        raise ValueError("Holdout sessions must be positive and purge sessions nonnegative")
+    names = sorted({session_key(frame.start, bundle.market_hours) for frame in bundle.frames})
+    required = holdout_sessions + purge_sessions + 1
+    if len(names) < required:
+        raise ValueError(f"Final holdout needs at least {required} sessions; dataset has {len(names)}")
+    holdout_start = len(names) - holdout_sessions
+    purge_start = holdout_start - purge_sessions
+    development_names = names[:purge_start]
+    purged_names = tuple(names[purge_start:holdout_start])
+    holdout_names = names[holdout_start:]
+    return ChronologicalHoldoutSplit(
+        development=_bundle_for_sessions(bundle, development_names),
+        holdout=_bundle_for_sessions(bundle, holdout_names),
+        purged_sessions=purged_names,
+    )
+
+
 def parse_yahoo_chart(payload: dict[str, Any], expected_symbol: str) -> list[Bar]:
     chart = payload.get("chart") or {}
     if chart.get("error"):
@@ -411,9 +460,7 @@ def load_csv_history(path: Path, interval: str = "1m") -> HistoricalBundle:
         has_evening = any(value >= time(20, 0) for value in local_times)
         has_early = any(value < time(7, 0) for value in local_times)
         if not has_evening or not has_early:
-            raise ValueError(
-                "CSV declaring all_day_hours must contain both evening and overnight timestamps"
-            )
+            raise ValueError("CSV declaring all_day_hours must contain both evening and overnight timestamps")
     quality = assess_quality(frames, interval, coverage)
     return HistoricalBundle(
         source=f"Imported CSV: {path.name}",

@@ -15,7 +15,7 @@ LEGACY_APP_NAME = "MomentumTrader"
 MCP_URL = "https://agent.robinhood.com/mcp/trading"
 ONBOARDING_VERSION = 1
 DISCLOSURE_VERSION = "2026-08"
-CADENCE_VERSION = 3
+CADENCE_VERSION = 4
 
 
 @dataclass
@@ -42,6 +42,9 @@ class AppConfig:
     order_type: str = "market"
     time_in_force: str = "gfd"
     limit_offset_bps: float = 10.0
+    # Conservative research/live-shadow assumption. The broker's reported buying
+    # power remains authoritative for actual orders.
+    settlement_model: str = "cash_t1"
     warmup_bars: int = 24
     fast_ema: int = 8
     slow_ema: int = 21
@@ -75,6 +78,8 @@ class AppConfig:
         if not 2 <= self.trade_every_bars <= 120:
             raise ValueError("Trade decisions must be separated by 2 to 120 analysis bars")
         execution_profile(self)
+        if self.settlement_model not in {"cash_t1", "instant"}:
+            raise ValueError("Settlement model must be cash_t1 or instant")
 
 
 def migrate_legacy_data(legacy: Path, destination: Path) -> list[Path]:
@@ -142,6 +147,8 @@ def migrate_config_payload(raw: dict) -> dict:
             time_in_force="gfd",
             limit_offset_bps=10.0,
         )
+    if version < 4:
+        upgraded["settlement_model"] = "cash_t1"
     upgraded["cadence_version"] = CADENCE_VERSION
     return upgraded
 

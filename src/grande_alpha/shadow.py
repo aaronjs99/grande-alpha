@@ -23,6 +23,7 @@ class ShadowFill:
     realized_pnl: float | None
     reason: str
     cash_after: float
+    unsettled_cash_after: float = 0.0
 
     def as_dict(self) -> dict[str, Any]:
         values = asdict(self)
@@ -45,6 +46,7 @@ class ShadowState:
     active: bool = True
     starting_cash: float = 0.0
     cash: float = 0.0
+    unsettled_cash: float = 0.0
     equity: float = 0.0
     pnl: float = 0.0
     position: ShadowPosition | None = None
@@ -76,6 +78,7 @@ class LiveShadowEngine:
         )
         self._pending: tuple[str | None, str] | None = None
         self._pending_session: str | None = None
+        self._current_session: str | None = None
         self._analysis_count = 0
 
     def on_bar(self, timestamp: datetime, signal: Signal, quotes: dict[str, Quote]) -> list[ShadowFill]:
@@ -84,6 +87,13 @@ class LiveShadowEngine:
         self._analysis_count += 1
         fills: list[ShadowFill] = []
         current_session = session_key(timestamp, self.config.market_hours)
+        if self._current_session is None:
+            self._current_session = current_session
+        elif current_session != self._current_session:
+            if self.config.settlement_model == "cash_t1":
+                self.state.cash += self.state.unsettled_cash
+                self.state.unsettled_cash = 0.0
+            self._current_session = current_session
         if (
             self._pending is not None
             and self.config.time_in_force == "gfd"
@@ -164,7 +174,10 @@ class LiveShadowEngine:
                     return False, None
             proceeds = position.quantity * price - self.config.commission_per_order
             realized = proceeds - position.entry_cost
-            self.state.cash += proceeds
+            if self.config.settlement_model == "cash_t1":
+                self.state.unsettled_cash += proceeds
+            else:
+                self.state.cash += proceeds
             self.state.position = None
             fill = ShadowFill(
                 timestamp,
@@ -175,6 +188,7 @@ class LiveShadowEngine:
                 realized,
                 reason or "Shadow exit",
                 self.state.cash,
+                self.state.unsettled_cash,
             )
             return target is None, fill
         if target is None:
@@ -201,18 +215,28 @@ class LiveShadowEngine:
         self.state.cash -= cost
         self.state.position = ShadowPosition(target, quantity, price, timestamp, cost)
         return True, ShadowFill(
-            timestamp, target, "buy", quantity, price, None, reason or "Shadow entry", self.state.cash
+            timestamp,
+            target,
+            "buy",
+            quantity,
+            price,
+            None,
+            reason or "Shadow entry",
+            self.state.cash,
+            self.state.unsettled_cash,
         )
 
     def _price(self, quote: Quote, side: str) -> float:
-        reference = (quote.ask if quote.ask > 0 else quote.mid) if side == "buy" else (
-            quote.bid if quote.bid > 0 else quote.mid
+        reference = (
+            (quote.ask if quote.ask > 0 else quote.mid)
+            if side == "buy"
+            else (quote.bid if quote.bid > 0 else quote.mid)
         )
         direction = 1.0 if side == "buy" else -1.0
         return reference * (1.0 + direction * self.config.slippage_bps / 10_000.0)
 
     def _mark(self, quotes: dict[str, Quote]) -> None:
-        value = self.state.cash
+        value = self.state.cash + self.state.unsettled_cash
         if self.state.position:
             quote = quotes.get(UNDERLYING[self.state.position.symbol])
             if quote:

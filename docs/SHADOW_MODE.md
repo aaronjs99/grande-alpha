@@ -24,8 +24,38 @@ exit, and trading-window fields with the current live EMA settings at start. Vir
 cost assumptions still come from the sandbox profile. The start receipt records the resulting
 strategy fingerprint so a later audit can detect configuration drift.
 
+## Tuesday, August 11, 2026 engineering session
+
+Tomorrow's session is **shadow only**. Its purpose is to validate the application, data path, timing,
+receipts, and virtual ledger under observation. It is not an attempt to earn money or a test of real
+execution.
+
+1. Run **Morning Check.cmd** before the market opens and save its output. Stop if account identity,
+   positions, open orders, evidence lock, or read-only connectivity is unexpected.
+2. Keep **Real-order automation** disabled. Do not select **Authorize Live Session**, do not enter a
+   live phrase, and do not place a manual companion trade in the same symbols.
+3. Connect read access, record the quote source and timestamps, and start Live Shadow before the
+   intended regular-session observation window.
+4. Observe without retuning. The controller polls quotes and locally constructs completed 5-second
+   midpoint bars. These are not native 5-second historical bars. If comparing against remote
+   history, label its finest available interval as 1 minute and do not treat the two paths as equal.
+5. Use the default `cash_t1` ledger. A virtual sale moves proceeds to unsettled cash; those proceeds
+   stay in equity but cannot buy again until the next observed market session.
+6. Monitor data age, missing/coalesced polls, decisions, virtual fills, cash buckets, and the broker
+   account independently. Press **STOP + CANCEL** on any mismatch; in shadow it revokes local
+   authority and still makes no real sale.
+7. Stop shadow deliberately, export the final receipt, and record ending position, settled cash,
+   unsettled cash, P/L, warnings, and any gaps. Do not change policy parameters based on the result
+   and then describe the same session as out-of-sample evidence.
+
+Engineering success means no order capability was created, no real order was submitted, timestamps
+and state transitions were explainable, `cash_t1` prevented unsettled-cash reuse, and the final
+receipt reconciled. A positive virtual P/L is neither required nor sufficient.
+
 ## What shadow validates
 
 Shadow is useful for current data flow, strategy state changes, timing, virtual accounting, and
-operational monitoring. It does not validate real fills, queue position, broker acceptance,
-settled-funds availability, taxes, or profit. A shadow result cannot automatically promote itself.
+operational monitoring. Its `cash_t1` behavior validates only the app's modeled ledger; it does not
+validate real fills, queue position, broker acceptance, the broker's actual settled-funds
+availability, taxes, or profit. A shadow result cannot automatically promote itself, and one day
+cannot establish a profitable strategy.
