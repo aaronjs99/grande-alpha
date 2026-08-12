@@ -133,7 +133,7 @@ def test_definition_mode_is_read_only_and_reports_exact_task_contract() -> None:
     assert definition["stop_if_going_on_batteries"] is False
     assert definition["network_required"] is False
     assert definition["multiple_instances"] == "IgnoreNew"
-    assert definition["execution_time_limit_hours"] == 14
+    assert definition["execution_time_limit_hours"] == 0
     assert definition["application_mode"] == "--auto-shadow"
     assert Path(definition["execute"]).is_absolute()
     assert Path(definition["working_directory"]) == ROOT
@@ -179,7 +179,7 @@ $FakeTask = [pscustomobject]@{{
         StopIfGoingOnBatteries = $false
         RunOnlyIfNetworkAvailable = $false
         MultipleInstances = 'IgnoreNew'
-        ExecutionTimeLimit = 'PT14H'
+        ExecutionTimeLimit = 'PT0S'
     }}
 }}
 $ValidMismatches = @(Get-GrandeAlphaTaskContractMismatches $FakeTask)

@@ -59,7 +59,10 @@ The installed definition:
 - ignores a new trigger while the previous scheduled instance is still active;
 - uses validated absolute paths to Windows PowerShell, this source directory, and
   `scheduled-shadow.ps1`;
-- launches `pythonw -m grande_alpha.app --auto-shadow` and waits for the application to exit.
+- launches `pythonw -m grande_alpha.app --auto-shadow` and waits for the application to exit;
+- keeps that single read-only process alive between sessions with no Task Scheduler time limit;
+- retries transient broker read failures with bounded 15-second-to-5-minute backoff during an
+  eligible regular session, then returns to an idle wait after the close.
 
 The task requests `WakeToRun=True`, but Windows power policy, disabled wake timers, hibernation, or
 hardware settings can still prevent a wake. If the computer is powered off or the user is not logged
@@ -116,3 +119,8 @@ one enabled Monday-Friday trigger, the mapped local time, the exact validated ex
 and working directory, the current interactive limited user, the documented wake/battery/network/
 overlap settings, and the 14-hour execution limit. Any mismatch prints `INVALID / UNSAFE` and exits
 nonzero; it never describes a merely present or partially matching task as safe.
+The supervisor is a 24/7 process, not a 24/7 market. QQQ, TQQQ, and SQQQ virtual execution remains
+restricted to valid regular equity sessions. Overnight, weekends, and exchange holidays are idle;
+they never create virtual fills or order authority. A transient HTTP 502/503/504 or transport failure
+ends the current virtual run, records a receipt, disconnects read access, and triggers a fresh bounded
+read-only reconnect rather than continuing with stale account or quote state.

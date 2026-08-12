@@ -620,7 +620,7 @@ def test_auto_shadow_start_deadline_and_session_close_use_eastern_clock(tmp_path
     at_close = datetime(2026, 8, 11, 20, 0, 0, tzinfo=UTC)
 
     assert controller.auto_shadow_start_allowed(before_deadline)
-    assert not controller.auto_shadow_start_allowed(at_deadline)
+    assert controller.auto_shadow_start_allowed(at_deadline)
     assert not controller.auto_shadow_session_complete(before_close)
     assert controller.auto_shadow_session_complete(at_close)
     store.close()

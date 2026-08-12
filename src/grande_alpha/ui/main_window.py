@@ -120,6 +120,9 @@ class MainWindow(QMainWindow):
         self._chart_times: deque[float] = deque(maxlen=1800)
         self._chart_prices: deque[float] = deque(maxlen=1800)
         self._closing_after_cleanup = False
+        self._auto_shadow_starting = False
+        self._auto_shadow_retry_seconds = 15
+        self._auto_shadow_retry_remaining = 0
         self.setWindowTitle(f"GRANDE Alpha {__version__} — Community Preview")
         self.setMinimumSize(1180, 720)
         self.resize(1440, 900)
@@ -733,14 +736,42 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Robinhood connection", str(exc))
 
     async def _auto_start_shadow(self) -> None:
-        started = await self.controller.auto_start_shadow()
-        if not started:
-            self.status.setText("AUTO SHADOW BLOCKED • No broker writes were attempted")
+        if self._auto_shadow_starting or self.controller.snapshot.shadow_running:
+            return
+        if not self.controller.auto_shadow_start_allowed():
+            self.status.setText("AUTO SHADOW IDLE • Waiting for the next regular session")
+            return
+        self._auto_shadow_starting = True
+        try:
+            started = await self.controller.auto_start_shadow()
+            if started:
+                self._auto_shadow_retry_seconds = 15
+                self._auto_shadow_retry_remaining = 0
+            else:
+                self._auto_shadow_retry_remaining = self._auto_shadow_retry_seconds
+                self._auto_shadow_retry_seconds = min(300, self._auto_shadow_retry_seconds * 2)
+                self.status.setText(
+                    "AUTO SHADOW RETRYING • Read-only reconnect; no broker writes"
+                )
+        finally:
+            self._auto_shadow_starting = False
 
     def _check_auto_shadow_close(self) -> None:
-        if self.auto_shadow and self.controller.auto_shadow_session_complete():
-            self.auto_shadow_close_timer.stop()
+        if not self.auto_shadow:
+            return
+        if (
+            self.controller.snapshot.shadow_running
+            and self.controller.auto_shadow_session_complete()
+        ):
             asyncio.create_task(self._finish_auto_shadow_session())
+            return
+        if self.controller.snapshot.shadow_running or self._auto_shadow_starting:
+            return
+        if self._auto_shadow_retry_remaining > 0:
+            self._auto_shadow_retry_remaining -= 1
+            return
+        if self.controller.auto_shadow_start_allowed():
+            asyncio.create_task(self._auto_start_shadow())
 
     async def _finish_auto_shadow_session(self) -> None:
         try:
@@ -749,8 +780,9 @@ class MainWindow(QMainWindow):
                 flatten_virtual=True,
             )
         finally:
-            self._closing_after_cleanup = True
-            self.close()
+            self._auto_shadow_retry_seconds = 15
+            self._auto_shadow_retry_remaining = 0
+            self.status.setText("AUTO SHADOW IDLE • Waiting for the next regular session")
 
     def _authorize(self) -> None:
         if not self._snapshot.account or not self._snapshot.portfolio:

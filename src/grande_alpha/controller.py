@@ -574,10 +574,10 @@ class TradingController(QObject):
         if not self.shadow_only_runtime or self.config.market_hours != "regular_hours":
             return False
         observed = reference or utc_now()
-        local = observed.astimezone(EASTERN)
-        opened, _closed = session_bounds(observed, "regular_hours")
-        deadline = opened + timedelta(minutes=5)
-        return local.weekday() < 5 and observed < deadline
+        opened, closed = session_bounds(observed, "regular_hours")
+        # A long-running supervisor may recover during an active session after
+        # a transient read outage. A closed or holiday session has equal bounds.
+        return opened < closed and observed < closed
 
     def auto_shadow_market_open(self, reference: datetime | None = None) -> datetime:
         observed = reference or utc_now()
@@ -772,12 +772,16 @@ class TradingController(QObject):
             self._validate_auto_shadow_config()
             if not self.auto_shadow_start_allowed():
                 raise RuntimeError(
-                    "Auto-shadow start window is closed; launch before 9:35 AM ET on a weekday"
+                    "Auto-shadow is idle because no regular equity session is currently eligible"
                 )
             await self.connect()
             await self._refresh_auto_shadow_account_state()
             opened = self.auto_shadow_market_open()
-            deadline = opened + timedelta(minutes=5)
+            _opened, closed = session_bounds(utc_now(), "regular_hours")
+            # Preserve the five-minute opening window on initial launch. For a
+            # same-session recovery, allow five minutes from the retry attempt,
+            # capped by the market close.
+            deadline = min(closed, max(opened, utc_now()) + timedelta(minutes=5))
             self.log(
                 "AUTO SHADOW WAITING — regular open 9:30 AM ET; writes blocked",
                 "warning",

@@ -81,7 +81,7 @@ $Spec = [ordered]@{
     stop_if_going_on_batteries = $false
     network_required = $false
     multiple_instances = 'IgnoreNew'
-    execution_time_limit_hours = 14
+    execution_time_limit_hours = 0
     application_mode = '--auto-shadow'
 }
 
@@ -166,8 +166,8 @@ function Get-GrandeAlphaTaskContractMismatches($Task) {
     if ([string]$Settings.MultipleInstances -ne 'IgnoreNew') { $Mismatches.Add('overlap policy is not IgnoreNew') }
     try {
         $ExecutionLimit = [Xml.XmlConvert]::ToTimeSpan([string]$Settings.ExecutionTimeLimit)
-        if ($ExecutionLimit -ne [timespan]::FromHours($Spec.execution_time_limit_hours)) {
-            $Mismatches.Add('execution time limit is not 14 hours')
+        if ($ExecutionLimit -ne [timespan]::Zero) {
+            $Mismatches.Add('execution time limit is not unlimited')
         }
     } catch {
         $Mismatches.Add('execution time limit is invalid')
@@ -282,7 +282,7 @@ $SettingsParameters = @{
     # local trigger falls between 07:00 and 09:20 ET. Fourteen hours extends
     # beyond the 4:00 ET close. Unsupported zones are rejected above instead of
     # silently creating a late launch or truncating the session-close receipt.
-    ExecutionTimeLimit = (New-TimeSpan -Hours 14)
+    ExecutionTimeLimit = [TimeSpan]::Zero
 }
 $Settings = New-ScheduledTaskSettingsSet @SettingsParameters
 $TaskParameters = @{

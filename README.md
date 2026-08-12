@@ -65,6 +65,10 @@ that bypasses the desktop application's bounded live-session consent workflow.
 
 The optional adapter uses Robinhood's official Trading MCP endpoint and browser OAuth. Robinhood states that a connected third-party agent can read data across Robinhood accounts, while trading is restricted to the dedicated Agentic account. The provider consent is broader than the app's read-only diagnostic: that diagnostic never invokes order review, placement, cancellation, or watchlist tools, but the granted OAuth scope can include those capabilities. Review the current provider disclosures before opting in: <https://robinhood.com/us/en/support/articles/agentic-trading-overview/>.
 
+Scheduled shadow uses one continuously supervised read-only process. It waits outside regular equity
+sessions and retries transient provider read failures with bounded backoff during an eligible session.
+Continuous process uptime does not mean 24/7 TQQQ/SQQQ trading and cannot grant live-order authority.
+
 ## Project status
 
 Version `0.15.0` adds session-scoped live-pilot safety machinery: typed non-persistent authority bound to one Agentic account, exact tickers, route, candidate fingerprint, Eastern-day expiry, and numeric limits; fresh account/quote preflight; durable pre-network placement receipts; restart-restored daily usage; and visible pause/revoke controls. The normal and scheduled runtime champion remains deterministic **CASH / hold**, the runtime execution-parity assessment remains blocked for non-cash candidates, and no strategy currently receives live authority. These controls do not establish an edge or guarantee profit, so scheduled operation remains engineering-only read-only shadow. See the [champion selection report](docs/CHAMPION_SELECTION_2026-08-11.md), [scheduled shadow](docs/SCHEDULED_SHADOW.md), [trading sessions](docs/TRADING_SESSIONS.md), [Action Lab methodology](docs/ACTION_LAB.md), and the [public release checklist](docs/PUBLIC_RELEASE_CHECKLIST.md).
