@@ -71,6 +71,10 @@ TERM_HELP: dict[str, str] = {
         "Maximum price concession used to construct automatic whole-share limit orders from the current bid or ask."
     ),
     "Max order notional": "Maximum dollars that any single order may expose during the authorized session.",
+    "Max daily notional": (
+        "Maximum gross dollars across all submitted buys and sells during the session, including reserved "
+        "authorizations awaiting submission or release."
+    ),
     "Max orders per minute": "Hard ceiling on submitted order requests within any rolling minute.",
     "Max session loss": "Loss threshold that blocks new entries for the remainder of the authorized session.",
     "Max submitted orders": "Maximum number of order submissions allowed before the live grant locks.",
@@ -101,6 +105,10 @@ TERM_HELP: dict[str, str] = {
     "Pause after losses": "Number of consecutive losing exits that pauses new virtual entries.",
     "Period (YYYY-MM)": "Month assigned to an optional personal research-fund planning entry.",
     "Preset": "A named starting configuration. Applying it replaces the visible sandbox parameters.",
+    "Provenance manifest": (
+        "Sidecar metadata declaring a dataset's source, license, timezone, session, interval, and "
+        "construction assumptions so evidence can be reproduced and eligibility checked."
+    ),
     "QQQ regime": "Current causal signal classification derived from completed QQQ observations.",
     "Quote request target": (
         "Desired delay between quote requests. Actual speed cannot exceed broker and network response time."

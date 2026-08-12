@@ -13,6 +13,29 @@ from grande_alpha.models import (
     Quote,
 )
 
+TERMINAL_ORDER_STATES = frozenset(
+    {
+        "filled",
+        "cancelled",
+        "canceled",
+        "partially_filled_rest_cancelled",
+        "rejected",
+        "failed",
+        "expired",
+        "voided",
+    }
+)
+
+
+def normalized_order_state(state: str) -> str:
+    return str(state or "").strip().lower()
+
+
+def order_is_terminal(order: BrokerOrder) -> bool:
+    """Treat unknown states as open so execution fails closed."""
+
+    return normalized_order_state(order.state) in TERMINAL_ORDER_STATES
+
 
 class BrokerError(RuntimeError):
     pass

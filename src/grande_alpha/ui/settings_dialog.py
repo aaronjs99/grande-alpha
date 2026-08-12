@@ -12,8 +12,10 @@ from PySide6.QtWidgets import (
     QDoubleSpinBox,
     QFormLayout,
     QGroupBox,
+    QHBoxLayout,
     QLabel,
     QLineEdit,
+    QPushButton,
     QScrollArea,
     QSpinBox,
     QVBoxLayout,
@@ -44,6 +46,14 @@ class SettingsDialog(QDialog):
         self.original = config
         self.live_evidence_ready = live_evidence_ready
         self.live_evidence_checker = live_evidence_checker
+        self._opened_route = (
+            config.market_hours,
+            config.order_type,
+            config.time_in_force,
+            config.settlement_model,
+            config.limit_offset_bps,
+        )
+        self._pending_settlement_model = config.settlement_model
         self.setWindowTitle("GRANDE Alpha settings and permissions")
         self.setMinimumSize(780, 650)
         self.resize(840, 720)
@@ -97,7 +107,7 @@ class SettingsDialog(QDialog):
         self.account_scope_status.setStyleSheet("background:#142b3d;color:#8fd3ff;border:1px solid #315b78;")
         permissions_layout.addWidget(self.account_scope_status)
 
-        self.live = QCheckBox("Allow real-order automation for TQQQ/SQQQ")
+        self.live = QCheckBox("Make bounded real-order session controls available")
         self.live.setAccessibleName("Allow real-order automation")
         self.live.setChecked(config.live_trading_enabled)
         apply_help(
@@ -120,7 +130,8 @@ class SettingsDialog(QDialog):
         apply_help(
             self.evidence_status,
             "Evidence gate",
-            "A current LIVE_REVIEW_ELIGIBLE certificate for the exact strategy, cadence, route, and risk envelope is required.",
+            "A current LIVE_REVIEW_ELIGIBLE certificate for the exact strategy, cadence, route, and risk "
+            "envelope is required. Return to Live Readiness for the owner and exact next action for every blocker.",
         )
         permissions_layout.addWidget(self.evidence_status)
         self.live_phrase = QLineEdit()
@@ -129,9 +140,10 @@ class SettingsDialog(QDialog):
         self.live_phrase.setVisible(not config.live_trading_enabled)
         permissions_layout.addWidget(self.live_phrase)
         self.live_note = self._description(
-            "This grants no standing authority. Every launch remains locked. Each live session still requires "
-            "a current matching evidence certificate, account-specific limits, expiry, attestation, and typed "
-            "confirmation."
+            "This grants no standing or remembered money-moving authority. Every launch remains locked. Each "
+            "session requires a current matching evidence certificate, exact account/ticker/route/strategy "
+            "scope, daily expiry, numeric caps, attestation, and typed confirmation. Active sessions must keep "
+            "Pause and Revoke controls visible."
         )
         permissions_layout.addWidget(self.live_note)
         body_layout.addWidget(permissions)
@@ -228,6 +240,24 @@ class SettingsDialog(QDialog):
         add_explained_row(routing_form, "Order type", self.order_type)
         add_explained_row(routing_form, "Time in force", self.time_in_force)
         add_explained_row(routing_form, "Marketable-limit offset", self.limit_offset)
+        pilot_buttons = QHBoxLayout()
+        self.apply_pilot_route = QPushButton("Apply bounded pilot settings")
+        self.apply_pilot_route.setAccessibleName("Apply bounded pilot route settings without saving")
+        self.apply_pilot_route.setToolTip(
+            "Sets Regular market, Market order, GFD, and cash T+1 in this dialog only. It does not save, "
+            "enable live orders, authorize, or place an order."
+        )
+        self.apply_pilot_route.clicked.connect(self._apply_bounded_pilot_settings)
+        pilot_buttons.addWidget(self.apply_pilot_route)
+        self.restore_opened_route = QPushButton("Restore opened values")
+        self.restore_opened_route.clicked.connect(self._restore_opened_settings)
+        pilot_buttons.addWidget(self.restore_opened_route)
+        routing_form.addRow(pilot_buttons)
+        self.pilot_route_status = self._description(
+            "Changes stay in this dialog until you explicitly click Save; Cancel discards them. Applying "
+            "the route never enables real-order automation or grants a live session."
+        )
+        routing_form.addRow(self.pilot_route_status)
         self.routing_note = self._description("")
         routing_form.addRow(self.routing_note)
         body_layout.addWidget(routing)
@@ -338,6 +368,36 @@ class SettingsDialog(QDialog):
         self.routing_note.setText(text)
         self._validate()
 
+    def _set_route_values(
+        self,
+        market_hours: str,
+        order_type: str,
+        time_in_force: str,
+        settlement_model: str,
+        limit_offset_bps: float | None = None,
+    ) -> None:
+        self.market_hours.setCurrentIndex(self.market_hours.findData(market_hours))
+        self.order_type.setCurrentIndex(self.order_type.findData(order_type))
+        self.time_in_force.setCurrentIndex(self.time_in_force.findData(time_in_force))
+        self._pending_settlement_model = settlement_model
+        if limit_offset_bps is not None:
+            self.limit_offset.setValue(limit_offset_bps)
+        self._update_route_note()
+
+    def _apply_bounded_pilot_settings(self) -> None:
+        self._set_route_values("regular_hours", "market", "gfd", "cash_t1")
+        self.pilot_route_status.setText(
+            "Preview applied: Regular market • Market order • GFD • cash T+1. Nothing is saved until "
+            "you click Save; real-order permission and session authority are unchanged."
+        )
+
+    def _restore_opened_settings(self) -> None:
+        self._set_route_values(*self._opened_route)
+        self.pilot_route_status.setText(
+            "Values restored to the state present when this dialog opened. Nothing is saved until you "
+            "click Save."
+        )
+
     def _validate(self) -> None:
         enabling_live = self.live.isChecked() and not self.original.live_trading_enabled
         evidence_ready = self.live_evidence_ready
@@ -362,8 +422,8 @@ class SettingsDialog(QDialog):
         elif self.live.isChecked() and not evidence_ready:
             valid = False
             message = (
-                "Real-order automation remains shadow-only: run the full Evidence Lab on eligible recent "
-                "market history until every gate passes for this exact strategy. Uncheck real-order "
+                "Real-order automation remains shadow-only. Return to Live Readiness for the owner and exact "
+                "next action for every blocker; evidence locks cannot be overridden here. Uncheck real-order "
                 "automation to save broker-only or research settings now."
             )
         elif enabling_live and self.live_phrase.text().strip() != LIVE_PHRASE:
@@ -392,4 +452,5 @@ class SettingsDialog(QDialog):
             order_type=self.order_type.currentData(),
             time_in_force=self.time_in_force.currentData(),
             limit_offset_bps=self.limit_offset.value(),
+            settlement_model=self._pending_settlement_model,
         )

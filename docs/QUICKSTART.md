@@ -1,5 +1,16 @@
 # Quickstart
 
+For the complete owner-by-owner procedure, start with the
+[Activation checklist](ACTIVATION_CHECKLIST.md). The same current-state assistant is available in
+**Live Readiness** and in the terminal:
+
+```powershell
+& ".\GRANDE Alpha CLI.cmd" activation --width 150
+```
+
+It never connects to a broker or grants order authority. Scheduled auto-shadow remains structurally
+read-only and cannot turn itself into live trading.
+
 ## Source application (works without a GRANDE Alpha signing certificate)
 
 ```powershell
@@ -24,6 +35,13 @@ process-scoped PowerShell bypass, so it works even when local `.ps1` files are b
 machine's normal execution policy. It verifies the source runtime, taskbar identity, stored OAuth
 path, Robinhood read path, and local evidence state. It never reviews, places, or cancels an order.
 
+The broker readiness step runs through a facade that structurally blocks review, placement, and
+cancellation methods. It passes only when the provider returns exactly one active Agentic account,
+one valid portfolio response, exact QQQ/TQQQ/SQQQ quotes with real fresh venue timestamps, and
+readable positions and orders. Order states are normalized; only recognized terminal states are
+closed, so an unknown provider state is conservatively reported as open. Output explicitly reports
+the enforced read-only boundary and `Write tools called: 0`.
+
 A successful result ends with `READY FOR RESEARCH AND LIVE SHADOW`. Real-order controls remain
 locked unless the exact current strategy has a fully passing evidence certificate and the user later
 completes a separate bounded live-session confirmation.
@@ -32,10 +50,11 @@ completes a separate bounded live-session confirmation.
 
 1. Start with `.\run.ps1` or `Start GRANDE Alpha.cmd`.
 2. Read the first-run disclosures and leave every optional capability off.
-3. Open **Research Sandbox**.
-4. Use the deterministic scenario or import CSV data you are permitted to use.
-5. Run a baseline replay, cost stress, parameter sensitivity, random-entry control, and walk-forward evaluation.
-6. Inspect trades, execution events, data source, hash, assumptions, and failed gates.
+3. Open **Live Readiness** to see each condition's owner and exact next action.
+4. Open **Research Sandbox**.
+5. Use the deterministic scenario or import CSV data you are permitted to use.
+6. Run a baseline replay, cost stress, parameter sensitivity, random-entry control, and walk-forward evaluation.
+7. Inspect trades, execution events, data source, hash, assumptions, and failed gates.
 
 This workflow never connects to a broker and never places an order.
 
@@ -58,7 +77,10 @@ overnight routes are whole-share limit-only; a route without matching session-co
 remains locked. Read [Trading sessions and order routes](TRADING_SESSIONS.md) before changing the
 regular-hours market GFD default.
 
-Removing broker permission disconnects the adapter. Removing real-order permission stops the strategy, revokes live authority, and attempts cancellation. Stored OAuth credentials can be forgotten from the same dialog.
+Removing broker or real-order permission first locks new local activity. If a GRANDE-owned open or
+unresolved order exists, Save refuses and directs the user to the explicit **STOP + CANCEL** preview;
+permission changes never cancel an order implicitly. Stored OAuth credentials can be forgotten only
+after a clean disconnect and never trigger cancellation as a side effect.
 
 ## Desktop navigation
 
@@ -66,9 +88,13 @@ The always-visible menu bar keeps infrequent controls out of the trading header:
 
 - **File** exports redacted diagnostics, opens Settings & Permissions, or exits.
 - **View** switches workspaces with `Ctrl+1` through `Ctrl+5`, resets the layout, or uses `F11` full screen.
-- **Broker** connects or disconnects Robinhood, refreshes with `F5`, controls live shadow, or forgets the locally stored OAuth credential after confirmation.
+- **Broker** connects or disconnects Robinhood, refreshes with `F5`, controls live shadow, or forgets
+  the locally stored OAuth credential after confirmation. Disconnect refuses when GRANDE-owned open
+  or unresolved order state still needs explicit handling; it never cancels an order.
 - **Research** opens each sandbox result surface directly.
-- **Safety** exposes only evidence-gated live controls plus the stop/cancel and flatten paths.
+- **Safety** exposes only evidence-gated live controls plus the order-specific stop/cancel and flatten
+  paths. **STOP + CANCEL** shows the exact GRANDE-owned nonterminal-order count and scope before a
+  required confirmation; manual and unrelated orders are untouched.
 - **Help** explains quick start, account scope, privacy, safety locks, version ownership, and opens the
   searchable terminology glossary with `F1`. Dashed-underlined labels also show the same definitions
   on hover or click.

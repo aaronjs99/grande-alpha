@@ -4,6 +4,9 @@ from dataclasses import asdict, dataclass
 
 from grande_alpha.evidence import (
     EVIDENCE_POLICY_VERSION,
+    FINAL_HOLDOUT_PURGE_SESSIONS,
+    FINAL_HOLDOUT_SESSIONS,
+    MIN_TOTAL_EVIDENCE_SESSIONS,
     PromotionReport,
     RandomControl,
     SensitivityPoint,
@@ -37,8 +40,18 @@ class EvidenceLabResult:
     holdout_id: int | None = None
 
 
-FINAL_HOLDOUT_SESSIONS = 20
-FINAL_HOLDOUT_PURGE_SESSIONS = 1
+def _quality_allows_holdout_reservation(bundle: HistoricalBundle) -> bool:
+    """Require the entire observed chronology to be clean before sealing a subset."""
+
+    quality = bundle.quality
+    return bool(
+        quality
+        and quality.clean
+        and quality.sessions >= MIN_TOTAL_EVIDENCE_SESSIONS
+        and quality.missing_intervals == 0
+        and quality.missing_sessions == 0
+        and quality.session_coverage_pct >= 95.0
+    )
 
 
 def run_evidence_lab(
@@ -56,7 +69,17 @@ def run_evidence_lab(
     holdout_bundle = None
     holdout_id = None
     holdout_result = None
-    if sessions >= FINAL_HOLDOUT_SESSIONS + FINAL_HOLDOUT_PURGE_SESSIONS + 1:
+    holdout_quality = None
+    holdout_quality_ok = False
+    evidence_development_sessions = (
+        max(0, sessions - FINAL_HOLDOUT_SESSIONS - FINAL_HOLDOUT_PURGE_SESSIONS)
+        if bundle.evidence_provenance_eligible
+        else sessions
+    )
+    if (
+        bundle.evidence_provenance_eligible
+        and _quality_allows_holdout_reservation(bundle)
+    ):
         split = split_final_holdout(
             bundle,
             FINAL_HOLDOUT_SESSIONS,
@@ -64,6 +87,14 @@ def run_evidence_lab(
         )
         development = split.development
         holdout_bundle = split.holdout
+        holdout_quality = holdout_bundle.quality
+        holdout_quality_ok = bool(
+            holdout_quality
+            and holdout_quality.clean
+            and holdout_quality.missing_intervals == 0
+            and holdout_quality.missing_sessions == 0
+            and holdout_quality.session_coverage_pct >= 95.0
+        )
         holdout_id = store.reserve_research_holdout(
             dataset_hash=bundle.dataset_hash,
             development_hash=development.dataset_hash,
@@ -71,7 +102,14 @@ def run_evidence_lab(
             holdout_start=holdout_bundle.start.isoformat(),
             holdout_end=holdout_bundle.end.isoformat(),
             policy_version=EVIDENCE_POLICY_VERSION,
+            provenance_hash=bundle.provenance_hash,
+            development_quality=(
+                asdict(development.quality) if development.quality is not None else None
+            ),
+            holdout_quality=(asdict(holdout_quality) if holdout_quality is not None else None),
         )
+        if not holdout_quality_ok:
+            store.invalidate_research_holdout(holdout_id)
 
     try:
         base = SandboxReplayEngine(config).run(development)
@@ -115,11 +153,19 @@ def run_evidence_lab(
             walk,
             random_control,
             total_trial_count=total_trial_count,
+            evidence_sessions=evidence_development_sessions,
+            evidence_quality=development.quality,
+            holdout_quality=holdout_quality,
         )
         development_passed = all(
             gate.passed for gate in development_report.gates if gate.name != "Sealed final holdout"
         )
-        if holdout_id is not None and holdout_bundle is not None and development_passed:
+        if (
+            holdout_id is not None
+            and holdout_bundle is not None
+            and holdout_quality_ok
+            and development_passed
+        ):
             store.freeze_research_holdout(holdout_id, selected_fingerprint)
             store.claim_research_holdout(holdout_id, selected_fingerprint)
             stressed_holdout_config = cost_stressed_config(config, 3.0)
@@ -148,6 +194,9 @@ def run_evidence_lab(
             total_trial_count=total_trial_count,
             holdout_result=holdout_result,
             holdout_id=holdout_id if holdout_result is not None else None,
+            evidence_sessions=evidence_development_sessions,
+            evidence_quality=development.quality,
+            holdout_quality=holdout_quality,
         )
     except Exception:
         if holdout_id is not None:
@@ -163,6 +212,8 @@ def run_evidence_lab(
         gates=[asdict(gate) for gate in report.gates],
         risk_envelope=tested_risk_envelope(config),
         holdout_id=report.holdout_id,
+        provenance_hash=bundle.provenance_hash,
+        provenance=bundle.provenance.as_dict() if bundle.provenance is not None else None,
     )
     store.receipt(
         "sandbox_evidence",
@@ -173,6 +224,11 @@ def run_evidence_lab(
             "gates": [asdict(gate) for gate in report.gates],
             "note": note.strip(),
             "registered_trial_count": total_trial_count,
+            "provenance_hash": bundle.provenance_hash,
+            "development_quality": (
+                asdict(development.quality) if development.quality is not None else None
+            ),
+            "holdout_quality": asdict(holdout_quality) if holdout_quality is not None else None,
         },
         "warning" if not report.passed else "info",
     )

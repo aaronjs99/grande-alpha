@@ -12,7 +12,9 @@ your Robinhood connection.
 1. Complete login only on a Robinhood domain.
 2. Allow the browser to return to `http://localhost:37654/callback`.
 3. Ensure another GRANDE Alpha process is not running.
-4. Disconnect/reconnect Robinhood Agentic Trading if Robinhood reports an expired authorization.
+4. If Robinhood reports an expired authorization, first lock local authority. Disconnect/reconnect
+   only from a clean state; if GRANDE-owned open or unresolved state remains, use the exact
+   **STOP + CANCEL** preview and confirmation before disconnecting.
 5. Check `%LOCALAPPDATA%\GRANDEAlpha\grande_alpha.log`.
 
 The OAuth wait expires after five minutes. Tokens and registered-client information are stored in
@@ -23,7 +25,9 @@ Windows Credential Manager under `GRANDEAlpha.RobinhoodMCP`. A legacy
 
 Do not authorize live trading.
 
-1. Press **Disconnect**.
+1. Revoke local authority. If GRANDE Alpha reports an owned open or unresolved order, use
+   **STOP + CANCEL**, inspect the exact list, and explicitly confirm only the intended owned orders.
+   Disconnect after terminal verification; Disconnect itself never cancels.
 2. Confirm the Agentic account—not the default margin account—is selected in Robinhood.
 3. Confirm deposits are complete and buying power is actually available.
 4. Reconnect OAuth and refresh.
@@ -36,7 +40,8 @@ buying power. Never authorize around an unexplained discrepancy of any size.
 
 - Confirm the U.S. equity session is open.
 - Check internet connectivity and Robinhood status.
-- Press STOP + CANCEL.
+- Press **STOP + CANCEL**, inspect the exact GRANDE-owned order count/scope, and confirm only if those
+  listed orders should be cancelled. Manual or unrelated orders must be handled directly in Robinhood.
 - Reconnect rather than weakening the quote-age limit.
 
 The app blocks orders when the relevant quote is older than eight seconds or the spread exceeds the
@@ -58,7 +63,7 @@ The warning is intentionally fail-closed and may describe buying power, settleme
 market-hours, halt, or a new broker control.
 
 1. Read the complete warning in Receipts and Robinhood.
-2. Press STOP + CANCEL.
+2. Press **STOP + CANCEL**, inspect its exact owned-order preview, and explicitly confirm if correct.
 3. Resolve the broker condition.
 4. Reauthorize a new live session only after the reason is understood.
 
@@ -73,6 +78,17 @@ Canceling an order does not reverse an already completed fill.
 3. Review the exact quantity and market disclosure.
 4. Type the displayed sell phrase.
 5. Verify the resulting state and final position in Robinhood.
+
+## Disconnect, Settings, credential forgetting, or Exit refuses
+
+These controls intentionally do not cancel an order. They lock new local activity and refuse while a
+GRANDE-owned nonterminal or unresolved order remains.
+
+1. Keep GRANDE Alpha connected and inspect the warning and Robinhood order view.
+2. Select **STOP + CANCEL** and review the exact owned-order count and details.
+3. Confirm only if that precise scope should be cancelled. An already-pending cancellation will be
+   disclosed and verified without a duplicate request; manual/unrelated orders are untouched.
+4. Wait for every targeted order to be observed terminal, then retry the original action.
 
 ## App was closed or crashed with a position
 

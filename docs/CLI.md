@@ -9,6 +9,7 @@ After `setup.ps1`, the repo-local wrapper is the easiest entry point:
 
 ```powershell
 .\cli.ps1 status
+.\cli.ps1 activation --width 150
 .\cli.ps1 evidence show
 .\cli.ps1 evidence show --failures-only --width 150
 .\cli.ps1 glossary "Deflated Sharpe"
@@ -18,6 +19,43 @@ After `setup.ps1`, the repo-local wrapper is the easiest entry point:
 The installed command is also available as `grande-alpha-cli` when its Python Scripts directory is
 on `PATH`. Every table wraps to the terminal width; `--width N` gives explicit control without
 truncating long evidence requirements.
+
+If PowerShell blocks local scripts, use the signed-system PowerShell wrapper through the provided CMD
+launcher:
+
+```powershell
+& ".\GRANDE Alpha CLI.cmd" activation --width 150
+```
+
+## Activation assistant
+
+`activation` reads only local configuration and the latest evidence receipt. It labels every
+condition as `APP CHECK`, `APP GATE`, `APP + YOU`, `YOU`, `RESEARCH`, or `EXTERNAL REVIEW`, prints the
+exact next action, and expands every failed evidence gate. It does not connect to Robinhood and has no
+command that grants, schedules, reviews, places, or cancels orders.
+
+The first row always records that scheduled auto-shadow is structurally read-only. After offline
+conditions are resolved, run `Morning Check.cmd`, then use **Live Readiness** in the normal GUI for
+fresh connected-account and quote checks. See the complete [activation checklist](ACTIVATION_CHECKLIST.md).
+
+## Read-only broker readiness
+
+The companion Morning Check invokes a separate read-only broker diagnostic:
+
+```powershell
+.\Morning Check.cmd
+```
+
+It discovers accounts and fails unless exactly one active Agentic account exists. Through a
+structural read-only broker facade, it fetches only that account's portfolio, positions, orders, and
+the exact QQQ/TQQQ/SQQQ quote batch. Each quote must contain valid prices, its matching symbol, a
+fresh venue timestamp, and bounded timestamp skew. Recognized terminal order states are normalized;
+unknown states are reported open for the downstream flat/order-free preflight. The report prints
+`Read-only boundary: ENFORCED (review/place/cancel blocked)` and `Write tools called: 0`.
+
+This diagnostic may trigger provider OAuth, whose granted scope can be broader than the calls made by
+the diagnostic. It does not grant or restore live authority, create an evidence certificate, or
+claim the account is suitable for trading.
 
 ## Run the sandbox
 
@@ -55,3 +93,18 @@ intervals; it sends no broker or account data.
 toward trading. The current policy is conjunctive: every canonical gate must
 pass on one eligible run. Synthetic source, inadequate breadth, weak trial-adjusted statistics, or a
 missing walk-forward test cannot be averaged away by strong execution-cost or drawdown results.
+
+## Audit data before Evidence Lab
+
+The data audit reads caches, a supplied CSV, and the evidence-ledger inventory without registering a
+trial or reserving/revealing a final holdout:
+
+```powershell
+.\.venv\Scripts\python.exe -m grande_alpha.cli data audit --target-interval 5s --width 150
+.\.venv\Scripts\python.exe -m grande_alpha.cli data manifest-template --target-interval 5s
+```
+
+For a supplied file, `--interval` is mandatory because the command never guesses or relabels cadence.
+Add `--manifest` to bind exact source, license attestations, construction method, native resolution,
+coverage, and hashes. See [Observed-data readiness](DATASET_READINESS.md) for the complete schema and
+one-use sealed-holdout checklist.

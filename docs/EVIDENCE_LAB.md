@@ -1,5 +1,36 @@
 # Evidence lab and promotion gates
 
+## Exact runtime-observation evidence
+
+Evidence-policy v13 requires the canonical **Exact runtime observation schema** gate. A bounded live
+candidate must be evaluated from a provenance-bound GRANDE Alpha quote trace whose synchronized
+QQQ/TQQQ/SQQQ venue observations reproduce the runtime path: QQQ bid/ask mids enter the same
+`BarBuilder`, and the first later accepted quote batch supplies the causal timestamp plus TQQQ/SQQQ
+bid/ask used by virtual execution. A generic OHLCV CSV remains useful for research but cannot pass
+this gate merely by being labeled runtime-equivalent.
+
+The importer opens the local SQLite trace read-only, content-hashes every atomically recorded v2
+batch, excludes legacy unbound rows, rejects incomplete/interleaved/skewed triples, filters
+observations outside the declared exchange session, and binds each signal-pipeline reset with a
+durable stream ID. One stream may not span sessions: scheduled daily runs must create a new stream,
+which is the exact production reset boundary. Quote traces do not contain volume. Derived bars therefore
+record zero volume; no volume-capacity or participation claim can be made from them.
+
+Each atomic batch also records how it was accepted. Only `exact_execution_quotes` validator v2
+batches with one consistent, finite age/skew envelope (no more than 8 seconds old and 5 seconds
+skew, with skew never exceeding age) and explicit venue bid and ask clocks enter exact replay.
+Policy-v12 receipts and validator-v1 batches are stale and cannot activate live review. Ordinary passive connected refreshes are
+stored as `passive_unvalidated` and excluded. A stale passive snapshot cannot become eligible later
+through a rights manifest or source label.
+
+The exact clock-replay engine is available for deterministic engineering comparisons and has no
+broker dependency or order-write path. The current broad performance/evidence pipeline still
+returns generic `SandboxResult` metrics, so its `runtime_observation_replay` marker remains false.
+Consequently the new gate remains closed even when an exact trace is loaded. Truthful closure
+requires routing every sensitivity, cost-stress, walk-forward, and sealed-holdout evaluation through
+the exact causal engine and returning the canonical metrics from that path. This change does not set
+the separate global runtime-parity certification flag and does not make any profitability claim.
+
 The evidence lab is designed to make a promising backtest harder to fool. Its strongest outcome,
 `LIVE_REVIEW_ELIGIBLE`, creates a local, 30-day certificate for the exact strategy fingerprint.
 That certificate only makes the separate live-risk review available; it does not authorize an
@@ -20,7 +51,7 @@ order or predict future profit. The normal outcome is `SHADOW_ONLY`.
   evaluated, so previously registered trials cannot disappear from the reported search count.
 - **Trial-adjusted significance:** applies both a Bonferroni familywise correction and the
   Deflated Sharpe Ratio's selection-bias, skew, and kurtosis adjustment.
-- **One-use final holdout:** evidence-policy version 8 reserves a later chronological block before
+- **One-use final holdout:** the current evidence policy reserves a later chronological block before
   candidate evaluation, freezes it to the selected strategy fingerprint, claims it before reading
   its result, and records that result permanently after one evaluation.
 
@@ -30,10 +61,10 @@ order or predict future profit. The normal outcome is `SHADOW_ONLY`.
 |---|---|
 | Historical source | Observed or imported market history; synthetic scenarios are ineligible |
 | Trading-session coverage | Dataset covers the complete regular, extended, or 24-hour session selected by the strategy |
-| Data breadth | At least 120 market sessions; use imported licensed history when the built-in source is shorter |
+| Data breadth | At least 141 total market sessions: 120 development, one purge, and 20 final holdout sessions |
 | Data recency | Final observation no more than 30 days old |
-| Data integrity | Hash-valid, zero duplicate/missing intraday intervals, and at least 95% complete selected sessions |
-| Runtime sizing parity | Replay and runtime use the exact same certified sizing contract. This currently fails every non-cash candidate because replay applies risk-budget and volatility sizing that shadow/live do not share. Cash passes only with zero fills and zero exposure, then still fails the trade-sample and profit gates. |
+| Data integrity | Hash-valid development data with zero omitted exchange sessions, zero duplicate/missing intraday intervals, and at least 95% complete selected sessions; the sealed holdout is checked separately under the same quality rule |
+| Runtime sizing parity | Replay, shadow, and live share the exact certified execution contract. Entry sizing, loss semantics, completed-bar cadence, distinct filled-entry counting, and holding clocks now share durable provider execution identity/time semantics. Non-cash certification remains blocked by market-observation construction, replay-versus-broker fill economics/timing, the autonomous exit lifecycle, and the provider's current per-order review/confirmation contract. Malformed or missing provider execution provenance fails closed. Cash passes this gate only with zero fills/exposure, then still fails trade-sample and profit gates. |
 | Parameter stability | At least half of neighboring configurations profitable |
 | Cost stress | Positive P/L at 3x modeled costs |
 | Closed-trade sample | At least 30 after-cost round trips |
@@ -57,10 +88,12 @@ validate the market-data license, account for tax/settlement restrictions, or au
 Before any live review, preserve a final dataset period that was not used to invent, select, or tune
 the strategy.
 
-## Policy v8 final-holdout lifecycle
+## Current-policy final-holdout lifecycle
 
 The seal is an auditable database lifecycle, not encryption. The app records the full dataset hash,
-development hash, holdout hash and dates, policy version, and selected strategy fingerprint.
+development hash and quality, holdout hash/dates and quality, policy version, source-provenance hash,
+and selected strategy fingerprint. Any date overlap with any prior holdout—including consumed or
+invalid attempts—is rejected; exact idempotency applies only while the same record is still reserved.
 
 ```text
 RESERVED -> FROZEN -> EVALUATING -> CONSUMED
@@ -88,7 +121,7 @@ replace this final one-use test.
 ## Avoiding false evidence
 
 - Do not choose the best configuration and then describe its training return as out-of-sample.
-- Do not inspect, retune on, or rerun the final holdout. Under policy v9, a claimed holdout is used
+- Do not inspect, retune on, or rerun the final holdout. Under the current policy, a claimed holdout is used
   once and remains consumed even when it fails.
 - Do not ignore rejected fills, open ending positions, costs, negative days, or zero-trade folds.
 - Do not compare two configurations on different hashes.

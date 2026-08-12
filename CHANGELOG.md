@@ -1,5 +1,55 @@
 # Changelog
 
+## 0.15.0 - 2026-08-11
+
+- Added session-scoped live-pilot machinery with typed, non-persistent authority bound to one
+  Agentic account, the exact TQQQ/SQQQ ticker set, order route, candidate fingerprint,
+  Eastern-day expiry, and explicit order, turnover, exposure, loss, rate, spread, and quote-age
+  limits.
+- Added fresh account, position, order, and venue-timestamp quote preflight; durable intent
+  provenance before broker placement; conservative restart restoration of daily placement usage;
+  and hash-chained authority-action receipts.
+- Added visible pause and revoke controls while retaining fail-closed reconciliation, unknown-order,
+  stale-data, settings-change, and expired-authority locks.
+- Added a unified Live Readiness checklist in the GUI and CLI with explicit app, research, user,
+  and external-review owners; a structurally read-only safe-refresh path; and reversible bounded-pilot
+  route previews that do not save, authorize, or place orders.
+- Made every autonomous exit one-shot, revoking authority after one known placement response so
+  stale position data cannot trigger a duplicate sell. The daily-loss transition is additionally
+  liquidation-only: it can only sell existing leveraged inventory and never add exposure. Exact
+  inventory-reducing exits may exceed the entry-notional cap only up to fresh reconciled sellable
+  inventory, while buy-side and total risk controls remain unchanged.
+- Added provider-backed execution provenance for cumulative and partial fills, including immutable
+  execution IDs, quantities, prices, fees, and fill timestamps; persisted those executions across
+  restart and bound entry counts and holding clocks to the reconciled Agentic-account inventory.
+- Restricted live authorization/start to the regular-session entry window and atomically discarded
+  all pre-start/premarket signal state before the live warm-up begins.
+- Added a recurring U.S. cash-equity holiday and scheduled early-close calendar, while continuing to
+  fail closed because emergency closures, venue outages, and symbol halts need current provider data.
+- Hardened Morning Check behind a structural read-only broker facade, exact-one Agentic-account
+  selection, exact fresh venue-quote validation, and conservative unknown-order-state handling.
+- Bumped evidence policy to v13 and the runtime-observation, quote-batch, and exact-validator
+  contracts to v2 so pre-book-clock receipts and traces remain visible history but cannot be
+  mistaken for current activation evidence.
+- Added a shared immutable candidate execution/sizing contract for replay, live shadow, and bounded
+  runtime order preparation, without presenting simulated execution assumptions as broker facts.
+- Added a query-only historical-data audit, exact CSV/provenance-manifest contract, native-cadence
+  checks that reject 1-minute/daily relabeling as 5-second data, and a one-use holdout checklist.
+  Evidence policy v12 now binds this provenance to holdout and promotion receipts, requires exact
+  runtime quote-observation replay, and ignores human-readable source labels when deciding
+  historical-source eligibility. It requires 120
+  complete development sessions, one purge session, and 20 complete later holdout sessions; rejects
+  omitted exchange sessions, overlapping holdouts, future/stale timestamps, and mutable CSV reads;
+  and applies durable trial counts to trial-adjusted significance.
+- Made scheduled shadow apply an audited, process-local regular-hours read-only route so a saved
+  normal-app 24-hour/limit/GTC preference cannot prevent the next observation run; no setting is
+  persisted and the broker-write facade remains active. Its watchdog permits a 14-hour read-only
+  run so an early manual start can still reach the deterministic regular-session close.
+- Kept deterministic CASH / hold as the normal and scheduled champion. The non-cash runtime-sizing
+  parity flag remains false because the complete runtime execution-parity assessment is still blocked;
+  no strategy currently receives live authority, and this release makes
+  no profitability or investment-performance guarantee.
+
 ## 0.14.0 - 2026-08-11
 
 - Made deterministic CASH / hold the normal and scheduled runtime champion after every existing

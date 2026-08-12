@@ -19,14 +19,14 @@ GRANDE project family
 | Independent runtime bounds | Risk engine independently approves or rejects the intent |
 | Freshness and lifecycle gates | Quote age, spread, market-time, and session-state checks |
 | Actuator boundary | Official Robinhood Trading MCP review and order submission |
-| Emergency stop | `STOP + CANCEL` blocks new orders and requests cancellation |
-| Evidence trail | SQLite receipts record decisions and broker responses |
+| Emergency stop | Pause/revoke only block local authority; `STOP + CANCEL` previews exact GRANDE-owned orders and requires confirmation before cancellation |
+| Evidence trail | Frozen hash-chained authority receipts plus SQLite decision/broker receipts |
 | Candidate versus approved runtime | `LOCKED`, `LIVE`, `EXPIRED`, and review-blocked states |
 | Simulation boundary | `TQQQS`/`SQQQS` replay engine receives no broker object or live authority |
 | Candidate observation | Live shadow consumes current quotes but has no broker-order dependency |
 | Low-latency observation | Single-flight quote loop is independent of slower account reconciliation |
 | Settlement-aware accounting | `cash_t1` separates settled cash from next-session sale proceeds |
-| Final acceptance test | Policy v8 binds one later holdout to one fingerprint and consumes it once |
+| Final acceptance test | The current policy binds one later holdout to one fingerprint and consumes it once |
 
 ## Hard separation
 
@@ -40,6 +40,20 @@ GRANDE project family
 The permitted connection is organizational and evidentiary: GRANDE Alpha uses the same style of
 bounded authority, explicit confirmation, stop control, and auditable receipts. Its Research Fund
 feature records only intended and externally confirmed contributions of personal realized profit.
+
+Real-order capability and real-money authority are different layers. Configuration may remember that
+session controls are available, but never stores a money-moving grant. The immutable grant binds the
+exact account, ticker tuple, route, strategy fingerprint, ET-day expiry, and all risk ceilings. The
+risk engine owns pause/revoke state, gross-notional reservations, and a hash-chained in-memory action
+receipt queue. The controller supplies current binding context, persists receipts append-only, and
+releases abandoned reservations. See [Bounded autonomous authority](AUTONOMOUS_AUTHORITY.md).
+
+Cancellation is a separate consent boundary. The controller may lock new local requests at any time,
+but its only cancellation path consumes a short-lived, exact preview of GRANDE-owned nonterminal
+Agentic orders after explicit user confirmation. The preview is bound to the selected account and
+order set; manual/unrelated orders are excluded, and pending-cancel orders are verification-only.
+Revoke, Settings, Disconnect, credential forgetting, Exit, and internal fault paths cannot call the
+broker cancellation operation and must refuse when owned open or unresolved state remains.
 
 The sandbox and live-shadow executor share a pure decision policy with live automation. The policy
 returns a target and reason; three separate execution boundaries consume that decision. Historical
@@ -71,7 +85,7 @@ completed QQQ bars and returns the same bullish, bearish, or flat signal contrac
 not provide broker access. Live automation remains the explicit EMA baseline; a research strategy's
 different fingerprint cannot authorize that live path.
 
-Evidence-policy version 9 retains the durable final-holdout state machine and binds the complete
+The current evidence policy retains the durable final-holdout state machine and binds the complete
 execution/sizing contract. A later chronological block
 is reserved by dataset/date hash. The candidate is frozen only after every development-only gate
 passes; the block is then atomically claimed before evaluation, and its metrics are consumed after

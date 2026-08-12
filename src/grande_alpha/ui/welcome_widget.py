@@ -8,13 +8,14 @@ from grande_alpha.strategy import STRATEGY_NAMES
 
 
 class WelcomeWidget(QWidget):
+    open_activation = Signal()
     open_sandbox = Signal()
     open_settings = Signal()
 
     def __init__(self, config: AppConfig, parent=None) -> None:
         super().__init__(parent)
         layout = QVBoxLayout(self)
-        title = QLabel("Research before authority")
+        title = QLabel("Know exactly what remains")
         title.setStyleSheet("font-size:22pt;font-weight:700")
         layout.addWidget(title)
         self.mode = QLabel()
@@ -22,7 +23,21 @@ class WelcomeWidget(QWidget):
         layout.addWidget(self.mode)
 
         cards = QHBoxLayout()
-        research = QGroupBox("1 · Establish evidence")
+        activation = QGroupBox("1 · Follow the activation checklist")
+        activation_layout = QVBoxLayout(activation)
+        activation_text = QLabel(
+            "See every blocking condition, who owns it, and the exact next action. Safe read-only checks "
+            "can be rerun by the app; money decisions and external approvals stay with you."
+        )
+        activation_text.setWordWrap(True)
+        activation_layout.addWidget(activation_text)
+        activation_button = QPushButton("Open activation checklist")
+        activation_button.setObjectName("primary")
+        activation_button.clicked.connect(self.open_activation)
+        activation_layout.addWidget(activation_button)
+        cards.addWidget(activation)
+
+        research = QGroupBox("2 · Establish evidence")
         research_layout = QVBoxLayout(research)
         research_text = QLabel(
             "Run deterministic scenarios or import lawful QQQ/TQQQ/SQQQ history. Inspect timing, costs, "
@@ -31,12 +46,11 @@ class WelcomeWidget(QWidget):
         research_text.setWordWrap(True)
         research_layout.addWidget(research_text)
         sandbox = QPushButton("Open research sandbox")
-        sandbox.setObjectName("primary")
         sandbox.clicked.connect(self.open_sandbox)
         research_layout.addWidget(sandbox)
         cards.addWidget(research)
 
-        permissions = QGroupBox("2 · Add only what you need")
+        permissions = QGroupBox("3 · Add only what you need")
         permissions_layout = QVBoxLayout(permissions)
         permissions_text = QLabel(
             "Broker access, community market data, the personal ledger, and real orders are independent "
@@ -48,18 +62,16 @@ class WelcomeWidget(QWidget):
         settings.clicked.connect(self.open_settings)
         permissions_layout.addWidget(settings)
         cards.addWidget(permissions)
-
-        monitor = QGroupBox("3 · Monitor independently")
-        monitor_layout = QVBoxLayout(monitor)
-        monitor_text = QLabel(
-            "Shadow results and backtests are not promises. If live controls are deliberately unlocked, "
-            "keep the broker app available, use a bounded session, and verify every receipt."
-        )
-        monitor_text.setWordWrap(True)
-        monitor_layout.addWidget(monitor_text)
-        monitor_layout.addStretch()
-        cards.addWidget(monitor)
         layout.addLayout(cards)
+
+        monitor_text = QLabel(
+            "Scheduled auto-shadow is structurally read-only: it can collect observations and virtual fills, "
+            "but it cannot authorize, review, place, or cancel an order. A normal live session remains a "
+            "separate same-day review after every condition passes."
+        )
+        monitor_text.setObjectName("validationWarning")
+        monitor_text.setWordWrap(True)
+        layout.addWidget(monitor_text)
 
         disclosure = QLabel(
             "Independent community software · Not affiliated with or endorsed by Robinhood, ProShares, "

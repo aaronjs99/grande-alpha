@@ -1,5 +1,23 @@
 # GRANDE Alpha sandbox
 
+## Runtime quote-trace replay
+
+`load_runtime_quote_trace()` can reconstruct a provenance-bound `HistoricalBundle` from GRANDE
+Alpha's own synchronized QQQ/TQQQ/SQQQ quote ledger without calling a broker or opening the database
+for writes. `RuntimeObservationReplayEngine` then feeds completed QQQ mid bars and their first later
+causal target-ETF bid/ask batch through the same strategy and live-shadow execution path. It does not
+apply the generic sandbox's additional next-bar scheduling or modeled spread to those exact quotes.
+
+For regular-hours replay, premarket, after-hours, holidays, and overnight bridges are excluded.
+Atomic batch IDs prove which quotes came from one accepted provider response; a stream ID proves the
+runtime reset boundary. Legacy unbound rows are excluded and cannot affect frames or their hash.
+A stream spanning sessions is rejected because it cannot represent the scheduled clean-start
+contract. The default history retention is 240 calendar days (legacy default 90 migrates to 240),
+and pruning deletes child quotes and now-empty batch parents together. The quote ledger has no trade volume, so volume is
+zero/unknown and the trace cannot validate volume-dependent capacity. A short trace—even a perfect
+one-day trace—is an engineering parity artifact, not sufficient evidence breadth and not evidence of
+future profitability.
+
 The **SANDBOX** tab is an isolated research environment. `TQQQS` and `SQQQS` are fictional aliases
 for historical TQQQ and SQQQ prices. The widget receives an audit store but no broker object; its
 engine has no OAuth, account, review, placement, or cancellation dependency.

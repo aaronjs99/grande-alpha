@@ -14,7 +14,7 @@ GATE_GUIDANCE: dict[str, tuple[str, str]] = {
     ),
     "Data breadth": (
         "A few sessions cannot represent enough market regimes or support the statistical tests below.",
-        "Use at least 120 complete market sessions. More independent sessions are preferable to denser samples from only a few days.",
+        "Use at least 141 complete market sessions: 120 development, one purge, and 20 later one-use holdout sessions.",
     ),
     "Data recency": (
         "Old data may not represent current liquidity, volatility, spread, or market structure.",

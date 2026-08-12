@@ -21,10 +21,11 @@ authoritative. See Robinhood's current [extended-hours](https://robinhood.com/us
 **Settings & Permissions → Automatic order route defaults** stores a default only. It grants no
 authority. **Safety → Authorize Live Session** displays the route again and allows the user to change
 it before typing the account-specific confirmation. The resulting live grant binds the exact session,
-order type, time in force, and limit offset. Any intent that differs is rejected locally before broker
-review.
+order type, time in force, limit offset, account, ticker tuple, and strategy fingerprint. It expires
+within the same Eastern calendar day and is never restored after restart. Any intent that differs is
+rejected locally before broker review.
 
-The sandbox exposes the same fields. Evidence-policy version 9 binds them and the settlement model
+The sandbox exposes the same fields. Evidence-policy version 13 binds them and the settlement model
 into the strategy fingerprint, adds a complete-session-coverage gate, and requires a one-use final
 holdout. Regular data cannot certify an extended or
 overnight route. The community adapter can request pre/post-market bars for extended research, but it
@@ -60,10 +61,13 @@ can be represented; outside regular hours it may queue at Robinhood.
 - GFD expires at the end of the selected provider trading day/session.
 - GTC can remain working at Robinhood for up to 90 calendar days.
 
-GRANDE Alpha detects a pending broker order and will not submit another one. STOP + CANCEL,
-disconnect, and orderly shutdown attempt cancellation, but a GTC order can survive an application,
-network, operating-system, or power failure and may fill without the app running. Choose GTC only if
-that persistence is intentional and monitor the authoritative Robinhood order view.
+GRANDE Alpha detects a pending broker order and will not submit another one. Only the explicit
+**STOP + CANCEL** flow can request cancellation: it previews the exact GRANDE-owned nonterminal
+Agentic orders, requires confirmation, excludes manual/unrelated orders, and verifies an already
+pending cancellation without sending it twice. Disconnect and orderly shutdown never cancel; they
+lock and refuse while owned open or unresolved state remains. A GTC order can still survive an
+application, network, operating-system, or power failure and may fill without the app running. Choose
+GTC only if that persistence is intentional and monitor the authoritative Robinhood order view.
 
 The local clock handles weekdays and selected session boundaries. It is not an exchange calendar;
 holidays, halts, venue outages, liquidity, account restrictions, and final eligibility are enforced by

@@ -27,6 +27,23 @@ the optional scheduled-shadow setup; it does not register or enable a task autom
 [Scheduled weekday live shadow](SCHEDULED_SHADOW.md) for the one-time install, status, definition,
 and removal commands.
 
+The scheduled task is permanently shadow-only. It never authorizes or starts live trading, and live
+authority is never stored in Task Scheduler, configuration, Credential Manager, or the receipt
+database. A future eligible live pilot would still require one interactive **Authorize & Start Live
+Session** action for that bounded same-ET-day grant.
+
+### Current OAuth recovery
+
+If a future Robinhood check reports that its cached OAuth token was revoked, first lock local
+authority. Credential forgetting requires a clean disconnected state and never cancels an order. If
+GRANDE-owned open or unresolved state remains, complete the explicit **STOP + CANCEL** preview,
+confirmation, and terminal verification before disconnecting. Then use **Broker → Forget Stored
+OAuth Credentials…**, confirm removal, reconnect through the Robinhood browser flow, and rerun the
+read-only broker diagnostic. Do not paste tokens into project files or try to bypass OAuth. Forgetting
+the local credential does not itself revoke Robinhood-side access; review Robinhood's
+[third-party connection guidance](https://robinhood.com/us/en/support/articles/third-party-connections/)
+for provider-side connection management.
+
 ## Why the unsigned executable may not start
 
 PyInstaller can build a technically valid executable without establishing publisher identity.

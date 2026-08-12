@@ -6,12 +6,17 @@ import math
 import random
 import statistics
 from collections.abc import Iterable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, fields, replace
 from datetime import UTC, datetime
 from zoneinfo import ZoneInfo
 
+from grande_alpha.candidate_execution import (
+    CandidateExecutionContract,
+    contract_from_config,
+    runtime_parity_assessment,
+)
 from grande_alpha.execution import execution_profile
-from grande_alpha.historical import HistoricalBundle, assess_quality
+from grande_alpha.historical import DataQuality, HistoricalBundle, assess_quality
 from grande_alpha.policy import session_key
 from grande_alpha.sandbox import (
     INTERVAL_MINUTES,
@@ -23,16 +28,23 @@ from grande_alpha.sandbox import (
 from grande_alpha.strategy import StrategyConfig
 
 EASTERN = ZoneInfo("America/New_York")
-EVIDENCE_POLICY_VERSION = 9
-# Non-cash replay uses risk-budget and volatility sizing that shadow/live do not yet share.
-# Cash can satisfy the report-level parity gate only when it never takes exposure, but it
-# cannot satisfy the trade-sample/profit gates. Consequently no current policy-v9 result
-# can truthfully create live-review authority.
-RUNTIME_SIZING_PARITY_CERTIFIED = False
+EVIDENCE_POLICY_VERSION = 13
+# This value is derived from the machine-readable mechanics assessment below. It must not
+# become true merely because entry sizing shares a helper: exact observations, fill economics,
+# exit lifecycle, and the provider order-confirmation contract must all align as well.
+RUNTIME_SIZING_PARITY_CERTIFIED = runtime_parity_assessment(
+    CandidateExecutionContract()
+).certified
 MIN_EVIDENCE_SESSIONS = 120
+FINAL_HOLDOUT_SESSIONS = 20
+FINAL_HOLDOUT_PURGE_SESSIONS = 1
+MIN_TOTAL_EVIDENCE_SESSIONS = (
+    MIN_EVIDENCE_SESSIONS + FINAL_HOLDOUT_PURGE_SESSIONS + FINAL_HOLDOUT_SESSIONS
+)
 REQUIRED_LIVE_GATE_NAMES = frozenset(
     {
         "Historical source",
+        "Exact runtime observation schema",
         "Trading-session coverage",
         "Data breadth",
         "Data recency",
@@ -73,30 +85,9 @@ STRATEGY_FINGERPRINT_FIELDS = (
     "breakout_buffer_bps",
     "ensemble_min_votes",
 )
-SANDBOX_EXECUTION_FINGERPRINT_FIELDS = (
-    "initial_cash",
-    "order_notional",
-    "slippage_bps",
-    "base_spread_bps",
-    "spread_volatility_multiplier",
-    "commission_per_order",
-    "latency_bars",
-    "fill_fraction_pct",
-    "rejection_rate_pct",
-    "max_volume_participation_pct",
-    "random_seed",
-    "max_entries_per_day",
-    "risk_budget_pct",
-    "max_exposure_pct",
-    "max_daily_loss_pct",
-    "max_consecutive_losses",
-    "volatility_target_pct",
-    "force_flat_at_end",
+SANDBOX_EXECUTION_FINGERPRINT_FIELDS = tuple(
+    field.name for field in fields(CandidateExecutionContract) if field.name != "contract_version"
 )
-_CONFIG_FIELD_ALIASES = {
-    "order_notional": "default_max_order_notional",
-    "max_entries_per_day": "default_max_trades",
-}
 FORCED_FLATTEN_REASONS = frozenset(
     {
         "Session-end forced virtual flatten",
@@ -203,46 +194,59 @@ def strategy_fingerprint(
     execution: object | None = None,
 ) -> str:
     strategy_defaults = StrategyConfig()
-    sandbox_defaults = SandboxConfig()
-    decision_stride = int(getattr(config, "decision_stride", getattr(config, "trade_every_bars", 1)))
     route = execution_profile(execution or config)
-
-    def config_value(field: str) -> object:
-        if hasattr(config, field):
-            return getattr(config, field)
-        alias = _CONFIG_FIELD_ALIASES.get(field)
-        if alias and hasattr(config, alias):
-            return getattr(config, alias)
-        return getattr(sandbox_defaults, field)
+    contract = contract_from_config(config)
+    if execution is not None:
+        contract = replace(
+            contract,
+            market_hours=route.market_hours,
+            order_type=route.order_type,
+            time_in_force=route.time_in_force,
+            limit_offset_bps=route.limit_offset_bps,
+        )
+        contract.validate()
 
     payload = {
         "policy_version": EVIDENCE_POLICY_VERSION,
         "bar_interval_seconds": _interval_seconds(config, interval),
-        "decision_stride": decision_stride,
-        "market_hours": route.market_hours,
-        "order_type": route.order_type,
-        "time_in_force": route.time_in_force,
-        "limit_offset_bps": route.limit_offset_bps,
-        "settlement_model": getattr(config, "settlement_model", "instant"),
+        "execution_contract": contract.canonical_payload(),
+        "execution_contract_fingerprint": contract.fingerprint,
         **{
             field: getattr(config, field, getattr(strategy_defaults, field, None))
             for field in STRATEGY_FINGERPRINT_FIELDS
         },
-        **{field: config_value(field) for field in SANDBOX_EXECUTION_FINGERPRINT_FIELDS},
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
 
 
+def runtime_parity_manifest(config: object | None = None) -> dict[str, object]:
+    """Return the current fail-closed replay/shadow/live parity assessment as data."""
+
+    contract = (
+        config
+        if isinstance(config, CandidateExecutionContract)
+        else contract_from_config(config or CandidateExecutionContract())
+    )
+    return runtime_parity_assessment(contract).as_dict()
+
+
 def tested_risk_envelope(config: SandboxConfig) -> dict[str, float | int]:
     """Maximum live grant compatible with the replayed sizing and stressed spread model."""
+    contract = contract_from_config(config)
     return {
-        "max_order_notional": config.order_notional,
-        "max_total_exposure": config.initial_cash * config.max_exposure_pct,
-        "max_daily_loss": config.initial_cash * config.max_daily_loss_pct,
-        "max_trades": config.max_entries_per_day,
+        "max_order_notional": contract.order_notional,
+        # Entry plus exit turnover for every permitted entry. Partial-fill retries remain
+        # bounded by the same aggregate filled quantity in the shared virtual contract.
+        "max_daily_notional": 2.0 * contract.order_notional * contract.max_entries_per_day,
+        "max_total_exposure": contract.initial_cash * contract.max_exposure_pct,
+        "max_daily_loss": contract.initial_cash * contract.max_daily_loss_pct,
+        # RiskEngine counts every irreversible placement invocation. Each replay entry can
+        # consume one buy and one sell invocation, so an entry-only count would block the
+        # certified exit at exactly the moment it is required.
+        "max_trades": 2 * contract.max_entries_per_day,
         "max_orders_per_minute": 2,
-        "max_spread_bps": config.base_spread_bps * 3.0,
+        "max_spread_bps": contract.base_spread_bps * 3.0,
     }
 
 
@@ -589,15 +593,24 @@ def promotion_report(
     total_trial_count: int | None = None,
     holdout_result: SandboxResult | None = None,
     holdout_id: int | None = None,
+    evidence_sessions: int | None = None,
+    evidence_quality: DataQuality | None = None,
+    holdout_quality: DataQuality | None = None,
 ) -> PromotionReport:
     reference = now or datetime.now(UTC)
-    sessions = bundle.quality.sessions if bundle.quality else len(_sessions(bundle))
+    sessions = (
+        evidence_sessions
+        if evidence_sessions is not None
+        else bundle.quality.sessions
+        if bundle.quality
+        else len(_sessions(bundle))
+    )
     stable_pct = (
         sum(point.return_pct > 0 for point in sensitivity) / len(sensitivity) * 100.0 if sensitivity else 0.0
     )
     positive_days = [value for value in base_result.daily_pnl.values() if value > 0]
     concentration = max(positive_days) / sum(positive_days) * 100.0 if positive_days else 100.0
-    data_age_days = max(0, (reference - bundle.end).total_seconds() / 86_400)
+    data_age_days = (reference - bundle.end).total_seconds() / 86_400
     daily_values = list(base_result.daily_pnl.values())
     if len(daily_values) >= 2 and statistics.stdev(daily_values) > 0:
         t_stat = statistics.fmean(daily_values) / (
@@ -606,9 +619,9 @@ def promotion_report(
         one_sided_p = 0.5 * math.erfc(t_stat / math.sqrt(2.0))
     else:
         one_sided_p = 1.0
-    adjusted_p = min(1.0, one_sided_p * max(1, len(sensitivity)))
     daily_returns = base_result.daily_returns
     counted_trials = max(len(sensitivity), total_trial_count or 0)
+    adjusted_p = min(1.0, one_sided_p * max(1, counted_trials))
     dsr = deflated_sharpe_ratio(
         daily_returns,
         [point.sharpe for point in sensitivity],
@@ -625,12 +638,41 @@ def promotion_report(
         and not base_result.fills
         and math.isclose(base_result.exposure_pct, 0.0, rel_tol=0.0, abs_tol=1e-12)
     )
+    parity = runtime_parity_assessment(contract_from_config(base_config))
+    parity_blockers = ", ".join(check.key for check in parity.blockers)
+    development_quality = evidence_quality or bundle.quality
     gates = [
         PromotionGate(
             "Historical source",
-            "deterministic" not in bundle.source.lower() and "scenario" not in bundle.source.lower(),
-            bundle.source,
-            "Observed or imported market history; synthetic scenarios are ineligible",
+            bundle.evidence_provenance_eligible,
+            (
+                f"kind={bundle.provenance.source_kind}; "
+                f"eligible={bundle.evidence_provenance_eligible}; "
+                f"provenance={bundle.provenance_hash[:16]}..."
+                if bundle.provenance is not None
+                else "No machine-readable provenance"
+            ),
+            "Manifest-bound observed market history with attested research rights; source labels are ignored",
+        ),
+        PromotionGate(
+            "Exact runtime observation schema",
+            (
+                bundle.runtime_observation_parity_eligible
+                and base_result.runtime_observation_replay
+            ),
+            (
+                f"schema={bundle.provenance.observation_schema}; "
+                f"analysis={bundle.provenance.analysis_price_semantics}; "
+                f"execution={bundle.provenance.execution_price_semantics}; "
+                f"volume={bundle.provenance.volume_semantics}; "
+                f"schema_exact={bundle.runtime_observation_parity_eligible}; "
+                f"evaluated_by_exact_engine={base_result.runtime_observation_replay}"
+                if bundle.provenance is not None
+                else "No machine-readable runtime quote provenance"
+            ),
+            "Provenance-bound GRANDE runtime quote trace evaluated by the exact causal replay "
+            "engine: QQQ bid/ask-mid bars and the first later synchronized TQQQ/SQQQ venue "
+            "bid/ask batch; generic OHLCV or generic bar replay is insufficient",
         ),
         PromotionGate(
             "Trading-session coverage",
@@ -642,46 +684,52 @@ def promotion_report(
             "Data breadth",
             sessions >= MIN_EVIDENCE_SESSIONS,
             f"{sessions} sessions",
-            f"At least {MIN_EVIDENCE_SESSIONS} sessions",
+            f"At least {MIN_EVIDENCE_SESSIONS} development sessions after holdout and purge",
         ),
         PromotionGate(
             "Data recency",
-            data_age_days <= 30,
+            0 <= data_age_days <= 30,
             f"{data_age_days:.1f} days old",
             "The final observation is no more than 30 days old",
         ),
         PromotionGate(
             "Data integrity",
             bool(
-                bundle.quality
-                and bundle.quality.clean
-                and bundle.quality.missing_intervals == 0
-                and bundle.quality.session_coverage_pct >= 95.0
+                development_quality
+                and development_quality.clean
+                and development_quality.missing_intervals == 0
+                and development_quality.missing_sessions == 0
+                and development_quality.session_coverage_pct >= 95.0
             ),
             (
-                f"{bundle.quality.missing_intervals} missing; "
-                f"{bundle.quality.session_coverage_pct:.1f}% complete sessions"
-                if bundle.quality
+                f"development: {development_quality.missing_intervals} missing bars; "
+                f"{development_quality.missing_sessions} missing sessions; "
+                f"{development_quality.duplicate_timestamps} duplicate; "
+                f"{development_quality.session_coverage_pct:.1f}% complete sessions"
+                if development_quality
                 else "unknown"
             ),
-            "Hash-valid, zero duplicate/missing intraday intervals, and 95% complete sessions",
+            "Development partition is hash-valid, has zero duplicate/missing intraday intervals, "
+            "and at least 95% complete sessions",
         ),
         PromotionGate(
             "Runtime sizing parity",
-            zero_cash_exposure,
+            (RUNTIME_SIZING_PARITY_CERTIFIED and parity.certified) or zero_cash_exposure,
             (
-                "Cash candidate had zero fills and zero exposure"
+                "Certified immutable execution contract shared by replay, shadow, and runtime"
+                if RUNTIME_SIZING_PARITY_CERTIFIED and parity.certified
+                else "Cash candidate had zero fills and zero exposure"
                 if zero_cash_exposure
                 else (
                     f"Cash candidate had {len(base_result.fills)} fills and "
                     f"{base_result.exposure_pct:.2f}% exposure"
                     if cash_candidate
-                    else "Replay uses risk-budget/volatility sizing; shadow/live do not share "
-                    "the certified sizing contract"
+                    else "Replay/live do not share the certified sizing contract; blockers: "
+                    + parity_blockers
                 )
             ),
-            "Replay and runtime share the exact certified sizing contract; until then only a "
-            "zero-fill, zero-exposure cash candidate can pass this gate",
+            "Replay, shadow, and runtime share the exact immutable execution contract; until "
+            "certified, only a zero-fill, zero-exposure cash candidate can pass this gate",
         ),
         PromotionGate(
             "Parameter stability",
@@ -716,7 +764,7 @@ def promotion_report(
         PromotionGate(
             "Trial-adjusted significance",
             adjusted_p <= 0.05,
-            f"one-sided Bonferroni p={adjusted_p:.4f} across {max(1, len(sensitivity))} candidates",
+            f"one-sided Bonferroni p={adjusted_p:.4f} across {max(1, counted_trials)} candidates",
             "Positive daily P/L survives a 5% familywise correction for every tested candidate",
         ),
         PromotionGate(
@@ -785,12 +833,24 @@ def promotion_report(
             )
         )
     if holdout_result is None or holdout_id is None:
+        quality_observed = (
+            f"Holdout quality blocked evaluation: {holdout_quality.missing_intervals} missing; "
+            f"{holdout_quality.duplicate_timestamps} duplicate; "
+            f"{holdout_quality.session_coverage_pct:.1f}% complete sessions"
+            if holdout_quality is not None
+            and (
+                not holdout_quality.clean
+                or holdout_quality.missing_intervals != 0
+                or holdout_quality.session_coverage_pct < 95.0
+            )
+            else "Not reserved and consumed"
+        )
         gates.append(
             PromotionGate(
                 "Sealed final holdout",
                 False,
-                "Not reserved and consumed",
-                "One frozen candidate must pass one later, purged, sealed holdout at 3x modeled costs",
+                quality_observed,
+                "A clean, zero-missing, at least 95%-complete frozen holdout must pass once at 3x modeled costs",
             )
         )
     else:

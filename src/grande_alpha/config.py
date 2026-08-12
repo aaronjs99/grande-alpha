@@ -17,7 +17,7 @@ LEGACY_APP_NAME = "MomentumTrader"
 MCP_URL = "https://agent.robinhood.com/mcp/trading"
 ONBOARDING_VERSION = 1
 DISCLOSURE_VERSION = "2026-08"
-CADENCE_VERSION = 5
+CADENCE_VERSION = 6
 
 
 @dataclass
@@ -29,7 +29,8 @@ class AppConfig:
     live_trading_enabled: bool = False
     remote_market_data_enabled: bool = False
     personal_ledger_enabled: bool = False
-    market_history_retention_days: int = 90
+    # Preserve enough calendar history to make the 141-session evidence floor achievable.
+    market_history_retention_days: int = 240
     # Retail low-latency profile: quote reads are completion-gated, decisions use
     # completed bars, and account/order state is reconciled on a separate clock.
     poll_seconds: float = 1.0
@@ -62,6 +63,7 @@ class AppConfig:
     no_trade_close_minutes: int = 10
     default_session_minutes: int = 60
     default_max_order_notional: float = 25.0
+    default_max_daily_notional: float = 50.0
     default_max_total_exposure: float = 40.0
     default_max_daily_loss: float = 2.0
     default_max_trades: int = 6
@@ -74,6 +76,14 @@ class AppConfig:
         return self.bar_seconds * self.trade_every_bars
 
     def validate_cadence(self) -> None:
+        try:
+            max_daily_notional = float(self.default_max_daily_notional)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("Maximum daily notional must be finite and positive") from exc
+        if isinstance(self.default_max_daily_notional, bool) or not (
+            math.isfinite(max_daily_notional) and max_daily_notional > 0
+        ):
+            raise ValueError("Maximum daily notional must be finite and positive")
         try:
             max_quote_age = float(self.default_max_quote_age_seconds)
         except (TypeError, ValueError, OverflowError) as exc:
@@ -166,6 +176,8 @@ def migrate_config_payload(raw: dict) -> dict:
         upgraded["settlement_model"] = "cash_t1"
     if version < 5:
         upgraded.setdefault("strategy_name", "cash")
+    if version < 6 and upgraded.get("market_history_retention_days", 90) == 90:
+        upgraded["market_history_retention_days"] = 240
     upgraded["cadence_version"] = CADENCE_VERSION
     return upgraded
 

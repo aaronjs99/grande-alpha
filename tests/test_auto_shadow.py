@@ -6,6 +6,7 @@ import pytest
 from PySide6.QtWidgets import QApplication
 
 import grande_alpha.broker.robinhood_mcp as robinhood_mcp
+from grande_alpha.app import auto_shadow_runtime_config
 from grande_alpha.broker.base import Broker, BrokerError, ShadowOnlyBroker
 from grande_alpha.broker.robinhood_mcp import RobinhoodMCPBroker
 from grande_alpha.config import AppConfig
@@ -27,6 +28,38 @@ from grande_alpha.strategy import CashStrategy, MomentumStrategy
 from grande_alpha.ui.main_window import MainWindow
 
 START = datetime(2026, 8, 11, 13, 31, tzinfo=UTC)  # 09:31 ET Tuesday
+
+
+@pytest.fixture(autouse=True)
+def _align_durable_quote_clock(monkeypatch):
+    """Keep the storage receipt clock on the same simulated instant as the controller."""
+
+    import grande_alpha.controller as controller_module
+
+    monkeypatch.setattr("grande_alpha.storage.utc_now", lambda: controller_module.utc_now())
+
+
+def test_scheduled_shadow_uses_nonpersistent_regular_read_only_profile() -> None:
+    saved = AppConfig(
+        broker_connection_enabled=True,
+        live_trading_enabled=True,
+        market_hours="all_day_hours",
+        order_type="limit",
+        time_in_force="gtc",
+        settlement_model="instant",
+    )
+
+    effective = auto_shadow_runtime_config(saved)
+
+    assert effective is not saved
+    assert effective.broker_connection_enabled
+    assert not effective.live_trading_enabled
+    assert effective.market_hours == "regular_hours"
+    assert effective.order_type == "market"
+    assert effective.time_in_force == "gfd"
+    assert effective.settlement_model == "cash_t1"
+    assert saved.market_hours == "all_day_hours"
+    assert saved.live_trading_enabled
 
 
 class AutoShadowBroker(Broker):
@@ -71,8 +104,17 @@ class AutoShadowBroker(Broker):
     async def get_quotes(self, symbols: list[str]) -> dict[str, Quote]:
         if self.fail_quotes:
             raise RuntimeError("transport unavailable")
+        timestamp = self.quote_clock()
         return {
-            symbol: Quote(symbol, 100.0, 100.02, 100.01, self.quote_clock())
+            symbol: Quote(
+                symbol,
+                100.0,
+                100.02,
+                100.01,
+                timestamp,
+                timestamp,
+                timestamp,
+            )
             for symbol in symbols
             if symbol != self.missing_symbol
         }
@@ -98,7 +140,8 @@ class AutoShadowBroker(Broker):
 
     async def review_order(self, account_number, intent):
         self.review_calls += 1
-        return OrderReview(intent, "", {}, {})
+        quote = Quote(intent.symbol, 99.9, 100.1, 100.0, START, START, START)
+        return OrderReview(intent, "", {}, quote, {})
 
     async def place_order(self, account_number, intent):
         self.place_calls += 1
@@ -161,6 +204,14 @@ async def test_auto_shadow_starts_clean_and_never_reaches_broker_writes(tmp_path
     assert controller.strategy.last_signal.regime == Regime.FLAT
     assert controller._analysis_sequence == controller._last_trade_decision_sequence == 0
     assert set(controller.snapshot.quotes) == {"QQQ", "TQQQ", "SQQQ"}
+    await controller.refresh_quotes(evaluate=False)
+    batches = store._connection.execute("SELECT * FROM quote_batches").fetchall()
+    children = store._connection.execute(
+        "SELECT batch_id,batch_position FROM quotes ORDER BY batch_position"
+    ).fetchall()
+    assert len(batches) == 3 and batches[-1]["stream_id"] == controller._quote_stream_id
+    assert [row["batch_position"] for row in children] == [0, 0, 0, 1, 1, 1, 2, 2, 2]
+    assert len({row["batch_id"] for row in children}) == 3
 
     grant = LiveGrant(
         "1000",
@@ -173,6 +224,7 @@ async def test_auto_shadow_starts_clean_and_never_reaches_broker_writes(tmp_path
         1,
         20,
         8,
+        strategy_fingerprint="a" * 64,
     )
     with pytest.raises(RuntimeError, match="read-only"):
         controller.authorize_live(grant)
@@ -285,6 +337,8 @@ async def test_deliberate_ema_runtime_still_creates_only_virtual_shadow_fill(
                 (100.0 + step * 0.2 if symbol == "QQQ" else 100.0),
                 (100.02 + step * 0.2 if symbol == "QQQ" else 100.02),
                 (100.01 + step * 0.2 if symbol == "QQQ" else 100.01),
+                clock.now,
+                clock.now,
                 clock.now,
             )
             for symbol in symbols
@@ -576,14 +630,24 @@ def test_auto_shadow_rejects_stale_or_nonfinite_quote_snapshot(tmp_path) -> None
     broker = AutoShadowBroker()
     controller, store = _controller(tmp_path, broker)
     stale = {
-        symbol: Quote(symbol, 100.0, 100.02, 100.01, START - timedelta(seconds=9))
+        symbol: Quote(
+            symbol,
+            100.0,
+            100.02,
+            100.01,
+            START,
+            START - timedelta(seconds=9),
+            START - timedelta(seconds=9),
+        )
         for symbol in ("QQQ", "TQQQ", "SQQQ")
     }
     invalid = {
-        symbol: Quote(symbol, 100.0, 100.02, 100.01, START)
+        symbol: Quote(symbol, 100.0, 100.02, 100.01, START, START, START)
         for symbol in ("QQQ", "TQQQ", "SQQQ")
     }
-    invalid["TQQQ"] = Quote("TQQQ", float("nan"), 100.02, 100.01, START)
+    invalid["TQQQ"] = Quote(
+        "TQQQ", float("nan"), 100.02, 100.01, START, START, START
+    )
 
     with pytest.raises(BrokerError, match="not fresh"):
         controller._validated_shadow_quotes(stale, START)
@@ -660,6 +724,8 @@ async def test_controller_shadow_fills_completed_bar_decision_at_first_causal_ne
                     mids[symbol] - 0.01,
                     mids[symbol] + 0.01,
                     mids[symbol],
+                    timestamps[symbol],
+                    timestamps[symbol],
                     timestamps[symbol],
                 )
                 for symbol in symbols
