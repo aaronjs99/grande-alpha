@@ -6,6 +6,7 @@ from collections import deque
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
+from grande_alpha.candidate_execution import session_drawdown_amount
 from grande_alpha.models import (
     AuthorityActionReceipt,
     LiveGrant,
@@ -158,7 +159,10 @@ class RiskEngine:
     def drawdown(self) -> float:
         if self.session_peak_value is None or self.last_portfolio_value is None:
             return 0.0
-        return max(0.0, self.session_peak_value - self.last_portfolio_value)
+        return session_drawdown_amount(
+            session_peak_equity=self.session_peak_value,
+            current_equity=self.last_portfolio_value,
+        )
 
     def session_status(self, now: datetime | None = None) -> str:
         reference = now or utc_now()
@@ -190,6 +194,8 @@ class RiskEngine:
         *,
         account_number: str | None = None,
         strategy_fingerprint: str | None = None,
+        reconciled_position_quantity: float | None = None,
+        reconciled_sellable_quantity: float | None = None,
     ) -> RiskDecision:
         reference = now or utc_now()
         grant = self.grant
@@ -279,12 +285,63 @@ class RiskEngine:
         )
         if notional <= 0 or not math.isfinite(notional):
             return self._decision(False, "Order has no positive finite notional", reference, intent)
-        if notional > grant.max_order_notional + 1e-9:
+        exact_reducing_exit = False
+        if intent.side == "sell":
+            quantities = (reconciled_position_quantity, reconciled_sellable_quantity)
+            if any(
+                value is None
+                or isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(float(value))
+                or float(value) < 0
+                for value in quantities
+            ):
+                return self._decision(
+                    False,
+                    "A sell requires exact freshly reconciled position and sellable quantities",
+                    reference,
+                    intent,
+                    notional,
+                )
+            position_quantity = float(reconciled_position_quantity or 0.0)
+            sellable_quantity = float(reconciled_sellable_quantity or 0.0)
+            requested_quantity = float(intent.quantity or 0.0)
+            tolerance = 1e-9
+            if sellable_quantity > position_quantity + tolerance:
+                return self._decision(
+                    False,
+                    "Reconciled sellable quantity exceeds held inventory",
+                    reference,
+                    intent,
+                    notional,
+                )
+            if requested_quantity > sellable_quantity + tolerance:
+                return self._decision(
+                    False,
+                    "Sell quantity exceeds freshly reconciled sellable inventory",
+                    reference,
+                    intent,
+                    notional,
+                )
+            marked_exit_allowance = min(position_quantity, sellable_quantity) * quote.mid
+            if notional > marked_exit_allowance + max(1e-9, marked_exit_allowance * 1e-9):
+                return self._decision(
+                    False,
+                    "Sell notional exceeds the exact marked inventory exit allowance",
+                    reference,
+                    intent,
+                    notional,
+                )
+            exact_reducing_exit = True
+        if not exact_reducing_exit and notional > grant.max_order_notional + 1e-9:
             return self._decision(False, "Order notional exceeds session limit", reference, intent, notional)
         reserved = sum(
             value for ref_id, value in self.authorized_notionals.items() if ref_id != intent.ref_id
         )
-        if self.daily_notional_used + reserved + notional > grant.max_daily_notional + 1e-9:
+        if (
+            not exact_reducing_exit
+            and self.daily_notional_used + reserved + notional > grant.max_daily_notional + 1e-9
+        ):
             return self._decision(False, "Daily gross-notional limit would be exceeded", reference, intent, notional)
         if intent.side == "buy":
             if current_exposure + notional > grant.max_total_exposure + 1e-9:
@@ -297,7 +354,15 @@ class RiskEngine:
                 )
         self.authorized_notionals[intent.ref_id] = notional
         return self._decision(
-            True, "Authorized by active bounded session", reference, intent, notional
+            True,
+            (
+                "Authorized exact inventory-reducing exit outside entry-notional caps"
+                if exact_reducing_exit
+                else "Authorized by active bounded session"
+            ),
+            reference,
+            intent,
+            notional,
         )
 
     def _decision(

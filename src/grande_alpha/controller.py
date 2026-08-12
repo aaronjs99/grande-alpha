@@ -20,16 +20,29 @@ from grande_alpha.action_lab import (
     live_feasible_action_ids,
     pair_action_for_target,
 )
-from grande_alpha.broker.base import Broker, BrokerError, normalized_order_state, order_is_terminal
+from grande_alpha.broker.base import (
+    Broker,
+    BrokerError,
+    ShadowOnlyBroker,
+    normalized_order_state,
+    order_is_terminal,
+)
 from grande_alpha.candidate_execution import (
     CandidateExecutionContract,
     annualized_volatility,
     contract_from_app_and_sandbox,
+    decision_due,
+    held_minutes,
+    runtime_parity_assessment,
     size_entry,
 )
 from grande_alpha.config import AppConfig
 from grande_alpha.evidence import strategy_fingerprint
 from grande_alpha.execution import ExecutionProfile, execution_profile
+from grande_alpha.live_reconciliation import (
+    LiveSubmissionReconciliation,
+    reconcile_execution,
+)
 from grande_alpha.models import (
     Account,
     BrokerOrder,
@@ -137,10 +150,14 @@ class TradingController(QObject):
         self.snapshot = TradingSnapshot()
         self._quote_lock = asyncio.Lock()
         self._reconcile_lock = asyncio.Lock()
+        self._safe_read_only_refresh_lock = asyncio.Lock()
         self._last_qqq_timestamp: datetime | None = None
         self._last_submission_at: datetime | None = None
         self._submission_reconcile_required: dict[str, str | None] = {}
         self._uncertain_submission_refs: set[str] = set()
+        self._live_submissions: dict[str, LiveSubmissionReconciliation] = {}
+        self._confirmed_entry_order_ids: set[str] = set()
+        self._prior_entry_upper_bound = 0
         self._cleanup_unresolved = False
         self._analysis_sequence = 0
         self._last_trade_decision_sequence = 0
@@ -149,6 +166,10 @@ class TradingController(QObject):
         self._shadow: LiveShadowEngine | None = None
 
     def _require_order_runtime(self, action: str) -> None:
+        if self._safe_read_only_refresh_lock.locked():
+            raise RuntimeError(
+                f"Safe read-only refresh is in progress; wait before attempting to {action}"
+            )
         if self.shadow_only_runtime:
             self.log(
                 f"BLOCKED: auto-shadow runtime cannot {action}; no broker write was attempted",
@@ -240,7 +261,11 @@ class TradingController(QObject):
                 return str(value)
         return ""
 
-    def _reconcile_submission_tracking(self, orders: list[BrokerOrder]) -> None:
+    def _reconcile_submission_tracking(
+        self,
+        orders: list[BrokerOrder],
+        positions: list[Position] | None = None,
+    ) -> None:
         by_order_id = {order.order_id: order for order in orders if order.order_id}
         by_ref_id = {
             reference: order
@@ -248,15 +273,96 @@ class TradingController(QObject):
             if (reference := self._order_ref_id(order))
         }
         unresolved = []
+        reconciled_positions = self.snapshot.positions if positions is None else positions
         for ref_id, order_id in list(self._submission_reconcile_required.items()):
             order = by_order_id.get(order_id or "") or by_ref_id.get(ref_id)
             if order is None:
                 unresolved.append(ref_id)
                 continue
             self.store.update_intent(ref_id, order.order_id, normalized_order_state(order.state))
+            tracking = self._live_submissions.get(ref_id)
+            if tracking is not None:
+                try:
+                    execution = reconcile_execution(tracking, order, reconciled_positions)
+                except ValueError as exc:
+                    self.log(
+                        f"LIVE EXECUTION DEVIATION for {order.side.upper()} {order.symbol}: {exc}",
+                        "critical",
+                        "live_fill_reconciliation",
+                        {
+                            "ref_id": ref_id,
+                            "order_id": order.order_id,
+                            "broker_state": normalized_order_state(order.state),
+                            "authority_locked": True,
+                        },
+                    )
+                    raise BrokerError(str(exc)) from exc
+                if execution.incremental_quantity > 1e-9 or execution.status in {
+                    "awaiting_inventory",
+                    "filled",
+                    "no_fill",
+                }:
+                    self.log(
+                        f"Reconciled {execution.status.replace('_', ' ')} for "
+                        f"{order.side.upper()} {order.symbol}",
+                        "warning" if execution.status == "awaiting_inventory" else "info",
+                        "live_fill_reconciliation",
+                        {
+                            "ref_id": ref_id,
+                            "order_id": order.order_id,
+                            "broker_state": normalized_order_state(order.state),
+                            "cumulative_quantity": execution.cumulative_quantity,
+                            "incremental_quantity": execution.incremental_quantity,
+                            "cumulative_notional": execution.cumulative_notional,
+                            "incremental_notional": execution.incremental_notional,
+                            "average_price": execution.average_price,
+                            "conservative_clock": (
+                                execution.conservative_clock.isoformat()
+                                if execution.conservative_clock is not None
+                                else None
+                            ),
+                            "actual_fill_timestamp_available": False,
+                            "resolved": execution.resolved,
+                            "reason": execution.reason,
+                        },
+                    )
+                if (
+                    order.side.strip().lower() == "buy"
+                    and execution.cumulative_quantity > 1e-9
+                    and order.order_id not in self._confirmed_entry_order_ids
+                ):
+                    self._confirmed_entry_order_ids.add(order.order_id)
+                    self.log(
+                        f"Confirmed live entry #{len(self._confirmed_entry_order_ids)} "
+                        f"from broker inventory for {order.symbol}",
+                        category="live_entry_ledger",
+                        payload={
+                            "order_id": order.order_id,
+                            "ref_id": ref_id,
+                            "confirmed_entries_in_process": len(
+                                self._confirmed_entry_order_ids
+                            ),
+                            "conservative_session_entry_count": (
+                                self._prior_entry_upper_bound
+                                + len(self._confirmed_entry_order_ids)
+                            ),
+                            "durable_fill_timestamp_available": False,
+                        },
+                    )
+                if not execution.resolved:
+                    self._submission_reconcile_required[ref_id] = order.order_id
+                    continue
+            elif order_is_terminal(order) and (
+                self.risk.grant is not None or self.snapshot.strategy_running
+            ):
+                raise BrokerError(
+                    "A terminal tracked order lacks its in-process fill baseline; "
+                    "automatic continuation is locked"
+                )
             if order_is_terminal(order):
                 self._submission_reconcile_required.pop(ref_id, None)
                 self._uncertain_submission_refs.discard(ref_id)
+                self._live_submissions.pop(ref_id, None)
             else:
                 self._submission_reconcile_required[ref_id] = order.order_id
         if unresolved:
@@ -703,6 +809,87 @@ class TradingController(QObject):
         await self.reconcile()
         await self.refresh_quotes(evaluate=evaluate)
 
+    async def safe_read_only_refresh(self) -> None:
+        """Atomically refresh readiness inputs through a broker-write-blocking facade.
+
+        Unlike the normal live refresh path, this inspection method never invokes live-state
+        cleanup. Any read, validation, or concurrent-authority failure is reported without review,
+        placement, or cancellation. Normal refresh retains its fail-closed cleanup behavior.
+        """
+
+        if not self.snapshot.connected or self.snapshot.account is None:
+            raise BrokerError("Safe checks require a connected Agentic account")
+        if self.risk.grant is not None or self.snapshot.strategy_running:
+            raise BrokerError("Safe checks require no live grant and a stopped strategy")
+        if self._safe_read_only_refresh_lock.locked():
+            raise BrokerError("A safe read-only refresh is already in progress")
+
+        async with self._safe_read_only_refresh_lock:
+            account_number = self.snapshot.account.account_number
+            read_only = ShadowOnlyBroker(self.broker)
+
+            def require_inactive() -> None:
+                if self.risk.grant is not None or self.snapshot.strategy_running:
+                    raise BrokerError(
+                        "Safe checks stopped because live authority or the strategy became active"
+                    )
+
+            try:
+                require_inactive()
+                accounts = await read_only.get_accounts()
+                require_inactive()
+                active = [
+                    account
+                    for account in accounts
+                    if account.agentic_allowed and account.state.strip().lower() == "active"
+                ]
+                if len(active) != 1 or active[0].account_number != account_number:
+                    raise BrokerError(
+                        "Safe checks require the same exact single active Agentic account"
+                    )
+
+                # Sequential reads match the MCP adapter's single-flight contract. Values remain
+                # local until every read, validation, and concurrent-authority check succeeds.
+                portfolio = await read_only.get_portfolio(account_number)
+                require_inactive()
+                positions = await read_only.get_positions(account_number)
+                require_inactive()
+                orders = await read_only.get_orders(account_number)
+                require_inactive()
+                quotes = await read_only.get_quotes(["QQQ", "TQQQ", "SQQQ"])
+                require_inactive()
+
+                self._validate_account_truth(portfolio, positions, orders)
+                quotes = self._validated_execution_quotes(
+                    quotes,
+                    max_age_seconds=self.config.default_max_quote_age_seconds,
+                    context="Safe readiness inspection",
+                )
+                require_inactive()
+
+                now = utc_now()
+                self.snapshot.portfolio = portfolio
+                self.snapshot.positions = positions
+                self.snapshot.orders = orders
+                self.snapshot.quotes = quotes
+                self.snapshot.last_reconcile_at = now
+                self.snapshot.last_refresh = now
+                self.log(
+                    "Safe read-only activation checks completed; broker write methods remained blocked",
+                    category="read_only_check",
+                    payload={"broker_write_attempted": False, "account_last4": account_number[-4:]},
+                )
+            except Exception as exc:
+                self.log(
+                    f"Safe read-only activation checks stopped: {exc}",
+                    "error",
+                    "read_only_check",
+                    {"broker_write_attempted": False},
+                )
+                raise
+            finally:
+                self._emit()
+
     async def reconcile(self) -> None:
         """Refresh slower account truth without coupling it to the quote clock."""
         if not self.snapshot.connected or self.snapshot.account is None:
@@ -727,7 +914,7 @@ class TradingController(QObject):
                     self.snapshot.orders = orders
                     self.snapshot.last_reconcile_at = utc_now()
                     self.risk.update_portfolio(portfolio)
-                    self._reconcile_submission_tracking(orders)
+                    self._reconcile_submission_tracking(orders, positions)
                     self._validate_reconciled_live_state()
                     if (
                         self.risk.session_status() == "LOSS LIMIT"
@@ -878,10 +1065,16 @@ class TradingController(QObject):
             raise RuntimeError(
                 "Live grant route differs from Settings; change the route in Settings and rerun evidence"
             )
-        if grant.market_hours != "regular_hours" or grant.time_in_force != "gfd":
+        pilot_contract = self.runtime_execution_contract()
+        pilot_route = next(
+            check
+            for check in runtime_parity_assessment(pilot_contract).checks
+            if check.key == "pilot_route"
+        )
+        if not pilot_route.aligned:
             raise RuntimeError(
-                "Autonomous live v1 is restricted to regular hours and good-for-day orders; "
-                "other routes remain available for research and shadow testing"
+                "Autonomous live v1 is restricted to regular hours, market orders, GFD, cash T+1 settlement, "
+                "and zero-bar modeled latency; other routes remain research/shadow only"
             )
         if not market_session_allowed(
             utc_now(),
@@ -933,11 +1126,16 @@ class TradingController(QObject):
             max_age_seconds=grant.max_quote_age_seconds,
             context="Live-session preflight",
         )
-        self.runtime_execution_contract().validate()
+        pilot_contract.validate()
         usage = self.store.live_daily_usage(
             grant.account_number,
             grant.starts_at.astimezone(EASTERN).date().isoformat(),
         )
+        # The durable ledger currently proves placement invocations, not provider fills.  On
+        # each new authority, count every earlier invocation as a possible entry; this can only
+        # stop early and cannot understate same-day entry usage after a restart.
+        self._prior_entry_upper_bound = int(usage["submitted_orders"])
+        self._confirmed_entry_order_ids.clear()
         self.policy = self._policy_for_session(grant.market_hours)
         self.risk.arm(
             grant,
@@ -1018,8 +1216,18 @@ class TradingController(QObject):
         if grant.strategy_fingerprint != self.current_strategy_fingerprint(grant):
             self._revoke_live_automation("Automatic trading stopped because candidate identity changed")
             return False
-        if grant.market_hours != "regular_hours" or grant.time_in_force != "gfd":
-            self._revoke_live_automation("Automatic live v1 route moved outside regular-hours GFD")
+        try:
+            pilot_route = next(
+                check
+                for check in runtime_parity_assessment(self.runtime_execution_contract()).checks
+                if check.key == "pilot_route"
+            )
+        except (StopIteration, TypeError, ValueError):
+            pilot_route = None
+        if pilot_route is None or not pilot_route.aligned:
+            self._revoke_live_automation(
+                "Automatic live v1 route moved outside regular-hours market/GFD/cash-T+1/zero-latency"
+            )
             return False
         if self._uncertain_submission_refs:
             self._revoke_live_automation(
@@ -1134,23 +1342,52 @@ class TradingController(QObject):
             quote_observed,
             "Wait for a complete current QQQ/TQQQ/SQQQ provider batch",
         )
-        route_ready = self.config.market_hours == "regular_hours" and self.config.time_in_force == "gfd"
-        add(
-            "Autonomous pilot route",
-            route_ready,
-            execution_profile(self.config).label,
-            "Select Regular market and GFD in Settings, then rerun evidence",
-        )
         try:
             contract = self.runtime_execution_contract()
             contract_ready, contract_observed = True, contract.fingerprint[:12] + "…"
-        except Exception as exc:
+            route_check = next(
+                check
+                for check in runtime_parity_assessment(contract).checks
+                if check.key == "pilot_route"
+            )
+            route_ready = route_check.aligned
+            route_observed = (
+                f"{route_check.replay}; settlement {contract.settlement_model}; "
+                f"modeled latency {contract.latency_bars} bars"
+            )
+        except (StopIteration, TypeError, ValueError) as exc:
+            contract = None
             contract_ready, contract_observed = False, str(exc)
+            route_ready = False
+            route_observed = str(exc)
+        add(
+            "Autonomous pilot route",
+            route_ready,
+            route_observed,
+            "Select Regular market, Market order, GFD, cash T+1, and zero modeled latency; "
+            "then rerun evidence",
+        )
         add(
             "Immutable runtime contract",
             contract_ready,
             contract_observed,
             "Align the saved sandbox candidate with runtime Settings",
+        )
+        if contract_ready and contract is not None:
+            parity = runtime_parity_assessment(contract)
+            parity_observed = (
+                "Certified"
+                if parity.certified
+                else "Blocked: " + ", ".join(check.key for check in parity.blockers)
+            )
+        else:
+            parity = None
+            parity_observed = "Runtime contract is unavailable"
+        add(
+            "Runtime execution parity",
+            bool(parity and parity.certified),
+            parity_observed,
+            "Resolve every machine-readable replay/shadow/live parity blocker, then rerun evidence",
         )
         try:
             evidence_ready = self.live_evidence_ready()
@@ -1363,7 +1600,7 @@ class TradingController(QObject):
                 orders = await self.broker.get_orders(self.snapshot.account.account_number)
                 self.snapshot.orders = orders
                 try:
-                    self._reconcile_submission_tracking(orders)
+                    self._reconcile_submission_tracking(orders, self.snapshot.positions)
                 except Exception as exc:
                     failures.append(str(exc))
                 for order in orders:
@@ -1418,6 +1655,7 @@ class TradingController(QObject):
                             ):
                                 self._submission_reconcile_required.pop(tracked_ref, None)
                                 self._uncertain_submission_refs.discard(tracked_ref)
+                                self._live_submissions.pop(tracked_ref, None)
                 if not remaining:
                     break
         if remaining:
@@ -1534,7 +1772,11 @@ class TradingController(QObject):
         return int("TQQQ" in symbols), int("SQQQ" in symbols)
 
     def _trade_decision_due(self) -> bool:
-        return self._analysis_sequence - self._last_trade_decision_sequence >= self.config.trade_every_bars
+        return decision_due(
+            analysis_count=self._analysis_sequence,
+            last_decision_count=self._last_trade_decision_sequence,
+            decision_stride=self.config.trade_every_bars,
+        )
 
     def _record_pair_decision(
         self,
@@ -1636,7 +1878,7 @@ class TradingController(QObject):
 
         held_symbol = held.symbol.strip().upper() if held else ""
         held_quote = self.snapshot.quotes.get(held_symbol) if held else None
-        held_minutes = None
+        held_duration_minutes = None
         if held:
             entries = [
                 order.created_at
@@ -1647,13 +1889,13 @@ class TradingController(QObject):
                 and normalized_order_state(order.state) in {"filled", "partially_filled"}
             ]
             if entries:
-                held_minutes = max(0, int((utc_now() - max(entries)).total_seconds() / 60))
+                held_duration_minutes = held_minutes(max(entries), utc_now())
         policy_position = (
             PolicyPosition(
                 held_symbol,
                 held.average_price,
                 held_quote.mid if held_quote else None,
-                held_minutes,
+                held_duration_minutes,
             )
             if held
             else None
@@ -1696,17 +1938,15 @@ class TradingController(QObject):
                 return
             order = await self._submit(intent, quote)
             if order is not None:
-                # Every autonomous exit is one-shot. A terminal order response can race
-                # a stale positions snapshot, so a later decision must not reuse the
-                # same sellable quantity and submit a duplicate exit.
-                self._revoke_live_automation(
-                    "Automatic exit invoked once; verify broker inventory before new authority"
-                )
                 self.log(
-                    f"Automatic exit for {held_symbol} was invoked once; verify the result in Robinhood",
-                    "critical",
-                    "risk",
-                    {"order_id": order.order_id, "ref_id": intent.ref_id, "retry_allowed": False},
+                    f"Automatic exit for {held_symbol} is awaiting broker order and inventory truth",
+                    "warning",
+                    "live_exit_lifecycle",
+                    {
+                        "order_id": order.order_id,
+                        "ref_id": intent.ref_id,
+                        "retry_allowed_only_after_terminal_reconciliation": True,
+                    },
                 )
             return
 
@@ -1716,6 +1956,22 @@ class TradingController(QObject):
         if quote is None or self.risk.grant is None:
             return
         contract = self.runtime_execution_contract()
+        conservative_entries = self._prior_entry_upper_bound + len(
+            self._confirmed_entry_order_ids
+        )
+        if conservative_entries >= contract.max_entries_per_day:
+            self.log(
+                "No buy submitted: conservative daily entry cap reached",
+                "warning",
+                "risk",
+                {
+                    "conservative_entries": conservative_entries,
+                    "max_entries_per_day": contract.max_entries_per_day,
+                    "prior_placement_upper_bound": self._prior_entry_upper_bound,
+                    "confirmed_in_process": len(self._confirmed_entry_order_ids),
+                },
+            )
+            return
         realized = annualized_volatility(
             tuple(self._recent_returns[target]),
             bar_minutes=self.config.bar_seconds / 60.0,
@@ -1758,13 +2014,44 @@ class TradingController(QObject):
         trade_at = utc_now()
         if not self._live_automation_current(allow_loss_liquidation=True):
             return
-        if self._submission_reconcile_required or self._has_open_order():
+        if self._submission_reconcile_required:
+            tracked_ids = {
+                order_id for order_id in self._submission_reconcile_required.values() if order_id
+            }
+            tracked_refs = set(self._submission_reconcile_required)
+            tracked_orders = [
+                order
+                for order in self.snapshot.orders
+                if order.order_id in tracked_ids or self._order_ref_id(order) in tracked_refs
+            ]
+            if tracked_orders and all(
+                order.side.strip().lower() == "sell" for order in tracked_orders
+            ):
+                self._record_pair_decision(
+                    PairAction(TradeCommand.HOLD, TradeCommand.HOLD),
+                    trade_at,
+                    None,
+                    "Daily-loss exit is waiting for broker order and inventory reconciliation",
+                    False,
+                )
+                return
             await self.stop_and_cancel(
-                "Daily loss limit reached while a prior submission or Agentic order remained unresolved"
+                "Daily loss limit reached while a prior non-exit submission remained unresolved"
             )
             self.log(
-                "Daily-loss exit needs manual verification because a prior submission had to be "
-                "cancelled or reconciled; filled positions may remain",
+                "Daily-loss exit needs manual verification because a prior non-exit submission "
+                "had to be cancelled; filled positions may remain",
+                "critical",
+                "risk",
+            )
+            return
+        if self._has_open_order():
+            await self.stop_and_cancel(
+                "Daily loss limit reached while an untracked Agentic order remained open"
+            )
+            self.log(
+                "Daily-loss exit needs manual verification because an external or untracked order "
+                "had to be cancelled; filled positions may remain",
                 "critical",
                 "risk",
             )
@@ -1815,17 +2102,15 @@ class TradingController(QObject):
         )
         order = await self._submit(intent, quote, liquidation_only=True)
         if order is not None:
-            # A loss-limit liquidation is deliberately one-shot. Even a terminal broker
-            # response can race a stale positions snapshot, so retaining authority here
-            # could submit the same sell twice before inventory truth catches up.
-            self._revoke_live_automation(
-                "Daily-loss exit invoked once; automatic retry is disabled pending broker truth"
-            )
             self.log(
-                f"Daily-loss exit for {symbol} was invoked once; verify the result in Robinhood",
+                f"Daily-loss exit for {symbol} is awaiting broker order and inventory truth",
                 "critical",
-                "risk",
-                {"order_id": order.order_id, "ref_id": intent.ref_id, "retry_allowed": False},
+                "live_exit_lifecycle",
+                {
+                    "order_id": order.order_id,
+                    "ref_id": intent.ref_id,
+                    "retry_allowed_only_after_terminal_reconciliation": True,
+                },
             )
             return
         if (
@@ -1856,6 +2141,24 @@ class TradingController(QObject):
             raise RuntimeError("Liquidation-only authority cannot create exposure")
         if not self._live_automation_current(allow_loss_liquidation=liquidation_only):
             return None
+        exit_position = None
+        if intent.side == "sell":
+            exit_position = next(
+                (
+                    position
+                    for position in self._leveraged_positions()
+                    if position.symbol.strip().upper() == intent.symbol
+                ),
+                None,
+            )
+            if exit_position is None:
+                self.log(
+                    f"Order blocked: no freshly reconciled {intent.symbol} inventory backs the sell",
+                    "critical",
+                    "risk",
+                    intent.as_dict(),
+                )
+                return None
         decision = self.risk.authorize(
             intent,
             quote,
@@ -1863,6 +2166,12 @@ class TradingController(QObject):
             self._exposure(),
             account_number=self.snapshot.account.account_number,
             strategy_fingerprint=self.current_strategy_fingerprint(self.risk.grant),
+            reconciled_position_quantity=(
+                exit_position.quantity if exit_position is not None else None
+            ),
+            reconciled_sellable_quantity=(
+                exit_position.sellable_quantity if exit_position is not None else None
+            ),
         )
         self._persist_risk_receipts()
         if not decision.allowed:
@@ -1958,7 +2267,13 @@ class TradingController(QObject):
         self._persist_risk_receipts()
         self._submission_reconcile_required[intent.ref_id] = None
         self._uncertain_submission_refs.add(intent.ref_id)
-        self._last_submission_at = utc_now()
+        submitted_at = utc_now()
+        self._last_submission_at = submitted_at
+        starting_quantity = sum(
+            max(0.0, float(position.quantity))
+            for position in self.snapshot.positions
+            if position.symbol.strip().upper() == intent.symbol
+        )
         try:
             order = await self.broker.place_order(self.snapshot.account.account_number, intent)
         except BaseException as exc:
@@ -1992,6 +2307,17 @@ class TradingController(QObject):
             return None
         self._submission_reconcile_required[intent.ref_id] = order.order_id
         self._uncertain_submission_refs.discard(intent.ref_id)
+        self._live_submissions[intent.ref_id] = LiveSubmissionReconciliation(
+            ref_id=intent.ref_id,
+            order_id=order.order_id,
+            symbol=intent.symbol,
+            side=intent.side,
+            starting_quantity=starting_quantity,
+            expected_quantity=(float(intent.quantity) if intent.quantity is not None else None),
+            authorized_notional=authorized_notional,
+            submitted_at=submitted_at,
+            reference_price=quote.ask if intent.side == "buy" else quote.bid,
+        )
         self.snapshot.orders = [
             order,
             *[item for item in self.snapshot.orders if item.order_id != order.order_id],
@@ -2104,6 +2430,8 @@ class TradingController(QObject):
         )
         self._submission_reconcile_required[intent.ref_id] = None
         self._uncertain_submission_refs.add(intent.ref_id)
+        submitted_at = utc_now()
+        starting_quantity = float(position.quantity)
         try:
             order = await self.broker.place_order(self.snapshot.account.account_number, intent)
         except BaseException as exc:
@@ -2124,6 +2452,17 @@ class TradingController(QObject):
             raise RuntimeError("Manual flatten outcome is unknown because no broker order id was returned")
         self._submission_reconcile_required[intent.ref_id] = order.order_id
         self._uncertain_submission_refs.discard(intent.ref_id)
+        self._live_submissions[intent.ref_id] = LiveSubmissionReconciliation(
+            ref_id=intent.ref_id,
+            order_id=order.order_id,
+            symbol=intent.symbol,
+            side=intent.side,
+            starting_quantity=starting_quantity,
+            expected_quantity=float(intent.quantity or 0.0),
+            authorized_notional=float(intent.quantity or 0.0) * quote.mid,
+            submitted_at=submitted_at,
+            reference_price=quote.bid,
+        )
         self.snapshot.orders = [
             order,
             *[item for item in self.snapshot.orders if item.order_id != order.order_id],

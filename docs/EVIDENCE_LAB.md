@@ -20,7 +20,7 @@ order or predict future profit. The normal outcome is `SHADOW_ONLY`.
   evaluated, so previously registered trials cannot disappear from the reported search count.
 - **Trial-adjusted significance:** applies both a Bonferroni familywise correction and the
   Deflated Sharpe Ratio's selection-bias, skew, and kurtosis adjustment.
-- **One-use final holdout:** evidence-policy version 8 reserves a later chronological block before
+- **One-use final holdout:** the current evidence policy reserves a later chronological block before
   candidate evaluation, freezes it to the selected strategy fingerprint, claims it before reading
   its result, and records that result permanently after one evaluation.
 
@@ -30,10 +30,10 @@ order or predict future profit. The normal outcome is `SHADOW_ONLY`.
 |---|---|
 | Historical source | Observed or imported market history; synthetic scenarios are ineligible |
 | Trading-session coverage | Dataset covers the complete regular, extended, or 24-hour session selected by the strategy |
-| Data breadth | At least 120 market sessions; use imported licensed history when the built-in source is shorter |
+| Data breadth | At least 141 total market sessions: 120 development, one purge, and 20 final holdout sessions |
 | Data recency | Final observation no more than 30 days old |
-| Data integrity | Hash-valid, zero duplicate/missing intraday intervals, and at least 95% complete selected sessions |
-| Runtime sizing parity | Replay and runtime use the exact same certified sizing contract. This currently fails every non-cash candidate because replay applies risk-budget and volatility sizing that shadow/live do not share. Cash passes only with zero fills and zero exposure, then still fails the trade-sample and profit gates. |
+| Data integrity | Hash-valid development data with zero omitted exchange sessions, zero duplicate/missing intraday intervals, and at least 95% complete selected sessions; the sealed holdout is checked separately under the same quality rule |
+| Runtime sizing parity | Replay, shadow, and live share the exact certified execution contract. Entry sizing, loss semantics, and completed-bar cadence now share helpers, but non-cash certification remains blocked by market-observation construction, confirmed-entry counting, broker fill-time provenance, asynchronous fill economics, and one-shot live exit lifecycle. Cash passes this gate only with zero fills/exposure, then still fails trade-sample and profit gates. |
 | Parameter stability | At least half of neighboring configurations profitable |
 | Cost stress | Positive P/L at 3x modeled costs |
 | Closed-trade sample | At least 30 after-cost round trips |
@@ -57,10 +57,12 @@ validate the market-data license, account for tax/settlement restrictions, or au
 Before any live review, preserve a final dataset period that was not used to invent, select, or tune
 the strategy.
 
-## Policy v8 final-holdout lifecycle
+## Current-policy final-holdout lifecycle
 
 The seal is an auditable database lifecycle, not encryption. The app records the full dataset hash,
-development hash, holdout hash and dates, policy version, and selected strategy fingerprint.
+development hash and quality, holdout hash/dates and quality, policy version, source-provenance hash,
+and selected strategy fingerprint. Any date overlap with any prior holdout—including consumed or
+invalid attempts—is rejected; exact idempotency applies only while the same record is still reserved.
 
 ```text
 RESERVED -> FROZEN -> EVALUATING -> CONSUMED
@@ -88,7 +90,7 @@ replace this final one-use test.
 ## Avoiding false evidence
 
 - Do not choose the best configuration and then describe its training return as out-of-sample.
-- Do not inspect, retune on, or rerun the final holdout. Under policy v9, a claimed holdout is used
+- Do not inspect, retune on, or rerun the final holdout. Under the current policy, a claimed holdout is used
   once and remains consumed even when it fails.
 - Do not ignore rejected fills, open ending positions, costs, negative days, or zero-trade folds.
 - Do not compare two configurations on different hashes.

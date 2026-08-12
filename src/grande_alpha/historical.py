@@ -3,10 +3,11 @@ from __future__ import annotations
 import asyncio
 import csv
 import hashlib
+import io
 import json
 import math
 import random
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, time, timedelta
 from pathlib import Path
 from typing import Any
@@ -15,13 +16,93 @@ from zoneinfo import ZoneInfo
 import httpx
 
 from grande_alpha.config import data_dir
+from grande_alpha.market_calendar import regular_session_times
 from grande_alpha.models import Bar, utc_now
-from grande_alpha.policy import session_bounds, session_key
+from grande_alpha.policy import session_bounds, session_key, trading_date
 
 YAHOO_CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
 INTERVAL_LIMITS = {"1m": 7, "5m": 60, "15m": 60, "60m": 730, "1d": 10_000}
 INTERVAL_SECONDS = {"5s": 5, "1m": 60, "5m": 300, "15m": 900, "60m": 3600, "1d": 86400}
 SHARED_LEVERAGED_HISTORY_START = datetime(2010, 2, 9, tzinfo=UTC)
+
+
+def _is_sha256(value: str) -> bool:
+    return bool(
+        isinstance(value, str)
+        and len(value) == 64
+        and all(character in "0123456789abcdef" for character in value)
+    )
+
+
+@dataclass(frozen=True)
+class DataProvenance:
+    """Machine-readable source/rights claims; a human-readable label is never sufficient."""
+
+    source_kind: str
+    provider: str = ""
+    provider_product: str = ""
+    acquisition_method: str = ""
+    license_reference: str = ""
+    license_reviewed_by_user: bool = False
+    research_use_permitted: bool = False
+    automated_strategy_research_permitted: bool = False
+    redistribution_permitted: bool = False
+    observed_data: bool = False
+    synthetic_or_interpolated: bool = True
+    contains_upsampled_rows: bool = False
+    construction_method: str = "unknown"
+    source_resolution_seconds: float | None = None
+    bar_interval: str = ""
+    market_hours: str = ""
+    manifest_version: int = 0
+    manifest_hash: str = ""
+    csv_sha256: str = ""
+    canonical_dataset_hash: str = ""
+
+    @property
+    def evidence_eligible(self) -> bool:
+        try:
+            resolution = float(self.source_resolution_seconds or 0)
+            output_seconds = INTERVAL_SECONDS.get(self.bar_interval)
+            if output_seconds is None and self.bar_interval.endswith("s"):
+                output_seconds = int(self.bar_interval[:-1])
+        except (TypeError, ValueError):
+            return False
+        return bool(
+            self.source_kind == "imported_manifest"
+            and self.manifest_version == 1
+            and self.observed_data
+            and not self.synthetic_or_interpolated
+            and not self.contains_upsampled_rows
+            and self.license_reviewed_by_user
+            and self.research_use_permitted
+            and self.automated_strategy_research_permitted
+            and self.provider.strip()
+            and self.provider_product.strip()
+            and self.acquisition_method.strip()
+            and self.license_reference.strip()
+            and self.construction_method
+            in {
+                "provider_native",
+                "aggregated_from_trades",
+                "aggregated_from_quotes",
+                "aggregated_from_nbbo",
+            }
+            and output_seconds is not None
+            and 0 < resolution <= output_seconds
+            and self.market_hours in {"regular_hours", "extended_hours", "all_day_hours"}
+            and _is_sha256(self.manifest_hash)
+            and _is_sha256(self.csv_sha256)
+            and _is_sha256(self.canonical_dataset_hash)
+        )
+
+    @property
+    def digest(self) -> str:
+        encoded = json.dumps(asdict(self), sort_keys=True, separators=(",", ":")).encode()
+        return hashlib.sha256(encoded).hexdigest()
+
+    def as_dict(self) -> dict[str, Any]:
+        return {**asdict(self), "evidence_eligible": self.evidence_eligible, "digest": self.digest}
 
 
 @dataclass(frozen=True)
@@ -31,14 +112,22 @@ class DataQuality:
     missing_intervals: int
     zero_volume_bars: int
     duplicate_timestamps: int
+    invalid_session_bars: int
     interval: str
     dataset_hash: str
     complete_sessions: int = 0
     session_coverage_pct: float = 0.0
+    expected_sessions: int = 0
+    missing_sessions: int = 0
 
     @property
     def clean(self) -> bool:
-        return self.aligned_bars > 0 and self.duplicate_timestamps == 0
+        return (
+            self.aligned_bars > 0
+            and self.duplicate_timestamps == 0
+            and self.invalid_session_bars == 0
+            and self.missing_sessions == 0
+        )
 
 
 @dataclass(frozen=True)
@@ -65,6 +154,7 @@ class HistoricalBundle:
     dataset_hash: str = ""
     quality: DataQuality | None = None
     market_hours: str = "regular_hours"
+    provenance: DataProvenance | None = None
 
     @property
     def start(self) -> datetime:
@@ -73,6 +163,20 @@ class HistoricalBundle:
     @property
     def end(self) -> datetime:
         return self.frames[-1].start
+
+    @property
+    def provenance_hash(self) -> str:
+        return self.provenance.digest if self.provenance is not None else ""
+
+    @property
+    def evidence_provenance_eligible(self) -> bool:
+        return bool(
+            self.provenance is not None
+            and self.provenance.evidence_eligible
+            and self.provenance.canonical_dataset_hash == self.dataset_hash
+            and self.provenance.bar_interval == self.interval
+            and self.provenance.market_hours == self.market_hours
+        )
 
 
 @dataclass(frozen=True)
@@ -96,6 +200,7 @@ def _bundle_for_sessions(bundle: HistoricalBundle, sessions: list[str]) -> Histo
         dataset_hash=quality.dataset_hash,
         quality=quality,
         market_hours=bundle.market_hours,
+        provenance=bundle.provenance,
     )
 
 
@@ -197,14 +302,31 @@ def assess_quality(
         else INTERVAL_SECONDS.get(interval, 60)
     )
     grouped: dict[str, list[ReplayFrame]] = {}
+    valid_frames: list[ReplayFrame] = []
+    invalid_session_bars = 0
     for frame in frames:
+        trade_date = trading_date(frame.start, market_hours)
+        if regular_session_times(trade_date) is None:
+            invalid_session_bars += 1
+            continue
+        valid_frames.append(frame)
         grouped.setdefault(session_key(frame.start, market_hours), []).append(frame)
     sessions = set(grouped)
+    expected_session_dates: set[str] = set()
+    if sessions:
+        first_date = datetime.fromisoformat(min(sessions)).date()
+        last_date = datetime.fromisoformat(max(sessions)).date()
+        cursor = first_date
+        while cursor <= last_date:
+            if regular_session_times(cursor) is not None:
+                expected_session_dates.add(cursor.isoformat())
+            cursor += timedelta(days=1)
+    missing_sessions = len(expected_session_dates - sessions)
     missing = 0
     duplicates = 0
     previous: ReplayFrame | None = None
     seen: set[datetime] = set()
-    for frame in frames:
+    for frame in valid_frames:
         if frame.start in seen:
             duplicates += 1
         seen.add(frame.start)
@@ -236,10 +358,13 @@ def assess_quality(
         missing_intervals=missing,
         zero_volume_bars=zero_volume,
         duplicate_timestamps=duplicates,
+        invalid_session_bars=invalid_session_bars,
         interval=interval,
         dataset_hash=dataset_hash(frames),
         complete_sessions=complete_sessions,
         session_coverage_pct=coverage_pct,
+        expected_sessions=len(expected_session_dates),
+        missing_sessions=missing_sessions,
     )
 
 
@@ -277,6 +402,7 @@ def save_bundle(bundle: HistoricalBundle, path: Path) -> None:
         "interval": bundle.interval,
         "dataset_hash": bundle.dataset_hash,
         "market_hours": bundle.market_hours,
+        "provenance": bundle.provenance.as_dict() if bundle.provenance is not None else None,
         "frames": [
             {
                 "start": frame.start.isoformat(),
@@ -307,6 +433,18 @@ def load_bundle(path: Path) -> HistoricalBundle:
     expected_hash = str(payload.get("dataset_hash") or quality.dataset_hash)
     if expected_hash != quality.dataset_hash:
         raise ValueError("Cached historical dataset hash does not match its contents")
+    raw_provenance = payload.get("provenance")
+    provenance = None
+    if isinstance(raw_provenance, dict):
+        stored_digest = str(raw_provenance.get("digest") or "")
+        if not stored_digest:
+            raise ValueError("Cached historical provenance is missing its required digest")
+        allowed = DataProvenance.__dataclass_fields__.keys()
+        provenance = DataProvenance(
+            **{key: value for key, value in raw_provenance.items() if key in allowed}
+        )
+        if stored_digest != provenance.digest:
+            raise ValueError("Cached historical provenance hash does not match its contents")
     return HistoricalBundle(
         source=str(payload["source"]),
         downloaded_at=datetime.fromisoformat(payload["downloaded_at"]).astimezone(UTC),
@@ -315,6 +453,7 @@ def load_bundle(path: Path) -> HistoricalBundle:
         dataset_hash=quality.dataset_hash,
         quality=quality,
         market_hours=market_hours,
+        provenance=provenance,
     )
 
 
@@ -390,6 +529,19 @@ class HistoricalDataProvider:
             dataset_hash=quality.dataset_hash,
             quality=quality,
             market_hours=market_hours,
+            provenance=DataProvenance(
+                source_kind="community_unattested",
+                provider="Yahoo Finance",
+                provider_product="Unsupported chart endpoint",
+                acquisition_method="Public chart request",
+                observed_data=True,
+                synthetic_or_interpolated=False,
+                construction_method="provider_native",
+                source_resolution_seconds=float(INTERVAL_SECONDS[interval]),
+                bar_interval=interval,
+                market_hours=market_hours,
+                canonical_dataset_hash=quality.dataset_hash,
+            ),
         )
         if use_cache:
             save_bundle(bundle, cache_path)
@@ -405,12 +557,17 @@ def full_history_calendar_days(reference: datetime | None = None) -> int:
     return max(1, math.ceil((end - SHARED_LEVERAGED_HISTORY_START).total_seconds() / 86_400) + 2)
 
 
-def load_csv_history(path: Path, interval: str = "1m") -> HistoricalBundle:
-    """Load long-history rows: timestamp,symbol,open,high,low,close,volume."""
+def load_csv_history_bytes(
+    raw_csv: bytes,
+    source_name: str,
+    interval: str = "1m",
+) -> HistoricalBundle:
+    """Load one immutable CSV byte snapshot into an aligned historical bundle."""
+
     required = {"timestamp", "symbol", "open", "high", "low", "close"}
     series: dict[str, list[Bar]] = {"QQQ": [], "TQQQ": [], "SQQQ": []}
     declared_coverage: set[str] = set()
-    with path.open("r", encoding="utf-8-sig", newline="") as handle:
+    with io.StringIO(raw_csv.decode("utf-8-sig"), newline="") as handle:
         reader = csv.DictReader(handle)
         if not reader.fieldnames or not required <= {name.lower() for name in reader.fieldnames}:
             raise ValueError("CSV needs timestamp,symbol,open,high,low,close and optional volume columns")
@@ -463,14 +620,32 @@ def load_csv_history(path: Path, interval: str = "1m") -> HistoricalBundle:
             raise ValueError("CSV declaring all_day_hours must contain both evening and overnight timestamps")
     quality = assess_quality(frames, interval, coverage)
     return HistoricalBundle(
-        source=f"Imported CSV: {path.name}",
+        source=f"Imported CSV: {source_name}",
         downloaded_at=utc_now(),
         frames=frames,
         interval=interval,
         dataset_hash=quality.dataset_hash,
         quality=quality,
         market_hours=coverage,
+        provenance=DataProvenance(
+            source_kind="import_unverified",
+            observed_data=False,
+            synthetic_or_interpolated=True,
+            bar_interval=interval,
+            market_hours=coverage,
+            canonical_dataset_hash=quality.dataset_hash,
+        ),
     )
+
+
+def load_csv_history(path: Path, interval: str = "1m") -> HistoricalBundle:
+    """Load long-history rows from one file read.
+
+    Evidence qualification uses :func:`load_csv_history_bytes` directly so inspection,
+    hashing, and parsing are all bound to the same immutable byte snapshot.
+    """
+
+    return load_csv_history_bytes(path.read_bytes(), path.name, interval)
 
 
 def _demo_market_days(days: int, end: datetime) -> list[datetime]:
@@ -511,13 +686,27 @@ def deterministic_demo(days: int = 7, seed: int = 7007) -> HistoricalBundle:
             frames.append(ReplayFrame(timestamp, qqq_bar, tqqq_bar, sqqq_bar))
             qqq_price, tqqq_price, sqqq_price = qqq_bar.close, tqqq_bar.close, sqqq_bar.close
             index += 1
+    quality = assess_quality(frames, "1m")
     return HistoricalBundle(
         source=f"Deterministic offline scenario (seed {seed}) — not historical market data",
         downloaded_at=utc_now(),
         frames=frames,
         interval="1m",
-        dataset_hash=dataset_hash(frames),
-        quality=assess_quality(frames, "1m"),
+        dataset_hash=quality.dataset_hash,
+        quality=quality,
+        provenance=DataProvenance(
+            source_kind="deterministic_scenario",
+            provider="GRANDE Alpha",
+            provider_product="Deterministic scenario generator",
+            acquisition_method="Local seeded generation",
+            observed_data=False,
+            synthetic_or_interpolated=True,
+            construction_method="synthetic",
+            source_resolution_seconds=60.0,
+            bar_interval="1m",
+            market_hours="regular_hours",
+            canonical_dataset_hash=quality.dataset_hash,
+        ),
     )
 
 

@@ -26,7 +26,7 @@ GRANDE project family
 | Candidate observation | Live shadow consumes current quotes but has no broker-order dependency |
 | Low-latency observation | Single-flight quote loop is independent of slower account reconciliation |
 | Settlement-aware accounting | `cash_t1` separates settled cash from next-session sale proceeds |
-| Final acceptance test | Policy v8 binds one later holdout to one fingerprint and consumes it once |
+| Final acceptance test | The current policy binds one later holdout to one fingerprint and consumes it once |
 
 ## Hard separation
 
@@ -78,7 +78,7 @@ completed QQQ bars and returns the same bullish, bearish, or flat signal contrac
 not provide broker access. Live automation remains the explicit EMA baseline; a research strategy's
 different fingerprint cannot authorize that live path.
 
-Evidence-policy version 9 retains the durable final-holdout state machine and binds the complete
+The current evidence policy retains the durable final-holdout state machine and binds the complete
 execution/sizing contract. A later chronological block
 is reserved by dataset/date hash. The candidate is frozen only after every development-only gate
 passes; the block is then atomically claimed before evaluation, and its metrics are consumed after

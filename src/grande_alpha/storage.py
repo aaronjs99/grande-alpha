@@ -4,7 +4,7 @@ import json
 import math
 import sqlite3
 import threading
-from datetime import date, datetime
+from datetime import UTC, date, datetime, timedelta
 from numbers import Real
 from pathlib import Path
 from typing import Any
@@ -12,6 +12,16 @@ from zoneinfo import ZoneInfo
 
 from grande_alpha.config import data_dir
 from grande_alpha.models import Bar, OrderIntent, Quote, Signal, utc_now
+
+
+def _parse_aware_utc(value: str, *, field: str) -> datetime:
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{field} must be an ISO 8601 timestamp with a UTC offset") from exc
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise ValueError(f"{field} must include a UTC offset")
+    return parsed.astimezone(UTC)
 
 
 class AuditStore:
@@ -141,7 +151,9 @@ class AuditStore:
                     source TEXT NOT NULL,
                     replay_end TEXT NOT NULL,
                     gates_json TEXT NOT NULL,
-                    risk_envelope_json TEXT NOT NULL DEFAULT '{}'
+                    risk_envelope_json TEXT NOT NULL DEFAULT '{}',
+                    provenance_hash TEXT NOT NULL DEFAULT '',
+                    provenance_json TEXT NOT NULL DEFAULT '{}'
                 );
                 CREATE INDEX IF NOT EXISTS idx_research_promotions_fingerprint_time
                     ON research_promotions(strategy_fingerprint,created_at DESC);
@@ -172,6 +184,9 @@ class AuditStore:
                     evaluation_started_at TEXT,
                     consumed_at TEXT,
                     metrics_json TEXT NOT NULL DEFAULT '{}',
+                    provenance_hash TEXT NOT NULL DEFAULT '',
+                    development_quality_json TEXT NOT NULL DEFAULT '{}',
+                    holdout_quality_json TEXT NOT NULL DEFAULT '{}',
                     UNIQUE(dataset_hash,holdout_start,holdout_end)
                 );
                 """
@@ -186,6 +201,30 @@ class AuditStore:
                 )
             if "holdout_id" not in promotion_columns:
                 self._connection.execute("ALTER TABLE research_promotions ADD COLUMN holdout_id INTEGER")
+            if "provenance_hash" not in promotion_columns:
+                self._connection.execute(
+                    "ALTER TABLE research_promotions ADD COLUMN provenance_hash TEXT NOT NULL DEFAULT ''"
+                )
+            if "provenance_json" not in promotion_columns:
+                self._connection.execute(
+                    "ALTER TABLE research_promotions ADD COLUMN provenance_json TEXT NOT NULL DEFAULT '{}'"
+                )
+            holdout_columns = {
+                row["name"]
+                for row in self._connection.execute("PRAGMA table_info(research_holdouts)").fetchall()
+            }
+            if "provenance_hash" not in holdout_columns:
+                self._connection.execute(
+                    "ALTER TABLE research_holdouts ADD COLUMN provenance_hash TEXT NOT NULL DEFAULT ''"
+                )
+            if "development_quality_json" not in holdout_columns:
+                self._connection.execute(
+                    "ALTER TABLE research_holdouts ADD COLUMN development_quality_json TEXT NOT NULL DEFAULT '{}'"
+                )
+            if "holdout_quality_json" not in holdout_columns:
+                self._connection.execute(
+                    "ALTER TABLE research_holdouts ADD COLUMN holdout_quality_json TEXT NOT NULL DEFAULT '{}'"
+                )
             self._connection.execute(
                 """CREATE UNIQUE INDEX IF NOT EXISTS idx_research_holdouts_hash
                 ON research_holdouts(holdout_hash)"""
@@ -637,37 +676,23 @@ class AuditStore:
         holdout_start: str,
         holdout_end: str,
         policy_version: int,
+        provenance_hash: str = "",
+        development_quality: dict[str, Any] | None = None,
+        holdout_quality: dict[str, Any] | None = None,
     ) -> int:
         """Reserve an unseen chronological block before candidate evaluation begins."""
 
-        with self._lock:
-            try:
-                with self._connection:
-                    cursor = self._connection.execute(
-                        """INSERT INTO research_holdouts(
-                            created_at,dataset_hash,development_hash,holdout_hash,
-                            holdout_start,holdout_end,policy_version,status
-                        ) VALUES(?,?,?,?,?,?,?,'RESERVED')""",
-                        (
-                            utc_now().isoformat(),
-                            dataset_hash,
-                            development_hash,
-                            holdout_hash,
-                            holdout_start,
-                            holdout_end,
-                            policy_version,
-                        ),
-                    )
-                    return int(cursor.lastrowid)
-            except sqlite3.IntegrityError as exc:
-                existing = self._connection.execute(
-                    """SELECT * FROM research_holdouts
-                    WHERE holdout_hash=? OR (
-                        dataset_hash=? AND holdout_start=? AND holdout_end=?
-                    ) ORDER BY id LIMIT 1""",
-                    (holdout_hash, dataset_hash, holdout_start, holdout_end),
-                ).fetchone()
-                if existing is not None and all(
+        requested_start = _parse_aware_utc(holdout_start, field="holdout_start")
+        requested_end = _parse_aware_utc(holdout_end, field="holdout_end")
+        if requested_start >= requested_end:
+            raise ValueError("holdout_start must be earlier than holdout_end")
+
+        with self._lock, self._connection:
+            prior = self._connection.execute(
+                "SELECT * FROM research_holdouts ORDER BY id"
+            ).fetchall()
+            for existing in prior:
+                exact_reserved = all(
                     (
                         existing["dataset_hash"] == dataset_hash,
                         existing["development_hash"] == development_hash,
@@ -675,10 +700,63 @@ class AuditStore:
                         existing["holdout_start"] == holdout_start,
                         existing["holdout_end"] == holdout_end,
                         int(existing["policy_version"]) == policy_version,
+                        existing["provenance_hash"] == provenance_hash,
+                        existing["development_quality_json"]
+                        == json.dumps(development_quality or {}, sort_keys=True, default=str),
+                        existing["holdout_quality_json"]
+                        == json.dumps(holdout_quality or {}, sort_keys=True, default=str),
                         existing["status"] == "RESERVED",
                     )
-                ):
+                )
+                if exact_reserved:
                     return int(existing["id"])
+                try:
+                    prior_start = _parse_aware_utc(
+                        existing["holdout_start"], field="stored holdout_start"
+                    )
+                    prior_end = _parse_aware_utc(
+                        existing["holdout_end"], field="stored holdout_end"
+                    )
+                except ValueError as exc:
+                    raise ValueError(
+                        "A prior final holdout has invalid dates; new holdouts are blocked fail-closed"
+                    ) from exc
+                if prior_start >= prior_end:
+                    raise ValueError(
+                        "A prior final holdout has non-monotonic dates; new holdouts are blocked fail-closed"
+                    )
+                # Holdout endpoints are observations, so sharing either endpoint is reuse.
+                overlaps = requested_start <= prior_end and requested_end >= prior_start
+                if overlaps:
+                    raise ValueError(
+                        "Final holdout dates overlap data already reserved or consumed and cannot be reused"
+                    )
+                if requested_start <= prior_end:
+                    raise ValueError(
+                        "A new final holdout must be entirely later than every prior sealed holdout"
+                    )
+            try:
+                cursor = self._connection.execute(
+                    """INSERT INTO research_holdouts(
+                        created_at,dataset_hash,development_hash,holdout_hash,
+                        holdout_start,holdout_end,policy_version,provenance_hash,
+                        development_quality_json,holdout_quality_json,status
+                    ) VALUES(?,?,?,?,?,?,?,?,?,?,'RESERVED')""",
+                    (
+                        utc_now().isoformat(),
+                        dataset_hash,
+                        development_hash,
+                        holdout_hash,
+                        holdout_start,
+                        holdout_end,
+                        policy_version,
+                        provenance_hash,
+                        json.dumps(development_quality or {}, sort_keys=True, default=str),
+                        json.dumps(holdout_quality or {}, sort_keys=True, default=str),
+                    ),
+                )
+                return int(cursor.lastrowid)
+            except sqlite3.IntegrityError as exc:
                 raise ValueError("This final holdout was already reserved or consumed") from exc
 
     def freeze_research_holdout(self, holdout_id: int, selected_fingerprint: str) -> None:
@@ -751,6 +829,15 @@ class AuditStore:
         except (TypeError, json.JSONDecodeError):
             metrics = {}
         result["metrics"] = metrics if isinstance(metrics, dict) else {}
+        for stored_name, public_name in (
+            ("development_quality_json", "development_quality"),
+            ("holdout_quality_json", "holdout_quality"),
+        ):
+            try:
+                value = json.loads(result.pop(stored_name))
+            except (KeyError, TypeError, json.JSONDecodeError):
+                value = {}
+            result[public_name] = value if isinstance(value, dict) else {}
         return result
 
     def record_research_promotion(
@@ -765,6 +852,8 @@ class AuditStore:
         gates: list[dict[str, Any]],
         risk_envelope: dict[str, float | int],
         holdout_id: int | None = None,
+        provenance_hash: str = "",
+        provenance: dict[str, Any] | None = None,
     ) -> int:
         if status not in {"SHADOW_ONLY", "LIVE_REVIEW_ELIGIBLE"}:
             raise ValueError("Unknown research-promotion status")
@@ -788,7 +877,8 @@ class AuditStore:
             with self._lock:
                 holdout = self._connection.execute(
                     """SELECT status,dataset_hash,holdout_hash,holdout_start,holdout_end,
-                    selected_fingerprint,policy_version,metrics_json
+                    selected_fingerprint,policy_version,metrics_json,provenance_hash,
+                    development_hash,development_quality_json,holdout_quality_json
                     FROM research_holdouts WHERE id=?""",
                     (holdout_id,),
                 ).fetchone()
@@ -806,8 +896,19 @@ class AuditStore:
                 or holdout["dataset_hash"] != dataset_hash
                 or holdout["selected_fingerprint"] != strategy_fingerprint
                 or int(holdout["policy_version"]) != policy_version
+                or holdout["provenance_hash"] != provenance_hash
                 or holdout["holdout_end"] != replay_end
                 or existing_promotion is not None
+                or not _valid_quality_record(
+                    holdout["development_quality_json"],
+                    holdout["development_hash"],
+                    minimum_sessions=120,
+                )
+                or not _valid_quality_record(
+                    holdout["holdout_quality_json"],
+                    holdout["holdout_hash"],
+                    exact_sessions=20,
+                )
                 or not _passing_holdout_metrics(holdout_metrics, holdout)
             ):
                 raise ValueError(
@@ -820,12 +921,17 @@ class AuditStore:
                     "Live-review eligibility is blocked until non-cash replay and runtime "
                     "share the certified sizing contract"
                 )
+            if not _valid_provenance_record(provenance_hash, provenance, dataset_hash):
+                raise ValueError(
+                    "Live-review eligibility requires manifest-bound observed-data provenance"
+                )
         with self._lock, self._connection:
             cursor = self._connection.execute(
                 """INSERT INTO research_promotions(
                     created_at,dataset_hash,strategy_fingerprint,policy_version,status,
-                    source,replay_end,gates_json,risk_envelope_json,holdout_id
-                ) VALUES(?,?,?,?,?,?,?,?,?,?)""",
+                    source,replay_end,gates_json,risk_envelope_json,holdout_id,
+                    provenance_hash,provenance_json
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     utc_now().isoformat(),
                     dataset_hash,
@@ -837,6 +943,8 @@ class AuditStore:
                     json.dumps(gates, default=str),
                     json.dumps(risk_envelope, sort_keys=True),
                     holdout_id,
+                    provenance_hash,
+                    json.dumps(provenance or {}, sort_keys=True, default=str),
                 ),
             )
             promotion_id = int(cursor.lastrowid)
@@ -851,6 +959,7 @@ class AuditStore:
                 "status": status,
                 "risk_envelope": risk_envelope,
                 "holdout_id": holdout_id,
+                "provenance_hash": provenance_hash,
             },
             "warning" if status == "SHADOW_ONLY" else "info",
         )
@@ -862,11 +971,13 @@ class AuditStore:
         try:
             gates = json.loads(result.pop("gates_json"))
             risk_envelope = json.loads(result.pop("risk_envelope_json"))
+            provenance = json.loads(result.pop("provenance_json", "{}"))
         except (TypeError, json.JSONDecodeError):
-            gates, risk_envelope = [], {}
+            gates, risk_envelope, provenance = [], {}, {}
             result["decode_error"] = "Stored evidence JSON is invalid"
         result["gates"] = gates if isinstance(gates, list) else []
         result["risk_envelope"] = risk_envelope if isinstance(risk_envelope, dict) else {}
+        result["provenance"] = provenance if isinstance(provenance, dict) else {}
         return result
 
     def recent_research_promotions(self, limit: int = 50) -> list[dict[str, Any]]:
@@ -909,7 +1020,11 @@ class AuditStore:
             row = self._connection.execute(
                 """SELECT p.*,h.dataset_hash AS holdout_dataset_hash,
                 h.holdout_hash AS sealed_holdout_hash,h.holdout_start AS sealed_holdout_start,
-                h.holdout_end AS sealed_holdout_end,h.metrics_json AS holdout_metrics_json
+                h.holdout_end AS sealed_holdout_end,h.metrics_json AS holdout_metrics_json,
+                h.provenance_hash AS holdout_provenance_hash,
+                h.development_hash AS sealed_development_hash,
+                h.development_quality_json AS development_quality_json,
+                h.holdout_quality_json AS holdout_quality_json
                 FROM research_promotions AS p
                 JOIN research_holdouts AS h ON h.id=p.holdout_id
                 WHERE p.strategy_fingerprint=? AND p.status='LIVE_REVIEW_ELIGIBLE'
@@ -928,9 +1043,29 @@ class AuditStore:
             tested = json.loads(evidence["risk_envelope_json"])
             gates = json.loads(evidence["gates_json"])
             holdout_metrics = json.loads(evidence["holdout_metrics_json"])
+            provenance = json.loads(evidence["provenance_json"])
+            development_quality = json.loads(evidence["development_quality_json"])
+            holdout_quality = json.loads(evidence["holdout_quality_json"])
         except (KeyError, TypeError, json.JSONDecodeError):
             return None
         from grande_alpha.evidence import REQUIRED_LIVE_GATE_NAMES
+
+        try:
+            replay_end = _parse_aware_utc(evidence["replay_end"], field="replay_end")
+            promotion_created_at = _parse_aware_utc(
+                evidence["created_at"], field="promotion created_at"
+            )
+        except ValueError:
+            return None
+        reference = utc_now()
+        earliest = reference - timedelta(days=max_age_days)
+        if (
+            replay_end > reference
+            or replay_end < earliest
+            or promotion_created_at > reference
+            or promotion_created_at < earliest
+        ):
+            return None
 
         gate_names = (
             [gate.get("name") for gate in gates if isinstance(gate, dict)] if isinstance(gates, list) else []
@@ -943,7 +1078,21 @@ class AuditStore:
             or set(gate_names) != REQUIRED_LIVE_GATE_NAMES
             or not all(gate.get("passed") is True for gate in gates)
             or evidence["dataset_hash"] != evidence["holdout_dataset_hash"]
+            or evidence["provenance_hash"] != evidence["holdout_provenance_hash"]
+            or not _valid_provenance_record(
+                evidence["provenance_hash"], provenance, evidence["dataset_hash"]
+            )
             or evidence["replay_end"] != evidence["sealed_holdout_end"]
+            or not _valid_quality_record(
+                development_quality,
+                evidence["sealed_development_hash"],
+                minimum_sessions=120,
+            )
+            or not _valid_quality_record(
+                holdout_quality,
+                evidence["sealed_holdout_hash"],
+                exact_sessions=20,
+            )
             or not _passing_holdout_metrics(
                 holdout_metrics,
                 {
@@ -962,11 +1111,96 @@ class AuditStore:
             if any(float(requested_envelope[name]) > float(tested[name]) for name in _RISK_ENVELOPE_FIELDS):
                 return None
         evidence["risk_envelope"] = tested
+        evidence["provenance"] = provenance
+        evidence["development_quality"] = development_quality
+        evidence["holdout_quality"] = holdout_quality
         return evidence
 
     def close(self) -> None:
         with self._lock:
             self._connection.close()
+
+
+def _valid_provenance_record(
+    provenance_hash: str,
+    provenance: dict[str, Any] | None,
+    dataset_hash: str,
+) -> bool:
+    if not isinstance(provenance, dict):
+        return False
+    try:
+        from grande_alpha.historical import DataProvenance
+
+        allowed = DataProvenance.__dataclass_fields__.keys()
+        record = DataProvenance(
+            **{key: value for key, value in provenance.items() if key in allowed}
+        )
+    except (TypeError, ValueError):
+        return False
+    return bool(
+        record.evidence_eligible
+        and record.digest == provenance_hash
+        and record.canonical_dataset_hash == dataset_hash
+    )
+
+
+def _valid_quality_record(
+    raw_quality: Any,
+    expected_hash: str,
+    *,
+    minimum_sessions: int | None = None,
+    exact_sessions: int | None = None,
+) -> bool:
+    if isinstance(raw_quality, str):
+        try:
+            raw_quality = json.loads(raw_quality)
+        except (TypeError, json.JSONDecodeError):
+            return False
+    if not isinstance(raw_quality, dict):
+        return False
+    integer_fields = (
+        "aligned_bars",
+        "sessions",
+        "missing_intervals",
+        "zero_volume_bars",
+        "duplicate_timestamps",
+        "invalid_session_bars",
+        "expected_sessions",
+        "missing_sessions",
+        "complete_sessions",
+    )
+    if any(type(raw_quality.get(name)) is not int for name in integer_fields):
+        return False
+    aligned_bars = raw_quality["aligned_bars"]
+    sessions = raw_quality["sessions"]
+    missing = raw_quality["missing_intervals"]
+    duplicates = raw_quality["duplicate_timestamps"]
+    complete = raw_quality["complete_sessions"]
+    raw_coverage = raw_quality.get("session_coverage_pct")
+    if isinstance(raw_coverage, bool) or not isinstance(raw_coverage, (int, float)):
+        return False
+    coverage = float(raw_coverage)
+    expected_coverage = complete / sessions * 100.0 if sessions > 0 else math.nan
+    return bool(
+        isinstance(raw_quality.get("interval"), str)
+        and bool(raw_quality["interval"])
+        and isinstance(raw_quality.get("dataset_hash"), str)
+        and aligned_bars >= sessions > 0
+        and sessions > 0
+        and missing == 0
+        and duplicates == 0
+        and raw_quality["invalid_session_bars"] == 0
+        and raw_quality["missing_sessions"] == 0
+        and raw_quality["expected_sessions"] == sessions
+        and raw_quality["zero_volume_bars"] >= 0
+        and 0 <= complete <= sessions
+        and math.isfinite(coverage)
+        and math.isclose(coverage, expected_coverage, rel_tol=0.0, abs_tol=1e-9)
+        and coverage >= 95.0
+        and (minimum_sessions is None or sessions >= minimum_sessions)
+        and (exact_sessions is None or sessions == exact_sessions)
+        and raw_quality.get("dataset_hash") == expected_hash
+    )
 
 
 def _passing_holdout_metrics(metrics: Any, holdout: Any) -> bool:

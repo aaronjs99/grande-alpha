@@ -6,6 +6,7 @@ import pytest
 from PySide6.QtWidgets import QApplication
 
 import grande_alpha.broker.robinhood_mcp as robinhood_mcp
+from grande_alpha.app import auto_shadow_runtime_config
 from grande_alpha.broker.base import Broker, BrokerError, ShadowOnlyBroker
 from grande_alpha.broker.robinhood_mcp import RobinhoodMCPBroker
 from grande_alpha.config import AppConfig
@@ -27,6 +28,29 @@ from grande_alpha.strategy import CashStrategy, MomentumStrategy
 from grande_alpha.ui.main_window import MainWindow
 
 START = datetime(2026, 8, 11, 13, 31, tzinfo=UTC)  # 09:31 ET Tuesday
+
+
+def test_scheduled_shadow_uses_nonpersistent_regular_read_only_profile() -> None:
+    saved = AppConfig(
+        broker_connection_enabled=True,
+        live_trading_enabled=True,
+        market_hours="all_day_hours",
+        order_type="limit",
+        time_in_force="gtc",
+        settlement_model="instant",
+    )
+
+    effective = auto_shadow_runtime_config(saved)
+
+    assert effective is not saved
+    assert effective.broker_connection_enabled
+    assert not effective.live_trading_enabled
+    assert effective.market_hours == "regular_hours"
+    assert effective.order_type == "market"
+    assert effective.time_in_force == "gfd"
+    assert effective.settlement_model == "cash_t1"
+    assert saved.market_hours == "all_day_hours"
+    assert saved.live_trading_enabled
 
 
 class AutoShadowBroker(Broker):

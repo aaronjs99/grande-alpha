@@ -1,4 +1,5 @@
 from dataclasses import replace
+from datetime import date, timedelta
 
 import pytest
 
@@ -8,6 +9,7 @@ from grande_alpha.evidence import (
     STRATEGY_FINGERPRINT_FIELDS,
     PromotionReport,
     RandomControl,
+    SensitivityPoint,
     candidate_grid,
     cost_stress,
     cost_stressed_config,
@@ -19,10 +21,59 @@ from grande_alpha.evidence import (
     strategy_fingerprint,
     walk_forward,
 )
-from grande_alpha.historical import deterministic_demo, split_final_holdout
+from grande_alpha.historical import (
+    DataProvenance,
+    HistoricalBundle,
+    assess_quality,
+    deterministic_demo,
+    split_final_holdout,
+)
+from grande_alpha.market_calendar import is_regular_trading_day
+from grande_alpha.policy import session_key
 from grande_alpha.research_service import run_evidence_lab
 from grande_alpha.sandbox import SandboxConfig, SandboxReplayEngine
 from grande_alpha.storage import AuditStore
+
+
+def _observed_daily_bundle(session_count: int) -> HistoricalBundle:
+    scenario = deterministic_demo(240, seed=930 + session_count)
+    by_session = {}
+    for frame in scenario.frames:
+        key = session_key(frame.start)
+        if is_regular_trading_day(date.fromisoformat(key)):
+            by_session.setdefault(key, frame)
+    frames = list(by_session.values())[-session_count:]
+    quality = assess_quality(frames, "1d")
+    provenance = DataProvenance(
+        source_kind="imported_manifest",
+        provider="Fixture Provider",
+        provider_product="Fixture daily bars",
+        acquisition_method="Fixture export",
+        license_reference="Fixture research terms",
+        license_reviewed_by_user=True,
+        research_use_permitted=True,
+        automated_strategy_research_permitted=True,
+        observed_data=True,
+        synthetic_or_interpolated=False,
+        construction_method="provider_native",
+        source_resolution_seconds=86_400.0,
+        bar_interval="1d",
+        market_hours="regular_hours",
+        manifest_version=1,
+        manifest_hash="a" * 64,
+        csv_sha256="b" * 64,
+        canonical_dataset_hash=quality.dataset_hash,
+    )
+    return HistoricalBundle(
+        source="Fixture manifest-bound observed import",
+        downloaded_at=scenario.downloaded_at,
+        frames=frames,
+        interval="1d",
+        dataset_hash=quality.dataset_hash,
+        quality=quality,
+        market_hours="regular_hours",
+        provenance=provenance,
+    )
 
 
 def test_evidence_pipeline_is_deterministic_and_never_auto_promotes_weak_data() -> None:
@@ -55,6 +106,110 @@ def test_evidence_pipeline_is_deterministic_and_never_auto_promotes_weak_data() 
 
 def test_empty_gate_report_never_passes() -> None:
     assert not PromotionReport("SHADOW_ONLY", [], "dataset", "strategy").passed
+
+
+def test_promotion_report_rejects_a_future_final_observation() -> None:
+    bundle = deterministic_demo(2, seed=771)
+    config = SandboxConfig()
+    replay = SandboxReplayEngine(config).run(bundle)
+    report = promotion_report(
+        bundle,
+        config,
+        replay,
+        [],
+        {3.0: replay},
+        None,
+        RandomControl(1, 0.0, 0.0, 0.0, 0.0),
+        now=bundle.end - timedelta(seconds=1),
+    )
+
+    recency = next(gate for gate in report.gates if gate.name == "Data recency")
+    assert not recency.passed
+    assert "-0.0 days old" in recency.observed
+
+
+def test_development_integrity_is_not_lifted_by_full_bundle_quality() -> None:
+    bundle = deterministic_demo(2, seed=772)
+    assert bundle.quality is not None
+    config = SandboxConfig()
+    replay = SandboxReplayEngine(config).run(bundle)
+    incomplete_development = replace(
+        bundle.quality,
+        sessions=120,
+        complete_sessions=113,
+        session_coverage_pct=113 / 120 * 100,
+        expected_sessions=120,
+        missing_sessions=0,
+    )
+    report = promotion_report(
+        bundle,
+        config,
+        replay,
+        [],
+        {3.0: replay},
+        None,
+        RandomControl(1, 0.0, 0.0, 0.0, 0.0),
+        evidence_sessions=120,
+        evidence_quality=incomplete_development,
+    )
+
+    integrity = next(gate for gate in report.gates if gate.name == "Data integrity")
+    assert not integrity.passed
+    assert "94.2% complete" in integrity.observed
+
+
+def test_durable_trial_count_tightens_bonferroni_gate() -> None:
+    bundle = deterministic_demo(2, seed=773)
+    config = SandboxConfig()
+    replay = SandboxReplayEngine(config).run(bundle)
+    marginal = replace(
+        replay,
+        daily_pnl={f"day-{index}": 1.0 if index < 14 else -1.0 for index in range(20)},
+    )
+    neighbors = [
+        SensitivityPoint(
+            config.strategy_name,
+            "fixture",
+            config.fast_ema,
+            config.slow_ema,
+            config.trend_threshold_bps,
+            config.hard_stop_pct,
+            1.0,
+            1.0,
+            1.2,
+            30,
+            0.5,
+        )
+    ]
+
+    one_trial = promotion_report(
+        bundle,
+        config,
+        marginal,
+        neighbors,
+        {3.0: marginal},
+        None,
+        RandomControl(1, 0.0, 0.0, 0.0, 0.0),
+        total_trial_count=1,
+    )
+    twenty_trials = promotion_report(
+        bundle,
+        config,
+        marginal,
+        neighbors,
+        {3.0: marginal},
+        None,
+        RandomControl(1, 0.0, 0.0, 0.0, 0.0),
+        total_trial_count=20,
+    )
+    first = next(gate for gate in one_trial.gates if gate.name == "Trial-adjusted significance")
+    durable = next(
+        gate for gate in twenty_trials.gates if gate.name == "Trial-adjusted significance"
+    )
+
+    assert first.passed
+    assert not durable.passed
+    assert "across 20 candidates" in durable.observed
 
 
 def test_execution_rejections_are_audited() -> None:
@@ -306,7 +461,32 @@ def test_chronological_final_holdout_is_later_and_purged() -> None:
 
 def test_evidence_service_reserves_before_candidate_evaluation(tmp_path, monkeypatch) -> None:
     store = AuditStore(tmp_path / "evidence.db")
-    bundle = deterministic_demo(40, seed=93)
+    scenario = deterministic_demo(40, seed=93)
+    bundle = replace(
+        scenario,
+        source="Fixture manifest-bound observed import",
+        provenance=DataProvenance(
+            source_kind="imported_manifest",
+            provider="Fixture Provider",
+            provider_product="Fixture Product",
+            acquisition_method="Fixture export",
+            license_reference="Fixture research terms",
+            license_reviewed_by_user=True,
+            research_use_permitted=True,
+            automated_strategy_research_permitted=True,
+            observed_data=True,
+            synthetic_or_interpolated=False,
+            construction_method="provider_native",
+            source_resolution_seconds=60.0,
+            bar_interval="1m",
+            market_hours="regular_hours",
+            manifest_version=1,
+            manifest_hash="a" * 64,
+            csv_sha256="b" * 64,
+            canonical_dataset_hash=scenario.dataset_hash,
+        ),
+    )
+    bundle = _observed_daily_bundle(141)
     config = SandboxConfig()
     observed_status: list[str] = []
     original_candidate_grid = candidate_grid
@@ -320,6 +500,7 @@ def test_evidence_service_reserves_before_candidate_evaluation(tmp_path, monkeyp
         return original_candidate_grid(value)[:1]
 
     monkeypatch.setattr("grande_alpha.research_service.candidate_grid", assert_reserved)
+    monkeypatch.setattr("grande_alpha.research_service.walk_forward", lambda *args: None)
     lab = run_evidence_lab(bundle, config, store)
 
     assert observed_status == ["RESERVED"]
@@ -330,4 +511,136 @@ def test_evidence_service_reserves_before_candidate_evaluation(tmp_path, monkeyp
     assert saved["metrics"] == {}
     assert lab.holdout is None
     assert lab.report.status == "SHADOW_ONLY"
+    store.close()
+
+
+def test_source_label_cannot_reserve_holdout_without_bound_provenance(tmp_path) -> None:
+    store = AuditStore(tmp_path / "evidence.db")
+    bundle = replace(
+        deterministic_demo(40, seed=94),
+        source="Licensed observed imported market history",
+    )
+
+    lab = run_evidence_lab(bundle, SandboxConfig(), store)
+
+    assert lab.holdout_id is None
+    assert store.research_promotion(lab.promotion_id) is not None
+    with store._lock:
+        count = store._connection.execute(
+            "SELECT COUNT(*) AS n FROM research_holdouts"
+        ).fetchone()["n"]
+    assert count == 0
+    source_gate = next(gate for gate in lab.report.gates if gate.name == "Historical source")
+    assert not source_gate.passed
+    store.close()
+
+
+@pytest.mark.parametrize(("total_sessions", "development_sessions"), [(120, 99), (140, 119)])
+def test_total_sessions_below_141_fail_development_breadth_without_reserving_holdout(
+    tmp_path, monkeypatch, total_sessions, development_sessions
+) -> None:
+    store = AuditStore(tmp_path / "evidence.db")
+    bundle = _observed_daily_bundle(total_sessions)
+    monkeypatch.setattr(
+        "grande_alpha.research_service.candidate_grid",
+        lambda config: [config],
+    )
+    monkeypatch.setattr("grande_alpha.research_service.walk_forward", lambda *args: None)
+
+    lab = run_evidence_lab(bundle, SandboxConfig(strategy_name="cash"), store)
+
+    breadth = next(gate for gate in lab.report.gates if gate.name == "Data breadth")
+    assert not breadth.passed
+    assert breadth.observed == f"{development_sessions} sessions"
+    assert lab.holdout_id is None
+    with store._lock:
+        assert store._connection.execute(
+            "SELECT COUNT(*) AS n FROM research_holdouts"
+        ).fetchone()["n"] == 0
+    store.close()
+
+
+def test_141_total_sessions_reserve_20_holdout_and_leave_120_development(
+    tmp_path, monkeypatch
+) -> None:
+    store = AuditStore(tmp_path / "evidence.db")
+    bundle = _observed_daily_bundle(141)
+    monkeypatch.setattr(
+        "grande_alpha.research_service.candidate_grid",
+        lambda config: [config],
+    )
+    monkeypatch.setattr("grande_alpha.research_service.walk_forward", lambda *args: None)
+
+    lab = run_evidence_lab(bundle, SandboxConfig(strategy_name="cash"), store)
+
+    breadth = next(gate for gate in lab.report.gates if gate.name == "Data breadth")
+    assert breadth.passed
+    assert breadth.observed == "120 sessions"
+    assert lab.holdout_id is not None
+    holdout = store.research_holdout(lab.holdout_id)
+    assert holdout is not None and holdout["status"] == "RESERVED"
+    store.close()
+
+
+def test_full_bundle_session_gap_before_purge_cannot_reserve_holdout(
+    tmp_path, monkeypatch
+) -> None:
+    store = AuditStore(tmp_path / "evidence.db")
+    complete = _observed_daily_bundle(142)
+    frames = complete.frames[:120] + complete.frames[121:]
+    quality = assess_quality(frames, "1d")
+    assert quality.sessions == 141
+    assert quality.missing_sessions == 1
+    bundle = replace(
+        complete,
+        frames=frames,
+        dataset_hash=quality.dataset_hash,
+        quality=quality,
+        provenance=replace(
+            complete.provenance,
+            canonical_dataset_hash=quality.dataset_hash,
+        ),
+    )
+    monkeypatch.setattr("grande_alpha.research_service.candidate_grid", lambda config: [config])
+    monkeypatch.setattr("grande_alpha.research_service.walk_forward", lambda *args: None)
+
+    lab = run_evidence_lab(bundle, SandboxConfig(strategy_name="cash"), store)
+
+    integrity = next(gate for gate in lab.report.gates if gate.name == "Data integrity")
+    assert not integrity.passed
+    assert lab.holdout_id is None
+    with store._lock:
+        assert store._connection.execute(
+            "SELECT COUNT(*) AS n FROM research_holdouts"
+        ).fetchone()["n"] == 0
+    store.close()
+
+
+def test_incomplete_holdout_partition_is_invalidated_without_evaluation(
+    tmp_path, monkeypatch
+) -> None:
+    store = AuditStore(tmp_path / "evidence.db")
+    bundle = _observed_daily_bundle(141)
+    actual_split = split_final_holdout(bundle, holdout_sessions=20, purge_sessions=1)
+    assert actual_split.holdout.quality is not None
+    bad_quality = replace(
+        actual_split.holdout.quality,
+        complete_sessions=18,
+        session_coverage_pct=90.0,
+    )
+    bad_split = replace(
+        actual_split,
+        holdout=replace(actual_split.holdout, quality=bad_quality),
+    )
+    monkeypatch.setattr("grande_alpha.research_service.split_final_holdout", lambda *args: bad_split)
+    monkeypatch.setattr("grande_alpha.research_service.candidate_grid", lambda config: [config])
+    monkeypatch.setattr("grande_alpha.research_service.walk_forward", lambda *args: None)
+
+    lab = run_evidence_lab(bundle, SandboxConfig(strategy_name="cash"), store)
+    saved = store.research_holdout(lab.holdout_id)
+    final_gate = next(gate for gate in lab.report.gates if gate.name == "Sealed final holdout")
+
+    assert lab.holdout is None
+    assert saved is not None and saved["status"] == "INVALID"
+    assert "Holdout quality blocked evaluation" in final_gate.observed
     store.close()

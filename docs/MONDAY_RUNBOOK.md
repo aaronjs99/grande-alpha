@@ -2,9 +2,9 @@
 
 Real-order automation is optional and high risk. Complete the [research quickstart](QUICKSTART.md), evidence checks, and a monitored shadow session first. No result proves future profitability.
 
-## Tomorrow: Tuesday, August 11, 2026
+## Next scheduled shadow session
 
-Tomorrow is a **shadow-only engineering session**. No strategy currently has a live certificate, so
+The next scheduled run is a **shadow-only engineering session**. No strategy currently has a live certificate, so
 do not enable Real-order automation, do not select **Authorize Live Session**, and do not submit an
 order. The objective is to prove that the read path, locally derived bars, policy timing, receipts,
 and virtual settlement ledger behave coherently under monitoring.
@@ -51,7 +51,7 @@ begin. Keep the application monitored.
 
 ## Later live review, only after evidence passes
 
-The remaining sections are not tomorrow's procedure. Use them only if a future policy-v9 Evidence
+The remaining sections are not the next session's procedure. Use them only if a future policy-v11 Evidence
 Lab run produces a current `LIVE_REVIEW_ELIGIBLE` certificate for the exact strategy, cadence,
 execution route, settlement model, and risk envelope, and all personal compliance questions have
 been resolved.
@@ -74,8 +74,8 @@ or mismatched evidence fails closed.
 
 1. Select **Authorize Live Session**.
 2. Use a short duration and conservative limits for order notional, total exposure, session loss, trade count, rate, spread, and quote age.
-3. Review the selected regular, extended, or 24 Hour Market route. Extended and overnight routes
-   require whole-share limits; use GTC only if persistence after an app failure is intentional.
+3. Confirm the bounded pilot route is exactly regular-hours, market order, GFD, and `cash_t1`.
+   Extended-hours, 24 Hour Market, limit, GTC, and modeled-latency routes are not eligible for this pilot.
 4. Read the exact account, buying power, expiry, and limits.
 5. Complete the attestation only if it is true.
 6. Type the displayed session phrase and authorize.

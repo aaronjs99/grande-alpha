@@ -59,6 +59,15 @@ def test_full_holidays_fail_closed() -> None:
         assert not market_session_allowed(midday, 0, 0, "regular_hours")
 
 
+def test_weekends_and_holidays_fail_closed_for_extended_and_overnight_equity_modes() -> None:
+    for closed_date in (date(2026, 8, 9), date(2026, 12, 25)):
+        midday = datetime.combine(closed_date, time(12), tzinfo=EASTERN)
+        for market_hours in ("extended_hours", "all_day_hours"):
+            opened, closed = session_bounds(midday, market_hours)
+            assert opened == closed
+            assert not market_session_allowed(midday, 0, 0, market_hours)
+
+
 def test_observation_and_early_close_rules_extend_beyond_2026() -> None:
     assert date(2027, 6, 18) in us_equity_holidays(2027)
     assert date(2027, 7, 5) in us_equity_holidays(2027)

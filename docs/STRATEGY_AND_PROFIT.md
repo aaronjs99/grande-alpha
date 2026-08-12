@@ -159,7 +159,7 @@ only from the broker.
 ## Evidence required before increasing size
 
 Do not scale because of one profitable day. Shadow-only operation remains the required engineering
-stage while there is no passing policy-v9 certificate. If a later qualified review permits real
+stage while there is no passing policy-v11 certificate. If a later qualified review permits real
 orders, require at least 20 monitored live sessions and record:
 
 - number of submitted, filled, canceled, and rejected orders;
@@ -176,7 +176,7 @@ acceptable, and no unresolved control failure occurred. Reduce size or stop if t
 
 ## What “success” means for a first evaluation
 
-For tomorrow's shadow-only engineering session, success is not a target dollar profit. It is:
+For the next shadow-only engineering session, success is not a target dollar profit. It is:
 
 - Robinhood and app data matched;
 - no real-order session was authorized and no real order was submitted;

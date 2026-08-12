@@ -10,9 +10,27 @@ from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Any
 
+from platformdirs import user_data_path
+
 from grande_alpha import __version__
-from grande_alpha.config import data_dir, load_config
-from grande_alpha.gate_guidance import gate_detail, promotion_overview
+from grande_alpha.activation_guidance import decorate_readiness
+from grande_alpha.candidate_execution import contract_from_app_and_sandbox, runtime_parity_assessment
+from grande_alpha.config import APP_NAME, load_config
+from grande_alpha.data_readiness import (
+    DatasetReadinessReport,
+    audit_cache_directory,
+    audit_csv_dataset,
+    audit_evidence_ledger,
+    load_audited_csv_dataset,
+    manifest_template,
+)
+from grande_alpha.evidence import (
+    EVIDENCE_POLICY_VERSION,
+    RUNTIME_SIZING_PARITY_CERTIFIED,
+    STRATEGY_FINGERPRINT_FIELDS,
+    strategy_fingerprint,
+)
+from grande_alpha.gate_guidance import GATE_GUIDANCE, gate_detail, promotion_overview
 from grande_alpha.historical import (
     HistoricalBundle,
     HistoricalDataProvider,
@@ -27,7 +45,7 @@ from grande_alpha.ui.glossary import TERM_HELP
 
 CLI_WIDTHS: dict[str, int] = {
     "Gate": 22,
-    "Status": 6,
+    "Status": 11,
     "Observed": 31,
     "Requirement": 43,
     "Time": 25,
@@ -37,14 +55,25 @@ CLI_WIDTHS: dict[str, int] = {
     "Run": 12,
     "Source": 32,
     "Metric": 24,
+    "Condition": 25,
+    "Owner": 16,
+    "Current result": 28,
+    "Exact next action": 58,
     "Value": 28,
 }
 
 
 def _cell(value: Any) -> str:
     if value is None:
-        return "—"
-    return str(value).replace("\r", " ").replace("\n", " ")
+        return "-"
+    return (
+        str(value)
+        .replace("\r", " ")
+        .replace("\n", " ")
+        .replace("—", "-")
+        .replace("–", "-")
+        .replace("…", "...")
+    )
 
 
 def format_table(headers: list[str], rows: list[list[Any]], width: int | None = None) -> str:
@@ -134,12 +163,63 @@ def _config_from_args(args: argparse.Namespace) -> SandboxConfig:
     return config
 
 
-async def _bundle_from_args(args: argparse.Namespace, config: SandboxConfig) -> HistoricalBundle:
+def _current_runtime_candidate(config: object) -> SandboxConfig:
+    """Bind the saved candidate to the runtime-owned fields without a broker controller."""
+    updates = {
+        field: getattr(config, field)
+        for field in STRATEGY_FINGERPRINT_FIELDS
+        if hasattr(config, field)
+    }
+    updates.update(
+        decision_stride=config.trade_every_bars,
+        market_hours=config.market_hours,
+        order_type=config.order_type,
+        time_in_force=config.time_in_force,
+        limit_offset_bps=config.limit_offset_bps,
+        settlement_model=config.settlement_model,
+    )
+    return replace(load_sandbox_config(), **updates)
+
+
+def _current_runtime_fingerprint(config: object) -> str:
+    candidate = _current_runtime_candidate(config)
+    return strategy_fingerprint(candidate, f"{config.bar_seconds}s")
+
+
+async def _bundle_from_args(
+    args: argparse.Namespace,
+    config: SandboxConfig,
+    *,
+    require_evidence_ready: bool = False,
+) -> HistoricalBundle:
     if args.source == "demo":
         return await asyncio.to_thread(deterministic_demo, config.lookback_days)
     if args.source == "csv":
         if args.csv is None:
             raise ValueError("--csv PATH is required when --source csv is selected")
+        manifest_path = getattr(args, "manifest", None)
+        if require_evidence_ready and manifest_path is None:
+            raise ValueError(
+                "CSV evidence requires --manifest PATH and a passing read-only data audit; "
+                "sandbox replay remains available without one"
+            )
+        if manifest_path is not None:
+            bundle, report = await asyncio.to_thread(
+                load_audited_csv_dataset,
+                args.csv,
+                args.interval,
+                target_interval=args.interval,
+                manifest_path=manifest_path,
+            )
+            if require_evidence_ready and not report.input_ready:
+                failures = ", ".join(
+                    check.name for check in report.checks if not check.passed
+                )
+                raise ValueError(
+                    f"CSV evidence input is not ready: {failures}. Run `data audit` for details; "
+                    "no final holdout was reserved or evaluated"
+                )
+            return bundle
         return await asyncio.to_thread(load_csv_history, args.csv, args.interval)
     app_config = load_config()
     if not app_config.remote_market_data_enabled:
@@ -218,6 +298,11 @@ def command_status(args: argparse.Namespace) -> int:
     store = AuditStore()
     try:
         latest = store.research_promotion()
+        try:
+            current_fingerprint = _current_runtime_fingerprint(config)
+            current_evidence = store.current_live_evidence(current_fingerprint)
+        except Exception:
+            current_evidence = None
         passes = (
             f"{sum(bool(gate.get('passed', False)) for gate in latest['gates'])}/{len(latest['gates'])}"
             if latest
@@ -229,13 +314,217 @@ def command_status(args: argparse.Namespace) -> int:
             ["Broker-data permission", "ENABLED" if config.broker_connection_enabled else "DISABLED", "Local setting only; no broker call was made"],
             ["Real-order setting", "ENABLED" if config.live_trading_enabled else "DISABLED", "The GUI still requires matching evidence and a bounded live grant"],
             ["Remote-data permission", "ENABLED" if config.remote_market_data_enabled else "DISABLED", "CLI downloads also require an explicit acknowledgement flag"],
-            ["Latest evidence", latest["status"] if latest else "NONE", f"{passes} gates passed"],
+            [
+                "Latest historical receipt",
+                latest["status"] if latest else "NONE",
+                f"{passes} stored gates; not current eligibility",
+            ],
+            [
+                "Current exact eligibility",
+                "ELIGIBLE" if current_evidence is not None else "BLOCKED",
+                "Revalidated for current policy, fingerprint, provenance, holdout, replay age, and envelope",
+            ],
             ["Local audit database", str(store.path), "Receipts, virtual runs, and evidence only"],
         ]
         if args.json:
             _json({row[0]: {"value": row[1], "explanation": row[2]} for row in rows})
         else:
             print(format_table(["Item", "Value", "Explanation"], rows, args.width))
+        return 0
+    finally:
+        store.close()
+
+
+def command_activation(args: argparse.Namespace) -> int:
+    """Explain the complete fail-closed activation path without touching a broker."""
+
+    config = load_config()
+    store = AuditStore()
+    try:
+        latest = store.research_promotion()
+        fingerprint_error = ""
+        route_ready = False
+        route_observed = "Runtime candidate contract unavailable"
+        try:
+            current_candidate = _current_runtime_candidate(config)
+            current_fingerprint = strategy_fingerprint(
+                current_candidate, f"{config.bar_seconds}s"
+            )
+            current_evidence = store.current_live_evidence(current_fingerprint)
+            contract = contract_from_app_and_sandbox(config, current_candidate)
+            pilot_route = next(
+                check
+                for check in runtime_parity_assessment(contract).checks
+                if check.key == "pilot_route"
+            )
+            route_ready = pilot_route.aligned
+            route_observed = (
+                f"{pilot_route.replay.replace(' · ', ' / ')}; "
+                f"modeled latency {contract.latency_bars} bars"
+            )
+        except Exception as exc:
+            current_fingerprint = ""
+            current_evidence = None
+            fingerprint_error = str(exc)
+        latest_receipt_uses_current_policy = bool(
+            latest and int(latest.get("policy_version", -1)) == EVIDENCE_POLICY_VERSION
+        )
+        latest_receipt_matches_fingerprint = bool(
+            latest
+            and current_fingerprint
+            and latest.get("strategy_fingerprint") == current_fingerprint
+        )
+        evidence_ready = current_evidence is not None
+        historical_passed = (
+            sum(bool(gate.get("passed", False)) for gate in latest["gates"])
+            if latest
+            else 0
+        )
+        historical_total = len(latest["gates"]) if latest else 0
+        evidence_observed = (
+            f"Current runtime fingerprint unavailable: {fingerprint_error}"
+            if fingerprint_error
+            else "No evidence receipt"
+        )
+        if current_evidence is not None:
+            evidence_observed = (
+                f"Current exact LIVE_REVIEW_ELIGIBLE certificate "
+                f"#{current_evidence.get('id', '?')}"
+            )
+        elif latest and latest_receipt_uses_current_policy and latest_receipt_matches_fingerprint:
+            evidence_observed = (
+                f"INELIGIBLE FOR LIVE: {latest['status']} "
+                f"({historical_passed}/{historical_total} current-policy gates); exact receipt still "
+                "fails current holdout, age, parity, or envelope requirements"
+            )
+        elif latest and latest_receipt_uses_current_policy:
+            evidence_observed = (
+                f"INELIGIBLE FOR CURRENT RUNTIME: latest fingerprint "
+                f"{str(latest.get('strategy_fingerprint', 'missing'))[:12]}... does not match current "
+                f"{current_fingerprint[:12]}..."
+            )
+        elif latest:
+            evidence_observed = (
+                f"STALE / INELIGIBLE: policy v{latest.get('policy_version', '?')} receipt "
+                f"({historical_passed}/{historical_total} historical gates); current policy is "
+                f"v{EVIDENCE_POLICY_VERSION}"
+            )
+        raw_rows = [
+            {
+                "gate": "Scheduled auto-shadow",
+                "status": "READ-ONLY",
+                "observed": "Order review/place/cancel are structurally blocked",
+            },
+            {
+                "gate": "Broker capability",
+                "status": "PASS" if config.broker_connection_enabled else "BLOCKED",
+                "observed": "Enabled" if config.broker_connection_enabled else "Disabled",
+            },
+            {
+                "gate": "Autonomous pilot route",
+                "status": "PASS" if route_ready else "BLOCKED",
+                "observed": route_observed,
+            },
+            {
+                "gate": "Runtime execution parity",
+                "status": "PASS" if RUNTIME_SIZING_PARITY_CERTIFIED else "BLOCKED",
+                "observed": "Certified" if RUNTIME_SIZING_PARITY_CERTIFIED else "Not certified",
+            },
+            {
+                "gate": "Positive exact evidence",
+                "status": "PASS" if evidence_ready else "BLOCKED",
+                "observed": evidence_observed,
+            },
+            {
+                "gate": "Real-order capability",
+                "status": "PASS" if config.live_trading_enabled else "BLOCKED",
+                "observed": "Enabled" if config.live_trading_enabled else "Disabled",
+            },
+            {
+                "gate": "Live broker preflight",
+                "status": "USER ACTION",
+                "observed": "Not evaluated by this offline CLI command",
+            },
+            {
+                "gate": "F-1 / tax suitability",
+                "status": "USER ACTION",
+                "observed": "Not decidable by the app",
+            },
+            {
+                "gate": "Bounded same-day authority",
+                "status": "USER ACTION",
+                "observed": "Never stored; required in the normal GUI each live day",
+            },
+        ]
+        rows = decorate_readiness(raw_rows)
+        failures = (
+            [gate for gate in latest["gates"] if not gate.get("passed", False)]
+            if latest
+            and latest_receipt_uses_current_policy
+            and latest_receipt_matches_fingerprint
+            else []
+        )
+        evidence_failures = [
+            {
+                "gate": str(gate.get("name", "Unknown gate")),
+                "observed": str(gate.get("observed", "Not recorded")),
+                "next_action": GATE_GUIDANCE.get(
+                    str(gate.get("name", "")),
+                    ("", "Compare the observed result with the requirement and rerun unchanged."),
+                )[1],
+            }
+            for gate in failures
+        ]
+        if args.json:
+            _json(
+                {
+                    "authority": "This command cannot grant, schedule, review, place, or cancel orders.",
+                    "current_evidence_policy": EVIDENCE_POLICY_VERSION,
+                    "current_strategy_fingerprint": current_fingerprint,
+                    "latest_receipt_uses_current_policy": latest_receipt_uses_current_policy,
+                    "latest_receipt_matches_current_fingerprint": latest_receipt_matches_fingerprint,
+                    "current_exact_evidence": evidence_ready,
+                    "conditions": rows,
+                    "evidence_failures": evidence_failures,
+                }
+            )
+            return 0
+
+        print("GRANDE Alpha activation assistant (local inspection only)")
+        print(
+            "This command cannot grant, schedule, review, place, or cancel orders. Scheduled auto-shadow "
+            "is structurally read-only."
+        )
+        print()
+        print(
+            format_table(
+                ["Condition", "Owner", "Status", "Current result", "Exact next action"],
+                [
+                    [
+                        row["gate"],
+                        row["owner"],
+                        row["status"],
+                        row["observed"],
+                        row["action"],
+                    ]
+                    for row in rows
+                ],
+                args.width,
+            )
+        )
+        if evidence_failures:
+            print("\nExact failed-evidence actions")
+            print(
+                format_table(
+                    ["Gate", "Observed", "Exact next action"],
+                    [
+                        [failure["gate"], failure["observed"], failure["next_action"]]
+                        for failure in evidence_failures
+                    ],
+                    args.width,
+                )
+            )
+        print("\nNext command: .\\Morning Check.cmd (read-only), then use Live Readiness in the normal GUI.")
         return 0
     finally:
         store.close()
@@ -255,7 +544,7 @@ def command_evidence_show(args: argparse.Namespace) -> int:
 
 def command_evidence_run(args: argparse.Namespace) -> int:
     config = _config_from_args(args)
-    bundle = asyncio.run(_bundle_from_args(args, config))
+    bundle = asyncio.run(_bundle_from_args(args, config, require_evidence_ready=True))
     store = AuditStore()
     try:
         lab = run_evidence_lab(bundle, config, store, note=args.note)
@@ -266,6 +555,185 @@ def command_evidence_run(args: argparse.Namespace) -> int:
         return 0
     finally:
         store.close()
+
+
+def _print_data_report(report: DatasetReadinessReport, width: int | None) -> None:
+    state = "INPUT READY" if report.input_ready else "NOT READY"
+    digest = report.dataset_hash[:16] + "..." if report.dataset_hash else "unavailable"
+    cadence = (
+        "not applicable"
+        if report.observed_cadence_seconds is None
+        else f"{report.observed_cadence_seconds:g}s"
+    )
+    print(
+        f"{report.label} | {state} for exact {report.target_interval} research input | "
+        f"dataset {digest}"
+    )
+    if report.load_error:
+        print(f"Load failure: {report.load_error}")
+        return
+    print(
+        format_table(
+            ["Item", "Value"],
+            [
+                ["Source", report.source],
+                ["Coverage", f"{report.start} through {report.end}"],
+                [
+                    "Interval",
+                    f"{report.interval}; observed mode {cadence}",
+                ],
+                [
+                    "Sessions",
+                    f"{report.sessions} total; {report.complete_sessions} complete "
+                    f"({report.session_coverage_pct:.1f}%)",
+                ],
+                [
+                    "Integrity",
+                    f"{report.missing_intervals} missing; "
+                    f"{report.duplicate_timestamps} duplicate; "
+                    f"{report.zero_volume_bars} zero-volume aligned bars",
+                ],
+            ],
+            width,
+        )
+    )
+    print()
+    print(
+        format_table(
+            ["Gate", "Status", "Observed", "Requirement"],
+            [
+                [
+                    check.name,
+                    "PASS" if check.passed else "FAIL",
+                    check.observed,
+                    check.requirement,
+                ]
+                for check in report.checks
+            ],
+            width,
+        )
+    )
+
+
+def command_data_audit(args: argparse.Namespace) -> int:
+    """Qualify data and inventory the ledger without reserving or revealing a holdout."""
+
+    if args.csv is not None:
+        if args.interval is None:
+            raise ValueError("--interval is required for a CSV; never infer or relabel its cadence")
+        reports = [
+            audit_csv_dataset(
+                args.csv,
+                args.interval,
+                target_interval=args.target_interval,
+                manifest_path=args.manifest,
+            )
+        ]
+    else:
+        if args.manifest is not None or args.interval is not None:
+            raise ValueError("--manifest and --interval apply only with --csv PATH")
+        local_root = Path(user_data_path(APP_NAME, appauthor=False))
+        cache_dir = args.cache_dir or local_root / "sandbox_cache"
+        reports = audit_cache_directory(cache_dir, target_interval=args.target_interval)
+
+    local_root = Path(user_data_path(APP_NAME, appauthor=False))
+    database_path = args.database or local_root / "grande_alpha.db"
+    ledger = audit_evidence_ledger(database_path)
+    payload = {
+        "operation": "read_only_data_audit",
+        "broker_calls": 0,
+        "holdout_reserved_or_evaluated": False,
+        "target_interval": args.target_interval,
+        "datasets": [report.as_dict() for report in reports],
+        "ledger": ledger,
+    }
+    if args.json:
+        _json(payload)
+    else:
+        print(
+            "READ-ONLY DATA AUDIT - no broker call, evidence trial, holdout reservation, "
+            "or holdout evaluation was performed."
+        )
+        if not reports:
+            print("No cached dataset was found. Supply --csv PATH --interval INTERVAL to audit an import.")
+        for index, report in enumerate(reports):
+            if index:
+                print()
+            _print_data_report(report, args.width)
+        latest = ledger.get("latest_promotion") or {}
+        print("\nEvidence ledger inventory")
+        print(
+            format_table(
+                ["Item", "Value", "Explanation"],
+                [
+                    ["Database", ledger["database"], "Opened with SQLite mode=ro and query_only"],
+                    [
+                        "Registered trials",
+                        ledger["trials"],
+                        f"Across {ledger['trial_datasets']} dataset hash(es)",
+                    ],
+                    [
+                        "Promotion receipts",
+                        ledger["promotions"],
+                        f"Statuses {ledger['promotion_statuses']}; policy versions "
+                        f"{ledger['promotion_policy_versions']}",
+                    ],
+                    [
+                        "Latest promotion",
+                        latest.get("status", "none"),
+                        (
+                            f"Receipt {latest.get('id')}; policy {latest.get('policy_version')}; "
+                            f"holdout {latest.get('holdout_id') or 'none'}"
+                            if latest
+                            else "No saved evidence receipt"
+                        ),
+                    ],
+                    [
+                        "Final holdouts",
+                        ledger["holdouts"],
+                        f"Statuses {ledger['holdout_statuses']}; this audit did not reserve or read one",
+                    ],
+                ],
+                args.width,
+            )
+        )
+        trace = ledger["runtime_trace"]
+        print("\nLocal runtime-trace progress")
+        print(
+            format_table(
+                ["Item", "Observed", "Eligibility"],
+                [
+                    [
+                        "Quotes",
+                        f"{trace['quotes']} • {trace['quote_symbols']} • "
+                        f"{trace['quote_start'] or 'none'} to {trace['quote_end'] or 'none'}",
+                        (
+                            "balanced QQQ/TQQQ/SQQQ counts"
+                            if trace["balanced_required_symbols"]
+                            else "required-symbol counts are absent or unbalanced"
+                        ),
+                    ],
+                    [
+                        "Constructed bars",
+                        f"{trace['bars']} • {trace['bar_symbols']} • "
+                        f"{trace['bar_start'] or 'none'} to {trace['bar_end'] or 'none'}",
+                        "NOT an evidence HistoricalBundle",
+                    ],
+                    ["Why not ready", trace["reason"], "Collection progress only"],
+                ],
+                args.width,
+            )
+        )
+        print(
+            "\nINPUT READY means only that a dataset is suitable to enter development/final-evidence "
+            "governance. It is not a passing strategy certificate or trading authorization."
+        )
+    return 0 if reports and all(report.input_ready for report in reports) else 1
+
+
+def command_data_manifest_template(args: argparse.Namespace) -> int:
+    _json(manifest_template(args.target_interval))
+    return 0
 
 
 def command_sandbox_run(args: argparse.Namespace) -> int:
@@ -430,6 +898,11 @@ def _source_options(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument("--days", type=int, help="Calendar lookback")
     parser.add_argument("--csv", type=Path, help="Aligned QQQ/TQQQ/SQQQ CSV")
+    parser.add_argument(
+        "--manifest",
+        type=Path,
+        help="Provenance manifest; mandatory and fully validated for CSV Evidence Lab runs",
+    )
     parser.add_argument("--interval", default="1m", help="CSV or remote interval, such as 5s, 1m, 5m, 60m")
     parser.add_argument("--acknowledge-community-data", action="store_true")
     parser.add_argument("--strategy", choices=sorted(STRATEGY_NAMES))
@@ -458,6 +931,13 @@ def build_parser() -> argparse.ArgumentParser:
     _output_options(status)
     status.set_defaults(func=command_status)
 
+    activation = commands.add_parser(
+        "activation",
+        help="Show who owns every activation condition and the exact next action",
+    )
+    _output_options(activation)
+    activation.set_defaults(func=command_activation)
+
     evidence = commands.add_parser("evidence", help="Show or run the exact Evidence Lab gate table")
     evidence_commands = evidence.add_subparsers(dest="evidence_command", required=True)
     evidence_show = evidence_commands.add_parser("show", help="Show a saved evidence receipt")
@@ -470,6 +950,37 @@ def build_parser() -> argparse.ArgumentParser:
     evidence_run.add_argument("--failures-only", action="store_true")
     _output_options(evidence_run, compact=True)
     evidence_run.set_defaults(func=command_evidence_run)
+
+    data = commands.add_parser(
+        "data", help="Audit historical-data readiness without running or reserving evidence"
+    )
+    data_commands = data.add_subparsers(dest="data_command", required=True)
+    data_audit = data_commands.add_parser(
+        "audit", help="Read-only audit of local caches, a CSV import, and the evidence ledger"
+    )
+    data_audit.add_argument("--csv", type=Path, help="Aligned QQQ/TQQQ/SQQQ source CSV")
+    data_audit.add_argument(
+        "--interval", help="Actual CSV bar interval; required with --csv and never inferred"
+    )
+    data_audit.add_argument("--manifest", type=Path, help="Dataset provenance manifest JSON")
+    data_audit.add_argument(
+        "--target-interval",
+        default="5s",
+        help="Exact runtime evidence interval to qualify against; default 5s",
+    )
+    data_audit.add_argument(
+        "--cache-dir", type=Path, help="Cache directory to inspect when --csv is omitted"
+    )
+    data_audit.add_argument(
+        "--database", type=Path, help="Evidence SQLite database to inventory read-only"
+    )
+    _output_options(data_audit)
+    data_audit.set_defaults(func=command_data_audit)
+    data_template = data_commands.add_parser(
+        "manifest-template", help="Print the exact provenance-manifest template without writing a file"
+    )
+    data_template.add_argument("--target-interval", default="5s")
+    data_template.set_defaults(func=command_data_manifest_template)
 
     sandbox = commands.add_parser("sandbox", help="Run a broker-isolated virtual replay")
     sandbox_commands = sandbox.add_subparsers(dest="sandbox_command", required=True)
@@ -508,7 +1019,10 @@ def main(argv: list[str] | None = None) -> int:
         return 130
     except Exception as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
-        print(f"Local data directory: {data_dir()}", file=sys.stderr)
+        print(
+            f"Local data directory: {user_data_path(APP_NAME, appauthor=False)}",
+            file=sys.stderr,
+        )
         return 2
 
 

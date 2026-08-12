@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from collections import deque
 from dataclasses import replace
@@ -52,16 +53,21 @@ def _order(
     *,
     state: str = "queued",
     ref_id: str = "",
+    symbol: str = "TQQQ",
+    side: str = "buy",
+    quantity: float | None = None,
+    dollar_amount: float | None = 10.0,
+    average_price: float | None = None,
 ) -> BrokerOrder:
     raw = {"ref_id": ref_id} if ref_id else {}
     return BrokerOrder(
         order_id=order_id,
-        symbol="TQQQ",
-        side="buy",
+        symbol=symbol,
+        side=side,
         state=state,
-        quantity=None,
-        dollar_amount=10.0,
-        average_price=None,
+        quantity=quantity,
+        dollar_amount=dollar_amount,
+        average_price=average_price,
         created_at=NOW,
         raw=raw,
     )
@@ -123,7 +129,13 @@ class DeterministicBroker(Broker):
         self.placed_intents.append(intent)
         if self.place_exception is not None:
             raise self.place_exception
-        order = _order(ref_id=intent.ref_id)
+        order = _order(
+            ref_id=intent.ref_id,
+            symbol=intent.symbol,
+            side=intent.side,
+            quantity=intent.quantity,
+            dollar_amount=intent.dollar_amount,
+        )
         self.orders = [order, *[item for item in self.orders if item.order_id != order.order_id]]
         return order
 
@@ -136,6 +148,19 @@ class DeterministicBroker(Broker):
                 for order in self.orders
             ]
         return True
+
+
+class BlockingSafeReadBroker(DeterministicBroker):
+    def __init__(self) -> None:
+        super().__init__()
+        self.portfolio_read_started = asyncio.Event()
+        self.release_portfolio_read = asyncio.Event()
+
+    async def get_portfolio(self, account_number: str) -> Portfolio:
+        assert account_number == ACCOUNT_NUMBER
+        self.portfolio_read_started.set()
+        await self.release_portfolio_read.wait()
+        return self.portfolio
 
 
 @pytest.fixture(autouse=True)
@@ -269,6 +294,40 @@ def test_live_grant_requires_flat_order_free_and_fresh_exact_quotes(
     store.close()
 
 
+def test_live_authority_and_readiness_reject_limit_route_even_with_regular_gfd(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    controller, _broker, store, _grant = _controller(
+        tmp_path,
+        monkeypatch,
+        name="nonpilot-limit-route",
+    )
+    controller.update_config(replace(controller.config, order_type="limit"))
+    draft = LiveGrant(
+        account_number=ACCOUNT_NUMBER,
+        starts_at=NOW - timedelta(minutes=1),
+        expires_at=NOW + timedelta(hours=1),
+        max_order_notional=25.0,
+        max_total_exposure=40.0,
+        max_daily_loss=5.0,
+        max_trades=8,
+        max_orders_per_minute=4,
+        max_spread_bps=20.0,
+        max_quote_age_seconds=8.0,
+        max_daily_notional=75.0,
+        order_type="limit",
+        strategy_fingerprint="a" * 64,
+    )
+    grant = replace(draft, strategy_fingerprint=controller.current_strategy_fingerprint(draft))
+
+    readiness = {row["gate"]: row for row in controller.live_readiness()}
+    assert readiness["Autonomous pilot route"]["status"] == "BLOCKED"
+    with pytest.raises(RuntimeError, match="market orders"):
+        controller.authorize_live(grant)
+
+    store.close()
+
+
 def test_live_authority_rejects_premarket_and_start_discards_prestart_pipeline(
     tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -373,10 +432,22 @@ async def test_successful_placement_blocks_decisions_until_broker_reconciliation
     )
     assert "Waiting for post-submission broker reconciliation" in pair_receipt["summary"]
 
-    broker.orders = [replace(order, state="filled")]
+    broker.positions = [Position("TQQQ", 0.2, 0.2, 50.0)]
+    broker.orders = [replace(order, state="filled", average_price=50.0)]
     await controller.reconcile()
     assert controller._submission_reconcile_required == {}
     assert controller._uncertain_submission_refs == set()
+    assert controller._confirmed_entry_order_ids == {order.order_id}
+    fill_receipts = [
+        receipt
+        for receipt in store.recent_receipts()
+        if receipt["category"] == "live_fill_reconciliation"
+    ]
+    assert fill_receipts
+    fill_payload = json.loads(fill_receipts[0]["payload_json"])
+    assert fill_payload["cumulative_quantity"] == pytest.approx(0.2)
+    assert fill_payload["cumulative_notional"] == pytest.approx(10.0)
+    assert fill_payload["actual_fill_timestamp_available"] is False
     store.close()
 
 
@@ -491,7 +562,7 @@ async def test_session_authority_can_be_paused_resumed_and_irrevocably_revoked(
 
 
 @pytest.mark.asyncio
-async def test_daily_loss_limit_submits_one_exit_and_never_retries_stale_inventory(
+async def test_daily_loss_exit_waits_for_reconciliation_and_revokes_when_flat(
     tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     controller, broker, store, grant = _controller(
@@ -511,23 +582,19 @@ async def test_daily_loss_limit_submits_one_exit_and_never_retries_stale_invento
 
     await controller._evaluate_and_trade()
 
-    assert controller.risk.session_status() == "LOCKED"
-    assert controller.risk.grant is None
+    assert controller.risk.session_status() == "LOSS LIMIT"
+    assert controller.risk.grant is grant
     assert len(broker.placed_intents) == 1
     assert broker.placed_intents[0].symbol == "TQQQ"
     assert broker.placed_intents[0].side == "sell"
     assert broker.placed_intents[0].quantity == 0.4
     assert broker.placed_intents[0].dollar_amount is None
 
-    # Even if the next positions response is stale while the order is terminal,
-    # the revoked one-shot authority cannot submit a duplicate sell.
-    broker.orders = [replace(broker.orders[0], state="filled")]
-    await controller.reconcile()
+    # A second strategy tick cannot duplicate the sell while reconciliation is pending.
     await controller._evaluate_and_trade()
-
     assert len(broker.placed_intents) == 1
-    assert controller.snapshot.positions == [position]
 
+    broker.orders = [replace(broker.orders[0], state="filled", average_price=49.9)]
     broker.positions = []
     await controller.reconcile()
 
@@ -535,12 +602,13 @@ async def test_daily_loss_limit_submits_one_exit_and_never_retries_stale_invento
     assert controller.risk.session_status() == "LOCKED"
     assert not controller.snapshot.strategy_running
     summaries = [receipt["summary"] for receipt in store.recent_receipts()]
-    assert any("automatic retry is disabled" in summary for summary in summaries)
+    assert any("awaiting broker order and inventory truth" in summary for summary in summaries)
+    assert any("confirmed flat" in summary for summary in summaries)
     store.close()
 
 
 @pytest.mark.asyncio
-async def test_regular_exit_is_one_shot_when_filled_order_races_stale_inventory(
+async def test_regular_exit_never_duplicates_and_locks_after_repeated_stale_inventory(
     tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     controller, broker, store, grant = _controller(
@@ -559,16 +627,68 @@ async def test_regular_exit_is_one_shot_when_filled_order_races_stale_inventory(
 
     assert len(broker.placed_intents) == 1
     assert broker.placed_intents[0].side == "sell"
-    assert controller.risk.grant is None
-    assert controller.risk.session_status() == "LOCKED"
+    assert controller.risk.grant is grant
+    assert controller._submission_reconcile_required
 
-    broker.orders = [replace(broker.orders[0], state="filled")]
+    broker.orders = [replace(broker.orders[0], state="filled", average_price=49.9)]
     await controller.reconcile()
+    assert controller.risk.grant is grant
+    assert controller._submission_reconcile_required
+
     controller._analysis_sequence += controller.config.trade_every_bars
     await controller._evaluate_and_trade()
-
     assert controller.snapshot.positions == [position]
     assert len(broker.placed_intents) == 1
+
+    # A second complete broker batch that still says both "filled" and unchanged inventory
+    # is an execution deviation. Authority locks rather than risking an oversell.
+    await controller.reconcile()
+    assert controller.risk.grant is None
+    assert controller.risk.session_status() == "LOCKED"
+    assert len(broker.placed_intents) == 1
+    summaries = [receipt["summary"] for receipt in store.recent_receipts()]
+    assert any("never produced matching inventory" in summary for summary in summaries)
+    store.close()
+
+
+@pytest.mark.asyncio
+async def test_take_profit_can_exit_exact_inventory_above_entry_order_cap(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    controller, broker, store, grant = _controller(
+        tmp_path,
+        monkeypatch,
+        name="profitable-exit-allowance",
+    )
+    controller.authorize_live(grant)
+    controller.start_strategy()
+    position = Position("TQQQ", 0.5, 0.5, 50.0)
+    winning_quote = Quote("TQQQ", 51.98, 52.02, 52.0, NOW)
+    controller.snapshot.positions = [position]
+    broker.positions = [position]
+    controller.snapshot.quotes["TQQQ"] = winning_quote
+    broker.quotes["TQQQ"] = winning_quote
+    controller.snapshot.signal = Signal(Regime.BULLISH, 1.0, "remain bullish", NOW)
+    controller._analysis_sequence = controller.config.trade_every_bars
+
+    await controller._evaluate_and_trade()
+
+    assert grant.max_order_notional == 25.0
+    assert position.sellable_quantity * winning_quote.mid == pytest.approx(26.0)
+    assert len(broker.placed_intents) == 1
+    assert broker.placed_intents[0].side == "sell"
+    assert broker.placed_intents[0].quantity == pytest.approx(0.5)
+    assert controller.risk.grant is grant
+    authority_receipts = [
+        json.loads(receipt["payload_json"])
+        for receipt in store.recent_receipts()
+        if receipt["category"] == "authority_action"
+    ]
+    assert any(
+        payload.get("action") == "order_authorized"
+        and "inventory-reducing exit" in payload.get("reason", "")
+        for payload in authority_receipts
+    )
     store.close()
 
 
@@ -604,7 +724,7 @@ async def test_daily_loss_cancels_pending_buy_before_any_liquidation(
     assert controller.risk.session_status() == "LOCKED"
     assert not controller.snapshot.strategy_running
     summaries = [receipt["summary"] for receipt in store.recent_receipts()]
-    assert any("prior submission" in summary for summary in summaries)
+    assert any("prior non-exit submission" in summary for summary in summaries)
     store.close()
 
 
@@ -644,19 +764,20 @@ def test_live_readiness_tab_renders_operator_gates_and_next_actions(
     window = MainWindow(controller, controller.config)
     window._on_snapshot(controller.snapshot)
 
-    tab_index = window.tabs.indexOf(window.live_readiness_table)
+    tab_index = window.tabs.indexOf(window.activation_widget)
     assert tab_index >= 0
     assert window.tabs.tabText(tab_index) == "Live Readiness"
     assert [
         window.live_readiness_table.horizontalHeaderItem(column).text()
         for column in range(window.live_readiness_table.columnCount())
-    ] == ["Gate", "Status", "Observed", "Next action"]
+    ] == ["Condition", "Owner", "Status", "Current result", "Exact next action"]
 
     rows = {
         window.live_readiness_table.item(row, 0).text(): (
             window.live_readiness_table.item(row, 1).text(),
             window.live_readiness_table.item(row, 2).text(),
             window.live_readiness_table.item(row, 3).text(),
+            window.live_readiness_table.item(row, 4).text(),
         )
         for row in range(window.live_readiness_table.rowCount())
     }
@@ -671,16 +792,99 @@ def test_live_readiness_tab_renders_operator_gates_and_next_actions(
         "Fresh exact venue quotes",
         "Autonomous pilot route",
         "Immutable runtime contract",
+        "Runtime execution parity",
         "Positive exact evidence",
         "F-1 / tax suitability",
     } <= rows.keys()
-    assert rows["Fresh exact venue quotes"][0] == "PASS"
-    assert rows["Fresh exact venue quotes"][1] == "QQQ/TQQQ/SQQQ exact and fresh"
-    assert rows["F-1 / tax suitability"][0] == "USER ACTION"
-    assert "UCLA DSO" in rows["F-1 / tax suitability"][2]
+    assert rows["Fresh exact venue quotes"][0] == "APP CHECK"
+    assert rows["Fresh exact venue quotes"][1] == "PASS"
+    assert rows["Fresh exact venue quotes"][2] == "QQQ/TQQQ/SQQQ exact and fresh"
+    assert rows["Runtime execution parity"][0] == "APP GATE"
+    assert rows["Runtime execution parity"][1] == "BLOCKED"
+    assert "execution_timing_and_fill_economics" in rows["Runtime execution parity"][2]
+    assert rows["F-1 / tax suitability"][0] == "EXTERNAL REVIEW"
+    assert rows["F-1 / tax suitability"][1] == "USER ACTION"
+    assert "UCLA DSO" in rows["F-1 / tax suitability"][3]
+    assert "structurally read-only" in window.activation_widget.mode_notice.text().lower()
+    assert "separate, bounded" in window.activation_widget.summary.text().lower()
 
     window._closing_after_cleanup = True
     window.close()
+    store.close()
+
+
+@pytest.mark.asyncio
+async def test_safe_activation_checks_refuse_active_authority_without_any_broker_write(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _qt_app()
+    controller, broker, store, grant = _controller(
+        tmp_path,
+        monkeypatch,
+        name="safe-check-active-authority",
+    )
+    controller.authorize_live(grant)
+    controller.start_strategy()
+    broker.orders = [_order("working-order")]
+    controller.snapshot.orders = list(broker.orders)
+    window = MainWindow(controller, controller.config)
+    window._on_snapshot(controller.snapshot)
+
+    assert not window.activation_widget.safe_checks_button.isEnabled()
+    await window._run_safe_activation_checks()
+
+    assert "SAFE CHECKS REFUSED" in window.status.text()
+    assert broker.review_calls == []
+    assert broker.place_calls == []
+    assert broker.placed_intents == []
+    assert broker.cancel_calls == []
+    assert controller.risk.grant is grant
+    assert controller.snapshot.strategy_running
+
+    window._closing_after_cleanup = True
+    window.close()
+    store.close()
+
+
+@pytest.mark.asyncio
+async def test_safe_read_only_refresh_blocks_authority_and_survives_midread_grant_race(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    broker = BlockingSafeReadBroker()
+    controller, _broker, store, grant = _controller(
+        tmp_path,
+        monkeypatch,
+        broker=broker,
+        name="safe-check-race",
+    )
+
+    refresh = asyncio.create_task(controller.safe_read_only_refresh())
+    await broker.portfolio_read_started.wait()
+
+    with pytest.raises(RuntimeError, match="Safe read-only refresh is in progress"):
+        controller.authorize_live(grant)
+    assert controller.risk.grant is None
+
+    # Simulate an out-of-band state change that bypasses the public controller API. The
+    # post-await guard must stop the inspection without invoking live cleanup or any write.
+    controller.risk.arm(grant, broker.portfolio)
+    broker.release_portfolio_read.set()
+    with pytest.raises(BrokerError, match="became active"):
+        await refresh
+
+    assert broker.review_calls == []
+    assert broker.place_calls == []
+    assert broker.placed_intents == []
+    assert broker.cancel_calls == []
+    assert controller.risk.grant is grant
+    assert not controller.snapshot.strategy_running
+    receipts = store.recent_receipts()
+    assert any(
+        receipt["category"] == "read_only_check"
+        and "write" not in receipt["summary"].lower()
+        and "stopped" in receipt["summary"].lower()
+        for receipt in receipts
+    )
     store.close()
 
 

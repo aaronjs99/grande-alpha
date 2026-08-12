@@ -5,6 +5,7 @@ import json
 import math
 import statistics
 from dataclasses import asdict, dataclass, fields
+from datetime import datetime
 from numbers import Real
 from typing import Any
 
@@ -12,6 +13,7 @@ from grande_alpha.execution import execution_profile
 from grande_alpha.policy import session_minutes
 
 CONTRACT_VERSION = 1
+RUNTIME_PARITY_SCHEMA_VERSION = 1
 
 
 @dataclass(frozen=True)
@@ -231,6 +233,49 @@ class EntrySizing:
     blocked_reason: str = ""
 
 
+@dataclass(frozen=True)
+class RuntimeParityCheck:
+    """One machine-readable replay/shadow/live mechanics comparison."""
+
+    key: str
+    aligned: bool
+    replay: str
+    shadow: str
+    live: str
+    requirement: str
+
+    def as_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class RuntimeParityAssessment:
+    """Fail-closed certification status for the constrained autonomous pilot."""
+
+    schema_version: int
+    contract_fingerprint: str
+    scope: str
+    checks: tuple[RuntimeParityCheck, ...]
+
+    @property
+    def certified(self) -> bool:
+        return bool(self.checks) and all(check.aligned for check in self.checks)
+
+    @property
+    def blockers(self) -> tuple[RuntimeParityCheck, ...]:
+        return tuple(check for check in self.checks if not check.aligned)
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "schema_version": self.schema_version,
+            "contract_fingerprint": self.contract_fingerprint,
+            "scope": self.scope,
+            "certified": self.certified,
+            "checks": [check.as_dict() for check in self.checks],
+            "blockers": [check.as_dict() for check in self.blockers],
+        }
+
+
 def fillable_quantity(
     contract: CandidateExecutionContract,
     *,
@@ -355,18 +400,60 @@ def execution_price(
     return reference_price * (1.0 + direction * total_bps / 10_000.0)
 
 
+def decision_due(
+    *,
+    analysis_count: int,
+    last_decision_count: int,
+    decision_stride: int,
+) -> bool:
+    """Return whether another completed-bar decision is due.
+
+    Counts are deliberately explicit so replay, live shadow, and the broker controller
+    do not mix provider-poll cadence with completed-analysis-bar cadence.
+    """
+
+    values = (analysis_count, last_decision_count, decision_stride)
+    if any(isinstance(value, bool) or not isinstance(value, int) for value in values):
+        raise ValueError("Decision cadence counts must be integers")
+    if analysis_count < 0 or last_decision_count < 0 or decision_stride < 1:
+        raise ValueError("Decision cadence counts must be nonnegative and stride positive")
+    if last_decision_count > analysis_count:
+        raise ValueError("Last decision count cannot exceed the analysis count")
+    return analysis_count - last_decision_count >= decision_stride
+
+
+def held_minutes(entry_time: datetime, observation_time: datetime) -> int:
+    """Whole elapsed minutes used by the shared maximum-hold policy."""
+
+    if entry_time.tzinfo is None or observation_time.tzinfo is None:
+        raise ValueError("Holding-time inputs must be timezone-aware")
+    return max(0, int((observation_time - entry_time).total_seconds() // 60))
+
+
+def session_drawdown_amount(*, session_peak_equity: float, current_equity: float) -> float:
+    """Observed peak-to-current loss, failing closed on unusable portfolio truth."""
+
+    if not all(math.isfinite(value) for value in (session_peak_equity, current_equity)):
+        return math.inf
+    if session_peak_equity < 0 or current_equity < 0:
+        return math.inf
+    return max(0.0, session_peak_equity - current_equity)
+
+
 def daily_loss_reached(
     contract: CandidateExecutionContract,
     *,
     session_start_equity: float,
+    session_peak_equity: float | None = None,
     current_equity: float,
 ) -> bool:
-    if not all(math.isfinite(value) for value in (session_start_equity, current_equity)):
+    peak = session_start_equity if session_peak_equity is None else session_peak_equity
+    if not all(math.isfinite(value) for value in (session_start_equity, peak, current_equity)):
         return True
     return bool(
         session_start_equity > 0
-        and (session_start_equity - current_equity) / session_start_equity
-        >= contract.max_daily_loss_pct
+        and session_drawdown_amount(session_peak_equity=peak, current_equity=current_equity)
+        >= session_start_equity * contract.max_daily_loss_pct
     )
 
 
@@ -390,3 +477,118 @@ def next_consecutive_losses(current: int, realized_pnl: float) -> int:
     if not math.isfinite(realized_pnl):
         raise ValueError("Realized P/L must be finite")
     return current + 1 if realized_pnl < 0 else 0
+
+
+def runtime_parity_assessment(
+    contract: CandidateExecutionContract,
+) -> RuntimeParityAssessment:
+    """Describe, without granting authority, what still prevents runtime parity.
+
+    Passing items identify shared mechanics already exercised by tests. Failing items are
+    architectural differences, not tunable evidence thresholds. The function is intentionally
+    data-only so the CLI, GUI, receipts, and tests can render the same blockers without parsing
+    prose or changing live-order capability.
+    """
+
+    contract.validate()
+    pilot_profile = (
+        contract.market_hours == "regular_hours"
+        and contract.order_type == "market"
+        and contract.time_in_force == "gfd"
+        and contract.settlement_model == "cash_t1"
+        and contract.latency_bars == 0
+    )
+    checks = (
+        RuntimeParityCheck(
+            "immutable_contract_identity",
+            True,
+            "CandidateExecutionContract fingerprint",
+            "CandidateExecutionContract fingerprint",
+            "CandidateExecutionContract fingerprint bound into evidence and authority",
+            "All engines consume the exact candidate-bound contract",
+        ),
+        RuntimeParityCheck(
+            "candidate_entry_sizing",
+            True,
+            "size_entry(equity, settled cash, modeled price, volatility, volume)",
+            "size_entry(equity, settled cash, quoted price, volatility)",
+            "size_entry(equity, buying power, ask, volatility), then authority caps",
+            "The same risk, volatility, exposure, and settled-cash budget formula runs before entry",
+        ),
+        RuntimeParityCheck(
+            "session_loss_semantics",
+            True,
+            "Observed session peak loss versus fixed starting-equity budget",
+            "Observed session peak loss versus fixed starting-equity budget",
+            "Observed session peak loss versus fixed grant-dollar budget",
+            "New entries lock on the same peak-to-current loss definition",
+        ),
+        RuntimeParityCheck(
+            "completed_bar_decision_cadence",
+            True,
+            "decision_due on completed historical bars",
+            "decision_due on completed live-shadow bars",
+            "decision_due on completed BarBuilder bars; provider polls do not advance it",
+            "Decision stride is measured only in completed analysis bars",
+        ),
+        RuntimeParityCheck(
+            "pilot_route",
+            pilot_profile,
+            execution_profile(contract).label,
+            execution_profile(contract).label,
+            "Autonomous v1 only accepts Regular market / Market order / GFD / cash T+1 / zero bar latency",
+            "Use the one constrained route whose lifecycle is implemented across all engines",
+        ),
+        RuntimeParityCheck(
+            "market_observation_semantics",
+            False,
+            "Imported OHLCV bars whose trade/quote construction is declared only by dataset "
+            "provenance",
+            "Completed bars built from sampled live QQQ quote mids plus target-ETF bid/ask quotes",
+            "Completed bars built from sampled live QQQ quote mids plus target-ETF bid/ask quotes",
+            "Replay input must reproduce the runtime quote-mid bar construction and bind that "
+            "provenance to the certified candidate",
+        ),
+        RuntimeParityCheck(
+            "filled_entry_count",
+            False,
+            "Counts successful virtual buy fills per session",
+            "Counts successful virtual buy fills per session",
+            "Counts inventory-confirmed buy orders in-process; restart restoration treats every "
+            "placement as a conservative possible entry",
+            "Provider-backed fill identity must make the distinct entry ledger exact and durable",
+        ),
+        RuntimeParityCheck(
+            "holding_time_provenance",
+            False,
+            "Elapsed whole minutes from deterministic virtual fill time",
+            "Elapsed whole minutes from virtual fill time",
+            "Elapsed whole minutes inferred from broker order creation time",
+            "Broker truth must provide and persist the actual entry-fill timestamp",
+        ),
+        RuntimeParityCheck(
+            "execution_timing_and_fill_economics",
+            False,
+            "Next causal bar open plus modeled spread/slippage, fill fraction, and volume cap",
+            "First causal quote plus modeled spread/slippage and fill fraction",
+            "Position deltas and cumulative average price feed a fail-closed cost receipt; the "
+            "provider does not expose a contractual fill timestamp/execution list",
+            "Provider fill events must map actual quantity, price, and time into the shared ledger",
+        ),
+        RuntimeParityCheck(
+            "autonomous_exit_lifecycle",
+            False,
+            "Retries modeled unfilled exits and may continue/reverse after a confirmed exit",
+            "Retries modeled unfilled exits and may continue/reverse after a confirmed exit",
+            "Blocks behind one exit until terminal order plus inventory reconciliation; cancelled "
+            "exits may retry and confirmed exits may continue/reverse",
+            "The shared lifecycle must be exercised against provider-observed partial, cancelled, "
+            "and filled orders before certification",
+        ),
+    )
+    return RuntimeParityAssessment(
+        schema_version=RUNTIME_PARITY_SCHEMA_VERSION,
+        contract_fingerprint=contract.fingerprint,
+        scope="bounded-autonomous-tqqq-sqqq-v1",
+        checks=checks,
+    )

@@ -1,5 +1,16 @@
 # Quickstart
 
+For the complete owner-by-owner procedure, start with the
+[Activation checklist](ACTIVATION_CHECKLIST.md). The same current-state assistant is available in
+**Live Readiness** and in the terminal:
+
+```powershell
+& ".\GRANDE Alpha CLI.cmd" activation --width 150
+```
+
+It never connects to a broker or grants order authority. Scheduled auto-shadow remains structurally
+read-only and cannot turn itself into live trading.
+
 ## Source application (works without a GRANDE Alpha signing certificate)
 
 ```powershell
@@ -39,10 +50,11 @@ completes a separate bounded live-session confirmation.
 
 1. Start with `.\run.ps1` or `Start GRANDE Alpha.cmd`.
 2. Read the first-run disclosures and leave every optional capability off.
-3. Open **Research Sandbox**.
-4. Use the deterministic scenario or import CSV data you are permitted to use.
-5. Run a baseline replay, cost stress, parameter sensitivity, random-entry control, and walk-forward evaluation.
-6. Inspect trades, execution events, data source, hash, assumptions, and failed gates.
+3. Open **Live Readiness** to see each condition's owner and exact next action.
+4. Open **Research Sandbox**.
+5. Use the deterministic scenario or import CSV data you are permitted to use.
+6. Run a baseline replay, cost stress, parameter sensitivity, random-entry control, and walk-forward evaluation.
+7. Inspect trades, execution events, data source, hash, assumptions, and failed gates.
 
 This workflow never connects to a broker and never places an order.
 

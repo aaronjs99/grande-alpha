@@ -11,9 +11,12 @@ from grande_alpha.candidate_execution import (
     annualized_volatility,
     contract_from_config,
     daily_loss_reached,
+    decision_due,
     effective_spread_bps,
+    entry_block_reason,
     execution_price,
     fillable_quantity,
+    held_minutes,
     next_consecutive_losses,
     size_entry,
 )
@@ -104,6 +107,8 @@ class LiveShadowEngine:
         self._pending: _PendingTransition | None = None
         self._current_session: str | None = None
         self._analysis_count = 0
+        self._session_analysis_count = 0
+        self._last_decision_count = 0
         self._bar_minutes = (
             float(bar_minutes)
             if bar_minutes is not None
@@ -114,6 +119,7 @@ class LiveShadowEngine:
         self._rng = random.Random(self.contract.random_seed)
         self._entries_by_session: dict[str, int] = {}
         self._session_start_equity: dict[str, float] = {}
+        self._session_peak_equity: dict[str, float] = {}
         self._paused_sessions: set[str] = set()
         self._consecutive_losses = 0
         self._recent_returns = {"TQQQS": deque(maxlen=30), "SQQQS": deque(maxlen=30)}
@@ -144,17 +150,22 @@ class LiveShadowEngine:
     ) -> list[ShadowFill]:
         if not self.state.active:
             return []
-        self._analysis_count += 1
         fills: list[ShadowFill] = []
         current_session = session_key(timestamp, self.contract.market_hours)
         if self._current_session is None:
             self._current_session = current_session
+            self._session_analysis_count = 0
+            self._last_decision_count = 0
         elif current_session != self._current_session:
             if self.contract.settlement_model == "cash_t1":
                 self.state.cash += self.state.unsettled_cash
                 self.state.unsettled_cash = 0.0
             self._current_session = current_session
             self._consecutive_losses = 0
+            self._session_analysis_count = 0
+            self._last_decision_count = 0
+        self._analysis_count += 1
+        self._session_analysis_count += 1
         if (
             self._pending is not None
             and self.contract.time_in_force == "gfd"
@@ -165,9 +176,14 @@ class LiveShadowEngine:
         self._update_returns(quotes)
         self._mark(quotes)
         self._session_start_equity.setdefault(current_session, self.state.equity)
+        self._session_peak_equity[current_session] = max(
+            self._session_peak_equity.get(current_session, self.state.equity),
+            self.state.equity,
+        )
         if daily_loss_reached(
             self.contract,
             session_start_equity=self._session_start_equity[current_session],
+            session_peak_equity=self._session_peak_equity[current_session],
             current_equity=self.state.equity,
         ):
             self._paused_sessions.add(current_session)
@@ -221,24 +237,30 @@ class LiveShadowEngine:
                 position.symbol,
                 position.entry_price,
                 marked,
-                max(0.0, (timestamp - position.entry_time).total_seconds() / 60.0),
+                held_minutes(position.entry_time, timestamp),
             )
             if position
             else None
         )
-        if self._analysis_count % self.contract.decision_stride == 0:
+        if decision_due(
+            analysis_count=self._session_analysis_count,
+            last_decision_count=self._last_decision_count,
+            decision_stride=self.contract.decision_stride,
+        ):
+            self._last_decision_count = self._session_analysis_count
             decision = self.policy.decide(signal, timestamp, policy_position)
             current = position.symbol if position else None
             decision_window = (
                 self.policy.exit_window_allowed(timestamp) if current is not None else window_allowed
             )
-            entry_blocked = (
+            entry_blocked = bool(
                 current is None
                 and decision.target_symbol is not None
-                and (
-                    current_session in self._paused_sessions
-                    or self._entries_by_session.get(current_session, 0)
-                    >= self.contract.max_entries_per_day
+                and entry_block_reason(
+                    self.contract,
+                    entries_this_session=self._entries_by_session.get(current_session, 0),
+                    consecutive_losses=self._consecutive_losses,
+                    daily_loss_paused=current_session in self._paused_sessions,
                 )
             )
             if (
@@ -377,9 +399,11 @@ class LiveShadowEngine:
         if target is None:
             return True, None
         current_session = session_key(timestamp, self.contract.market_hours)
-        if (
-            current_session in self._paused_sessions
-            or self._entries_by_session.get(current_session, 0) >= self.contract.max_entries_per_day
+        if entry_block_reason(
+            self.contract,
+            entries_this_session=self._entries_by_session.get(current_session, 0),
+            consecutive_losses=self._consecutive_losses,
+            daily_loss_paused=current_session in self._paused_sessions,
         ):
             return True, None
         quote = quotes.get(UNDERLYING[target])

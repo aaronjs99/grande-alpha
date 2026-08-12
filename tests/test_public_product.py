@@ -25,7 +25,7 @@ from grande_alpha.evidence import (
     REQUIRED_LIVE_GATE_NAMES,
     strategy_fingerprint,
 )
-from grande_alpha.historical import deterministic_demo
+from grande_alpha.historical import DataProvenance, deterministic_demo
 from grande_alpha.models import Account, LiveGrant, Portfolio, Position, Quote, Regime, Signal, utc_now
 from grande_alpha.privacy import export_diagnostics
 from grande_alpha.sandbox import SandboxConfig, SandboxReplayEngine
@@ -312,7 +312,7 @@ def test_settings_sandbox_and_live_grant_expose_contextual_help(tmp_path) -> Non
     assert "5 sessions" in sandbox.gates_table.item(0, 0).toolTip()
     assert "0/1 gates passed" in sandbox.promotion_label.text()
     assert "not a progress score" in sandbox.evidence_overview.text()
-    assert "Use at least 120 complete market sessions" in sandbox.gate_inspector.toPlainText()
+    assert "Use at least 141 complete market sessions" in sandbox.gate_inspector.toPlainText()
     assert sandbox.gates_table.horizontalHeader().sectionResizeMode(0) == QHeaderView.ResizeMode.Interactive
     assert sandbox.gates_table.columnWidth(1) < sandbox.gates_table.columnWidth(2)
     sandbox.gates_table.horizontalHeader().resizeSection(1, 92)
@@ -397,7 +397,7 @@ def test_sandbox_restores_latest_evidence_receipt_with_next_step(tmp_path) -> No
 
     assert f"receipt #{promotion_id}" in sandbox.evidence_overview.text()
     assert "5 sessions" in sandbox.gates_table.item(0, 2).text()
-    assert "Use at least 120 complete market sessions" in sandbox.gate_inspector.toPlainText()
+    assert "Use at least 141 complete market sessions" in sandbox.gate_inspector.toPlainText()
     assert "Loaded evidence receipt" in sandbox.status.text()
     sandbox.close()
     store.close()
@@ -430,6 +430,40 @@ def test_settings_dialog_is_scrollable_and_explains_agentic_account_scope() -> N
     assert updated.market_hours == "extended_hours"
     assert updated.order_type == "limit"
     assert updated.strategy_name == "cash"
+    dialog.close()
+
+
+def test_settings_bounded_pilot_preset_is_preview_only_and_reversible() -> None:
+    qt_app()
+    original = AppConfig(
+        market_hours="all_day_hours",
+        order_type="limit",
+        time_in_force="gtc",
+        settlement_model="instant",
+        limit_offset_bps=17.5,
+        live_trading_enabled=False,
+    )
+    dialog = SettingsDialog(original, live_evidence_ready=False)
+
+    dialog.apply_pilot_route.click()
+    preview = dialog.updated_config()
+    assert preview.market_hours == "regular_hours"
+    assert preview.order_type == "market"
+    assert preview.time_in_force == "gfd"
+    assert preview.settlement_model == "cash_t1"
+    assert not preview.live_trading_enabled
+    assert "Nothing is saved" in dialog.pilot_route_status.text()
+
+    dialog.limit_offset.setValue(99.0)
+
+    dialog.restore_opened_route.click()
+    restored = dialog.updated_config()
+    assert restored.market_hours == "all_day_hours"
+    assert restored.order_type == "limit"
+    assert restored.time_in_force == "gtc"
+    assert restored.settlement_model == "instant"
+    assert restored.limit_offset_bps == 17.5
+    assert restored == original
     dialog.close()
 
 
@@ -510,13 +544,63 @@ def test_controller_requires_matching_current_evidence_before_live_authority(
         controller.authorize_live(grant)
 
     fingerprint = strategy_fingerprint(config)
+    dataset_hash = "c" * 64
+    provenance = DataProvenance(
+        source_kind="imported_manifest",
+        provider="Fixture Provider",
+        provider_product="Fixture 5-second bars",
+        acquisition_method="Fixture export",
+        license_reference="Fixture research terms",
+        license_reviewed_by_user=True,
+        research_use_permitted=True,
+        automated_strategy_research_permitted=True,
+        observed_data=True,
+        synthetic_or_interpolated=False,
+        construction_method="provider_native",
+        source_resolution_seconds=5.0,
+        bar_interval="5s",
+        market_hours="regular_hours",
+        manifest_version=1,
+        manifest_hash="d" * 64,
+        csv_sha256="e" * 64,
+        canonical_dataset_hash=dataset_hash,
+    )
     holdout_id = store.reserve_research_holdout(
-        dataset_hash="market-history-hash",
+        dataset_hash=dataset_hash,
         development_hash="development-history-hash",
         holdout_hash="sealed-holdout-hash",
         holdout_start="2026-07-13T13:30:00+00:00",
         holdout_end=now.isoformat(),
         policy_version=EVIDENCE_POLICY_VERSION,
+        provenance_hash=provenance.digest,
+        development_quality={
+            "aligned_bars": 120,
+            "sessions": 120,
+            "missing_intervals": 0,
+            "zero_volume_bars": 0,
+            "duplicate_timestamps": 0,
+            "invalid_session_bars": 0,
+            "expected_sessions": 120,
+            "missing_sessions": 0,
+            "interval": "1d",
+            "dataset_hash": "development-history-hash",
+            "complete_sessions": 120,
+            "session_coverage_pct": 100.0,
+        },
+        holdout_quality={
+            "aligned_bars": 20,
+            "sessions": 20,
+            "missing_intervals": 0,
+            "zero_volume_bars": 0,
+            "duplicate_timestamps": 0,
+            "invalid_session_bars": 0,
+            "expected_sessions": 20,
+            "missing_sessions": 0,
+            "interval": "1d",
+            "dataset_hash": "sealed-holdout-hash",
+            "complete_sessions": 20,
+            "session_coverage_pct": 100.0,
+        },
     )
     store.freeze_research_holdout(holdout_id, fingerprint)
     store.claim_research_holdout(holdout_id, fingerprint)
@@ -538,7 +622,7 @@ def test_controller_requires_matching_current_evidence_before_live_authority(
         },
     )
     store.record_research_promotion(
-        dataset_hash="market-history-hash",
+        dataset_hash=dataset_hash,
         strategy_fingerprint=fingerprint,
         policy_version=EVIDENCE_POLICY_VERSION,
         status="LIVE_REVIEW_ELIGIBLE",
@@ -555,6 +639,8 @@ def test_controller_requires_matching_current_evidence_before_live_authority(
             "max_spread_bps": 20.0,
         },
         holdout_id=holdout_id,
+        provenance_hash=provenance.digest,
+        provenance=provenance.as_dict(),
     )
     controller.snapshot.last_reconcile_at = now
     controller.snapshot.quotes = {
@@ -767,6 +853,25 @@ def test_sandbox_exposes_exact_nine_action_matrix_and_full_history_source(tmp_pa
     )
     assert "session end" in widget.force_flat.text().lower()
     assert widget.daily_benchmark_table.columnCount() == 7
+    widget.close()
+    store.close()
+
+
+def test_sandbox_source_switch_invalidates_cached_dataset_and_result(tmp_path) -> None:
+    qt_app()
+    store = AuditStore(tmp_path / "audit.db")
+    widget = SandboxWidget(store, allow_remote_data=False)
+    bundle = deterministic_demo(2, seed=919)
+    widget.bundle = bundle
+    widget.result = SandboxReplayEngine(SandboxConfig()).run(bundle)
+    current = widget.source.currentIndex()
+    replacement = next(index for index in range(widget.source.count()) if index != current)
+
+    widget.source.setCurrentIndex(replacement)
+
+    assert widget.bundle is None
+    assert widget.result is None
+    assert store._connection.execute("SELECT COUNT(*) FROM research_holdouts").fetchone()[0] == 0
     widget.close()
     store.close()
 

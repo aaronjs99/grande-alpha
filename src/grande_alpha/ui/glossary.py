@@ -105,6 +105,10 @@ TERM_HELP: dict[str, str] = {
     "Pause after losses": "Number of consecutive losing exits that pauses new virtual entries.",
     "Period (YYYY-MM)": "Month assigned to an optional personal research-fund planning entry.",
     "Preset": "A named starting configuration. Applying it replaces the visible sandbox parameters.",
+    "Provenance manifest": (
+        "Sidecar metadata declaring a dataset's source, license, timezone, session, interval, and "
+        "construction assumptions so evidence can be reproduced and eligibility checked."
+    ),
     "QQQ regime": "Current causal signal classification derived from completed QQQ observations.",
     "Quote request target": (
         "Desired delay between quote requests. Actual speed cannot exceed broker and network response time."

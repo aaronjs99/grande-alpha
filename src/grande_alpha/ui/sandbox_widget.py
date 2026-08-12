@@ -41,6 +41,7 @@ from grande_alpha.action_lab import (
     evaluate_daily_benchmarks,
     train_offline_action_policy,
 )
+from grande_alpha.data_readiness import load_audited_csv_dataset
 from grande_alpha.evidence import PromotionGate, PromotionReport, RandomControl, compare_configs
 from grande_alpha.execution import MARKET_HOURS_LABELS, ORDER_TYPE_LABELS, TIME_IN_FORCE_LABELS
 from grande_alpha.gate_guidance import gate_detail, promotion_overview
@@ -148,6 +149,7 @@ class SandboxWidget(QWidget):
         self.result: SandboxResult | None = None
         self._evidence_gates: list[object] = []
         self.csv_path: Path | None = None
+        self.manifest_path: Path | None = None
         self._replay_index = 0
         self._replay_timer = QTimer(self)
         self._replay_timer.timeout.connect(self._advance_replay)
@@ -204,12 +206,20 @@ class SandboxWidget(QWidget):
         csv_row = QHBoxLayout()
         csv_row.addWidget(self.csv_button)
         csv_row.addWidget(self.csv_label, 1)
+        self.manifest_button = QPushButton("Choose manifest…")
+        self.manifest_button.clicked.connect(self._choose_manifest)
+        self.manifest_label = QLabel("Required for Evidence Lab; optional for sandbox replay")
+        self.manifest_label.setWordWrap(True)
+        manifest_row = QHBoxLayout()
+        manifest_row.addWidget(self.manifest_button)
+        manifest_row.addWidget(self.manifest_label, 1)
         self.quality = QLabel("Run a replay to calculate data quality and SHA-256 provenance.")
         self.quality.setWordWrap(True)
         add_explained_row(form, "Source", self.source)
         add_explained_row(form, "Calendar lookback", self.lookback)
         add_explained_row(form, "Imported bar interval", self.csv_seconds)
         add_explained_row(form, "Long-history CSV", csv_row)
+        add_explained_row(form, "Provenance manifest", manifest_row)
         add_explained_row(form, "Integrity", self.quality)
         layout.addWidget(data)
 
@@ -660,12 +670,18 @@ class SandboxWidget(QWidget):
         widget.setSuffix(suffix)
         return widget
 
-    def _source_changed(self) -> None:
+    def _source_changed(self, _value: int | None = None) -> None:
+        # A cached bundle is valid only for the source selection that produced it.  Clearing
+        # both objects prevents Evidence Lab from reusing a previously audited CSV after the
+        # user switches to an unattested or synthetic source.
+        self.bundle = None
+        self.result = None
         kind, _, maximum = self.source.currentData()
         self.lookback.setMaximum(maximum)
         self.lookback.setEnabled(kind != "yahoo-full")
         self.lookback.setValue(maximum if kind == "yahoo-full" else min(self.lookback.value(), maximum))
         self.csv_button.setEnabled(kind in {"csv", "csv-custom"})
+        self.manifest_button.setEnabled(kind in {"csv", "csv-custom"})
         self.csv_seconds.setEnabled(kind == "csv-custom")
 
     def set_remote_data_allowed(self, allowed: bool) -> None:
@@ -690,6 +706,19 @@ class SandboxWidget(QWidget):
         if filename:
             self.csv_path = Path(filename)
             self.csv_label.setText(self.csv_path.name)
+            self.bundle = None
+
+    def _choose_manifest(self) -> None:
+        filename, _ = QFileDialog.getOpenFileName(
+            self,
+            "QQQ/TQQQ/SQQQ provenance manifest",
+            "",
+            "JSON manifest (*.json)",
+        )
+        if filename:
+            self.manifest_path = Path(filename)
+            self.manifest_label.setText(self.manifest_path.name)
+            self.bundle = None
 
     def _apply_config(self, config: SandboxConfig) -> None:
         strategy_index = self.strategy_name.findData(config.strategy_name)
@@ -822,7 +851,12 @@ class SandboxWidget(QWidget):
             force_flat_at_end=self.force_flat.isChecked(),
         )
 
-    async def _load_bundle(self, config: SandboxConfig) -> HistoricalBundle:
+    async def _load_bundle(
+        self,
+        config: SandboxConfig,
+        *,
+        require_evidence_ready: bool = False,
+    ) -> HistoricalBundle:
         kind, interval, _ = self.source.currentData()
         if kind in {"yahoo", "yahoo-full"}:
             if not self.allow_remote_data:
@@ -855,6 +889,32 @@ class SandboxWidget(QWidget):
                 raise ValueError("Choose a combined QQQ/TQQQ/SQQQ CSV first")
             if kind == "csv-custom":
                 interval = f"{config.csv_bar_seconds}s"
+            if require_evidence_ready:
+                if self.manifest_path is None:
+                    raise ValueError(
+                        "CSV Evidence Lab requires a provenance manifest. Choose the manifest "
+                        "beside the CSV; ordinary sandbox replay remains available without one."
+                    )
+                bundle, report = await asyncio.to_thread(
+                    load_audited_csv_dataset,
+                    self.csv_path,
+                    interval,
+                    target_interval=interval,
+                    manifest_path=self.manifest_path,
+                )
+                if not report.input_ready:
+                    failures = ", ".join(
+                        check.name for check in report.checks if not check.passed
+                    )
+                    raise ValueError(
+                        f"CSV is not evidence-ready: {failures}. No final holdout was reserved "
+                        "or evaluated. Use the CLI data audit for the complete report."
+                    )
+                self.quality.setText(
+                    f"Evidence input ready • {report.sessions} sessions • "
+                    f"{report.dataset_hash[:16]}… • provenance {bundle.provenance_hash[:16]}…"
+                )
+                return bundle
             return await asyncio.to_thread(load_csv_history, self.csv_path, interval)
         return await asyncio.to_thread(deterministic_demo, config.lookback_days)
 
@@ -907,7 +967,12 @@ class SandboxWidget(QWidget):
         try:
             config = self._config()
             config.validate()
-            self.bundle = self.bundle or await self._load_bundle(config)
+            kind = self.source.currentData()[0]
+            self.bundle = (
+                await self._load_bundle(config, require_evidence_ready=True)
+                if kind in {"csv", "csv-custom"}
+                else self.bundle or await self._load_bundle(config)
+            )
             lab = await asyncio.to_thread(
                 run_evidence_lab,
                 self.bundle,

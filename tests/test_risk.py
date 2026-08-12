@@ -40,6 +40,14 @@ def sell_intent(ref_id="sell-one") -> OrderIntent:
 
 
 def authorize(engine, order, current_quote, portfolio, exposure, now=NOW):
+    exit_quantities = (
+        {
+            "reconciled_position_quantity": float(order.quantity or 0.0),
+            "reconciled_sellable_quantity": float(order.quantity or 0.0),
+        }
+        if order.side == "sell"
+        else {}
+    )
     return engine.authorize(
         order,
         current_quote,
@@ -48,6 +56,7 @@ def authorize(engine, order, current_quote, portfolio, exposure, now=NOW):
         now,
         account_number="123456789",
         strategy_fingerprint="a" * 64,
+        **exit_quantities,
     )
 
 
@@ -71,6 +80,126 @@ def test_notional_and_exposure_are_enforced() -> None:
     engine.arm(grant(), portfolio)
     assert not authorize(engine, intent(amount=30), quote(), portfolio, 0).allowed
     assert not authorize(engine, intent(amount=20), quote(), portfolio, 30).allowed
+
+
+def test_profitable_exact_exit_has_separate_bounded_notional_allowance() -> None:
+    engine = RiskEngine()
+    portfolio = Portfolio(60, 35, 35)
+    engine.arm(
+        grant(max_order_notional=25, max_daily_notional=50),
+        portfolio,
+        initial_daily_notional=25,
+        initial_trades=1,
+    )
+    winning_quote = quote(bid=51.98, ask=52.02)
+    exit_order = OrderIntent(
+        ref_id="winning-exit",
+        symbol="TQQQ",
+        side="sell",
+        quantity=0.5,
+        reason="take profit",
+    )
+
+    decision = engine.authorize(
+        exit_order,
+        winning_quote,
+        portfolio,
+        26.0,
+        NOW,
+        account_number="123456789",
+        strategy_fingerprint="a" * 64,
+        reconciled_position_quantity=0.5,
+        reconciled_sellable_quantity=0.5,
+    )
+
+    assert decision.allowed
+    assert "inventory-reducing exit" in decision.reason
+    engine.record_submission(exit_order, NOW)
+    assert engine.daily_notional_used == pytest.approx(51.0)
+    # The liquidation exception cannot reopen the exhausted daily entry budget.
+    assert "daily gross" in authorize(
+        engine, intent("post-exit-buy", 1), winning_quote, portfolio, 0
+    ).reason.lower()
+
+
+def test_exit_allowance_rejects_missing_inconsistent_or_oversized_inventory() -> None:
+    engine = RiskEngine()
+    portfolio = Portfolio(60, 35, 35)
+    engine.arm(grant(max_order_notional=25, max_daily_notional=50), portfolio)
+    winning_quote = quote(bid=51.98, ask=52.02)
+    oversized = OrderIntent(
+        ref_id="oversized-exit",
+        symbol="TQQQ",
+        side="sell",
+        quantity=0.6,
+        reason="malicious oversell",
+    )
+
+    missing = engine.authorize(
+        oversized,
+        winning_quote,
+        portfolio,
+        26.0,
+        NOW,
+        account_number="123456789",
+        strategy_fingerprint="a" * 64,
+    )
+    oversized_result = engine.authorize(
+        oversized,
+        winning_quote,
+        portfolio,
+        26.0,
+        NOW,
+        account_number="123456789",
+        strategy_fingerprint="a" * 64,
+        reconciled_position_quantity=0.5,
+        reconciled_sellable_quantity=0.5,
+    )
+    inconsistent = engine.authorize(
+        OrderIntent(
+            ref_id="inconsistent-exit",
+            symbol="TQQQ",
+            side="sell",
+            quantity=0.5,
+            reason="invalid inventory",
+        ),
+        winning_quote,
+        portfolio,
+        26.0,
+        NOW,
+        account_number="123456789",
+        strategy_fingerprint="a" * 64,
+        reconciled_position_quantity=0.5,
+        reconciled_sellable_quantity=0.6,
+    )
+
+    assert not missing.allowed
+    assert "exact freshly reconciled" in missing.reason
+    assert not oversized_result.allowed
+    assert "exceeds freshly reconciled" in oversized_result.reason
+    assert not inconsistent.allowed
+    assert "exceeds held inventory" in inconsistent.reason
+
+
+def test_exit_inventory_arguments_never_relax_buy_caps() -> None:
+    engine = RiskEngine()
+    portfolio = Portfolio(60, 60, 60)
+    engine.arm(grant(max_order_notional=25, max_daily_notional=100), portfolio)
+
+    decision = engine.authorize(
+        intent("oversized-buy-with-exit-fields", 26),
+        quote(),
+        portfolio,
+        0,
+        NOW,
+        account_number="123456789",
+        strategy_fingerprint="a" * 64,
+        reconciled_position_quantity=100,
+        reconciled_sellable_quantity=100,
+    )
+
+    assert not decision.allowed
+    assert "notional exceeds" in decision.reason.lower()
 
 
 def test_stale_or_wide_quote_is_blocked() -> None:

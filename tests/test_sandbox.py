@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -260,6 +261,24 @@ def test_historical_cache_round_trip_verifies_content_hash(tmp_path: Path) -> No
     assert restored.dataset_hash == bundle.dataset_hash
     assert restored.frames == bundle.frames
     assert restored.quality and restored.quality.clean
+
+
+@pytest.mark.parametrize("digest_value", [None, ""])
+def test_historical_cache_rejects_provenance_without_exact_digest(
+    tmp_path: Path, digest_value
+) -> None:
+    bundle = deterministic_demo(2, seed=141)
+    path = tmp_path / "bundle.json"
+    save_bundle(bundle, path)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if digest_value is None:
+        payload["provenance"].pop("digest")
+    else:
+        payload["provenance"]["digest"] = digest_value
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="missing its required digest"):
+        load_bundle(path)
 
 
 def test_data_quality_counts_intraday_gaps() -> None:

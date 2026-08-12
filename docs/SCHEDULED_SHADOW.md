@@ -61,6 +61,12 @@ reconcile account state, wait for the regular-session boundary, require fresh QQ
 and pass its current auto-shadow readiness checks before starting virtual fills. A successful
 Windows task launch alone does not mean shadow started.
 
+Scheduled mode applies a **process-local, non-persistent** Regular market / Market order / GFD /
+cash T+1 shadow profile and forces the real-order capability off. This prevents a saved normal-app
+extended-hours, limit, or GTC preference from breaking the next scheduled observation. The original
+settings file is not modified, and an audit receipt records both the saved and effective route. The
+broker is still wrapped in the structural read-only facade.
+
 The default runtime champion is **CASH / hold**. With that default, scheduled shadow still validates
 quotes, causal bars, receipts, account reconciliation, and the read-only boundary, but it requests
 no leveraged position and should record zero virtual fills. A different supported runtime policy

@@ -15,9 +15,11 @@ from grande_alpha.candidate_execution import (
     annualized_volatility,
     contract_from_config,
     daily_loss_reached,
+    decision_due,
     effective_spread_bps,
     execution_price,
     fillable_quantity,
+    held_minutes,
     next_consecutive_losses,
     observed_range_bps,
     size_entry,
@@ -312,6 +314,7 @@ class SandboxReplayEngine:
         scheduled: tuple[int, str | None, str] | None = None
         entries_by_day: dict[str, int] = {}
         day_start_equity: dict[str, float] = {}
+        day_peak_equity: dict[str, float] = {}
         paused_days: set[str] = set()
         fills: list[SandboxFill] = []
         events: list[ExecutionEvent] = []
@@ -323,6 +326,7 @@ class SandboxReplayEngine:
         previous_volume: dict[str, float | None] = {"TQQQS": None, "SQQQS": None}
         consecutive_losses = 0
         session_bar_counts: dict[str, int] = {}
+        last_decision_counts: dict[str, int] = {}
         bar_minutes = interval_minutes(bundle.interval)
         self._bar_minutes = bar_minutes
         session_last_indices: dict[str, int] = {}
@@ -359,9 +363,11 @@ class SandboxReplayEngine:
             session_bar_counts[day] = session_bar_counts.get(day, 0) + 1
             starting_equity = self._equity(cash, unsettled_cash, position, frame)
             day_start_equity.setdefault(day, starting_equity)
+            day_peak_equity[day] = max(day_peak_equity.get(day, starting_equity), starting_equity)
             if daily_loss_reached(
                 self.contract,
                 session_start_equity=day_start_equity[day],
+                session_peak_equity=day_peak_equity[day],
                 current_equity=starting_equity,
             ):
                 paused_days.add(day)
@@ -407,10 +413,15 @@ class SandboxReplayEngine:
                     position.symbol,
                     position.entry_price,
                     frame.bar_for_alias(position.symbol).close,
-                    max(0, int((frame.start - position.entry_time).total_seconds() // 60)),
+                    held_minutes(position.entry_time, frame.start),
                 )
-            decision_due = session_bar_counts[day] % self.contract.decision_stride == 0
-            if decision_due:
+            is_decision_due = decision_due(
+                analysis_count=session_bar_counts[day],
+                last_decision_count=last_decision_counts.get(day, 0),
+                decision_stride=self.contract.decision_stride,
+            )
+            if is_decision_due:
+                last_decision_counts[day] = session_bar_counts[day]
                 decision = self.policy.decide(signal, frame.start, policy_position)
                 current = position.symbol if position else None
                 decision_window = exit_window_allowed(frame) if current is not None else window_allowed(frame)

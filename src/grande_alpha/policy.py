@@ -46,15 +46,14 @@ def trading_date(timestamp: datetime, market_hours: str = "regular_hours") -> da
 
 def session_bounds(timestamp: datetime, market_hours: str) -> tuple[datetime, datetime]:
     trade_date = trading_date(timestamp, market_hours)
+    if regular_session_times(trade_date) is None:
+        # TQQQ/SQQQ/QQQ have no equity session on weekends or scheduled full-day
+        # exchange holidays, including for extended and overnight route labels.
+        closed = datetime.combine(trade_date, REGULAR_OPEN, tzinfo=EASTERN)
+        return closed, closed
     if market_hours == "regular_hours":
         session = regular_session_times(trade_date)
-        if session is None:
-            # Preserve the established tuple API while representing a closed
-            # session as a zero-length interval.  market_session_allowed also
-            # rejects it explicitly, so the shared endpoint cannot admit the
-            # exact boundary instant.
-            closed = datetime.combine(trade_date, REGULAR_OPEN, tzinfo=EASTERN)
-            return closed, closed
+        assert session is not None
         opened_at, closed_at = session
         return (
             datetime.combine(trade_date, opened_at, tzinfo=EASTERN),
@@ -79,9 +78,7 @@ def market_session_allowed(
 ) -> bool:
     local = timestamp.astimezone(EASTERN)
     trade_date = trading_date(timestamp, market_hours)
-    if trade_date.weekday() >= 5:
-        return False
-    if market_hours == "regular_hours" and regular_session_times(trade_date) is None:
+    if regular_session_times(trade_date) is None:
         return False
     opened, closed = session_bounds(timestamp, market_hours)
     start = opened.timestamp() + no_trade_open_minutes * 60

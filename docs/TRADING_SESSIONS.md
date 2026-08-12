@@ -25,7 +25,7 @@ order type, time in force, limit offset, account, ticker tuple, and strategy fin
 within the same Eastern calendar day and is never restored after restart. Any intent that differs is
 rejected locally before broker review.
 
-The sandbox exposes the same fields. Evidence-policy version 9 binds them and the settlement model
+The sandbox exposes the same fields. Evidence-policy version 11 binds them and the settlement model
 into the strategy fingerprint, adds a complete-session-coverage gate, and requires a one-use final
 holdout. Regular data cannot certify an extended or
 overnight route. The community adapter can request pre/post-market bars for extended research, but it
