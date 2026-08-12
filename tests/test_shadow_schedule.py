@@ -101,7 +101,13 @@ def test_definition_mode_is_read_only_and_reports_exact_task_contract() -> None:
         "Pacific Standard Time": "06:20",
     }
     assert definition["local_time_by_windows_zone"] == expected_times
-    assert definition["local_time"] == expected_times[definition["host_time_zone_id"]]
+    host_time_zone_id = definition["host_time_zone_id"]
+    if host_time_zone_id in expected_times:
+        assert definition["local_time"] == expected_times[host_time_zone_id]
+    else:
+        # Definition mode is deliberately portable and read-only. Installation
+        # remains fail-closed on unsupported host zones (including CI's UTC).
+        assert definition["local_time"] is None
     assert definition["target_eastern_time_window"] == "07:00-09:20"
     assert definition["host_time_zone_id"]
     assert definition["supported_time_zone_ids"] == [
@@ -139,6 +145,11 @@ def test_contract_validator_rejects_tampered_task_object_without_scheduler_write
     script = ROOT / "manage-shadow-schedule.ps1"
     command = rf"""
 . '{script}'
+if ($null -eq $Spec.local_time) {{
+    # Exercise the pure contract validator on UTC CI hosts without weakening
+    # the installation path's unsupported-zone rejection.
+    $Spec.local_time = '09:20'
+}}
 $FakeAction = [pscustomobject]@{{
     Execute = $Spec.execute
     Arguments = $Spec.arguments
