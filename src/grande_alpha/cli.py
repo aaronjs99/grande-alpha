@@ -73,6 +73,11 @@ def _cell(value: Any) -> str:
         .replace("—", "-")
         .replace("–", "-")
         .replace("…", "...")
+        .replace("•", " / ")
+        .replace("·", " / ")
+        .replace("×", "x")
+        .replace("≥", ">=")
+        .replace("≤", "<=")
     )
 
 
