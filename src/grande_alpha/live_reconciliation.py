@@ -12,10 +12,9 @@ from grande_alpha.models import BrokerOrder, Position
 class LiveSubmissionReconciliation:
     """In-process baseline for reconciling one broker placement.
 
-    The broker adapter currently exposes order state, cumulative average price, and the
-    account position, but not a provider-contractual fill timestamp or execution list.
-    Consequently this object records only what those fields can prove.  It never manufactures
-    a fill time or assumes that a terminal order and a stale position are consistent.
+    Provider execution identity/time is persisted separately. This object retains the
+    independent account-inventory reconciliation needed to prove that those executions
+    actually reached the current position snapshot.
     """
 
     ref_id: str
@@ -63,9 +62,9 @@ def reconcile_execution(
 ) -> ReconciledExecutionEvent:
     """Reconcile cumulative position change to one known broker order, fail-closed.
 
-    A successful result is based on the position delta from the pre-placement baseline and
-    the broker's cumulative average price.  The order creation time is surfaced only as a
-    conservative holding clock; it is explicitly not relabeled as an actual fill timestamp.
+    A successful result requires the position delta from the pre-placement baseline to agree
+    with the provider execution list and cumulative average price. Holding time uses the actual
+    first execution timestamp, never order creation time.
     """
 
     symbol = order.symbol.strip().upper()
@@ -76,6 +75,7 @@ def reconcile_execution(
         raise ValueError("Reconciled broker order identity differs from the submitted intent")
     if side not in {"buy", "sell"}:
         raise ValueError("Reconciled broker order side is unsupported")
+    order.validate_execution_provenance(require_snapshot=bool(order.executions))
 
     current_quantity = _position_quantity(positions, symbol)
     cumulative_quantity = (
@@ -134,7 +134,7 @@ def reconcile_execution(
                         0.0,
                         0.0,
                         None,
-                        order.created_at or tracking.submitted_at,
+                        order.first_execution_at,
                         "Filled order was observed before matching inventory; one more full "
                         "reconciliation is required",
                     )
@@ -165,6 +165,6 @@ def reconcile_execution(
         cumulative_notional,
         incremental_notional,
         average_price,
-        order.created_at or tracking.submitted_at,
+        order.first_execution_at,
         "Broker order state and account inventory reconciled",
     )

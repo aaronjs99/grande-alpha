@@ -77,7 +77,10 @@ overnight routes are whole-share limit-only; a route without matching session-co
 remains locked. Read [Trading sessions and order routes](TRADING_SESSIONS.md) before changing the
 regular-hours market GFD default.
 
-Removing broker permission disconnects the adapter. Removing real-order permission stops the strategy, revokes live authority, and attempts cancellation. Stored OAuth credentials can be forgotten from the same dialog.
+Removing broker or real-order permission first locks new local activity. If a GRANDE-owned open or
+unresolved order exists, Save refuses and directs the user to the explicit **STOP + CANCEL** preview;
+permission changes never cancel an order implicitly. Stored OAuth credentials can be forgotten only
+after a clean disconnect and never trigger cancellation as a side effect.
 
 ## Desktop navigation
 
@@ -85,9 +88,13 @@ The always-visible menu bar keeps infrequent controls out of the trading header:
 
 - **File** exports redacted diagnostics, opens Settings & Permissions, or exits.
 - **View** switches workspaces with `Ctrl+1` through `Ctrl+5`, resets the layout, or uses `F11` full screen.
-- **Broker** connects or disconnects Robinhood, refreshes with `F5`, controls live shadow, or forgets the locally stored OAuth credential after confirmation.
+- **Broker** connects or disconnects Robinhood, refreshes with `F5`, controls live shadow, or forgets
+  the locally stored OAuth credential after confirmation. Disconnect refuses when GRANDE-owned open
+  or unresolved order state still needs explicit handling; it never cancels an order.
 - **Research** opens each sandbox result surface directly.
-- **Safety** exposes only evidence-gated live controls plus the stop/cancel and flatten paths.
+- **Safety** exposes only evidence-gated live controls plus the order-specific stop/cancel and flatten
+  paths. **STOP + CANCEL** shows the exact GRANDE-owned nonterminal-order count and scope before a
+  required confirmation; manual and unrelated orders are untouched.
 - **Help** explains quick start, account scope, privacy, safety locks, version ownership, and opens the
   searchable terminology glossary with `F1`. Dashed-underlined labels also show the same definitions
   on hover or click.

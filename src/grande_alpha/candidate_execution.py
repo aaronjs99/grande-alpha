@@ -427,7 +427,9 @@ def held_minutes(entry_time: datetime, observation_time: datetime) -> int:
 
     if entry_time.tzinfo is None or observation_time.tzinfo is None:
         raise ValueError("Holding-time inputs must be timezone-aware")
-    return max(0, int((observation_time - entry_time).total_seconds() // 60))
+    if observation_time < entry_time:
+        raise ValueError("Holding entry time cannot be later than the observation")
+    return int((observation_time - entry_time).total_seconds() // 60)
 
 
 def session_drawdown_amount(*, session_peak_equity: float, current_equity: float) -> float:
@@ -551,29 +553,28 @@ def runtime_parity_assessment(
         ),
         RuntimeParityCheck(
             "filled_entry_count",
-            False,
+            True,
             "Counts successful virtual buy fills per session",
             "Counts successful virtual buy fills per session",
-            "Counts inventory-confirmed buy orders in-process; restart restoration treats every "
-            "placement as a conservative possible entry",
-            "Provider-backed fill identity must make the distinct entry ledger exact and durable",
+            "Counts distinct provider execution-backed buy order ids from the durable account ledger",
+            "Provider execution identity makes the distinct entry ledger exact across restart",
         ),
         RuntimeParityCheck(
             "holding_time_provenance",
-            False,
+            True,
             "Elapsed whole minutes from deterministic virtual fill time",
             "Elapsed whole minutes from virtual fill time",
-            "Elapsed whole minutes inferred from broker order creation time",
-            "Broker truth must provide and persist the actual entry-fill timestamp",
+            "Elapsed whole minutes from the first provider execution of the active long holding",
+            "Actual provider execution time is persisted and reconciled to current inventory",
         ),
         RuntimeParityCheck(
             "execution_timing_and_fill_economics",
             False,
             "Next causal bar open plus modeled spread/slippage, fill fraction, and volume cap",
             "First causal quote plus modeled spread/slippage and fill fraction",
-            "Position deltas and cumulative average price feed a fail-closed cost receipt; the "
-            "provider does not expose a contractual fill timestamp/execution list",
-            "Provider fill events must map actual quantity, price, and time into the shared ledger",
+            "Provider execution quantity, price, fees, and timestamp are durably recorded, but broker "
+            "fill behavior still differs from replay/shadow modeled fill assumptions",
+            "Live provider fills cannot certify replay/shadow fill economics as identical",
         ),
         RuntimeParityCheck(
             "autonomous_exit_lifecycle",
@@ -584,6 +585,16 @@ def runtime_parity_assessment(
             "exits may retry and confirmed exits may continue/reverse",
             "The shared lifecycle must be exercised against provider-observed partial, cancelled, "
             "and filled orders before certification",
+        ),
+        RuntimeParityCheck(
+            "provider_order_confirmation_contract",
+            False,
+            "No provider order placement",
+            "No provider order placement",
+            "Current Robinhood review contract requires the exact reviewed ticket and disclosure "
+            "to be presented for explicit confirmation before placement",
+            "Implement per-order confirmation or obtain written provider confirmation that the "
+            "exact bounded session-authority flow satisfies the current order contract",
         ),
     )
     return RuntimeParityAssessment(

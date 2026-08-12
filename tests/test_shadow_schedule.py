@@ -36,7 +36,15 @@ def test_schedule_manager_declares_safe_per_user_task_contract() -> None:
         "RunOnlyIfNetworkAvailable = $false",
         "MultipleInstances = 'IgnoreNew'",
         "DaysOfWeek = @('Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday')",
-        "At = '06:20'",
+        "At = $LocalTriggerTime",
+        "if ($null -eq $LocalTriggerTime)",
+        "'Eastern Standard Time' = '09:20'",
+        "'Central Standard Time' = '08:20'",
+        "'Mountain Standard Time' = '07:20'",
+        "'US Mountain Standard Time' = '06:20'",
+        "'Pacific Standard Time' = '06:20'",
+        "'US Mountain Standard Time'",
+        "'Pacific Standard Time'",
         "Register-ScheduledTask @RegistrationParameters",
         "Unregister-ScheduledTask",
         "Test-FullyQualifiedPath",
@@ -85,7 +93,24 @@ def test_definition_mode_is_read_only_and_reports_exact_task_contract() -> None:
 
     assert definition["task_name"] == "GRANDE Alpha Live Shadow"
     assert definition["task_path"] == "\\"
-    assert definition["local_time"] == "06:20"
+    expected_times = {
+        "Eastern Standard Time": "09:20",
+        "Central Standard Time": "08:20",
+        "Mountain Standard Time": "07:20",
+        "US Mountain Standard Time": "06:20",
+        "Pacific Standard Time": "06:20",
+    }
+    assert definition["local_time_by_windows_zone"] == expected_times
+    assert definition["local_time"] == expected_times[definition["host_time_zone_id"]]
+    assert definition["target_eastern_time_window"] == "07:00-09:20"
+    assert definition["host_time_zone_id"]
+    assert definition["supported_time_zone_ids"] == [
+        "Eastern Standard Time",
+        "Central Standard Time",
+        "Mountain Standard Time",
+        "US Mountain Standard Time",
+        "Pacific Standard Time",
+    ]
     assert definition["days_of_week"] == [
         "Monday",
         "Tuesday",
@@ -102,7 +127,69 @@ def test_definition_mode_is_read_only_and_reports_exact_task_contract() -> None:
     assert definition["stop_if_going_on_batteries"] is False
     assert definition["network_required"] is False
     assert definition["multiple_instances"] == "IgnoreNew"
+    assert definition["execution_time_limit_hours"] == 14
     assert definition["application_mode"] == "--auto-shadow"
     assert Path(definition["execute"]).is_absolute()
     assert Path(definition["working_directory"]) == ROOT
     assert str(ROOT / "scheduled-shadow.ps1") in definition["arguments"]
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows Scheduled Tasks are Windows-only")
+def test_contract_validator_rejects_tampered_task_object_without_scheduler_write() -> None:
+    script = ROOT / "manage-shadow-schedule.ps1"
+    command = rf"""
+. '{script}'
+$FakeAction = [pscustomobject]@{{
+    Execute = $Spec.execute
+    Arguments = $Spec.arguments
+    WorkingDirectory = $Spec.working_directory
+}}
+$FakeTrigger = [pscustomobject]@{{
+    StartBoundary = "2026-08-12T$($Spec.local_time):00"
+    DaysOfWeek = 62
+    WeeksInterval = 1
+    Enabled = $true
+}}
+$FakeTask = [pscustomobject]@{{
+    TaskName = $Spec.task_name
+    TaskPath = $Spec.task_path
+    Actions = @($FakeAction)
+    Triggers = @($FakeTrigger)
+    Principal = [pscustomobject]@{{
+        UserId = $CurrentUser
+        LogonType = 'Interactive'
+        RunLevel = 'Limited'
+    }}
+    Settings = [pscustomobject]@{{
+        Enabled = $true
+        StartWhenAvailable = $false
+        WakeToRun = $true
+        DisallowStartIfOnBatteries = $false
+        StopIfGoingOnBatteries = $false
+        RunOnlyIfNetworkAvailable = $false
+        MultipleInstances = 'IgnoreNew'
+        ExecutionTimeLimit = 'PT14H'
+    }}
+}}
+$ValidMismatches = @(Get-GrandeAlphaTaskContractMismatches $FakeTask)
+if ($ValidMismatches.Count -ne 0) {{
+    $ValidMismatches | ConvertTo-Json
+    exit 10
+}}
+$FakeTask.Actions[0].Arguments = '-File tampered.ps1'
+$FakeTask.Settings.StartWhenAvailable = $true
+$TamperedMismatches = @(Get-GrandeAlphaTaskContractMismatches $FakeTask)
+$TamperedMismatches | ConvertTo-Json
+if ($TamperedMismatches.Count -ne 2) {{ exit 11 }}
+"""
+    result = subprocess.run(
+        ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", command],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    mismatches = json.loads(result.stdout)
+    assert any("action arguments" in item for item in mismatches)
+    assert any("late catch-up" in item for item in mismatches)

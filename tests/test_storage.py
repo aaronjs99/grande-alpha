@@ -11,19 +11,230 @@ from grande_alpha.evidence import (
     REQUIRED_LIVE_GATE_NAMES,
     strategy_fingerprint,
 )
-from grande_alpha.historical import DataProvenance, deterministic_demo
-from grande_alpha.models import OrderIntent, utc_now
+from grande_alpha.historical import (
+    RUNTIME_OBSERVATION_SCHEMA,
+    DataProvenance,
+    deterministic_demo,
+)
+from grande_alpha.models import OrderIntent, Quote, utc_now
 from grande_alpha.sandbox import SandboxConfig, SandboxReplayEngine
-from grande_alpha.storage import AuditStore, _valid_quality_record
+from grande_alpha.storage import (
+    EXACT_QUOTE_VALIDATOR_VERSION,
+    QUOTE_BATCH_SCHEMA_VERSION,
+    AuditStore,
+    _valid_provenance_record,
+    _valid_quality_record,
+)
 
 
 def _passing_gates() -> list[dict[str, object]]:
     return [{"name": name, "passed": True} for name in sorted(REQUIRED_LIVE_GATE_NAMES)]
 
 
+def test_quote_batch_is_atomic_and_durably_bound(tmp_path: Path) -> None:
+    store = AuditStore(tmp_path / "quotes.db")
+    timestamp = utc_now()
+    quotes = {
+        symbol: Quote(
+            symbol,
+            price - 0.01,
+            price + 0.01,
+            price,
+            timestamp,
+            timestamp,
+            timestamp,
+        )
+        for symbol, price in (("QQQ", 100.0), ("TQQQ", 80.0), ("SQQQ", 40.0))
+    }
+
+    batch_id = store.record_quote_batch(quotes, stream_id="fixture-stream")
+
+    batch = store._connection.execute(
+        "SELECT * FROM quote_batches WHERE batch_id=?", (batch_id,)
+    ).fetchone()
+    children = store._connection.execute(
+        """SELECT symbol,batch_position,batch_id,bid_timestamp,ask_timestamp
+        FROM quotes WHERE batch_id=? ORDER BY batch_position""",
+        (batch_id,),
+    ).fetchall()
+    assert (
+        batch is not None
+        and batch["schema_version"] == QUOTE_BATCH_SCHEMA_VERSION
+        and batch["symbol_count"] == 3
+    )
+    assert [(row["symbol"], row["batch_position"]) for row in children] == [
+        ("QQQ", 0),
+        ("TQQQ", 1),
+        ("SQQQ", 2),
+    ]
+    assert {row["batch_id"] for row in children} == {batch_id}
+    assert {row["bid_timestamp"] for row in children} == {timestamp.isoformat()}
+    assert {row["ask_timestamp"] for row in children} == {timestamp.isoformat()}
+
+    before = store._connection.total_changes
+    with pytest.raises(ValueError, match="exactly QQQ"):
+        store.record_quote_batch(
+            {"QQQ": quotes["QQQ"], "TQQQ": quotes["TQQQ"]},
+            stream_id="fixture-stream",
+        )
+    assert store._connection.total_changes == before
+    store.close()
+
+
+def test_exact_quote_batch_recomputes_its_age_envelope_before_persisting(tmp_path: Path) -> None:
+    store = AuditStore(tmp_path / "stale-exact-quotes.db")
+    timestamp = utc_now() - timedelta(hours=20)
+    quotes = {
+        symbol: Quote(
+            symbol,
+            price - 0.01,
+            price + 0.01,
+            price,
+            timestamp,
+            timestamp,
+            timestamp,
+        )
+        for symbol, price in (("QQQ", 100.0), ("TQQQ", 80.0), ("SQQQ", 40.0))
+    }
+
+    with pytest.raises(ValueError, match="recorded age envelope"):
+        store.record_quote_batch(
+            quotes,
+            stream_id="forged-exact-stream",
+            validation_profile="exact_execution_quotes",
+            validation_version=EXACT_QUOTE_VALIDATOR_VERSION,
+            max_age_seconds=8.0,
+            max_skew_seconds=5.0,
+        )
+
+    assert store._connection.execute("SELECT COUNT(*) FROM quote_batches").fetchone()[0] == 0
+    store.close()
+
+
+def test_quote_batch_migration_preserves_v1_history_but_only_writes_current_v2(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "quote-schema-migration.db"
+    connection = sqlite3.connect(path)
+    connection.execute(
+        """CREATE TABLE quote_batches (
+        batch_id TEXT PRIMARY KEY,stream_id TEXT NOT NULL,observed_at TEXT NOT NULL,
+        schema_version INTEGER NOT NULL CHECK(schema_version = 1),
+        symbol_count INTEGER NOT NULL CHECK(symbol_count = 3),
+        validation_profile TEXT NOT NULL DEFAULT 'passive_unvalidated',
+        validation_version INTEGER NOT NULL DEFAULT 0,
+        max_age_seconds REAL,max_skew_seconds REAL)"""
+    )
+    connection.execute(
+        """INSERT INTO quote_batches VALUES(
+        'legacy','legacy-stream','2026-08-11T13:30:00+00:00',1,3,
+        'exact_execution_quotes',1,8.0,5.0)"""
+    )
+    connection.commit()
+    connection.close()
+
+    store = AuditStore(path)
+    timestamp = utc_now()
+    quotes = {
+        symbol: Quote(
+            symbol, price - 0.01, price + 0.01, price, timestamp, timestamp, timestamp
+        )
+        for symbol, price in (("QQQ", 100.0), ("TQQQ", 80.0), ("SQQQ", 40.0))
+    }
+    with pytest.raises(ValueError, match="validator version must be 2"):
+        store.record_quote_batch(
+            quotes,
+            stream_id="rejected-v1",
+            validation_profile="exact_execution_quotes",
+            validation_version=1,
+            max_age_seconds=8.0,
+            max_skew_seconds=5.0,
+        )
+    current_id = store.record_quote_batch(
+        quotes,
+        stream_id="current-v2",
+        validation_profile="exact_execution_quotes",
+        validation_version=EXACT_QUOTE_VALIDATOR_VERSION,
+        max_age_seconds=8.0,
+        max_skew_seconds=5.0,
+    )
+
+    versions = {
+        row["batch_id"]: (row["schema_version"], row["validation_version"])
+        for row in store._connection.execute(
+            "SELECT batch_id,schema_version,validation_version FROM quote_batches"
+        )
+    }
+    assert versions["legacy"] == (1, 1)
+    assert versions[current_id] == (
+        QUOTE_BATCH_SCHEMA_VERSION,
+        EXACT_QUOTE_VALIDATOR_VERSION,
+    )
+    store.close()
+
+
+def test_pruning_removes_orphaned_quote_batch_parents_atomically(tmp_path: Path) -> None:
+    store = AuditStore(tmp_path / "prune-quotes.db")
+    timestamp = utc_now() - timedelta(days=300)
+    quotes = {
+        symbol: Quote(symbol, price - 0.01, price + 0.01, price, timestamp)
+        for symbol, price in (("QQQ", 100.0), ("TQQQ", 80.0), ("SQQQ", 40.0))
+    }
+    batch_id = store.record_quote_batch(quotes, stream_id="old-stream")
+    store._connection.execute(
+        "UPDATE quote_batches SET observed_at=? WHERE batch_id=?",
+        (timestamp.isoformat(), batch_id),
+    )
+    store._connection.execute(
+        "UPDATE quotes SET observed_at=? WHERE batch_id=?",
+        (timestamp.isoformat(), batch_id),
+    )
+    store._connection.commit()
+
+    removed = store.prune_market_history(240)
+
+    assert removed["quotes"] == 3
+    assert removed["quote_batches"] == 1
+    assert store._connection.execute("SELECT COUNT(*) FROM quote_batches").fetchone()[0] == 0
+    store.close()
+
+
+def test_storage_rejects_generic_ohlcv_as_v12_runtime_provenance() -> None:
+    dataset_hash = "f" * 64
+    generic = DataProvenance(
+        source_kind="imported_manifest",
+        provider="Fixture Provider",
+        provider_product="Generic OHLCV",
+        acquisition_method="Fixture export",
+        license_reference="Fixture research terms",
+        license_reviewed_by_user=True,
+        research_use_permitted=True,
+        automated_strategy_research_permitted=True,
+        observed_data=True,
+        synthetic_or_interpolated=False,
+        contains_upsampled_rows=False,
+        construction_method="provider_native",
+        source_resolution_seconds=5.0,
+        bar_interval="5s",
+        market_hours="regular_hours",
+        manifest_version=1,
+        manifest_hash="a" * 64,
+        csv_sha256="b" * 64,
+        canonical_dataset_hash=dataset_hash,
+    )
+
+    assert _valid_provenance_record(generic.digest, generic.as_dict(), dataset_hash)
+    assert not _valid_provenance_record(
+        generic.digest,
+        generic.as_dict(),
+        dataset_hash,
+        require_runtime_observation=True,
+    )
+
+
 def _passing_provenance(dataset_hash: str) -> tuple[str, dict[str, object]]:
     provenance = DataProvenance(
-        source_kind="imported_manifest",
+        source_kind="grande_runtime_quote_trace",
         provider="Fixture Provider",
         provider_product="Fixture 5-second bars",
         acquisition_method="Fixture export",
@@ -33,14 +244,22 @@ def _passing_provenance(dataset_hash: str) -> tuple[str, dict[str, object]]:
         automated_strategy_research_permitted=True,
         observed_data=True,
         synthetic_or_interpolated=False,
-        construction_method="provider_native",
+        construction_method="aggregated_from_quotes",
         source_resolution_seconds=5.0,
         bar_interval="5s",
         market_hours="regular_hours",
         manifest_version=1,
         manifest_hash="d" * 64,
-        csv_sha256="e" * 64,
         canonical_dataset_hash=dataset_hash,
+        observation_schema=RUNTIME_OBSERVATION_SCHEMA,
+        analysis_price_semantics="qqq_bid_ask_mid_ohlc",
+        execution_price_semantics="causal_target_bid_ask",
+        volume_semantics="absent",
+        source_trace_sha256="e" * 64,
+        validator_profile="exact_execution_quotes",
+        validator_version=EXACT_QUOTE_VALIDATOR_VERSION,
+        validator_max_age_seconds=8.0,
+        validator_max_skew_seconds=5.0,
     )
     return provenance.digest, provenance.as_dict()
 
@@ -88,9 +307,47 @@ def test_receipts_and_idempotent_intents_are_persisted(tmp_path: Path) -> None:
     store.receipt("test", "hello", {"value": 1})
     order = OrderIntent("ref-1", "TQQQ", "buy", "test", dollar_amount=10.0)
     store.record_intent(order)
+    store.mark_intent_submitting(
+        order.ref_id,
+        account_number="acct-1",
+        authority_id="authority-1",
+        strategy_fingerprint="fingerprint-1",
+        authorized_notional=10.0,
+    )
     store.update_intent(order.ref_id, "broker-1", "queued")
     receipts = store.recent_receipts()
     assert receipts[0]["summary"] == "hello"
+    store.close()
+
+
+def test_order_id_binding_is_unique_per_account_and_requires_account_provenance(
+    tmp_path: Path,
+) -> None:
+    store = AuditStore(tmp_path / "intent-binding.db")
+    first = OrderIntent("ref-first", "TQQQ", "buy", "first", dollar_amount=10.0)
+    second = OrderIntent("ref-second", "TQQQ", "buy", "second", dollar_amount=10.0)
+    unbound = OrderIntent("ref-unbound", "TQQQ", "buy", "unbound", dollar_amount=10.0)
+    for intent in (first, second, unbound):
+        store.record_intent(intent)
+    for intent in (first, second):
+        store.mark_intent_submitting(
+            intent.ref_id,
+            account_number="acct-1",
+            authority_id="authority-1",
+            strategy_fingerprint="fingerprint-1",
+            authorized_notional=10.0,
+        )
+
+    store.update_intent(first.ref_id, "broker-1", "queued")
+    with pytest.raises(ValueError, match="already bound"):
+        store.update_intent(second.ref_id, "broker-1", "queued")
+    with pytest.raises(ValueError, match="before durable account provenance"):
+        store.update_intent(unbound.ref_id, "broker-2", "queued")
+
+    index_sql = store._connection.execute(
+        "SELECT sql FROM sqlite_master WHERE name='idx_order_intents_account_order'"
+    ).fetchone()["sql"]
+    assert "UNIQUE INDEX" in index_sql
     store.close()
 
 
@@ -117,6 +374,21 @@ def test_order_intent_submission_provenance_migrates_and_is_atomic(tmp_path: Pat
         "authorized_notional",
         "submission_started_at",
     } <= columns
+    execution_columns = {
+        row["name"]
+        for row in store._connection.execute("PRAGMA table_info(broker_executions)")
+    }
+    assert {
+        "account_number",
+        "execution_id",
+        "order_id",
+        "symbol",
+        "side",
+        "quantity",
+        "price",
+        "fees",
+        "executed_at",
+    } <= execution_columns
     intent = OrderIntent("ref-submit", "TQQQ", "buy", "test", dollar_amount=10.0)
     store.record_intent(intent)
     store.mark_intent_submitting(

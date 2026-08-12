@@ -54,15 +54,24 @@ def _validate_quotes(
         quote.validate()
         if quote.symbol != symbol:
             raise BrokerError(f"Quote key/symbol mismatch for {symbol}")
-        age = (observed_at - quote.timestamp).total_seconds()
-        if age < -MAX_QUOTE_FUTURE_SKEW_SECONDS:
-            raise BrokerError(f"{symbol} venue quote timestamp is {abs(age):.1f}s in the future")
-        if age > max_quote_age_seconds:
-            raise BrokerError(
-                f"{symbol} venue quote is stale ({age:.1f}s; limit {max_quote_age_seconds:.1f}s)"
-            )
-        timestamps.append(quote.timestamp)
-        ages.append(max(0.0, age))
+        if quote.bid_timestamp is None or quote.ask_timestamp is None:
+            raise BrokerError(f"{symbol} lacks exact bid/ask venue clocks")
+        for side, timestamp in (
+            ("bid", quote.bid_timestamp),
+            ("ask", quote.ask_timestamp),
+        ):
+            age = (observed_at - timestamp).total_seconds()
+            if age < -MAX_QUOTE_FUTURE_SKEW_SECONDS:
+                raise BrokerError(
+                    f"{symbol} venue {side} timestamp is {abs(age):.1f}s in the future"
+                )
+            if age > max_quote_age_seconds:
+                raise BrokerError(
+                    f"{symbol} venue {side} is stale "
+                    f"({age:.1f}s; limit {max_quote_age_seconds:.1f}s)"
+                )
+            timestamps.append(timestamp)
+            ages.append(max(0.0, age))
     timestamp_skew = (max(timestamps) - min(timestamps)).total_seconds()
     if timestamp_skew > min(MAX_QUOTE_BATCH_SKEW_SECONDS, max_quote_age_seconds):
         raise BrokerError(f"Venue quote timestamps are misaligned by {timestamp_skew:.1f}s")
@@ -146,8 +155,8 @@ async def _run() -> None:
     print(f"Account value: ${result.total_value:,.2f}")
     print(f"Buying power: ${result.buying_power:,.2f}")
     print(f"Quotes returned: {', '.join(result.quote_symbols) or 'none'}")
-    print(f"Oldest venue quote: {result.maximum_quote_age_seconds:.2f}s")
-    print(f"Venue quote timestamp skew: {result.quote_timestamp_skew_seconds:.2f}s")
+    print(f"Oldest bid/ask venue book: {result.maximum_quote_age_seconds:.2f}s")
+    print(f"Bid/ask venue timestamp skew: {result.quote_timestamp_skew_seconds:.2f}s")
     print(f"Positions returned: {result.position_count}")
     print(f"Orders returned (all states): {result.order_count}")
     print(f"Open orders: {result.open_order_count}")

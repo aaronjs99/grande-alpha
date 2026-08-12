@@ -25,10 +25,16 @@ from grande_alpha.evidence import (
     REQUIRED_LIVE_GATE_NAMES,
     strategy_fingerprint,
 )
-from grande_alpha.historical import DataProvenance, deterministic_demo
+from grande_alpha.historical import (
+    RUNTIME_OBSERVATION_SCHEMA,
+    DataProvenance,
+    deterministic_demo,
+)
 from grande_alpha.models import (
     AUTHORITY_TIMEZONE,
     Account,
+    BrokerExecution,
+    BrokerOrder,
     LiveGrant,
     Portfolio,
     Position,
@@ -39,7 +45,7 @@ from grande_alpha.models import (
 )
 from grande_alpha.privacy import export_diagnostics
 from grande_alpha.sandbox import SandboxConfig, SandboxReplayEngine
-from grande_alpha.storage import AuditStore
+from grande_alpha.storage import EXACT_QUOTE_VALIDATOR_VERSION, AuditStore
 from grande_alpha.ui.dialogs import AuthorityControlPanel, LiveGrantDialog
 from grande_alpha.ui.glossary import TERM_HELP, ExplainedLabel, GlossaryDialog
 from grande_alpha.ui.main_window import MainWindow
@@ -514,8 +520,26 @@ async def test_due_trade_tick_records_exact_pair_action_without_forcing_turnover
     controller._live_automation_current = lambda: True
     controller.snapshot.signal = Signal(Regime.BULLISH, 1.0, "Test bullish signal", now)
     controller.snapshot.last_analysis_at = now
+    controller.snapshot.account = Account("123456789", "Agentic", "cash", True, "active")
     controller.snapshot.positions = [Position("TQQQ", 0.1, 0.1, 100.0)]
     controller.snapshot.quotes = {"TQQQ": Quote("TQQQ", 100.0, 100.02, 100.01, now)}
+    entry_at = now - timedelta(minutes=4)
+    store.record_broker_order_executions(
+        "123456789",
+        BrokerOrder(
+            order_id="existing-entry",
+            symbol="TQQQ",
+            side="buy",
+            state="filled",
+            quantity=0.1,
+            dollar_amount=None,
+            average_price=100.0,
+            created_at=entry_at,
+            executions=(BrokerExecution("existing-execution", 0.1, 100.0, 0.0, entry_at),),
+            cumulative_quantity=0.1,
+            last_transaction_at=entry_at,
+        ),
+    )
     controller._analysis_sequence = 3
 
     await controller._evaluate_and_trade()
@@ -563,7 +587,7 @@ def test_controller_requires_matching_current_evidence_before_live_authority(
     fingerprint = strategy_fingerprint(config)
     dataset_hash = "c" * 64
     provenance = DataProvenance(
-        source_kind="imported_manifest",
+            source_kind="grande_runtime_quote_trace",
         provider="Fixture Provider",
         provider_product="Fixture 5-second bars",
         acquisition_method="Fixture export",
@@ -573,14 +597,22 @@ def test_controller_requires_matching_current_evidence_before_live_authority(
         automated_strategy_research_permitted=True,
         observed_data=True,
         synthetic_or_interpolated=False,
-        construction_method="provider_native",
+            construction_method="aggregated_from_quotes",
         source_resolution_seconds=5.0,
         bar_interval="5s",
         market_hours="regular_hours",
         manifest_version=1,
         manifest_hash="d" * 64,
-        csv_sha256="e" * 64,
-        canonical_dataset_hash=dataset_hash,
+            canonical_dataset_hash=dataset_hash,
+            observation_schema=RUNTIME_OBSERVATION_SCHEMA,
+            analysis_price_semantics="qqq_bid_ask_mid_ohlc",
+            execution_price_semantics="causal_target_bid_ask",
+            volume_semantics="absent",
+            source_trace_sha256="e" * 64,
+            validator_profile="exact_execution_quotes",
+            validator_version=EXACT_QUOTE_VALIDATOR_VERSION,
+            validator_max_age_seconds=8.0,
+            validator_max_skew_seconds=5.0,
     )
     holdout_id = store.reserve_research_holdout(
         dataset_hash=dataset_hash,
@@ -661,9 +693,9 @@ def test_controller_requires_matching_current_evidence_before_live_authority(
     )
     controller.snapshot.last_reconcile_at = now
     controller.snapshot.quotes = {
-        "QQQ": Quote("QQQ", 99.99, 100.01, 100.0, now),
-        "TQQQ": Quote("TQQQ", 49.99, 50.01, 50.0, now),
-        "SQQQ": Quote("SQQQ", 39.99, 40.01, 40.0, now),
+        "QQQ": Quote("QQQ", 99.99, 100.01, 100.0, now, now, now),
+        "TQQQ": Quote("TQQQ", 49.99, 50.01, 50.0, now, now, now),
+        "SQQQ": Quote("SQQQ", 39.99, 40.01, 40.0, now, now, now),
     }
     controller.authorize_live(grant)
     assert controller.snapshot.live_status == "LIVE"

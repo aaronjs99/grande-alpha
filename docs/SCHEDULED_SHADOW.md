@@ -1,7 +1,21 @@
 # Scheduled weekday live shadow
 
-GRANDE Alpha can install one per-user Windows Scheduled Task that launches the application at
-**6:20 AM local time, Monday through Friday**, with the `--auto-shadow` startup mode. This is an
+GRANDE Alpha can install one per-user Windows Scheduled Task that launches the application Monday
+through Friday with the `--auto-shadow` startup mode. The installer derives a local trigger from the
+computer's Windows time-zone ID so launch occurs between **7:00 and 9:20 AM ET**:
+
+| Windows time-zone ID | Local trigger |
+|---|---:|
+| `Eastern Standard Time` | 9:20 AM |
+| `Central Standard Time` | 8:20 AM |
+| `Mountain Standard Time` | 7:20 AM |
+| `US Mountain Standard Time` (Arizona) | 6:20 AM |
+| `Pacific Standard Time` | 6:20 AM |
+
+Arizona does not observe daylight saving time, so its 6:20 AM trigger is 8:20 AM ET during Eastern
+standard time and 9:20 AM ET during Eastern daylight time. Installation is intentionally limited to
+these Windows time-zone IDs; the watchdog extends past the 4:00 PM ET close. Unsupported zones fail
+without registering or changing a task. This is an
 optional convenience for monitored engineering sessions. It does not authorize orders, establish
 an investment edge, or guarantee that the market is open or that the broker will be reachable.
 
@@ -35,7 +49,8 @@ The installed definition:
 - is registered in Task Scheduler's existing root folder, so setup does not depend on creating a
   custom machine-wide folder;
 - uses limited privileges and stores no Windows password;
-- runs at 6:20 AM in the computer's local time zone on weekdays;
+- runs at the mapped local time shown above on weekdays;
+- refuses installation outside the explicitly supported continental-U.S. Windows time zones;
 - does not start late when a scheduled launch was missed;
 - requests permission to wake an already logged-in sleeping computer at the trigger time;
 - may start and continue while the computer is on battery power;
@@ -48,8 +63,9 @@ The installed definition:
 
 The task requests `WakeToRun=True`, but Windows power policy, disabled wake timers, hibernation, or
 hardware settings can still prevent a wake. If the computer is powered off or the user is not logged
-on at 6:20 AM, that day's launch is intentionally skipped; `StartWhenAvailable=False` prevents a
-late catch-up. The schedule does not compensate for exchange holidays or early closes, so the
+on at the mapped local trigger time, that day's launch is intentionally skipped;
+`StartWhenAvailable=False` prevents a late catch-up. The schedule does not compensate for exchange
+holidays or early closes, so the
 application's broker/readiness gates must fail closed when current session data is unavailable.
 Because battery starts are allowed and the task does not stop when power switches to battery, make
 sure the computer has enough charge for the monitored session.
@@ -87,8 +103,16 @@ After installation:
 Get-ScheduledTask -TaskPath '\' -TaskName 'GRANDE Alpha Live Shadow'
 ```
 
-Confirm the reported user, `InteractiveToken` logon, `Limited` run level, 6:20 AM weekday trigger,
+Confirm the reported user, `InteractiveToken` logon, `Limited` run level, zone-derived weekday trigger,
 `StartWhenAvailable=False`, and `MultipleInstances=IgnoreNew`. Do not manually run the task as a
 substitute for the application's readiness gates. Also confirm `WakeToRun=True` if the computer may
 sleep before the trigger, `DisallowStartIfOnBatteries=False`, `StopIfGoingOnBatteries=False`, and
-`RunOnlyIfNetworkAvailable=False`.
+`RunOnlyIfNetworkAvailable=False`. If the computer moves to an unsupported time zone, remove the
+task or reinstall only after returning to a supported zone; the task does not rewrite its trigger
+while traveling.
+
+`-Status` is a read-only contract verifier, not a presence check. It requires exactly one action and
+one enabled Monday-Friday trigger, the mapped local time, the exact validated executable, arguments,
+and working directory, the current interactive limited user, the documented wake/battery/network/
+overlap settings, and the 14-hour execution limit. Any mismatch prints `INVALID / UNSAFE` and exits
+nonzero; it never describes a merely present or partially matching task as safe.

@@ -17,7 +17,7 @@ LEGACY_APP_NAME = "MomentumTrader"
 MCP_URL = "https://agent.robinhood.com/mcp/trading"
 ONBOARDING_VERSION = 1
 DISCLOSURE_VERSION = "2026-08"
-CADENCE_VERSION = 5
+CADENCE_VERSION = 6
 
 
 @dataclass
@@ -29,7 +29,8 @@ class AppConfig:
     live_trading_enabled: bool = False
     remote_market_data_enabled: bool = False
     personal_ledger_enabled: bool = False
-    market_history_retention_days: int = 90
+    # Preserve enough calendar history to make the 141-session evidence floor achievable.
+    market_history_retention_days: int = 240
     # Retail low-latency profile: quote reads are completion-gated, decisions use
     # completed bars, and account/order state is reconciled on a separate clock.
     poll_seconds: float = 1.0
@@ -175,6 +176,8 @@ def migrate_config_payload(raw: dict) -> dict:
         upgraded["settlement_model"] = "cash_t1"
     if version < 5:
         upgraded.setdefault("strategy_name", "cash")
+    if version < 6 and upgraded.get("market_history_retention_days", 90) == 90:
+        upgraded["market_history_retention_days"] = 240
     upgraded["cadence_version"] = CADENCE_VERSION
     return upgraded
 

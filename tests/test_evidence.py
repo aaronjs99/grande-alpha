@@ -91,6 +91,11 @@ def test_evidence_pipeline_is_deterministic_and_never_auto_promotes_weak_data() 
     assert report.status == "SHADOW_ONLY"
     assert not report.passed
     assert not next(gate for gate in report.gates if gate.name == "Historical source").passed
+    runtime_observation = next(
+        gate for gate in report.gates if gate.name == "Exact runtime observation schema"
+    )
+    assert not runtime_observation.passed
+    assert "generic OHLCV" in runtime_observation.requirement
     sizing = next(gate for gate in report.gates if gate.name == "Runtime sizing parity")
     assert not sizing.passed
     assert "do not share the certified sizing contract" in sizing.observed

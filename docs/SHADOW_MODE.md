@@ -13,7 +13,8 @@ broker and contains no review, placement, or cancellation method.
 4. Leave it running through completed QQQ bars. The Live shadow card shows virtual P/L and the
    current fictional position; every virtual fill appears in Receipts.
 5. Select **Stop Live Shadow**, **STOP + CANCEL**, Disconnect, or exit. Shadow authority is revoked
-   immediately and a final receipt records virtual equity, P/L, fills, and ending position.
+   immediately and a final receipt records virtual equity, P/L, fills, and ending position. In the
+   shadow-only runtime none of these controls can request broker cancellation.
 
 Shadow mode and live order authority are mutually exclusive in both the controller and UI. Starting
 shadow while a live grant exists is rejected; authorizing or starting real automation while shadow

@@ -31,9 +31,10 @@ explainable timing and state transitions, correct `cash_t1` cash buckets, and a 
 receipt. Profit is not an acceptance criterion.
 
 For future weekdays, the optional [scheduled live-shadow setup](SCHEDULED_SHADOW.md) can launch the
-application at 6:20 AM local time with `--auto-shadow`. Installation is explicit and per-user; a
-scheduled launch still must pass the application's broker and readiness checks before virtual fills
-begin. Keep the application monitored.
+application at a zone-derived local time between 7:00 and 9:20 AM ET with `--auto-shadow` in the
+supported continental-U.S. Windows time zones documented there. Installation is explicit and
+per-user; a scheduled launch still must pass the application's broker and readiness checks before
+virtual fills begin. Keep the application monitored.
 
 ## Before enabling anything
 
@@ -51,7 +52,7 @@ begin. Keep the application monitored.
 
 ## Later live review, only after evidence passes
 
-The remaining sections are not the next session's procedure. Use them only if a future policy-v11 Evidence
+The remaining sections are not the next session's procedure. Use them only if a future policy-v13 Evidence
 Lab run produces a current `LIVE_REVIEW_ELIGIBLE` certificate for the exact strategy, cadence,
 execution route, settlement model, and risk envelope, and all personal compliance questions have
 been resolved.
@@ -85,14 +86,21 @@ Increasing a cap does not increase expected edge; it increases possible exposure
 
 ## Stop conditions
 
-Press **STOP + CANCEL** if the applications disagree, data goes stale, an unexpected order appears, a limit is reached, behavior differs from documentation, or you cannot continue monitoring. Then confirm order state in the broker. Cancellation does not liquidate a filled position.
+Press **STOP + CANCEL** if the applications disagree, data goes stale, an owned order is unexpected,
+a limit is reached, behavior differs from documentation, or you cannot continue monitoring. Review
+the exact GRANDE-owned nonterminal-order count and details, then explicitly confirm only that scope.
+Manual/unrelated orders are not cancelled and must be handled in Robinhood. Confirm terminal state in
+the broker; cancellation does not liquidate a filled position.
 
 Use **Flatten Position** only after reviewing the exact quantity and broker preview. Slippage and rejection remain possible.
 
 ## End of session
 
-1. Press **STOP + CANCEL**.
-2. Confirm no order is open or pending in the broker.
+1. Press **STOP + CANCEL**, review its exact GRANDE-owned order preview, and explicitly confirm it.
+2. Confirm every targeted order is terminal in the broker. Pending-cancel orders are verified without
+   a duplicate cancellation request.
 3. Deliberately handle any remaining position.
 4. Save broker fills and fees, and complete the [journal](DAILY_JOURNAL_TEMPLATE.md).
-5. Disable real-order permission in settings if it is not needed again soon; forget credentials if appropriate.
+5. Disable real-order permission only after cleanup is clear, then disconnect before forgetting
+   credentials if appropriate. Settings, Disconnect, credential forgetting, and Exit refuse rather
+   than cancelling an owned open or unresolved order.

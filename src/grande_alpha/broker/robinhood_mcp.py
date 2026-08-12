@@ -3,11 +3,13 @@ from __future__ import annotations
 import asyncio
 import itertools
 import json
+import math
 import webbrowser
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from urllib.parse import parse_qs, urlparse
 
 from mcp import ClientSession
 from mcp.client.auth import OAuthClientProvider
@@ -19,6 +21,7 @@ from grande_alpha.broker.oauth import CredentialTokenStorage, OAuthCallbackServe
 from grande_alpha.config import MCP_URL
 from grande_alpha.models import (
     Account,
+    BrokerExecution,
     BrokerOrder,
     EquityTradability,
     OrderIntent,
@@ -26,6 +29,7 @@ from grande_alpha.models import (
     Portfolio,
     Position,
     Quote,
+    utc_now,
 )
 
 TOOL_PRIORITIES = {
@@ -39,6 +43,7 @@ TOOL_TIMEOUT_SECONDS = {
     "review_equity_order": 15.0,
 }
 DEFAULT_TOOL_TIMEOUT_SECONDS = 10.0
+MAX_LIST_PAGES = 100
 
 
 @dataclass
@@ -63,6 +68,119 @@ def _number(value: Any, default: float = 0.0) -> float:
         return float(value)
     except (TypeError, ValueError):
         return default
+
+
+def _required_number(value: Any, *, field: str) -> float:
+    if isinstance(value, bool):
+        raise BrokerError(f"Robinhood {field} must be numeric")
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise BrokerError(f"Robinhood {field} must be numeric") from exc
+    if not math.isfinite(parsed):
+        raise BrokerError(f"Robinhood {field} must be finite")
+    return parsed
+
+
+def _required_datetime(value: Any, *, field: str) -> datetime:
+    if not isinstance(value, str) or not value.strip():
+        raise BrokerError(f"Robinhood {field} must be a timezone-aware timestamp")
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise BrokerError(f"Robinhood {field} must be a timezone-aware timestamp") from exc
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise BrokerError(f"Robinhood {field} must be a timezone-aware timestamp")
+    return parsed.astimezone(UTC)
+
+
+def _required_text(value: Any, *, field: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise BrokerError(f"Robinhood {field} must be a nonempty string")
+    return value.strip()
+
+
+def _required_bool(value: Any, *, field: str) -> bool:
+    if not isinstance(value, bool):
+        raise BrokerError(f"Robinhood {field} must be a boolean")
+    return value
+
+
+def _next_cursor(data: dict[str, Any], *, resource: str) -> str | None:
+    if any(data.get(key) for key in ("next_page_token", "next_cursor", "cursor")):
+        raise BrokerError(
+            f"Robinhood returned a paginated {resource} set without its exact continuation URL"
+        )
+    continuation = data.get("next")
+    if continuation is None or continuation == "":
+        if data.get("has_more") is True:
+            raise BrokerError(
+                f"Robinhood {resource} pagination claimed more data without a continuation URL"
+            )
+        return None
+    if not isinstance(continuation, str):
+        raise BrokerError(f"Robinhood {resource} pagination continuation must be a URL")
+    values = parse_qs(urlparse(continuation).query, keep_blank_values=True).get("cursor", [])
+    if len(values) != 1 or not values[0].strip():
+        raise BrokerError(
+            f"Robinhood {resource} pagination continuation omitted one exact cursor"
+        )
+    return values[0].strip()
+
+
+def _require_order_identity(echo: dict[str, Any], intent: OrderIntent, *, context: str) -> None:
+    for key, expected in (
+        ("symbol", intent.symbol),
+        ("side", intent.side),
+        ("type", intent.order_type),
+    ):
+        if str(echo.get(key, "")).strip().lower() != str(expected).strip().lower():
+            raise BrokerError(f"Robinhood {context} echoed a different {key}")
+
+
+def _require_review_echo(data: dict[str, Any], intent: OrderIntent) -> None:
+    """Bind a review using fields declared by the review tool response schema."""
+
+    _require_order_identity(data, intent, context="review")
+    if intent.quantity is not None:
+        actual = _required_number(data.get("quantity"), field="review quantity")
+        if not math.isclose(actual, float(intent.quantity), rel_tol=1e-9, abs_tol=1e-9):
+            raise BrokerError("Robinhood review echoed a different quantity")
+    if intent.dollar_amount is not None:
+        actual = _required_number(data.get("dollar_amount"), field="review dollar amount")
+        if not math.isclose(actual, float(intent.dollar_amount), rel_tol=1e-9, abs_tol=0.005):
+            raise BrokerError("Robinhood review echoed a different dollar amount")
+    if intent.limit_price is not None:
+        actual = _required_number(data.get("limit_price"), field="review limit price")
+        if not math.isclose(actual, float(intent.limit_price), rel_tol=1e-9, abs_tol=0.005):
+            raise BrokerError("Robinhood review echoed a different limit price")
+
+
+def _require_placement_echo(row: dict[str, Any], intent: OrderIntent) -> None:
+    """Bind a placed order using fields declared by the order response schema."""
+
+    _require_order_identity(row, intent, context="placement")
+    for key, expected in (
+        ("market_hours", intent.market_hours),
+        ("time_in_force", intent.time_in_force),
+    ):
+        if str(row.get(key, "")).strip().lower() != str(expected).strip().lower():
+            raise BrokerError(f"Robinhood placement echoed a different {key}")
+    if intent.quantity is not None:
+        actual = _required_number(row.get("quantity"), field="placement quantity")
+        if not math.isclose(actual, float(intent.quantity), rel_tol=1e-9, abs_tol=1e-9):
+            raise BrokerError("Robinhood placement echoed a different quantity")
+    if intent.dollar_amount is not None:
+        raw_dollars = row.get("dollar_based_amount")
+        if isinstance(raw_dollars, dict):
+            raw_dollars = raw_dollars.get("amount")
+        actual = _required_number(raw_dollars, field="placement dollar amount")
+        if not math.isclose(actual, float(intent.dollar_amount), rel_tol=1e-9, abs_tol=0.005):
+            raise BrokerError("Robinhood placement echoed a different dollar amount")
+    if intent.limit_price is not None:
+        actual = _required_number(row.get("price"), field="placement price")
+        if not math.isclose(actual, float(intent.limit_price), rel_tol=1e-9, abs_tol=0.005):
+            raise BrokerError("Robinhood placement echoed a different price")
 
 
 class RobinhoodMCPBroker(Broker):
@@ -317,12 +435,17 @@ class RobinhoodMCPBroker(Broker):
         for row in data.get("accounts") or []:
             if not row:
                 continue
+            account_number = _required_text(
+                row.get("account_number"), field="account number"
+            )
             accounts.append(
                 Account(
-                    account_number=str(row.get("account_number", "")),
+                    account_number=account_number,
                     nickname=str(row.get("nickname") or row.get("brokerage_account_type") or "Account"),
                     account_type=str(row.get("type", "")),
-                    agentic_allowed=bool(row.get("agentic_allowed")),
+                    agentic_allowed=_required_bool(
+                        row.get("agentic_allowed"), field="agentic_allowed"
+                    ),
                     state=str(row.get("state", "")),
                 )
             )
@@ -340,11 +463,26 @@ class RobinhoodMCPBroker(Broker):
 
     async def get_quotes(self, symbols: list[str]) -> dict[str, Quote]:
         data = await self._call("get_equity_quotes", {"symbols": symbols})
+        if "results" not in data or not isinstance(data["results"], list):
+            raise BrokerError("Robinhood quote response must contain a results array")
         quotes: dict[str, Quote] = {}
-        for row in data.get("results") or []:
-            if not row or not row.get("quote"):
-                continue
+        for row in data["results"]:
+            if not isinstance(row, dict) or not isinstance(row.get("quote"), dict):
+                raise BrokerError("Robinhood quote result must contain a quote object")
             item = row["quote"]
+            symbol = _required_text(item.get("symbol"), field="quote symbol").upper()
+            if symbol in quotes:
+                raise BrokerError("Robinhood returned duplicate quote symbols")
+            if _required_bool(item.get("has_traded"), field=f"{symbol} has_traded") is not True:
+                raise BrokerError(f"Robinhood quote for {symbol} has not traded")
+            if _required_text(item.get("state"), field=f"{symbol} listing state").lower() != "active":
+                raise BrokerError(f"Robinhood quote for {symbol} is not actively listed")
+            bid_time = _required_datetime(
+                item.get("venue_bid_time"), field=f"{symbol} venue bid timestamp"
+            )
+            ask_time = _required_datetime(
+                item.get("venue_ask_time"), field=f"{symbol} venue ask timestamp"
+            )
             regular_time = _datetime(item.get("venue_last_trade_time"))
             extended_time = _datetime(item.get("venue_last_non_reg_trade_time"))
             venue_times = [value for value in (regular_time, extended_time) if value is not None]
@@ -352,18 +490,26 @@ class RobinhoodMCPBroker(Broker):
             # venue timestamps therefore make the row unusable instead of manufacturing a
             # fresh-looking quote, which is especially important for unattended shadow runs.
             if not venue_times:
-                continue
+                raise BrokerError(
+                    f"Robinhood quote for {symbol} omitted a valid venue timestamp"
+                )
             timestamp = max(venue_times)
             last = item.get("last_trade_price")
             if extended_time and (not regular_time or extended_time > regular_time):
                 last = item.get("last_non_reg_trade_price") or last
             quote = Quote(
-                symbol=str(item.get("symbol", "")).upper(),
-                bid=_number(item.get("bid_price")),
-                ask=_number(item.get("ask_price")),
-                last=_number(last),
+                symbol=symbol,
+                bid=_required_number(item.get("bid_price"), field="quote bid price"),
+                ask=_required_number(item.get("ask_price"), field="quote ask price"),
+                last=_required_number(last, field="quote last price"),
                 timestamp=timestamp,
+                bid_timestamp=bid_time,
+                ask_timestamp=ask_time,
             )
+            try:
+                quote.validate()
+            except ValueError as exc:
+                raise BrokerError(str(exc)) from exc
             quotes[quote.symbol] = quote
         return quotes
 
@@ -378,59 +524,186 @@ class RobinhoodMCPBroker(Broker):
                 continue
             item = EquityTradability(
                 symbol=str(row.get("symbol", "")).upper(),
-                tradeable=bool(row.get("tradeable")),
+                tradeable=_required_bool(row.get("tradeable"), field="tradeable"),
                 all_day_tradeable=str(row.get("all_day_tradability", "")).lower() == "tradable",
-                extended_hours_fractional_tradeable=bool(row.get("extended_hours_fractional_tradability")),
+                extended_hours_fractional_tradeable=_required_bool(
+                    row.get("extended_hours_fractional_tradability"),
+                    field="extended_hours_fractional_tradability",
+                ),
             )
             results[item.symbol] = item
         return results
 
     async def get_positions(self, account_number: str) -> list[Position]:
-        data = await self._call("get_equity_positions", {"account_number": account_number})
+        rows: list[dict[str, Any]] = []
+        arguments = {"account_number": account_number}
+        seen_cursors: set[str] = set()
+        for _page in range(MAX_LIST_PAGES):
+            data = await self._call("get_equity_positions", arguments)
+            if "positions" not in data:
+                raise BrokerError("Robinhood position page omitted the positions field")
+            page_rows = data["positions"]
+            if page_rows is None:
+                page_rows = []
+            if not isinstance(page_rows, list) or any(
+                not isinstance(row, dict) for row in page_rows
+            ):
+                raise BrokerError("Robinhood position page must contain an object array")
+            rows.extend(page_rows)
+            cursor = _next_cursor(data, resource="position")
+            if cursor is None:
+                break
+            if cursor in seen_cursors:
+                raise BrokerError("Robinhood position pagination repeated a cursor")
+            seen_cursors.add(cursor)
+            arguments = {"account_number": account_number, "cursor": cursor}
+        else:
+            raise BrokerError("Robinhood position pagination exceeded the bounded page limit")
         positions = []
-        for row in data.get("positions") or []:
+        for row in rows:
             if not row:
                 continue
-            quantity = _number(row.get("quantity"))
+            symbol = _required_text(row.get("symbol"), field="position symbol").upper()
+            quantity = _required_number(row.get("quantity"), field="position quantity")
+            sellable_quantity = _required_number(
+                row.get("shares_available_for_sells"),
+                field="position sellable quantity",
+            )
             if abs(quantity) < 1e-9:
                 continue
             positions.append(
                 Position(
-                    symbol=str(row.get("symbol", "")).upper(),
+                    symbol=symbol,
                     quantity=quantity,
-                    sellable_quantity=_number(row.get("shares_available_for_sells")),
+                    sellable_quantity=sellable_quantity,
                     average_price=(
-                        _number(row.get("average_buy_price"))
+                        _required_number(
+                            row.get("average_buy_price"), field="position average price"
+                        )
                         if row.get("average_buy_price") is not None
                         else None
                     ),
                 )
             )
+        normalized_symbols = [position.symbol.strip().upper() for position in positions]
+        if len(normalized_symbols) != len(set(normalized_symbols)):
+            raise BrokerError("Robinhood returned duplicate position symbols across pages")
         return positions
 
     def _parse_order(self, row: dict[str, Any]) -> BrokerOrder:
-        dollar = row.get("dollar_based_amount") or {}
-        return BrokerOrder(
-            order_id=str(row.get("id", "")),
-            symbol=str(row.get("symbol", "")).upper(),
-            side=str(row.get("side", "")),
-            state=str(row.get("state", "")),
-            quantity=_number(row.get("quantity")) if row.get("quantity") is not None else None,
-            dollar_amount=_number(dollar.get("amount")) if dollar.get("amount") is not None else None,
-            average_price=_number(row.get("average_price")) if row.get("average_price") is not None else None,
-            created_at=_datetime(row.get("created_at")),
-            raw=row,
+        order_id = _required_text(row.get("id"), field="order id")
+        symbol = _required_text(row.get("symbol"), field="order symbol").upper()
+        side = _required_text(row.get("side"), field="order side").lower()
+        state = _required_text(row.get("state"), field="order state").lower()
+        created_at = _required_datetime(
+            row.get("created_at"), field="order creation timestamp"
         )
+        placed_agent = _required_text(
+            row.get("placed_agent"), field="order placed_agent"
+        ).lower()
+        if side not in {"buy", "sell"}:
+            raise BrokerError("Robinhood order side must be buy or sell")
+        dollar = row.get("dollar_based_amount") or {}
+        if not isinstance(dollar, dict):
+            raise BrokerError("Robinhood dollar-based amount must be an object")
+        dollar_amount = (
+            _required_number(dollar.get("amount"), field="requested dollar amount")
+            if dollar.get("amount") is not None
+            else None
+        )
+        provider_quantity = (
+            _required_number(row.get("quantity"), field="requested quantity")
+            if row.get("quantity") is not None
+            else None
+        )
+        # The provider reports quantity=0 for dollar-notional orders. Preserve
+        # positive observed quantities, but normalize the non-applicable sentinel
+        # so it cannot be mistaken for a requested share quantity.
+        quantity = (
+            None
+            if dollar_amount is not None and provider_quantity == 0
+            else provider_quantity
+        )
+        raw_executions = row.get("executions")
+        cumulative_value = row.get("cumulative_quantity")
+        if raw_executions is not None and not isinstance(raw_executions, list):
+            raise BrokerError("Robinhood execution list must be an array")
+        executions: list[BrokerExecution] = []
+        for raw_execution in raw_executions or []:
+            if not isinstance(raw_execution, dict):
+                raise BrokerError("Robinhood execution must be an object")
+            execution = BrokerExecution(
+                execution_id=str(raw_execution.get("id", "")).strip(),
+                quantity=_required_number(raw_execution.get("quantity"), field="execution quantity"),
+                price=_required_number(raw_execution.get("price"), field="execution price"),
+                fees=_required_number(raw_execution.get("fees"), field="execution fees"),
+                timestamp=_required_datetime(
+                    raw_execution.get("timestamp"), field="execution timestamp"
+                ),
+            )
+            try:
+                execution.validate()
+            except ValueError as exc:
+                raise BrokerError(str(exc)) from exc
+            executions.append(execution)
+        order = BrokerOrder(
+            order_id=order_id,
+            symbol=symbol,
+            side=side,
+            state=state,
+            quantity=quantity,
+            dollar_amount=dollar_amount,
+            average_price=_number(row.get("average_price")) if row.get("average_price") is not None else None,
+            created_at=created_at,
+            placed_agent=placed_agent,
+            raw=row,
+            executions=tuple(executions),
+            cumulative_quantity=(
+                _required_number(cumulative_value, field="cumulative execution quantity")
+                if cumulative_value is not None
+                else None
+            ),
+            last_transaction_at=(
+                _required_datetime(row.get("last_transaction_at"), field="last transaction timestamp")
+                if row.get("last_transaction_at") is not None
+                else None
+            ),
+        )
+        try:
+            order.validate_execution_provenance(
+                require_snapshot=(raw_executions is not None and cumulative_value is not None),
+                observed_at=utc_now(),
+            )
+        except ValueError as exc:
+            raise BrokerError(str(exc)) from exc
+        return order
 
     async def get_orders(self, account_number: str) -> list[BrokerOrder]:
-        data = await self._call("get_equity_orders", {"account_number": account_number})
-        if data.get("has_more") is True or any(
-            data.get(key) for key in ("next_page_token", "next_cursor", "cursor")
-        ):
-            raise BrokerError(
-                "Robinhood returned a paginated order set that GRANDE Alpha cannot prove complete"
-            )
-        orders = [self._parse_order(row) for row in data.get("orders") or [] if row]
+        rows: list[dict[str, Any]] = []
+        arguments = {"account_number": account_number}
+        seen_cursors: set[str] = set()
+        for _page in range(MAX_LIST_PAGES):
+            data = await self._call("get_equity_orders", arguments)
+            if "orders" not in data:
+                raise BrokerError("Robinhood order page omitted the orders field")
+            page_rows = data["orders"]
+            if page_rows is None:
+                page_rows = []
+            if not isinstance(page_rows, list) or any(
+                not isinstance(row, dict) for row in page_rows
+            ):
+                raise BrokerError("Robinhood order page must contain an object array")
+            rows.extend(page_rows)
+            cursor = _next_cursor(data, resource="order")
+            if cursor is None:
+                break
+            if cursor in seen_cursors:
+                raise BrokerError("Robinhood order pagination repeated a cursor")
+            seen_cursors.add(cursor)
+            arguments = {"account_number": account_number, "cursor": cursor}
+        else:
+            raise BrokerError("Robinhood order pagination exceeded the bounded page limit")
+        orders = [self._parse_order(row) for row in rows]
         if any(not order.order_id for order in orders):
             raise BrokerError("Robinhood returned an order without a stable order id")
         if len({order.order_id for order in orders}) != len(orders):
@@ -440,10 +713,62 @@ class RobinhoodMCPBroker(Broker):
     async def review_order(self, account_number: str, intent: OrderIntent) -> OrderReview:
         arguments = intent.broker_arguments(account_number)
         data = await self._call("review_equity_order", arguments)
+        if "order_checks" not in data or not isinstance(data["order_checks"], dict):
+            raise BrokerError("Robinhood review omitted a valid order_checks object")
+        _require_review_echo(data, intent)
+        disclosure = data.get("market_data_disclosure")
+        if disclosure is not None and not isinstance(disclosure, str):
+            raise BrokerError("Robinhood market_data_disclosure must be a string or null")
+        quote_data = data.get("quote_data")
+        if not isinstance(quote_data, dict):
+            raise BrokerError("Robinhood review omitted required quote_data")
+        if _required_bool(
+            quote_data.get("has_traded"), field="review quote has_traded"
+        ) is not True:
+            raise BrokerError("Robinhood review quote_data reports an untraded instrument")
+        listing_state = _required_text(
+            quote_data.get("state"), field="review quote listing state"
+        ).lower()
+        if listing_state != "active":
+            raise BrokerError("Robinhood review quote_data instrument is not active")
+        quote_symbol = _required_text(
+            quote_data.get("symbol"), field="review quote symbol"
+        ).upper()
+        if quote_symbol != intent.symbol.strip().upper():
+            raise BrokerError("Robinhood review quote_data echoed a different symbol")
+        quote = Quote(
+            symbol=quote_symbol,
+            bid=_required_number(
+                quote_data.get("bid_price"), field="review quote bid price"
+            ),
+            ask=_required_number(
+                quote_data.get("ask_price"), field="review quote ask price"
+            ),
+            last=_required_number(
+                quote_data.get("last_trade_price"), field="review quote last price"
+            ),
+            timestamp=_required_datetime(
+                quote_data.get("venue_last_trade_time"),
+                field="review quote last-trade timestamp",
+            ),
+            bid_timestamp=_required_datetime(
+                quote_data.get("venue_bid_time"),
+                field="review quote venue bid timestamp",
+            ),
+            ask_timestamp=_required_datetime(
+                quote_data.get("venue_ask_time"),
+                field="review quote venue ask timestamp",
+            ),
+        )
+        try:
+            quote.validate()
+        except ValueError as exc:
+            raise BrokerError(f"Robinhood review quote_data is invalid: {exc}") from exc
         return OrderReview(
             intent=intent,
-            market_data_disclosure=str(data.get("market_data_disclosure") or ""),
-            checks=data.get("order_checks") or {},
+            market_data_disclosure=disclosure,
+            checks=data["order_checks"],
+            quote=quote,
             raw=data,
         )
 
@@ -454,10 +779,20 @@ class RobinhoodMCPBroker(Broker):
         row = data.get("order")
         if not isinstance(row, dict):
             raise BrokerError("Robinhood did not return the submitted order")
+        _require_placement_echo(row, intent)
+        echoed_ref = next(
+            (row.get(key) for key in ("ref_id", "client_order_id", "client_id") if row.get(key)),
+            None,
+        )
+        if echoed_ref is not None and str(echoed_ref) != intent.ref_id:
+            raise BrokerError("Robinhood placement echoed a different reference id")
         return self._parse_order(row)
 
     async def cancel_order(self, account_number: str, order_id: str) -> bool:
         data = await self._call(
             "cancel_equity_order", {"account_number": account_number, "order_id": order_id}
         )
-        return bool(data.get("accepted"))
+        accepted = data.get("accepted")
+        if not isinstance(accepted, bool):
+            raise BrokerError("Robinhood cancellation acceptance must be a boolean")
+        return accepted

@@ -14,7 +14,7 @@ class ReadOnlyBroker(Broker):
         self.now = now or datetime(2026, 8, 11, 15, 0, tzinfo=UTC)
         self.accounts = [Account("123456", "Agentic", "cash", True, "active")]
         self.quotes = {
-            symbol: Quote(symbol, 100.0, 100.02, 100.01, self.now)
+            symbol: Quote(symbol, 100.0, 100.02, 100.01, self.now, self.now, self.now)
             for symbol in ("QQQ", "TQQQ", "SQQQ")
         }
         self.orders: list[BrokerOrder] = []
@@ -126,13 +126,31 @@ async def test_broker_check_normalizes_terminal_states_and_fails_unknown_open() 
         ),
         (
             lambda broker: broker.quotes.__setitem__(
-                "QQQ", Quote("QQQ", 100, 100.02, 100.01, broker.now - timedelta(seconds=9))
+                "QQQ",
+                Quote(
+                    "QQQ",
+                    100,
+                    100.02,
+                    100.01,
+                    broker.now,
+                    broker.now - timedelta(seconds=9),
+                    broker.now - timedelta(seconds=9),
+                ),
             ),
-            "venue quote is stale",
+            "venue bid is stale",
         ),
         (
             lambda broker: broker.quotes.__setitem__(
-                "QQQ", Quote("QQQ", 100, 100.02, 100.01, broker.now + timedelta(seconds=3))
+                "QQQ",
+                Quote(
+                    "QQQ",
+                    100,
+                    100.02,
+                    100.01,
+                    broker.now,
+                    broker.now + timedelta(seconds=3),
+                    broker.now + timedelta(seconds=3),
+                ),
             ),
             "in the future",
         ),

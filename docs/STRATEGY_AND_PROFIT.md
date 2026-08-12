@@ -159,7 +159,7 @@ only from the broker.
 ## Evidence required before increasing size
 
 Do not scale because of one profitable day. Shadow-only operation remains the required engineering
-stage while there is no passing policy-v11 certificate. If a later qualified review permits real
+stage while there is no passing policy-v13 certificate. If a later qualified review permits real
 orders, require at least 20 monitored live sessions and record:
 
 - number of submitted, filled, canceled, and rejected orders;

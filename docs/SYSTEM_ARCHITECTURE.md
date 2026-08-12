@@ -19,7 +19,7 @@ GRANDE project family
 | Independent runtime bounds | Risk engine independently approves or rejects the intent |
 | Freshness and lifecycle gates | Quote age, spread, market-time, and session-state checks |
 | Actuator boundary | Official Robinhood Trading MCP review and order submission |
-| Emergency stop | Session pause/revoke blocks local authority; `STOP + CANCEL` also requests cancellation |
+| Emergency stop | Pause/revoke only block local authority; `STOP + CANCEL` previews exact GRANDE-owned orders and requires confirmation before cancellation |
 | Evidence trail | Frozen hash-chained authority receipts plus SQLite decision/broker receipts |
 | Candidate versus approved runtime | `LOCKED`, `LIVE`, `EXPIRED`, and review-blocked states |
 | Simulation boundary | `TQQQS`/`SQQQS` replay engine receives no broker object or live authority |
@@ -47,6 +47,13 @@ exact account, ticker tuple, route, strategy fingerprint, ET-day expiry, and all
 risk engine owns pause/revoke state, gross-notional reservations, and a hash-chained in-memory action
 receipt queue. The controller supplies current binding context, persists receipts append-only, and
 releases abandoned reservations. See [Bounded autonomous authority](AUTONOMOUS_AUTHORITY.md).
+
+Cancellation is a separate consent boundary. The controller may lock new local requests at any time,
+but its only cancellation path consumes a short-lived, exact preview of GRANDE-owned nonterminal
+Agentic orders after explicit user confirmation. The preview is bound to the selected account and
+order set; manual/unrelated orders are excluded, and pending-cancel orders are verification-only.
+Revoke, Settings, Disconnect, credential forgetting, Exit, and internal fault paths cannot call the
+broker cancellation operation and must refuse when owned open or unresolved state remains.
 
 The sandbox and live-shadow executor share a pure decision policy with live automation. The policy
 returns a target and reason; three separate execution boundaries consume that decision. Historical

@@ -18,6 +18,7 @@ TERMINAL_ORDER_STATES = frozenset(
         "filled",
         "cancelled",
         "canceled",
+        "partially_filled_rest_cancelled",
         "rejected",
         "failed",
         "expired",

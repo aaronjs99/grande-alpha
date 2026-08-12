@@ -28,10 +28,10 @@ from grande_alpha.sandbox import (
 from grande_alpha.strategy import StrategyConfig
 
 EASTERN = ZoneInfo("America/New_York")
-EVIDENCE_POLICY_VERSION = 11
+EVIDENCE_POLICY_VERSION = 13
 # This value is derived from the machine-readable mechanics assessment below. It must not
-# become true merely because entry sizing shares a helper: entry counts, fill-time provenance,
-# actual execution state, and post-exit authority semantics must all align as well.
+# become true merely because entry sizing shares a helper: exact observations, fill economics,
+# exit lifecycle, and the provider order-confirmation contract must all align as well.
 RUNTIME_SIZING_PARITY_CERTIFIED = runtime_parity_assessment(
     CandidateExecutionContract()
 ).certified
@@ -44,6 +44,7 @@ MIN_TOTAL_EVIDENCE_SESSIONS = (
 REQUIRED_LIVE_GATE_NAMES = frozenset(
     {
         "Historical source",
+        "Exact runtime observation schema",
         "Trading-session coverage",
         "Data breadth",
         "Data recency",
@@ -652,6 +653,26 @@ def promotion_report(
                 else "No machine-readable provenance"
             ),
             "Manifest-bound observed market history with attested research rights; source labels are ignored",
+        ),
+        PromotionGate(
+            "Exact runtime observation schema",
+            (
+                bundle.runtime_observation_parity_eligible
+                and base_result.runtime_observation_replay
+            ),
+            (
+                f"schema={bundle.provenance.observation_schema}; "
+                f"analysis={bundle.provenance.analysis_price_semantics}; "
+                f"execution={bundle.provenance.execution_price_semantics}; "
+                f"volume={bundle.provenance.volume_semantics}; "
+                f"schema_exact={bundle.runtime_observation_parity_eligible}; "
+                f"evaluated_by_exact_engine={base_result.runtime_observation_replay}"
+                if bundle.provenance is not None
+                else "No machine-readable runtime quote provenance"
+            ),
+            "Provenance-bound GRANDE runtime quote trace evaluated by the exact causal replay "
+            "engine: QQQ bid/ask-mid bars and the first later synchronized TQQQ/SQQQ venue "
+            "bid/ask batch; generic OHLCV or generic bar replay is insufficient",
         ),
         PromotionGate(
             "Trading-session coverage",

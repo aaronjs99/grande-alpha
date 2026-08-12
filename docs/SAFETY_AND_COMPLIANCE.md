@@ -14,7 +14,16 @@ Active sessions expose separate pause and revoke actions and emit hash-chained a
 The [live-pilot activation guide](LIVE_ACTIVATION.md) records the current CASH/evidence/OAuth stop
 state, regular-hours/GFD-only route, ambiguous-order quarantine, and external release gates.
 
-The optional Robinhood adapter may receive read access to account numbers, balances, positions, transactions, orders, watchlists, and scans across connected accounts. Robinhood states that order placement is restricted to the dedicated Agentic account, that automated trades may occur without per-transaction confirmation if authorized, and that agentic trading can result in total loss. Review the provider's current [Agentic Trading overview](https://robinhood.com/us/en/support/articles/agentic-trading-overview/) before connecting.
+The optional Robinhood adapter may receive read access to account numbers, balances, positions,
+transactions, orders, watchlists, and scans across connected accounts. Robinhood's public overview
+states that order placement is restricted to the dedicated Agentic account, that an agent may place
+orders without confirmation when instructed, and that agentic trading can result in total loss.
+However, the current order-review tool contract separately requires the exact preview and disclosure
+to be presented for explicit confirmation before placement. GRANDE Alpha applies the stricter current
+tool contract: its session grant is not treated as per-order confirmation, and autonomous placement
+remains blocked pending a compliant per-order flow or written provider clarification. Review the
+provider's current [Agentic Trading overview](https://robinhood.com/us/en/support/articles/agentic-trading-overview/)
+before connecting.
 
 The application further restricts its own behavior, but cannot control provider availability, settlement, fills, market gaps, account restrictions, or a compromised host.
 
@@ -55,12 +64,19 @@ Retain broker confirmations, consolidated tax forms, transfers, fills, fees, tax
 
 ## Stops and emergency control
 
-The red stop control blocks new local requests, attempts cancellation, and checks the broker for a
-terminal result. A cancellation can race a fill and cannot be guaranteed during a provider, network,
-operating-system, or power failure. If cleanup remains unresolved, the connected app refuses a clean
-exit; check Robinhood and retry stop/cancel. Local stop-loss and take-profit decisions cannot execute
-while the app is unavailable. A filled position remains the user's responsibility until a broker
-confirms its sale.
+The red **STOP + CANCEL** control first blocks new local requests, refreshes broker truth, and presents
+a blocking preview of the exact nonterminal Agentic-account orders owned by GRANDE Alpha's durable
+intent ledger. Cancellation requires explicit confirmation of that count and scope. Unrelated or
+manually placed orders are never included. Orders already pending cancellation are disclosed and
+verified without a duplicate cancellation request.
+
+Revoke, permission disablement, Disconnect, credential forgetting, Exit, and internal fault handling
+do not cancel implicitly. They lock or refuse while GRANDE-owned open or unresolved order state
+remains and direct the operator to **STOP + CANCEL**. Even a confirmed cancellation can race a fill
+and cannot be guaranteed during a provider, network, operating-system, or power failure. The app
+therefore remains connected/open when cleanup is unresolved. Local stop-loss and take-profit
+decisions cannot execute while the app is unavailable, and a filled position remains the user's
+responsibility until a broker confirms its sale.
 
 The local market calendar covers scheduled recurring holidays and early closes, not emergency
 closures, venue outages, or trading halts. Use the official

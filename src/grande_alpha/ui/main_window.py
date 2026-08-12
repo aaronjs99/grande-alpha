@@ -788,17 +788,39 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Authority was not resumed", str(exc))
 
     async def _revoke_authority(self) -> None:
-        verified = await self.controller.revoke_live_authority()
-        if not verified:
-            QMessageBox.critical(
-                self,
-                "Cancellation not verified",
-                "Authority is revoked and new orders are locked, but every prior order could not be "
-                "verified terminal. Check Robinhood immediately and retry STOP + CANCEL.",
-            )
+        await self.controller.revoke_live_authority("Authority revoked by user")
+        QMessageBox.information(
+            self,
+            "Authority revoked",
+            "New orders are locked. Existing orders were not cancelled. Use STOP + CANCEL "
+            "to review and explicitly confirm any GRANDE-owned cancellations.",
+        )
 
     async def _stop_and_cancel(self) -> None:
-        verified = await self.controller.stop_and_cancel()
+        try:
+            plan = await self.controller.prepare_cancel_plan()
+        except Exception as exc:
+            QMessageBox.critical(self, "Cancellation preview failed", str(exc))
+            return
+        scope = "\n".join(plan.order_summaries) or "No eligible GRANDE-owned open orders."
+        unrelated = (
+            f"\n\n{len(plan.unrelated_order_ids)} unrelated open order(s) will remain untouched."
+            if plan.unrelated_order_ids
+            else ""
+        )
+        answer = QMessageBox.question(
+            self,
+            "Confirm GRANDE-owned order cancellation",
+            f"Agentic account ••••{plan.account_number[-4:]}\n"
+            f"Cancel exactly {len(plan.order_ids)} GRANDE-owned order(s):\n\n{scope}"
+            f"{unrelated}\n\nFilled positions remain open. Continue?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            await self.controller.stop_and_cancel("STOP requested; cancellation declined")
+            return
+        verified = await self.controller.execute_confirmed_cancel(plan)
         if not verified:
             QMessageBox.critical(
                 self,
@@ -887,13 +909,26 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             QMessageBox.critical(self, "Flatten review failed", str(exc))
             return
-        disclosure = review.market_data_disclosure or "Live market disclosure unavailable."
+        disclosure_section = (
+            f"Robinhood market-data disclosure (verbatim):\n{review.market_data_disclosure}\n\n"
+            if review.market_data_disclosure is not None
+            else ""
+        )
+        estimated_price = review.estimated_execution_price
+        estimated_proceeds = review.estimated_notional
         phrase = f"SELL {intent.quantity:g} {intent.symbol}"
         text, ok = QInputDialog.getText(
             self,
             "Confirm real-money sell",
-            f"Robinhood reviewed this order:\n\n{disclosure}\n\n"
-            f"SELL {intent.quantity:g} {intent.symbol} at market during regular hours.\n"
+            "Robinhood reviewed this exact real-money order:\n\n"
+            f"Symbol: {intent.symbol}\n"
+            f"Side: {intent.side.upper()}\n"
+            f"Order type: {intent.order_type}\n"
+            f"Quantity: {intent.quantity:g} shares\n"
+            f"Estimated sell price at reviewed bid: ${estimated_price:,.2f} per share\n"
+            f"Estimated proceeds: ${estimated_proceeds:,.2f}\n"
+            "This is an estimate from the reviewed bid, not a guaranteed fill.\n\n"
+            f"{disclosure_section}"
             f"Type exactly: {phrase}",
         )
         if not ok or text.strip() != phrase:
@@ -1176,7 +1211,10 @@ class MainWindow(QMainWindow):
             answer = QMessageBox.question(
                 self,
                 "Exit GRANDE Alpha",
-                "Exit will lock the strategy and attempt to cancel open agentic orders. Filled positions remain open. Continue?",
+                "Exit locks new orders but does not cancel broker orders. GRANDE Alpha will "
+                "refuse to disconnect while any GRANDE-owned order or unresolved submission "
+                "remains; use STOP + CANCEL first to preview and explicitly confirm that exact "
+                "scope. Unrelated orders and filled positions remain untouched. Continue?",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.No,
             )

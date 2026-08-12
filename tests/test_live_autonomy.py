@@ -13,12 +13,14 @@ from PySide6.QtWidgets import QApplication, QMessageBox
 
 import grande_alpha.controller as controller_module
 import grande_alpha.risk as risk_module
+import grande_alpha.storage as storage_module
 import grande_alpha.ui.main_window as main_window_module
 from grande_alpha.broker.base import Broker, BrokerError
 from grande_alpha.config import AppConfig
 from grande_alpha.controller import TradingController
 from grande_alpha.models import (
     Account,
+    BrokerExecution,
     BrokerOrder,
     LiveGrant,
     OrderIntent,
@@ -42,9 +44,9 @@ def _account(number: str = ACCOUNT_NUMBER) -> Account:
 
 def _quotes(timestamp: datetime = NOW) -> dict[str, Quote]:
     return {
-        "QQQ": Quote("QQQ", 499.98, 500.02, 500.0, timestamp),
-        "TQQQ": Quote("TQQQ", 49.99, 50.01, 50.0, timestamp),
-        "SQQQ": Quote("SQQQ", 39.99, 40.01, 40.0, timestamp),
+        "QQQ": Quote("QQQ", 499.98, 500.02, 500.0, timestamp, timestamp, timestamp),
+        "TQQQ": Quote("TQQQ", 49.99, 50.01, 50.0, timestamp, timestamp, timestamp),
+        "SQQQ": Quote("SQQQ", 39.99, 40.01, 40.0, timestamp, timestamp, timestamp),
     }
 
 
@@ -58,8 +60,19 @@ def _order(
     quantity: float | None = None,
     dollar_amount: float | None = 10.0,
     average_price: float | None = None,
+    executions: tuple[BrokerExecution, ...] = (),
+    cumulative_quantity: float | None = None,
+    last_transaction_at: datetime | None = None,
+    created_at: datetime = NOW,
+    placed_agent: str = "agentic",
 ) -> BrokerOrder:
-    raw = {"ref_id": ref_id} if ref_id else {}
+    raw = {
+        "type": "market",
+        "market_hours": "regular_hours",
+        "time_in_force": "gfd",
+    }
+    if ref_id:
+        raw["ref_id"] = ref_id
     return BrokerOrder(
         order_id=order_id,
         symbol=symbol,
@@ -68,8 +81,61 @@ def _order(
         quantity=quantity,
         dollar_amount=dollar_amount,
         average_price=average_price,
-        created_at=NOW,
+        created_at=created_at,
         raw=raw,
+        executions=executions,
+        cumulative_quantity=cumulative_quantity,
+        last_transaction_at=last_transaction_at,
+        placed_agent=placed_agent,
+    )
+
+
+def _observed_fill(
+    order: BrokerOrder,
+    *,
+    quantity: float,
+    price: float,
+    execution_id: str,
+    state: str = "filled",
+    timestamp: datetime = NOW,
+) -> BrokerOrder:
+    execution = BrokerExecution(execution_id, quantity, price, 0.0, timestamp)
+    return replace(
+        order,
+        state=state,
+        average_price=price,
+        executions=(execution,),
+        cumulative_quantity=quantity,
+        last_transaction_at=timestamp,
+    )
+
+
+def _seed_holding(
+    store: AuditStore,
+    *,
+    symbol: str,
+    quantity: float,
+    price: float,
+    order_id: str,
+    timestamp: datetime = NOW - timedelta(minutes=5),
+) -> None:
+    store.record_broker_order_executions(
+        ACCOUNT_NUMBER,
+        _order(
+            order_id=order_id,
+            state="filled",
+            symbol=symbol,
+            side="buy",
+            quantity=quantity,
+            dollar_amount=None,
+            average_price=price,
+            executions=(
+                BrokerExecution(f"{order_id}-execution", quantity, price, 0.0, timestamp),
+            ),
+            cumulative_quantity=quantity,
+            last_transaction_at=timestamp,
+            created_at=timestamp,
+        ),
     )
 
 
@@ -121,7 +187,7 @@ class DeterministicBroker(Broker):
     async def review_order(self, account_number: str, intent: OrderIntent) -> OrderReview:
         assert account_number == ACCOUNT_NUMBER
         self.review_calls.append(intent.ref_id)
-        return OrderReview(intent, "", {}, {})
+        return OrderReview(intent, "", {}, self.quotes[intent.symbol], {})
 
     async def place_order(self, account_number: str, intent: OrderIntent) -> BrokerOrder:
         assert account_number == ACCOUNT_NUMBER
@@ -130,6 +196,7 @@ class DeterministicBroker(Broker):
         if self.place_exception is not None:
             raise self.place_exception
         order = _order(
+            order_id=f"broker-order-{len(self.place_calls)}",
             ref_id=intent.ref_id,
             symbol=intent.symbol,
             side=intent.side,
@@ -163,10 +230,43 @@ class BlockingSafeReadBroker(DeterministicBroker):
         return self.portfolio
 
 
+class BlockingQuoteBroker(DeterministicBroker):
+    def __init__(self) -> None:
+        super().__init__()
+        self.quote_read_started = asyncio.Event()
+        self.release_quote_read = asyncio.Event()
+        self.block_next_quote_read = True
+
+    async def get_quotes(self, symbols: list[str]) -> dict[str, Quote]:
+        if self.block_next_quote_read:
+            self.block_next_quote_read = False
+            self.quote_read_started.set()
+            await self.release_quote_read.wait()
+        return await super().get_quotes(symbols)
+
+
+class MutatingCancelBroker(DeterministicBroker):
+    def __init__(self) -> None:
+        super().__init__()
+        self.mutate_order_id = ""
+
+    async def cancel_order(self, account_number: str, order_id: str) -> bool:
+        accepted = await super().cancel_order(account_number, order_id)
+        if self.mutate_order_id:
+            self.orders = [
+                replace(order, quantity=2.0, dollar_amount=None)
+                if order.order_id == self.mutate_order_id
+                else order
+                for order in self.orders
+            ]
+        return accepted
+
+
 @pytest.fixture(autouse=True)
 def _fixed_live_clock(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(controller_module, "utc_now", lambda: NOW)
     monkeypatch.setattr(risk_module, "utc_now", lambda: NOW)
+    monkeypatch.setattr(storage_module, "utc_now", lambda: NOW)
 
 
 def _controller(
@@ -221,8 +321,138 @@ def _intent(ref_id: str) -> OrderIntent:
     )
 
 
+def _bind_owned_order(
+    store: AuditStore,
+    order: BrokerOrder,
+    *,
+    ref_id: str | None = None,
+) -> BrokerOrder:
+    durable_ref = ref_id or f"{order.order_id}-ref"
+    bound = order
+    intent = OrderIntent(
+        ref_id=durable_ref,
+        symbol=bound.symbol,
+        side=bound.side,
+        reason="owned cancellation fixture",
+        order_type=str(bound.raw["type"]),
+        dollar_amount=bound.dollar_amount,
+        quantity=bound.quantity,
+        limit_price=(
+            float(bound.raw["price"]) if bound.raw.get("price") is not None else None
+        ),
+        market_hours=str(bound.raw["market_hours"]),
+        time_in_force=str(bound.raw["time_in_force"]),
+        created_at=bound.created_at or NOW,
+    )
+    store.record_intent(intent)
+    store.mark_intent_submitting(
+        durable_ref,
+        account_number=ACCOUNT_NUMBER,
+        authority_id="cancel-fixture-authority",
+        strategy_fingerprint="c" * 64,
+        authorized_notional=float(
+            bound.dollar_amount
+            if bound.dollar_amount is not None
+            else (bound.quantity or 0.0) * 50.0
+        ),
+    )
+    store.update_intent(durable_ref, bound.order_id, bound.state)
+    return bound
+
+
+def _manual_flatten_ticket(
+    store: AuditStore,
+    *,
+    ref_id: str,
+    symbol: str = "TQQQ",
+    quantity: float = 0.4,
+) -> tuple[OrderIntent, OrderReview]:
+    intent = OrderIntent(
+        ref_id=ref_id,
+        symbol=symbol,
+        side="sell",
+        reason="Manual flatten confirmed in desktop app",
+        quantity=quantity,
+        created_at=NOW,
+    )
+    store.record_intent(intent)
+    return intent, OrderReview(
+        intent,
+        "manual flatten reviewed",
+        {},
+        _quotes()[symbol],
+        {},
+    )
+
+
+def _external_flatten_fill(*, symbol: str = "TQQQ", quantity: float = 0.4) -> BrokerOrder:
+    return _observed_fill(
+        _order(
+            "external-flatten-order",
+            state="queued",
+            symbol=symbol,
+            side="sell",
+            quantity=quantity,
+            dollar_amount=None,
+        ),
+        quantity=quantity,
+        price=49.9,
+        execution_id="external-flatten-execution",
+    )
+
+
 def _qt_app() -> QApplication:
     return QApplication.instance() or QApplication([])
+
+
+@pytest.mark.asyncio
+async def test_manual_flatten_ui_shows_exact_reviewed_estimate_and_verbatim_disclosure(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _qt_app()
+    held = Position("TQQQ", 0.4, 0.4, 50.0)
+    controller, broker, store, _grant = _controller(
+        tmp_path, monkeypatch, name="flatten-preview-ui"
+    )
+    broker.positions = [held]
+    controller.snapshot.positions = [held]
+    intent, review = _manual_flatten_ticket(store, ref_id="flatten-preview-ref")
+    review = replace(
+        review,
+        market_data_disclosure="PROVIDER VERBATIM: bids move; execution is not guaranteed.",
+        quote=replace(review.quote, bid=49.75, ask=49.80, last=49.77),
+    )
+
+    async def reviewed(_symbol: str) -> tuple[OrderIntent, OrderReview]:
+        return intent, review
+
+    captured: list[str] = []
+
+    def decline(_parent, _title: str, prompt: str):
+        captured.append(prompt)
+        return "", False
+
+    monkeypatch.setattr(controller, "review_flatten", reviewed)
+    monkeypatch.setattr(main_window_module.QInputDialog, "getText", decline)
+    window = MainWindow(controller, controller.config)
+    window._on_snapshot(controller.snapshot)
+
+    await window._flatten()
+
+    assert len(captured) == 1
+    prompt = captured[0]
+    assert "Symbol: TQQQ" in prompt
+    assert "Side: SELL" in prompt
+    assert "Order type: market" in prompt
+    assert "Quantity: 0.4 shares" in prompt
+    assert "Estimated sell price at reviewed bid: $49.75 per share" in prompt
+    assert "Estimated proceeds: $19.90" in prompt
+    assert "estimate from the reviewed bid, not a guaranteed fill" in prompt
+    assert "PROVIDER VERBATIM: bids move; execution is not guaranteed." in prompt
+    assert broker.place_calls == []
+    window._closing_after_cleanup = True
+    window.close()
+    store.close()
 
 
 @pytest.mark.asyncio
@@ -269,7 +499,7 @@ def test_live_grant_requires_flat_order_free_and_fresh_exact_quotes(
             [],
             [],
             _quotes(NOW - timedelta(seconds=20)),
-            "venue quote is not fresh",
+            "venue bid is not fresh",
         ),
     )
 
@@ -291,6 +521,24 @@ def test_live_grant_requires_flat_order_free_and_fresh_exact_quotes(
     controller.authorize_live(grant)
     assert controller.risk.grant == grant
     assert controller.snapshot.live_status == "LIVE"
+    store.close()
+
+
+def test_fresh_last_trade_cannot_hide_stale_executable_book(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    controller, _broker, store, _grant = _controller(
+        tmp_path,
+        monkeypatch,
+        name="fresh-trade-stale-book",
+    )
+    stale = NOW - timedelta(seconds=20)
+    quotes = _quotes()
+    quotes["TQQQ"] = Quote("TQQQ", 49.99, 50.01, 50.0, NOW, stale, stale)
+
+    with pytest.raises(BrokerError, match="TQQQ venue bid is not fresh"):
+        controller._validated_execution_quotes(quotes, NOW, max_age_seconds=8.0)
+
     store.close()
 
 
@@ -369,6 +617,133 @@ def test_live_authority_rejects_premarket_and_start_discards_prestart_pipeline(
     store.close()
 
 
+def test_unrelated_completed_order_does_not_enter_scoped_execution_ledger(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    controller, _broker, store, _grant = _controller(
+        tmp_path,
+        monkeypatch,
+        name="unrelated-completed-order",
+    )
+    execution = BrokerExecution("soxl-execution", 1.0, 198.37, 0.0, NOW)
+    unrelated = _order(
+        order_id="soxl-order",
+        state="filled",
+        symbol="SOXL",
+        side="sell",
+        quantity=1.0,
+        dollar_amount=None,
+        average_price=198.37,
+        executions=(execution,),
+        cumulative_quantity=1.0,
+        last_transaction_at=NOW,
+    )
+
+    controller._persist_execution_truth(ACCOUNT_NUMBER, [unrelated])
+
+    assert store.broker_executions(ACCOUNT_NUMBER) == []
+    assert controller._execution_provenance_gaps == set()
+    store.close()
+
+
+def test_missing_scoped_execution_provenance_blocks_live_authority(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    controller, _broker, store, grant = _controller(
+        tmp_path,
+        monkeypatch,
+        name="missing-scoped-provenance",
+    )
+    incomplete = _order(
+        order_id="historical-tqqq-fill",
+        state="filled",
+        symbol="TQQQ",
+        side="buy",
+        quantity=0.2,
+        dollar_amount=None,
+        average_price=50.0,
+    )
+    controller._persist_execution_truth(ACCOUNT_NUMBER, [incomplete])
+
+    with pytest.raises(RuntimeError, match="lacks exact provider execution provenance"):
+        controller.authorize_live(grant)
+
+    assert controller.risk.grant is None
+    store.close()
+
+
+def test_live_authority_restores_exact_candidate_entry_count_from_durable_fills(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    controller, _broker, store, grant = _controller(
+        tmp_path,
+        monkeypatch,
+        name="exact-entry-restart",
+    )
+    buy_at = NOW - timedelta(minutes=3)
+    sell_at = NOW - timedelta(minutes=2)
+    buy_intent = replace(_intent("prior-entry-ref"), created_at=NOW - timedelta(minutes=4))
+    sell_intent = OrderIntent(
+        "prior-exit-ref",
+        "TQQQ",
+        "sell",
+        "prior exact exit",
+        quantity=0.2,
+        created_at=NOW - timedelta(minutes=4),
+    )
+    for intent, order_id, submitted_at in (
+        (buy_intent, "prior-buy", buy_at - timedelta(seconds=1)),
+        (sell_intent, "prior-sell", sell_at - timedelta(seconds=1)),
+    ):
+        store.record_intent(intent)
+        monkeypatch.setattr(storage_module, "utc_now", lambda value=submitted_at: value)
+        store.mark_intent_submitting(
+            intent.ref_id,
+            account_number=ACCOUNT_NUMBER,
+            authority_id="prior-authority",
+            strategy_fingerprint=grant.strategy_fingerprint,
+            authorized_notional=10.0,
+        )
+        store.update_intent(intent.ref_id, order_id, "filled")
+    monkeypatch.setattr(storage_module, "utc_now", lambda: NOW)
+    store.record_broker_order_executions(
+        ACCOUNT_NUMBER,
+        _order(
+            order_id="prior-buy",
+            state="filled",
+            side="buy",
+            quantity=None,
+            dollar_amount=10.0,
+            average_price=50.0,
+            executions=(BrokerExecution("prior-buy-exec", 0.2, 50.0, 0.0, buy_at),),
+            cumulative_quantity=0.2,
+            last_transaction_at=buy_at,
+            created_at=buy_at,
+        ),
+    )
+    store.record_broker_order_executions(
+        ACCOUNT_NUMBER,
+        _order(
+            order_id="prior-sell",
+            state="filled",
+            side="sell",
+            quantity=0.2,
+            dollar_amount=None,
+            average_price=50.1,
+            executions=(BrokerExecution("prior-sell-exec", 0.2, 50.1, 0.0, sell_at),),
+            cumulative_quantity=0.2,
+            last_transaction_at=sell_at,
+            created_at=sell_at,
+        ),
+    )
+
+    controller.authorize_live(grant)
+
+    assert controller._prior_entry_upper_bound == 1
+    assert controller.risk.grant == grant
+    store.close()
+
+
 @pytest.mark.asyncio
 async def test_ambiguous_placement_is_durable_revokes_authority_and_never_retries(
     tmp_path, monkeypatch: pytest.MonkeyPatch
@@ -433,7 +808,14 @@ async def test_successful_placement_blocks_decisions_until_broker_reconciliation
     assert "Waiting for post-submission broker reconciliation" in pair_receipt["summary"]
 
     broker.positions = [Position("TQQQ", 0.2, 0.2, 50.0)]
-    broker.orders = [replace(order, state="filled", average_price=50.0)]
+    broker.orders = [
+        _observed_fill(
+            order,
+            quantity=0.2,
+            price=50.0,
+            execution_id="successful-execution",
+        )
+    ]
     await controller.reconcile()
     assert controller._submission_reconcile_required == {}
     assert controller._uncertain_submission_refs == set()
@@ -447,8 +829,649 @@ async def test_successful_placement_blocks_decisions_until_broker_reconciliation
     fill_payload = json.loads(fill_receipts[0]["payload_json"])
     assert fill_payload["cumulative_quantity"] == pytest.approx(0.2)
     assert fill_payload["cumulative_notional"] == pytest.approx(10.0)
-    assert fill_payload["actual_fill_timestamp_available"] is False
+    assert fill_payload["actual_fill_timestamp_available"] is True
     store.close()
+
+
+@pytest.mark.asyncio
+async def test_post_review_opposite_inventory_blocks_placement_toctou(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    controller, broker, store, grant = _controller(
+        tmp_path,
+        monkeypatch,
+        name="post-review-opposite-inventory",
+    )
+    controller.authorize_live(grant)
+    controller.start_strategy()
+    original_review = broker.review_order
+
+    async def review_then_inject_position(account_number, intent):
+        review = await original_review(account_number, intent)
+        broker.positions = [Position("SQQQ", 0.1, 0.1, 40.0)]
+        return review
+
+    monkeypatch.setattr(broker, "review_order", review_then_inject_position)
+
+    assert await controller._submit(
+        _intent("post-review-race"), controller.snapshot.quotes["TQQQ"]
+    ) is None
+
+    assert broker.place_calls == []
+    assert controller.risk.grant is None
+    assert controller.snapshot.positions == [Position("SQQQ", 0.1, 0.1, 40.0)]
+    store.close()
+
+
+@pytest.mark.asyncio
+async def test_post_review_refresh_waits_for_inflight_reconcile_before_placement(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    broker = BlockingSafeReadBroker()
+    controller, _broker, store, grant = _controller(
+        tmp_path,
+        monkeypatch,
+        broker=broker,
+        name="post-review-inflight-reconcile",
+    )
+    controller.authorize_live(grant)
+    controller.start_strategy()
+    background = asyncio.create_task(controller.reconcile())
+    await broker.portfolio_read_started.wait()
+
+    submit = asyncio.create_task(
+        controller._submit(
+            _intent("post-review-locked-race"), controller.snapshot.quotes["TQQQ"]
+        )
+    )
+    await asyncio.sleep(0)
+    broker.positions = [Position("SQQQ", 0.1, 0.1, 40.0)]
+    broker.release_portfolio_read.set()
+
+    await background
+    assert await submit is None
+    assert broker.place_calls == []
+    assert controller.snapshot.positions == [Position("SQQQ", 0.1, 0.1, 40.0)]
+    store.close()
+
+
+@pytest.mark.asyncio
+async def test_post_review_refresh_waits_for_quote_lock_and_reauthorizes_latest_quote(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    broker = BlockingQuoteBroker()
+    controller, _broker, store, grant = _controller(
+        tmp_path,
+        monkeypatch,
+        broker=broker,
+        name="post-review-inflight-quote",
+    )
+    controller.authorize_live(grant)
+    controller.start_strategy()
+    background = asyncio.create_task(controller.refresh_quotes(evaluate=False))
+    await broker.quote_read_started.wait()
+
+    submit = asyncio.create_task(
+        controller._submit(
+            _intent("post-review-quote-race"), controller.snapshot.quotes["TQQQ"]
+        )
+    )
+    await asyncio.sleep(0)
+    broker.quotes["TQQQ"] = Quote("TQQQ", 49.0, 51.0, 50.0, NOW, NOW, NOW)
+    broker.release_quote_read.set()
+
+    await background
+    assert await submit is None
+    assert broker.place_calls == []
+    assert controller.snapshot.quotes["TQQQ"].spread_bps > grant.max_spread_bps
+    assert controller.risk.grant is None
+    store.close()
+
+
+@pytest.mark.asyncio
+async def test_manual_flatten_places_only_after_exact_current_truth_matches_review(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    held = Position("TQQQ", 0.4, 0.4, 50.0)
+    broker = DeterministicBroker()
+    broker.positions = [held]
+    controller, broker, store, _grant = _controller(
+        tmp_path,
+        monkeypatch,
+        broker=broker,
+        name="manual-flatten-exact-success",
+    )
+    _seed_holding(
+        store,
+        symbol="TQQQ",
+        quantity=held.quantity,
+        price=50.0,
+        order_id="manual-success-entry",
+    )
+    intent, review = _manual_flatten_ticket(store, ref_id="manual-success-ref")
+
+    order = await controller.place_reviewed_flatten(intent, review)
+
+    assert order.order_id == "broker-order-1"
+    assert broker.place_calls == [intent.ref_id]
+    assert broker.placed_intents == [intent]
+    assert controller._submission_reconcile_required == {intent.ref_id: order.order_id}
+    store.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("review_quote", "message"),
+    [
+        (
+            Quote(
+                "TQQQ",
+                49.99,
+                50.01,
+                50.0,
+                NOW - timedelta(seconds=20),
+                NOW - timedelta(seconds=20),
+                NOW - timedelta(seconds=20),
+            ),
+            "not fresh",
+        ),
+        (
+            Quote(
+                "TQQQ",
+                49.99,
+                50.01,
+                50.0,
+                NOW + timedelta(seconds=5),
+                NOW + timedelta(seconds=5),
+                NOW + timedelta(seconds=5),
+            ),
+            "not fresh",
+        ),
+        (
+            Quote(
+                "TQQQ",
+                49.99,
+                50.01,
+                50.0,
+                NOW,
+                NOW - timedelta(seconds=6),
+                NOW,
+            ),
+            "timestamps are misaligned",
+        ),
+    ],
+)
+async def test_manual_flatten_blocks_stale_future_or_skewed_review_quote(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+    review_quote: Quote,
+    message: str,
+) -> None:
+    held = Position("TQQQ", 0.4, 0.4, 50.0)
+    broker = DeterministicBroker()
+    broker.positions = [held]
+    controller, broker, store, _grant = _controller(
+        tmp_path,
+        monkeypatch,
+        broker=broker,
+        name=f"manual-review-clock-{review_quote.timestamp.timestamp()}",
+    )
+    _seed_holding(
+        store,
+        symbol="TQQQ",
+        quantity=held.quantity,
+        price=50.0,
+        order_id="manual-clock-entry",
+    )
+    intent, _review = _manual_flatten_ticket(store, ref_id="manual-clock-ref")
+    review = OrderReview(intent, "verbatim disclosure", {}, review_quote, {})
+
+    with pytest.raises(RuntimeError, match=message):
+        await controller.place_reviewed_flatten(intent, review)
+
+    assert broker.place_calls == []
+    store.close()
+
+
+@pytest.mark.asyncio
+async def test_manual_flatten_requires_rereview_after_material_bid_drift(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    held = Position("TQQQ", 0.4, 0.4, 50.0)
+    broker = DeterministicBroker()
+    broker.positions = [held]
+    controller, broker, store, _grant = _controller(
+        tmp_path,
+        monkeypatch,
+        broker=broker,
+        name="manual-review-bid-drift",
+    )
+    _seed_holding(
+        store,
+        symbol="TQQQ",
+        quantity=held.quantity,
+        price=50.0,
+        order_id="manual-drift-entry",
+    )
+    intent, review = _manual_flatten_ticket(store, ref_id="manual-drift-ref")
+    broker.quotes["TQQQ"] = Quote(
+        "TQQQ", 49.79, 49.81, 49.8, NOW, NOW, NOW
+    )
+
+    with pytest.raises(RuntimeError, match="changed materially"):
+        await controller.place_reviewed_flatten(intent, review)
+
+    assert broker.place_calls == []
+    store.close()
+
+
+@pytest.mark.asyncio
+async def test_manual_flatten_waits_for_inflight_reconcile_and_rejects_new_open_order(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    held = Position("TQQQ", 0.4, 0.4, 50.0)
+    broker = BlockingSafeReadBroker()
+    broker.positions = [held]
+    controller, broker, store, _grant = _controller(
+        tmp_path,
+        monkeypatch,
+        broker=broker,
+        name="manual-flatten-reconcile-overlap",
+    )
+    _seed_holding(
+        store,
+        symbol="TQQQ",
+        quantity=held.quantity,
+        price=50.0,
+        order_id="manual-overlap-entry",
+    )
+    intent, review = _manual_flatten_ticket(store, ref_id="manual-reconcile-race")
+
+    background = asyncio.create_task(controller.reconcile())
+    await broker.portfolio_read_started.wait()
+    placement = asyncio.create_task(controller.place_reviewed_flatten(intent, review))
+    await asyncio.sleep(0)
+
+    assert not placement.done()
+    assert broker.place_calls == []
+
+    # A working sell appears while the timer reconciliation owns the account
+    # lock. The placement path must wait and then perform its own non-coalescing
+    # truth read rather than creating a duplicate flatten order.
+    broker.orders = [
+        _order(
+            "external-working-sell",
+            state="queued",
+            symbol="TQQQ",
+            side="sell",
+            quantity=held.quantity,
+            dollar_amount=None,
+        )
+    ]
+    broker.release_portfolio_read.set()
+    await background
+
+    with pytest.raises(RuntimeError, match="nonterminal order appeared after review"):
+        await asyncio.wait_for(placement, timeout=1.0)
+
+    assert controller.snapshot.positions == [held]
+    assert broker.place_calls == []
+    assert store.unresolved_order_intents(ACCOUNT_NUMBER) == []
+    store.close()
+
+
+@pytest.mark.asyncio
+async def test_manual_flatten_rereads_account_after_waiting_for_quote_lock(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    held = Position("TQQQ", 0.4, 0.4, 50.0)
+    broker = BlockingQuoteBroker()
+    broker.positions = [held]
+    controller, broker, store, _grant = _controller(
+        tmp_path,
+        monkeypatch,
+        broker=broker,
+        name="manual-flatten-quote-overlap",
+    )
+    _seed_holding(
+        store,
+        symbol="TQQQ",
+        quantity=held.quantity,
+        price=50.0,
+        order_id="manual-quote-entry",
+    )
+    intent, review = _manual_flatten_ticket(store, ref_id="manual-quote-race")
+
+    background = asyncio.create_task(controller.refresh_quotes(evaluate=False))
+    await broker.quote_read_started.wait()
+    placement = asyncio.create_task(controller.place_reviewed_flatten(intent, review))
+    await asyncio.sleep(0)
+
+    assert not placement.done()
+    assert broker.place_calls == []
+
+    # Truth changes during the quote-lock wait. The exact placement refresh
+    # acquires both locks before reading account state, so this new flat state
+    # must win over the stale reviewed inventory.
+    broker.positions = []
+    broker.orders = [_external_flatten_fill()]
+    broker.release_quote_read.set()
+    await background
+
+    with pytest.raises(RuntimeError, match="Sellable position changed after review"):
+        await asyncio.wait_for(placement, timeout=1.0)
+
+    assert controller.snapshot.positions == []
+    assert broker.place_calls == []
+    assert store.unresolved_order_intents(ACCOUNT_NUMBER) == []
+    store.close()
+
+
+@pytest.mark.asyncio
+async def test_live_quote_evaluation_releases_quote_lock_before_preplacement_refresh(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    controller, broker, store, grant = _controller(
+        tmp_path,
+        monkeypatch,
+        name="live-refresh-placement-lock-order",
+    )
+    controller.authorize_live(grant)
+    controller.start_strategy()
+    controller.snapshot.signal = Signal(Regime.BULLISH, 1.0, "bullish lock-order test", NOW)
+    controller.snapshot.last_analysis_at = NOW
+    controller._analysis_sequence = controller.config.trade_every_bars
+    controller._last_trade_decision_sequence = 0
+
+    await asyncio.wait_for(controller.refresh_quotes(evaluate=True), timeout=1.0)
+
+    assert len(broker.place_calls) == 1
+    assert controller._submission_reconcile_required
+    store.close()
+
+
+@pytest.mark.asyncio
+async def test_failed_reconcile_invalidates_freshness_before_new_authority(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    controller, broker, store, grant = _controller(
+        tmp_path,
+        monkeypatch,
+        name="reconcile-freshness-invalidated",
+    )
+
+    async def fail_portfolio(_account_number):
+        raise BrokerError("read failed")
+
+    monkeypatch.setattr(broker, "get_portfolio", fail_portfolio)
+    await controller.reconcile()
+
+    assert controller.snapshot.last_reconcile_at is None
+    with pytest.raises(RuntimeError, match="freshly reconciled"):
+        controller.authorize_live(grant)
+    assert controller.risk.grant is None
+    store.close()
+
+
+@pytest.mark.asyncio
+async def test_partial_then_cancelled_buy_is_idempotent_and_releases_reconciliation_gate(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    controller, broker, store, grant = _controller(
+        tmp_path,
+        monkeypatch,
+        name="partial-cancelled-buy",
+    )
+    controller.authorize_live(grant)
+    controller.start_strategy()
+    intent = _intent("partial-cancelled-ref")
+    order = await controller._submit(intent, controller.snapshot.quotes["TQQQ"])
+    assert order is not None
+
+    execution = BrokerExecution("partial-cancelled-execution", 0.1, 50.0, 0.0, NOW)
+    partial = replace(
+        order,
+        state="partially_filled",
+        average_price=50.0,
+        executions=(execution,),
+        cumulative_quantity=0.1,
+        last_transaction_at=NOW,
+    )
+    broker.orders = [partial]
+    broker.positions = [Position("TQQQ", 0.1, 0.1, 50.0)]
+
+    await controller.reconcile()
+    assert controller._submission_reconcile_required == {intent.ref_id: order.order_id}
+    assert controller.risk.grant is grant
+
+    # Providers may repeat the same cumulative snapshot. Its immutable execution id
+    # must remain a single durable row and must not create a second entry count.
+    await controller.reconcile()
+    rows = store.broker_executions(ACCOUNT_NUMBER, order_id=order.order_id)
+    assert [row["execution_id"] for row in rows] == [execution.execution_id]
+    assert controller._confirmed_entry_order_ids == {order.order_id}
+
+    broker.orders = [replace(partial, state="partially_filled_rest_cancelled")]
+    await controller.reconcile()
+
+    assert controller._submission_reconcile_required == {}
+    assert controller.risk.grant is grant
+    assert len(store.broker_executions(ACCOUNT_NUMBER, order_id=order.order_id)) == 1
+
+    # The provider's exact terminal state releases the HOLD gate. The remaining
+    # partial inventory is then eligible for the normal managed exit path.
+    controller.snapshot.signal = Signal(Regime.FLAT, 0.0, "managed exit", NOW)
+    controller.snapshot.last_analysis_at = NOW
+    controller._analysis_sequence += controller.config.trade_every_bars
+    controller._last_submission_at = None
+    await controller._evaluate_and_trade()
+
+    assert broker.placed_intents[-1].side == "sell"
+    assert broker.placed_intents[-1].quantity == pytest.approx(0.1)
+    store.close()
+
+
+@pytest.mark.asyncio
+async def test_rejected_order_resolves_no_fill_and_a_new_reference_can_continue(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    controller, broker, store, grant = _controller(
+        tmp_path,
+        monkeypatch,
+        name="rejected-order-continuation",
+    )
+    controller.authorize_live(grant)
+    controller.start_strategy()
+    rejected_intent = _intent("rejected-ref")
+    rejected_order = await controller._submit(
+        rejected_intent,
+        controller.snapshot.quotes["TQQQ"],
+    )
+    assert rejected_order is not None
+
+    broker.orders = [
+        replace(
+            rejected_order,
+            state="rejected",
+            average_price=None,
+            executions=(),
+            cumulative_quantity=0.0,
+            last_transaction_at=NOW,
+        )
+    ]
+    broker.positions = []
+    await controller.reconcile()
+
+    assert controller._submission_reconcile_required == {}
+    assert controller.risk.grant is grant
+    assert store.broker_executions(ACCOUNT_NUMBER, order_id=rejected_order.order_id) == []
+
+    replacement = _intent("replacement-after-rejection")
+    replacement_order = await controller._submit(
+        replacement,
+        controller.snapshot.quotes["TQQQ"],
+    )
+    assert replacement_order is not None
+    assert replacement_order.order_id != rejected_order.order_id
+    assert broker.place_calls == [rejected_intent.ref_id, replacement.ref_id]
+    store.close()
+
+
+@pytest.mark.asyncio
+async def test_confirmed_flat_sell_can_eventually_reverse_into_opposite_fund(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    controller, broker, store, grant = _controller(
+        tmp_path,
+        monkeypatch,
+        name="confirmed-flat-reversal",
+    )
+    controller.authorize_live(grant)
+    controller.start_strategy()
+    _seed_holding(
+        store,
+        symbol="TQQQ",
+        quantity=0.4,
+        price=50.0,
+        order_id="reversal-entry",
+    )
+    held = Position("TQQQ", 0.4, 0.4, 50.0)
+    controller.snapshot.positions = [held]
+    broker.positions = [held]
+
+    sell_intent = OrderIntent(
+        ref_id="reversal-sell-ref",
+        symbol="TQQQ",
+        side="sell",
+        reason="confirmed-flat reversal lifecycle",
+        quantity=0.4,
+        created_at=NOW,
+    )
+    sell_order = await controller._submit(
+        sell_intent,
+        controller.snapshot.quotes["TQQQ"],
+    )
+    assert sell_order is not None
+    broker.orders = [
+        _observed_fill(
+            sell_order,
+            quantity=0.4,
+            price=49.9,
+            execution_id="reversal-sell-execution",
+        )
+    ]
+    broker.positions = []
+    await controller.reconcile()
+
+    assert controller._submission_reconcile_required == {}
+    assert controller.snapshot.positions == []
+    assert store.active_holding_start(ACCOUNT_NUMBER, "TQQQ", 0.0) is None
+
+    buy_intent = OrderIntent(
+        ref_id="reversal-buy-ref",
+        symbol="SQQQ",
+        side="buy",
+        reason="enter opposite fund only after confirmed flat",
+        dollar_amount=10.0,
+        created_at=NOW,
+    )
+    buy_order = await controller._submit(
+        buy_intent,
+        controller.snapshot.quotes["SQQQ"],
+    )
+    assert buy_order is not None
+    filled_buy = _observed_fill(
+        buy_order,
+        quantity=0.25,
+        price=40.0,
+        execution_id="reversal-buy-execution",
+    )
+    broker.orders = [filled_buy, *broker.orders[1:]]
+    broker.positions = [Position("SQQQ", 0.25, 0.25, 40.0)]
+    await controller.reconcile()
+
+    assert controller._submission_reconcile_required == {}
+    assert controller.snapshot.positions == broker.positions
+    assert store.active_holding_start(ACCOUNT_NUMBER, "SQQQ", 0.25) == NOW
+    assert [(item.side, item.symbol) for item in broker.placed_intents] == [
+        ("sell", "TQQQ"),
+        ("buy", "SQQQ"),
+    ]
+    store.close()
+
+
+@pytest.mark.asyncio
+async def test_restart_with_durable_fill_but_flat_broker_inventory_blocks_new_authority(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "restart-ledger-mismatch.db"
+    execution_time = NOW - timedelta(minutes=5)
+    filled_entry = _order(
+        order_id="restart-entry-order",
+        state="filled",
+        ref_id="restart-entry-ref",
+        symbol="TQQQ",
+        side="buy",
+        quantity=0.2,
+        dollar_amount=None,
+        average_price=50.0,
+        executions=(
+            BrokerExecution(
+                "restart-entry-execution",
+                0.2,
+                50.0,
+                0.0,
+                execution_time,
+            ),
+        ),
+        cumulative_quantity=0.2,
+        last_transaction_at=execution_time,
+        created_at=execution_time,
+    )
+    first_store = AuditStore(path)
+    first_store.record_broker_order_executions(ACCOUNT_NUMBER, filled_entry)
+    first_store.close()
+
+    broker = DeterministicBroker()
+    broker.orders = [filled_entry]
+    broker.positions = []
+    restored_store = AuditStore(path)
+    config = AppConfig(
+        broker_connection_enabled=True,
+        live_trading_enabled=True,
+        no_trade_open_minutes=0,
+        no_trade_close_minutes=0,
+    )
+    controller = TradingController(broker, config, restored_store)
+    monkeypatch.setattr(controller, "live_evidence_ready", lambda grant=None: True)
+
+    await controller.connect()
+    draft = LiveGrant(
+        account_number=ACCOUNT_NUMBER,
+        starts_at=NOW - timedelta(minutes=1),
+        expires_at=NOW + timedelta(hours=1),
+        max_order_notional=25.0,
+        max_total_exposure=40.0,
+        max_daily_loss=5.0,
+        max_trades=8,
+        max_orders_per_minute=4,
+        max_spread_bps=20.0,
+        max_quote_age_seconds=8.0,
+        max_daily_notional=75.0,
+        strategy_fingerprint="a" * 64,
+    )
+    grant = replace(draft, strategy_fingerprint=controller.current_strategy_fingerprint(draft))
+
+    with pytest.raises(
+        RuntimeError,
+        match="Durable execution history does not reconcile to broker inventory",
+    ):
+        controller.authorize_live(grant)
+
+    assert controller.risk.grant is None
+    assert not controller.snapshot.strategy_running
+    assert broker.place_calls == []
+    restored_store.close()
 
 
 @pytest.mark.asyncio
@@ -461,15 +1484,19 @@ async def test_stop_cancel_treats_pending_cancelled_as_nonterminal_and_fails_clo
     monkeypatch.setattr(controller_module.asyncio, "sleep", no_wait)
     broker = DeterministicBroker()
     broker.terminal_on_cancel = False
-    broker.orders = [_order("pending-cancel", state="pending_cancelled")]
     controller, broker, store, _grant = _controller(
         tmp_path,
         monkeypatch,
         broker=broker,
         name="pending-cancel",
     )
+    pending = _bind_owned_order(
+        store, _order("pending-cancel", state="pending_cancelled")
+    )
+    broker.orders = [pending]
+    plan = await controller.prepare_cancel_plan()
 
-    verified = await controller.stop_and_cancel("fault-test stop")
+    verified = await controller.execute_confirmed_cancel(plan, reason="fault-test stop")
 
     assert not verified
     assert broker.cancel_calls == []
@@ -487,23 +1514,147 @@ async def test_stop_cancel_succeeds_only_after_pending_cancel_is_observed_termin
     tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     broker = DeterministicBroker()
-    pending = _order("eventually-cancelled", state="pending_cancelled")
-    broker.order_snapshots.extend([[pending], [replace(pending, state="cancelled")]])
     controller, broker, store, _grant = _controller(
         tmp_path,
         monkeypatch,
         broker=broker,
         name="terminal-cancel",
     )
+    pending = _bind_owned_order(
+        store, _order("eventually-cancelled", state="pending_cancelled")
+    )
+    broker.orders = [pending]
+    plan = await controller.prepare_cancel_plan()
+    broker.order_snapshots.extend([[pending], [replace(pending, state="cancelled")]])
 
-    assert await controller.stop_and_cancel("fault-test stop")
+    assert await controller.execute_confirmed_cancel(plan, reason="fault-test stop")
     assert broker.cancel_calls == []
     assert controller.snapshot.orders[0].state == "cancelled"
     store.close()
 
 
 @pytest.mark.asyncio
-async def test_stale_live_quote_batch_revokes_authority_and_cancels_open_orders(
+async def test_stop_without_confirmed_plan_never_calls_provider_cancel(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    controller, broker, store, _grant = _controller(
+        tmp_path, monkeypatch, name="unconfirmed-cancel"
+    )
+    broker.orders = [
+        _bind_owned_order(store, _order("owned-but-unconfirmed", state="queued"))
+    ]
+
+    assert not await controller.stop_and_cancel("unconfirmed stop")
+    assert broker.cancel_calls == []
+    store.close()
+
+
+@pytest.mark.asyncio
+async def test_confirmed_cancel_only_targets_durably_owned_agentic_orders(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    controller, broker, store, _grant = _controller(
+        tmp_path, monkeypatch, name="mixed-cancel-scope"
+    )
+    owned = _bind_owned_order(store, _order("grande-order", state="queued"))
+    unrelated = _order(
+        "manual-order",
+        state="queued",
+        symbol="SQQQ",
+        placed_agent="user",
+    )
+    broker.orders = [owned, unrelated]
+
+    plan = await controller.prepare_cancel_plan()
+
+    assert plan.order_ids == ("grande-order",)
+    assert plan.unrelated_order_ids == ("manual-order",)
+    assert await controller.execute_confirmed_cancel(plan)
+    assert broker.cancel_calls == ["grande-order"]
+    assert next(order for order in broker.orders if order.order_id == "manual-order").state == "queued"
+    store.close()
+
+
+@pytest.mark.asyncio
+async def test_cancel_aborts_before_any_write_if_confirmed_order_identity_mutates(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    controller, broker, store, _grant = _controller(
+        tmp_path, monkeypatch, name="cancel-identity-mutation"
+    )
+    owned = _bind_owned_order(store, _order("mutated-order", state="queued"))
+    broker.orders = [owned]
+    plan = await controller.prepare_cancel_plan()
+    broker.orders = [replace(owned, symbol="SQQQ")]
+
+    assert not await controller.execute_confirmed_cancel(plan)
+    assert broker.cancel_calls == []
+    store.close()
+
+
+@pytest.mark.asyncio
+async def test_cancel_aborts_before_any_write_if_reconciliation_fails_after_preview(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    controller, broker, store, _grant = _controller(
+        tmp_path, monkeypatch, name="cancel-reconcile-failure"
+    )
+    owned = _bind_owned_order(store, _order("reconcile-order", state="queued"))
+    broker.orders = [owned]
+    plan = await controller.prepare_cancel_plan()
+    controller._submission_reconcile_required["missing-placement"] = "missing-order"
+
+    assert not await controller.execute_confirmed_cancel(plan)
+    assert broker.cancel_calls == []
+    store.close()
+
+
+@pytest.mark.asyncio
+async def test_cancel_revalidates_remaining_identity_before_every_provider_write(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    broker = MutatingCancelBroker()
+    controller, broker, store, _grant = _controller(
+        tmp_path,
+        monkeypatch,
+        broker=broker,
+        name="cancel-mid-batch-mutation",
+    )
+    first = _bind_owned_order(store, _order("a-first-order", state="queued"))
+    second = _bind_owned_order(store, _order("b-second-order", state="queued"))
+    broker.orders = [first, second]
+    broker.mutate_order_id = second.order_id
+    plan = await controller.prepare_cancel_plan()
+
+    assert not await controller.execute_confirmed_cancel(plan)
+    assert broker.cancel_calls == ["a-first-order"]
+    assert next(order for order in broker.orders if order.order_id == second.order_id).state == "queued"
+    store.close()
+
+
+@pytest.mark.asyncio
+async def test_disconnect_and_revoke_never_cancel_owned_open_orders_without_consent(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    controller, broker, store, grant = _controller(
+        tmp_path, monkeypatch, name="generic-actions-no-cancel"
+    )
+    controller.authorize_live(grant)
+    owned = _bind_owned_order(store, _order("owned-open-order", state="queued"))
+    broker.orders = [owned]
+    controller.snapshot.orders = [owned]
+
+    assert not await controller.revoke_live_authority("operator revoke")
+    with pytest.raises(BrokerError, match=r"Use STOP \+ CANCEL"):
+        await controller.disconnect()
+
+    assert broker.cancel_calls == []
+    assert controller.risk.grant is None
+    store.close()
+
+
+@pytest.mark.asyncio
+async def test_stale_live_quote_batch_revokes_authority_without_implicit_cancellation(
     tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     controller, broker, store, grant = _controller(
@@ -518,8 +1669,8 @@ async def test_stale_live_quote_batch_revokes_authority_and_cancels_open_orders(
 
     await controller.refresh_quotes()
 
-    assert broker.cancel_calls == ["risk-order"]
-    assert broker.orders[0].state == "cancelled"
+    assert broker.cancel_calls == []
+    assert broker.orders[0].state == "queued"
     assert controller.risk.grant is None
     assert controller.snapshot.live_status == "LOCKED"
     assert not controller.snapshot.strategy_running
@@ -573,6 +1724,7 @@ async def test_daily_loss_exit_waits_for_reconciliation_and_revokes_when_flat(
     controller.authorize_live(grant)
     controller.start_strategy()
     position = Position("TQQQ", 0.4, 0.4, 50.0)
+    _seed_holding(store, symbol="TQQQ", quantity=0.4, price=50.0, order_id="loss-entry")
     controller.snapshot.positions = [position]
     broker.positions = [position]
     losing = Portfolio(94.0, 94.0, 94.0)
@@ -594,7 +1746,14 @@ async def test_daily_loss_exit_waits_for_reconciliation_and_revokes_when_flat(
     await controller._evaluate_and_trade()
     assert len(broker.placed_intents) == 1
 
-    broker.orders = [replace(broker.orders[0], state="filled", average_price=49.9)]
+    broker.orders = [
+        _observed_fill(
+            broker.orders[0],
+            quantity=0.4,
+            price=49.9,
+            execution_id="loss-exit-execution",
+        )
+    ]
     broker.positions = []
     await controller.reconcile()
 
@@ -619,6 +1778,7 @@ async def test_regular_exit_never_duplicates_and_locks_after_repeated_stale_inve
     controller.authorize_live(grant)
     controller.start_strategy()
     position = Position("TQQQ", 0.4, 0.4, 50.0)
+    _seed_holding(store, symbol="TQQQ", quantity=0.4, price=50.0, order_id="regular-entry")
     controller.snapshot.positions = [position]
     broker.positions = [position]
     controller._analysis_sequence = controller.config.trade_every_bars
@@ -630,7 +1790,14 @@ async def test_regular_exit_never_duplicates_and_locks_after_repeated_stale_inve
     assert controller.risk.grant is grant
     assert controller._submission_reconcile_required
 
-    broker.orders = [replace(broker.orders[0], state="filled", average_price=49.9)]
+    broker.orders = [
+        _observed_fill(
+            broker.orders[0],
+            quantity=0.4,
+            price=49.9,
+            execution_id="regular-exit-execution",
+        )
+    ]
     await controller.reconcile()
     assert controller.risk.grant is grant
     assert controller._submission_reconcile_required
@@ -663,7 +1830,8 @@ async def test_take_profit_can_exit_exact_inventory_above_entry_order_cap(
     controller.authorize_live(grant)
     controller.start_strategy()
     position = Position("TQQQ", 0.5, 0.5, 50.0)
-    winning_quote = Quote("TQQQ", 51.98, 52.02, 52.0, NOW)
+    _seed_holding(store, symbol="TQQQ", quantity=0.5, price=50.0, order_id="profit-entry")
+    winning_quote = Quote("TQQQ", 51.98, 52.02, 52.0, NOW, NOW, NOW)
     controller.snapshot.positions = [position]
     broker.positions = [position]
     controller.snapshot.quotes["TQQQ"] = winning_quote
@@ -693,7 +1861,7 @@ async def test_take_profit_can_exit_exact_inventory_above_entry_order_cap(
 
 
 @pytest.mark.asyncio
-async def test_daily_loss_cancels_pending_buy_before_any_liquidation(
+async def test_daily_loss_locks_without_implicitly_cancelling_pending_buy(
     tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     controller, broker, store, grant = _controller(
@@ -704,6 +1872,7 @@ async def test_daily_loss_cancels_pending_buy_before_any_liquidation(
     controller.authorize_live(grant)
     controller.start_strategy()
     position = Position("TQQQ", 0.4, 0.4, 50.0)
+    _seed_holding(store, symbol="TQQQ", quantity=0.4, price=50.0, order_id="pending-loss-entry")
     controller.snapshot.positions = [position]
     broker.positions = [position]
     pending_buy = _order("pending-buy", state="queued", ref_id="pending-buy-ref")
@@ -717,8 +1886,8 @@ async def test_daily_loss_cancels_pending_buy_before_any_liquidation(
 
     await controller._evaluate_and_trade()
 
-    assert broker.cancel_calls == ["pending-buy"]
-    assert broker.orders[0].state == "cancelled"
+    assert broker.cancel_calls == []
+    assert broker.orders[0].state == "queued"
     assert broker.placed_intents == []
     assert controller.risk.grant is None
     assert controller.risk.session_status() == "LOCKED"
@@ -739,6 +1908,13 @@ async def test_reconcile_rejects_inconsistent_leveraged_inventory_without_sellin
     )
     controller.authorize_live(grant)
     controller.start_strategy()
+    _seed_holding(
+        store,
+        symbol="TQQQ",
+        quantity=0.4,
+        price=50.0,
+        order_id="inconsistent-inventory-entry",
+    )
     broker.positions = [Position("TQQQ", 0.4, 0.6, 50.0)]
 
     await controller.reconcile()
@@ -885,6 +2061,100 @@ async def test_safe_read_only_refresh_blocks_authority_and_survives_midread_gran
         and "stopped" in receipt["summary"].lower()
         for receipt in receipts
     )
+    store.close()
+
+
+@pytest.mark.asyncio
+async def test_safe_read_only_refresh_recovers_restart_fill_truth_before_marking_fresh(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    controller, broker, store, grant = _controller(
+        tmp_path,
+        monkeypatch,
+        name="safe-check-restart-fill",
+    )
+    intent = _intent("crashed-placement-ref")
+    store.record_intent(intent)
+    store.mark_intent_submitting(
+        intent.ref_id,
+        account_number=ACCOUNT_NUMBER,
+        authority_id=grant.authority_id,
+        strategy_fingerprint=grant.strategy_fingerprint,
+        authorized_notional=10.0,
+    )
+    controller._submission_reconcile_required[intent.ref_id] = "restart-order"
+    filled = _observed_fill(
+        _order(
+            "restart-order",
+            ref_id=intent.ref_id,
+            symbol="TQQQ",
+            side="buy",
+            dollar_amount=10.0,
+        ),
+        quantity=0.2,
+        price=50.0,
+        execution_id="restart-execution",
+    )
+    broker.orders = [filled]
+    broker.positions = [Position("TQQQ", 0.2, 0.2, 50.0)]
+    controller.snapshot.last_reconcile_at = None
+    controller.snapshot.last_refresh = None
+
+    await controller.safe_read_only_refresh()
+
+    assert controller.snapshot.last_reconcile_at == NOW
+    assert controller.snapshot.last_refresh == NOW
+    assert controller._submission_reconcile_required == {}
+    assert store.live_filled_entry_order_ids(ACCOUNT_NUMBER, "2026-08-11") == {
+        "restart-order"
+    }
+    assert store.unresolved_order_intents(ACCOUNT_NUMBER) == []
+    assert broker.review_calls == []
+    assert broker.place_calls == []
+    assert broker.cancel_calls == []
+    store.close()
+
+
+@pytest.mark.asyncio
+async def test_restart_reconciliation_rejects_order_predating_durable_submission(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    controller, broker, store, grant = _controller(
+        tmp_path,
+        monkeypatch,
+        name="restart-order-predates-submit",
+    )
+    intent = _intent("predating-placement-ref")
+    store.record_intent(intent)
+    store.mark_intent_submitting(
+        intent.ref_id,
+        account_number=ACCOUNT_NUMBER,
+        authority_id=grant.authority_id,
+        strategy_fingerprint=grant.strategy_fingerprint,
+        authorized_notional=10.0,
+    )
+    controller._submission_reconcile_required[intent.ref_id] = "predating-order"
+    too_old = NOW - timedelta(minutes=1)
+    broker.orders = [
+        _observed_fill(
+            _order(
+                "predating-order",
+                ref_id=intent.ref_id,
+                created_at=too_old,
+            ),
+            quantity=0.2,
+            price=50.0,
+            execution_id="predating-execution",
+            timestamp=too_old,
+        )
+    ]
+    broker.positions = [Position("TQQQ", 0.2, 0.2, 50.0)]
+
+    with pytest.raises(BrokerError, match="predates (the durable placement invocation|its durable submission intent)"):
+        await controller.safe_read_only_refresh()
+
+    assert controller.snapshot.last_reconcile_at is None
+    assert broker.place_calls == []
     store.close()
 
 

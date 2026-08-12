@@ -27,6 +27,7 @@ from grande_alpha.candidate_execution import (
 from grande_alpha.config import data_dir
 from grande_alpha.execution import execution_profile
 from grande_alpha.historical import HistoricalBundle, ReplayFrame
+from grande_alpha.models import Bar, Signal
 from grande_alpha.policy import DecisionPolicy, PolicyConfig, PolicyPosition, session_key, session_minutes
 from grande_alpha.strategy import StrategyConfig, build_strategy
 
@@ -243,6 +244,7 @@ class SandboxResult:
     daily_pnl: dict[str, float] = field(default_factory=dict)
     daily_returns: list[float] = field(default_factory=list)
     final_unsettled_cash: float = 0.0
+    runtime_observation_replay: bool = False
 
     def metrics(self) -> dict[str, Any]:
         return {
@@ -269,8 +271,78 @@ class SandboxResult:
             "daily_pnl": self.daily_pnl,
             "daily_returns": self.daily_returns,
             "final_unsettled_cash": self.final_unsettled_cash,
+            "runtime_observation_replay": self.runtime_observation_replay,
             "warnings": self.warnings,
         }
+
+
+@dataclass(frozen=True)
+class RuntimeObservationReplayResult:
+    """Clock trace from the same causal quote path used by live shadow execution."""
+
+    bars: tuple[Bar, ...]
+    signals: tuple[Signal, ...]
+    causal_timestamps: tuple[datetime, ...]
+    fills: tuple[Any, ...]
+    final_state: Any
+
+
+class RuntimeObservationReplayEngine:
+    """Replay exact runtime observations with no broker dependency or write capability."""
+
+    def __init__(self, config: SandboxConfig) -> None:
+        config.validate()
+        self.config = config
+
+    def run(self, bundle: HistoricalBundle) -> RuntimeObservationReplayResult:
+        if not bundle.frames or not all(
+            frame.has_exact_runtime_observation for frame in bundle.frames
+        ):
+            raise ValueError(
+                "Runtime observation replay requires causal QQQ/TQQQ/SQQQ quote frames; "
+                "generic OHLCV is not runtime parity"
+            )
+        # Local import avoids a module cycle: live shadow consumes SandboxConfig but has no broker.
+        from grande_alpha.shadow import LiveShadowEngine
+
+        strategy = build_strategy(self.config.strategy_config())
+        shadow = LiveShadowEngine(self.config, bar_minutes=interval_minutes(bundle.interval))
+        active_boundary: tuple[str, str] | None = None
+        bars: list[Bar] = []
+        signals: list[Signal] = []
+        causal_timestamps: list[datetime] = []
+        fills: list[Any] = []
+        for frame in bundle.frames:
+            assert frame.causal_timestamp is not None
+            boundary = (
+                session_key(frame.causal_timestamp, bundle.market_hours),
+                frame.stream_id,
+            )
+            if active_boundary is not None and boundary != active_boundary:
+                strategy = build_strategy(self.config.strategy_config())
+                shadow = LiveShadowEngine(
+                    self.config,
+                    bar_minutes=interval_minutes(bundle.interval),
+                )
+            active_boundary = boundary
+            signal = strategy.on_bar(frame.qqq)
+            fills.extend(
+                shadow.on_causal_quote(
+                    frame.causal_timestamp,
+                    signal,
+                    frame.runtime_quotes(),
+                )
+            )
+            bars.append(frame.qqq)
+            signals.append(signal)
+            causal_timestamps.append(frame.causal_timestamp)
+        return RuntimeObservationReplayResult(
+            tuple(bars),
+            tuple(signals),
+            tuple(causal_timestamps),
+            tuple(fills),
+            shadow.state,
+        )
 
 
 @dataclass

@@ -7,7 +7,8 @@ import io
 import json
 import math
 import random
-from dataclasses import asdict, dataclass
+import sqlite3
+from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime, time, timedelta
 from pathlib import Path
 from typing import Any
@@ -17,13 +18,35 @@ import httpx
 
 from grande_alpha.config import data_dir
 from grande_alpha.market_calendar import regular_session_times
-from grande_alpha.models import Bar, utc_now
-from grande_alpha.policy import session_bounds, session_key, trading_date
+from grande_alpha.models import Bar, Quote, utc_now
+from grande_alpha.policy import market_session_allowed, session_bounds, session_key, trading_date
+from grande_alpha.storage import EXACT_QUOTE_VALIDATOR_VERSION, QUOTE_BATCH_SCHEMA_VERSION
+from grande_alpha.strategy import BarBuilder
 
 YAHOO_CHART_URL = "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
 INTERVAL_LIMITS = {"1m": 7, "5m": 60, "15m": 60, "60m": 730, "1d": 10_000}
 INTERVAL_SECONDS = {"5s": 5, "1m": 60, "5m": 300, "15m": 900, "60m": 3600, "1d": 86400}
 SHARED_LEVERAGED_HISTORY_START = datetime(2010, 2, 9, tzinfo=UTC)
+RUNTIME_OBSERVATION_SCHEMA = "grande_runtime_quote_v2"
+RUNTIME_ANALYSIS_PRICE_SEMANTICS = "qqq_bid_ask_mid_ohlc"
+RUNTIME_EXECUTION_PRICE_SEMANTICS = "causal_target_bid_ask"
+RUNTIME_VOLUME_SEMANTICS = "absent"
+RUNTIME_REQUIRED_SYMBOLS = ("QQQ", "TQQQ", "SQQQ")
+RUNTIME_PROVENANCE_FIELDS = frozenset(
+    {
+        "observation_schema",
+        "analysis_price_semantics",
+        "execution_price_semantics",
+        "volume_semantics",
+        "source_trace_sha256",
+        "excluded_legacy_quote_rows",
+        "validator_profile",
+        "validator_version",
+        "validator_max_age_seconds",
+        "validator_max_skew_seconds",
+        "excluded_nonexact_quote_batches",
+    }
+)
 
 
 def _is_sha256(value: str) -> bool:
@@ -58,6 +81,17 @@ class DataProvenance:
     manifest_hash: str = ""
     csv_sha256: str = ""
     canonical_dataset_hash: str = ""
+    observation_schema: str = "generic_ohlcv_v1"
+    analysis_price_semantics: str = "bar_ohlc"
+    execution_price_semantics: str = "next_bar_modeled_spread"
+    volume_semantics: str = "provider_or_zero"
+    source_trace_sha256: str = ""
+    excluded_legacy_quote_rows: int = 0
+    validator_profile: str = ""
+    validator_version: int = 0
+    validator_max_age_seconds: float | None = None
+    validator_max_skew_seconds: float | None = None
+    excluded_nonexact_quote_batches: int = 0
 
     @property
     def evidence_eligible(self) -> bool:
@@ -68,8 +102,15 @@ class DataProvenance:
                 output_seconds = int(self.bar_interval[:-1])
         except (TypeError, ValueError):
             return False
-        return bool(
+        source_content_bound = (
             self.source_kind == "imported_manifest"
+            and _is_sha256(self.csv_sha256)
+        ) or (
+            self.source_kind == "grande_runtime_quote_trace"
+            and _is_sha256(self.source_trace_sha256)
+        )
+        return bool(
+            source_content_bound
             and self.manifest_version == 1
             and self.observed_data
             and not self.synthetic_or_interpolated
@@ -92,8 +133,27 @@ class DataProvenance:
             and 0 < resolution <= output_seconds
             and self.market_hours in {"regular_hours", "extended_hours", "all_day_hours"}
             and _is_sha256(self.manifest_hash)
-            and _is_sha256(self.csv_sha256)
             and _is_sha256(self.canonical_dataset_hash)
+        )
+
+    @property
+    def runtime_observation_eligible(self) -> bool:
+        """Whether source identity and semantics match the live causal observation path."""
+
+        return bool(
+            self.evidence_eligible
+            and self.source_kind == "grande_runtime_quote_trace"
+            and self.observation_schema == RUNTIME_OBSERVATION_SCHEMA
+            and self.analysis_price_semantics == RUNTIME_ANALYSIS_PRICE_SEMANTICS
+            and self.execution_price_semantics == RUNTIME_EXECUTION_PRICE_SEMANTICS
+            and self.volume_semantics == RUNTIME_VOLUME_SEMANTICS
+            and self.validator_profile == "exact_execution_quotes"
+            and self.validator_version == EXACT_QUOTE_VALIDATOR_VERSION
+            and self.validator_max_age_seconds is not None
+            and 0 < self.validator_max_age_seconds <= 8.0
+            and self.validator_max_skew_seconds is not None
+            and 0 < self.validator_max_skew_seconds
+            <= min(5.0, self.validator_max_age_seconds)
         )
 
     @property
@@ -136,6 +196,11 @@ class ReplayFrame:
     qqq: Bar
     tqqq: Bar
     sqqq: Bar
+    causal_timestamp: datetime | None = None
+    qqq_quote: Quote | None = None
+    tqqq_quote: Quote | None = None
+    sqqq_quote: Quote | None = None
+    stream_id: str = ""
 
     def bar_for_alias(self, alias: str) -> Bar:
         if alias == "TQQQS":
@@ -143,6 +208,37 @@ class ReplayFrame:
         if alias == "SQQQS":
             return self.sqqq
         raise ValueError(f"Unknown sandbox alias: {alias}")
+
+    @property
+    def has_exact_runtime_observation(self) -> bool:
+        quotes = (self.qqq_quote, self.tqqq_quote, self.sqqq_quote)
+        if self.causal_timestamp is None or any(quote is None for quote in quotes):
+            return False
+        assert all(quote is not None for quote in quotes)
+        return bool(
+            tuple(quote.symbol for quote in quotes if quote is not None) == RUNTIME_REQUIRED_SYMBOLS
+            and all(quote.book_timestamp is not None for quote in quotes if quote is not None)
+            and self.causal_timestamp
+            == max(
+                quote.latest_book_timestamp
+                for quote in quotes
+                if quote is not None and quote.latest_book_timestamp is not None
+            )
+            and self.causal_timestamp > self.qqq.start
+            and bool(self.stream_id.strip())
+        )
+
+    def runtime_quotes(self) -> dict[str, Quote]:
+        if not self.has_exact_runtime_observation:
+            raise ValueError("Replay frame has no exact runtime quote observation")
+        assert self.qqq_quote is not None
+        assert self.tqqq_quote is not None
+        assert self.sqqq_quote is not None
+        return {
+            "QQQ": self.qqq_quote,
+            "TQQQ": self.tqqq_quote,
+            "SQQQ": self.sqqq_quote,
+        }
 
 
 @dataclass(frozen=True)
@@ -176,6 +272,18 @@ class HistoricalBundle:
             and self.provenance.canonical_dataset_hash == self.dataset_hash
             and self.provenance.bar_interval == self.interval
             and self.provenance.market_hours == self.market_hours
+        )
+
+    @property
+    def runtime_observation_parity_eligible(self) -> bool:
+        return bool(
+            self.provenance is not None
+            and self.provenance.runtime_observation_eligible
+            and self.provenance.canonical_dataset_hash == self.dataset_hash
+            and self.provenance.bar_interval == self.interval
+            and self.provenance.market_hours == self.market_hours
+            and self.frames
+            and all(frame.has_exact_runtime_observation for frame in self.frames)
         )
 
 
@@ -290,6 +398,16 @@ def dataset_hash(frames: list[ReplayFrame]) -> str:
                 f"{bar.symbol}|{bar.open:.8f}|{bar.high:.8f}|{bar.low:.8f}|"
                 f"{bar.close:.8f}|{bar.volume:.4f}".encode()
             )
+        if frame.has_exact_runtime_observation:
+            assert frame.causal_timestamp is not None
+            digest.update(f"|causal|{frame.causal_timestamp.isoformat()}".encode())
+            digest.update(f"|stream|{frame.stream_id}".encode())
+            for quote in frame.runtime_quotes().values():
+                digest.update(
+                    f"|{quote.symbol}|{quote.bid:.8f}|{quote.ask:.8f}|{quote.last:.8f}|"
+                    f"{quote.timestamp.isoformat()}|{quote.bid_timestamp.isoformat()}|"
+                    f"{quote.ask_timestamp.isoformat()}".encode()
+                )
     return digest.hexdigest()
 
 
@@ -394,6 +512,48 @@ def _bar_from_dict(raw: dict[str, Any]) -> Bar:
     )
 
 
+def _quote_dict(quote: Quote | None) -> dict[str, Any] | None:
+    if quote is None:
+        return None
+    return {
+        "symbol": quote.symbol,
+        "bid": quote.bid,
+        "ask": quote.ask,
+        "last": quote.last,
+        "timestamp": quote.timestamp.isoformat(),
+        "bid_timestamp": (
+            quote.bid_timestamp.isoformat() if quote.bid_timestamp is not None else None
+        ),
+        "ask_timestamp": (
+            quote.ask_timestamp.isoformat() if quote.ask_timestamp is not None else None
+        ),
+    }
+
+
+def _quote_from_dict(raw: dict[str, Any] | None) -> Quote | None:
+    if raw is None:
+        return None
+    quote = Quote(
+        symbol=str(raw["symbol"]),
+        bid=float(raw["bid"]),
+        ask=float(raw["ask"]),
+        last=float(raw["last"]),
+        timestamp=datetime.fromisoformat(str(raw["timestamp"])).astimezone(UTC),
+        bid_timestamp=(
+            datetime.fromisoformat(str(raw["bid_timestamp"])).astimezone(UTC)
+            if raw.get("bid_timestamp") is not None
+            else None
+        ),
+        ask_timestamp=(
+            datetime.fromisoformat(str(raw["ask_timestamp"])).astimezone(UTC)
+            if raw.get("ask_timestamp") is not None
+            else None
+        ),
+    )
+    quote.validate()
+    return quote
+
+
 def save_bundle(bundle: HistoricalBundle, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
@@ -409,6 +569,13 @@ def save_bundle(bundle: HistoricalBundle, path: Path) -> None:
                 "qqq": _bar_dict(frame.qqq),
                 "tqqq": _bar_dict(frame.tqqq),
                 "sqqq": _bar_dict(frame.sqqq),
+                "causal_timestamp": (
+                    frame.causal_timestamp.isoformat() if frame.causal_timestamp is not None else None
+                ),
+                "qqq_quote": _quote_dict(frame.qqq_quote),
+                "tqqq_quote": _quote_dict(frame.tqqq_quote),
+                "sqqq_quote": _quote_dict(frame.sqqq_quote),
+                "stream_id": frame.stream_id,
             }
             for frame in bundle.frames
         ],
@@ -424,6 +591,15 @@ def load_bundle(path: Path) -> HistoricalBundle:
             _bar_from_dict(row["qqq"]),
             _bar_from_dict(row["tqqq"]),
             _bar_from_dict(row["sqqq"]),
+            (
+                datetime.fromisoformat(row["causal_timestamp"]).astimezone(UTC)
+                if row.get("causal_timestamp")
+                else None
+            ),
+            _quote_from_dict(row.get("qqq_quote")),
+            _quote_from_dict(row.get("tqqq_quote")),
+            _quote_from_dict(row.get("sqqq_quote")),
+            str(row.get("stream_id") or ""),
         )
         for row in payload["frames"]
     ]
@@ -444,10 +620,478 @@ def load_bundle(path: Path) -> HistoricalBundle:
             **{key: value for key, value in raw_provenance.items() if key in allowed}
         )
         if stored_digest != provenance.digest:
-            raise ValueError("Cached historical provenance hash does not match its contents")
+            legacy_payload = {
+                key: raw_provenance[key]
+                for key in allowed
+                if key not in RUNTIME_PROVENANCE_FIELDS and key in raw_provenance
+            }
+            legacy_digest = hashlib.sha256(
+                json.dumps(legacy_payload, sort_keys=True, separators=(",", ":")).encode()
+            ).hexdigest()
+            if RUNTIME_PROVENANCE_FIELDS.intersection(raw_provenance) or stored_digest != legacy_digest:
+                raise ValueError("Cached historical provenance hash does not match its contents")
     return HistoricalBundle(
         source=str(payload["source"]),
         downloaded_at=datetime.fromisoformat(payload["downloaded_at"]).astimezone(UTC),
+        frames=frames,
+        interval=interval,
+        dataset_hash=quality.dataset_hash,
+        quality=quality,
+        market_hours=market_hours,
+        provenance=provenance,
+    )
+
+
+def runtime_trace_manifest_template(bundle: HistoricalBundle, quote_row_count: int) -> dict[str, Any]:
+    """Return a fail-closed manifest template bound to one imported runtime trace."""
+
+    provenance = bundle.provenance
+    if provenance is None or not _is_sha256(provenance.source_trace_sha256):
+        raise ValueError("Runtime trace bundle is missing its source trace digest")
+    return {
+        "manifest_version": 1,
+        "dataset_id": "replace-with-stable-runtime-trace-id",
+        "created_at": utc_now().isoformat(),
+        "provider": "",
+        "provider_product": "",
+        "acquisition_method": "GRANDE Alpha synchronized venue quote recorder",
+        "license_reference": "",
+        "license_reviewed_by_user": False,
+        "research_use_permitted": False,
+        "automated_strategy_research_permitted": False,
+        "redistribution_permitted": False,
+        "observed_data": True,
+        "synthetic_or_interpolated": False,
+        "contains_upsampled_rows": False,
+        "symbols": list(RUNTIME_REQUIRED_SYMBOLS),
+        "bar_interval": bundle.interval,
+        "source_resolution_seconds": provenance.source_resolution_seconds,
+        "construction_method": "aggregated_from_quotes",
+        "observation_schema": RUNTIME_OBSERVATION_SCHEMA,
+        "analysis_price_semantics": RUNTIME_ANALYSIS_PRICE_SEMANTICS,
+        "execution_price_semantics": RUNTIME_EXECUTION_PRICE_SEMANTICS,
+        "volume_semantics": RUNTIME_VOLUME_SEMANTICS,
+        "timestamp_timezone": "UTC",
+        "timestamp_semantics": "venue_quote_time",
+        "market_hours": bundle.market_hours,
+        "start": bundle.start.isoformat(),
+        "end": bundle.end.isoformat(),
+        "source_trace_sha256": provenance.source_trace_sha256,
+        "dataset_hash": bundle.dataset_hash,
+        "quote_row_count": quote_row_count,
+        "excluded_legacy_quote_rows": provenance.excluded_legacy_quote_rows,
+        "validator_profile": provenance.validator_profile,
+        "validator_version": provenance.validator_version,
+        "validator_max_age_seconds": provenance.validator_max_age_seconds,
+        "validator_max_skew_seconds": provenance.validator_max_skew_seconds,
+        "excluded_nonexact_quote_batches": provenance.excluded_nonexact_quote_batches,
+    }
+
+
+def _runtime_trace_provenance(
+    manifest: dict[str, Any] | None,
+    *,
+    source_trace_sha256: str,
+    dataset_hash_value: str,
+    interval: str,
+    market_hours: str,
+    quote_row_count: int,
+    excluded_legacy_quote_rows: int,
+    validator_max_age_seconds: float,
+    validator_max_skew_seconds: float,
+    excluded_nonexact_quote_batches: int,
+    source_resolution_seconds: float,
+    start: datetime,
+    end: datetime,
+) -> DataProvenance:
+    if manifest is None:
+        return DataProvenance(
+            source_kind="grande_runtime_quote_trace_unattested",
+            acquisition_method="GRANDE Alpha synchronized venue quote recorder",
+            observed_data=True,
+            synthetic_or_interpolated=False,
+            contains_upsampled_rows=False,
+            construction_method="aggregated_from_quotes",
+            source_resolution_seconds=source_resolution_seconds,
+            bar_interval=interval,
+            market_hours=market_hours,
+            canonical_dataset_hash=dataset_hash_value,
+            observation_schema=RUNTIME_OBSERVATION_SCHEMA,
+            analysis_price_semantics=RUNTIME_ANALYSIS_PRICE_SEMANTICS,
+            execution_price_semantics=RUNTIME_EXECUTION_PRICE_SEMANTICS,
+            volume_semantics=RUNTIME_VOLUME_SEMANTICS,
+            source_trace_sha256=source_trace_sha256,
+            excluded_legacy_quote_rows=excluded_legacy_quote_rows,
+            validator_profile="exact_execution_quotes",
+            validator_version=EXACT_QUOTE_VALIDATOR_VERSION,
+            validator_max_age_seconds=validator_max_age_seconds,
+            validator_max_skew_seconds=validator_max_skew_seconds,
+            excluded_nonexact_quote_batches=excluded_nonexact_quote_batches,
+        )
+    required_exact = {
+        "manifest_version": 1,
+        "observed_data": True,
+        "synthetic_or_interpolated": False,
+        "contains_upsampled_rows": False,
+        "symbols": list(RUNTIME_REQUIRED_SYMBOLS),
+        "bar_interval": interval,
+        "construction_method": "aggregated_from_quotes",
+        "observation_schema": RUNTIME_OBSERVATION_SCHEMA,
+        "analysis_price_semantics": RUNTIME_ANALYSIS_PRICE_SEMANTICS,
+        "execution_price_semantics": RUNTIME_EXECUTION_PRICE_SEMANTICS,
+        "volume_semantics": RUNTIME_VOLUME_SEMANTICS,
+        "timestamp_timezone": "UTC",
+        "timestamp_semantics": "venue_quote_time",
+        "market_hours": market_hours,
+        "start": start.isoformat(),
+        "end": end.isoformat(),
+        "source_trace_sha256": source_trace_sha256,
+        "dataset_hash": dataset_hash_value,
+        "quote_row_count": quote_row_count,
+        "excluded_legacy_quote_rows": excluded_legacy_quote_rows,
+        "validator_profile": "exact_execution_quotes",
+        "validator_version": EXACT_QUOTE_VALIDATOR_VERSION,
+        "validator_max_age_seconds": validator_max_age_seconds,
+        "validator_max_skew_seconds": validator_max_skew_seconds,
+        "excluded_nonexact_quote_batches": excluded_nonexact_quote_batches,
+        "source_resolution_seconds": source_resolution_seconds,
+    }
+    mismatches = [key for key, value in required_exact.items() if manifest.get(key) != value]
+    if mismatches:
+        raise ValueError("Runtime trace manifest does not match: " + ", ".join(mismatches))
+    try:
+        source_resolution = float(manifest.get("source_resolution_seconds"))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Runtime trace source resolution must be numeric") from exc
+    output_seconds = float(INTERVAL_SECONDS.get(interval, 60))
+    if not 0 < source_resolution <= output_seconds:
+        raise ValueError("Runtime trace source resolution must be positive and no coarser than bars")
+    manifest_hash = hashlib.sha256(
+        json.dumps(manifest, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    return DataProvenance(
+        source_kind="grande_runtime_quote_trace",
+        provider=str(manifest.get("provider") or ""),
+        provider_product=str(manifest.get("provider_product") or ""),
+        acquisition_method=str(manifest.get("acquisition_method") or ""),
+        license_reference=str(manifest.get("license_reference") or ""),
+        license_reviewed_by_user=manifest.get("license_reviewed_by_user") is True,
+        research_use_permitted=manifest.get("research_use_permitted") is True,
+        automated_strategy_research_permitted=(
+            manifest.get("automated_strategy_research_permitted") is True
+        ),
+        redistribution_permitted=manifest.get("redistribution_permitted") is True,
+        observed_data=True,
+        synthetic_or_interpolated=False,
+        contains_upsampled_rows=False,
+        construction_method="aggregated_from_quotes",
+        source_resolution_seconds=source_resolution,
+        bar_interval=interval,
+        market_hours=market_hours,
+        manifest_version=1,
+        manifest_hash=manifest_hash,
+        canonical_dataset_hash=dataset_hash_value,
+        observation_schema=RUNTIME_OBSERVATION_SCHEMA,
+        analysis_price_semantics=RUNTIME_ANALYSIS_PRICE_SEMANTICS,
+        execution_price_semantics=RUNTIME_EXECUTION_PRICE_SEMANTICS,
+        volume_semantics=RUNTIME_VOLUME_SEMANTICS,
+        source_trace_sha256=source_trace_sha256,
+        excluded_legacy_quote_rows=excluded_legacy_quote_rows,
+        validator_profile="exact_execution_quotes",
+        validator_version=EXACT_QUOTE_VALIDATOR_VERSION,
+        validator_max_age_seconds=validator_max_age_seconds,
+        validator_max_skew_seconds=validator_max_skew_seconds,
+        excluded_nonexact_quote_batches=excluded_nonexact_quote_batches,
+    )
+
+
+def _aware_trace_timestamp(raw: object, field: str) -> datetime:
+    parsed = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise ValueError(f"Runtime quote trace {field} must include a UTC offset")
+    return parsed.astimezone(UTC)
+
+
+def load_runtime_quote_trace(
+    database_path: Path,
+    *,
+    bar_seconds: int = 60,
+    market_hours: str = "regular_hours",
+    manifest: dict[str, Any] | None = None,
+) -> HistoricalBundle:
+    """Read GRANDE Alpha's quote ledger in SQLite read-only mode into causal frames.
+
+    Every accepted response must have a current durable batch record and exact
+    QQQ/TQQQ/SQQQ children with two-sided book clocks.
+    Legacy adjacency is never inferred. QQQ bid/ask mids are fed through the runtime
+    :class:`BarBuilder`; the batch that emits a completed bar supplies the later target bid/ask
+    quotes and causal execution timestamp. Quote data has no volume, so every derived bar records
+    zero volume and volume-based evidence remains unavailable.
+    """
+
+    if bar_seconds < 1 or bar_seconds > 300:
+        raise ValueError("Runtime trace bar duration must be between 1 and 300 seconds")
+    if market_hours not in {"regular_hours", "extended_hours", "all_day_hours"}:
+        raise ValueError("Unsupported runtime trace market hours")
+    resolved = database_path.resolve(strict=True)
+    connection = sqlite3.connect(f"{resolved.as_uri()}?mode=ro", uri=True)
+    connection.row_factory = sqlite3.Row
+    try:
+        columns = {
+            str(row["name"])
+            for row in connection.execute("PRAGMA table_info(quotes)").fetchall()
+        }
+        required = {
+            "id",
+            "observed_at",
+            "symbol",
+            "bid",
+            "ask",
+            "last",
+            "venue_timestamp",
+            "bid_timestamp",
+            "ask_timestamp",
+        }
+        required.update({"batch_id", "batch_position"})
+        tables = {
+            str(row["name"])
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+        if not required <= columns or "quote_batches" not in tables:
+            raise ValueError("Database has no compatible GRANDE Alpha quote ledger")
+        legacy_count = int(
+            connection.execute(
+                "SELECT COUNT(*) AS n FROM quotes WHERE batch_id IS NULL OR batch_position IS NULL"
+            ).fetchone()["n"]
+        )
+        excluded_nonexact = int(
+            connection.execute(
+                """SELECT COUNT(*) AS n FROM quote_batches
+                WHERE validation_profile!='exact_execution_quotes'
+                   OR schema_version!=?
+                   OR validation_version!=?
+                   OR max_age_seconds IS NULL OR max_skew_seconds IS NULL"""
+                , (QUOTE_BATCH_SCHEMA_VERSION, EXACT_QUOTE_VALIDATOR_VERSION)
+            ).fetchone()["n"]
+        )
+        batch_rows = connection.execute(
+            """SELECT rowid AS batch_sequence,batch_id,stream_id,observed_at,
+            schema_version,symbol_count,validation_profile,validation_version,
+            max_age_seconds,max_skew_seconds FROM quote_batches
+            WHERE validation_profile='exact_execution_quotes' AND schema_version=?
+              AND validation_version=?
+              AND max_age_seconds IS NOT NULL AND max_skew_seconds IS NOT NULL
+            ORDER BY rowid""",
+            (QUOTE_BATCH_SCHEMA_VERSION, EXACT_QUOTE_VALIDATOR_VERSION),
+        ).fetchall()
+        rows = connection.execute(
+            """SELECT id,observed_at,symbol,bid,ask,last,venue_timestamp,
+            bid_timestamp,ask_timestamp,batch_id,batch_position
+            FROM quotes WHERE batch_id IN (
+                SELECT batch_id FROM quote_batches
+                WHERE validation_profile='exact_execution_quotes' AND schema_version=?
+                  AND validation_version=?
+                  AND max_age_seconds IS NOT NULL AND max_skew_seconds IS NOT NULL
+            ) AND batch_position IS NOT NULL
+            ORDER BY batch_id,batch_position""",
+            (QUOTE_BATCH_SCHEMA_VERSION, EXACT_QUOTE_VALIDATOR_VERSION),
+        ).fetchall()
+    finally:
+        connection.close()
+    if len(batch_rows) < 2 or len(rows) < 6:
+        raise ValueError("Runtime quote trace needs at least two synchronized quote batches")
+
+    trace_digest = hashlib.sha256()
+    batches: list[dict[str, Quote]] = []
+    rows_by_batch: dict[str, list[sqlite3.Row]] = {}
+    for row in rows:
+        rows_by_batch.setdefault(str(row["batch_id"]), []).append(row)
+    known_batch_ids = {str(row["batch_id"]) for row in batch_rows}
+    if set(rows_by_batch) != known_batch_ids:
+        raise ValueError("Runtime quote rows reference a missing or childless provider batch")
+    envelopes = {
+        (float(row["max_age_seconds"]), float(row["max_skew_seconds"]))
+        for row in batch_rows
+    }
+    if len(envelopes) != 1:
+        raise ValueError("Exact runtime trace must use one validator age/skew envelope")
+    validator_max_age_seconds, validator_max_skew_seconds = next(iter(envelopes))
+    if (
+        not 0 < validator_max_age_seconds <= 8.0
+        or not 0 < validator_max_skew_seconds
+        <= min(5.0, validator_max_age_seconds)
+    ):
+        raise ValueError("Exact runtime trace validator envelope is unsupported")
+    for batch_record in batch_rows:
+        batch_id = str(batch_record["batch_id"])
+        batch_sequence = int(batch_record["batch_sequence"])
+        stream_id = str(batch_record["stream_id"]).strip()
+        if not stream_id:
+            raise ValueError("Runtime quote batch lacks a bound signal-pipeline stream ID")
+        if (
+            int(batch_record["schema_version"]) != QUOTE_BATCH_SCHEMA_VERSION
+            or int(batch_record["validation_version"]) != EXACT_QUOTE_VALIDATOR_VERSION
+            or int(batch_record["symbol_count"]) != 3
+        ):
+            raise ValueError("Runtime quote batch has an unsupported or inconsistent schema")
+        batch_observed_at = _aware_trace_timestamp(
+            batch_record["observed_at"], "batch observed_at"
+        )
+        chunk = rows_by_batch[batch_id]
+        if len(chunk) != len(RUNTIME_REQUIRED_SYMBOLS):
+            raise ValueError("Runtime quote batch is interrupted or incomplete")
+        if sorted(int(row["batch_position"]) for row in chunk) != [0, 1, 2]:
+            raise ValueError("Runtime quote batch positions must be exactly 0, 1, and 2")
+        observed_times: list[datetime] = []
+        quotes: dict[str, Quote] = {}
+        for row in sorted(chunk, key=lambda item: int(item["batch_position"])):
+            observed_at = _aware_trace_timestamp(row["observed_at"], "observed_at")
+            if observed_at != batch_observed_at:
+                raise ValueError("Runtime quote child does not match its atomic batch timestamp")
+            venue_timestamp = _aware_trace_timestamp(row["venue_timestamp"], "venue_timestamp")
+            bid_timestamp = _aware_trace_timestamp(row["bid_timestamp"], "bid_timestamp")
+            ask_timestamp = _aware_trace_timestamp(row["ask_timestamp"], "ask_timestamp")
+            symbol = str(row["symbol"]).upper()
+            quote = Quote(
+                symbol,
+                float(row["bid"]),
+                float(row["ask"]),
+                float(row["last"]),
+                venue_timestamp,
+                bid_timestamp,
+                ask_timestamp,
+            )
+            quote.validate()
+            if symbol in quotes:
+                raise ValueError("Runtime quote batch contains a duplicate symbol")
+            quotes[symbol] = quote
+            observed_times.append(observed_at)
+            trace_digest.update(
+                f"{batch_sequence}|{stream_id}|{batch_id}|1|3|exact_execution_quotes|1|"
+                f"{validator_max_age_seconds:.6f}|{validator_max_skew_seconds:.6f}|"
+                f"{row['batch_position']}|{row['id']}|"
+                f"{observed_at.isoformat()}|{symbol}|{quote.bid:.8f}|"
+                f"{quote.ask:.8f}|{quote.last:.8f}|{venue_timestamp.isoformat()}|"
+                f"{bid_timestamp.isoformat()}|{ask_timestamp.isoformat()}\n".encode()
+            )
+        if tuple(sorted(quotes)) != tuple(sorted(RUNTIME_REQUIRED_SYMBOLS)):
+            raise ValueError("Runtime quote batch must contain exactly QQQ, TQQQ, and SQQQ")
+        if (max(observed_times) - min(observed_times)).total_seconds() > 2.0:
+            raise ValueError("Runtime quote rows are not one synchronized recorder batch")
+        book_times = [
+            timestamp
+            for quote in quotes.values()
+            for timestamp in (quote.bid_timestamp, quote.ask_timestamp)
+            if timestamp is not None
+        ]
+        ages = [(batch_observed_at - timestamp).total_seconds() for timestamp in book_times]
+        if any(age < -2.0 or age > validator_max_age_seconds for age in ages):
+            raise ValueError("Runtime quote batch violates its bound validator age envelope")
+        if (
+            max(book_times) - min(book_times)
+        ).total_seconds() > validator_max_skew_seconds:
+            raise ValueError("Runtime quote batch violates its bound validator skew envelope")
+        batches.append({"__stream_id__": stream_id, **quotes})
+
+    eligible_batches = [
+        quotes
+        for quotes in batches
+        if all(
+            market_session_allowed(timestamp, 0, 0, market_hours)
+            for symbol, quote in quotes.items()
+            if symbol != "__stream_id__"
+            for timestamp in (quote.bid_timestamp, quote.ask_timestamp)
+        )
+    ]
+    sessions_by_stream: dict[str, set[str]] = {}
+    for quotes in eligible_batches:
+        sessions_by_stream.setdefault(str(quotes["__stream_id__"]), set()).add(
+            session_key(quotes["QQQ"].latest_book_timestamp, market_hours)
+        )
+    if any(len(sessions) > 1 for sessions in sessions_by_stream.values()):
+        raise ValueError(
+            "Runtime quote stream spans multiple sessions without a signal-pipeline reset"
+        )
+    within_session_deltas = [
+        (
+            current["QQQ"].latest_book_timestamp
+            - previous["QQQ"].latest_book_timestamp
+        ).total_seconds()
+        for previous, current in zip(eligible_batches, eligible_batches[1:], strict=False)
+        if session_key(previous["QQQ"].latest_book_timestamp, market_hours)
+        == session_key(current["QQQ"].latest_book_timestamp, market_hours)
+        and current["QQQ"].latest_book_timestamp > previous["QQQ"].latest_book_timestamp
+        and previous["__stream_id__"] == current["__stream_id__"]
+    ]
+    source_resolution_seconds = (
+        max(within_session_deltas) if within_session_deltas else float(bar_seconds)
+    )
+    builder = BarBuilder("QQQ", bar_seconds)
+    frames: list[ReplayFrame] = []
+    active_stream: str | None = None
+    last_qqq_timestamp: datetime | None = None
+    for quotes in eligible_batches:
+        stream_id = str(quotes["__stream_id__"])
+        if active_stream != stream_id:
+            builder = BarBuilder("QQQ", bar_seconds)
+            active_stream = stream_id
+            last_qqq_timestamp = None
+        qqq_observed_at = quotes["QQQ"].latest_book_timestamp
+        if qqq_observed_at is None:
+            raise ValueError("Runtime QQQ quote lacks exact book observation time")
+        if last_qqq_timestamp is not None and qqq_observed_at <= last_qqq_timestamp:
+            continue
+        last_qqq_timestamp = qqq_observed_at
+        completed = builder.update(replace(quotes["QQQ"], timestamp=qqq_observed_at))
+        if completed is None:
+            continue
+        causal_timestamp = max(
+            quotes[symbol].latest_book_timestamp for symbol in RUNTIME_REQUIRED_SYMBOLS
+        )
+        if causal_timestamp <= completed.start:
+            raise ValueError("Runtime causal quote must be later than its completed analysis bar")
+
+        def point_bar(symbol: str, quote: Quote, start: datetime) -> Bar:
+            price = quote.mid
+            return Bar(symbol, start, price, price, price, price, 1, 0.0)
+
+        frames.append(
+            ReplayFrame(
+                completed.start,
+                completed,
+                point_bar("TQQQ", quotes["TQQQ"], completed.start),
+                point_bar("SQQQ", quotes["SQQQ"], completed.start),
+                causal_timestamp,
+                quotes["QQQ"],
+                quotes["TQQQ"],
+                quotes["SQQQ"],
+                stream_id,
+            )
+        )
+    if not frames:
+        raise ValueError("Runtime quote trace did not complete an analysis bar")
+    interval = f"{bar_seconds}s" if bar_seconds != 60 else "1m"
+    quality = assess_quality(frames, interval, market_hours)
+    provenance = _runtime_trace_provenance(
+        manifest,
+        source_trace_sha256=trace_digest.hexdigest(),
+        dataset_hash_value=quality.dataset_hash,
+        interval=interval,
+        market_hours=market_hours,
+        quote_row_count=len(rows),
+        excluded_legacy_quote_rows=legacy_count,
+        validator_max_age_seconds=validator_max_age_seconds,
+        validator_max_skew_seconds=validator_max_skew_seconds,
+        excluded_nonexact_quote_batches=excluded_nonexact,
+        source_resolution_seconds=source_resolution_seconds,
+        start=frames[0].start,
+        end=frames[-1].start,
+    )
+    return HistoricalBundle(
+        source="GRANDE Alpha synchronized runtime venue quote trace",
+        downloaded_at=utc_now(),
         frames=frames,
         interval=interval,
         dataset_hash=quality.dataset_hash,

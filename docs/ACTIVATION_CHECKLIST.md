@@ -148,8 +148,10 @@ Agentic account for its app views and does not select the regular investing acco
 
 - If TQQQ/SQQQ inventory exists, decide in Robinhood whether it should remain. The separately reviewed
   **Flatten Position** flow is a real sell and is not part of safe checks.
-- If a working order exists, use **STOP + CANCEL**, then verify every affected order is terminal in
-  Robinhood. A cancellation request is not proof of cancellation.
+- If a GRANDE-owned working order exists, use **STOP + CANCEL**, review the exact count/details, and
+  explicitly confirm that scope. Manual or unrelated Agentic-account orders are untouched. An order
+  already pending cancellation is disclosed and verified without a duplicate request. Verify every
+  affected order is terminal in Robinhood; a cancellation request is not proof of cancellation.
 - If a placement acknowledgement is ambiguous, reconcile its exact client reference against Robinhood
   and never retry it blindly.
 
@@ -176,7 +178,8 @@ the same-day typed confirmation yourself.
 
 The grant is never stored or scheduled. Restart, expiry, revocation, account change, fingerprint change,
 or unresolved broker state returns the app to locked. Keep Robinhood open, monitor receipts, and use
-**STOP + CANCEL** if state is unclear.
+**STOP + CANCEL** if state is unclear; inspect and explicitly confirm its exact GRANDE-owned order
+preview before any cancellation request is sent.
 
 ## What Codex or GRANDE Alpha cannot do for you
 

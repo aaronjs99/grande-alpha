@@ -34,11 +34,14 @@ Session** action for that bounded same-ET-day grant.
 
 ### Current OAuth recovery
 
-If a future Robinhood check reports that its cached OAuth token was revoked, before relying on broker
-reads, use **Broker → Forget Stored OAuth Credentials…**, confirm removal, reconnect through the
-Robinhood browser flow, and rerun the read-only broker diagnostic. Do not paste tokens into project
-files or try to bypass OAuth. Forgetting the local credential does not itself revoke Robinhood-side
-access; review Robinhood's [third-party connection guidance](https://robinhood.com/us/en/support/articles/third-party-connections/)
+If a future Robinhood check reports that its cached OAuth token was revoked, first lock local
+authority. Credential forgetting requires a clean disconnected state and never cancels an order. If
+GRANDE-owned open or unresolved state remains, complete the explicit **STOP + CANCEL** preview,
+confirmation, and terminal verification before disconnecting. Then use **Broker → Forget Stored
+OAuth Credentials…**, confirm removal, reconnect through the Robinhood browser flow, and rerun the
+read-only broker diagnostic. Do not paste tokens into project files or try to bypass OAuth. Forgetting
+the local credential does not itself revoke Robinhood-side access; review Robinhood's
+[third-party connection guidance](https://robinhood.com/us/en/support/articles/third-party-connections/)
 for provider-side connection management.
 
 ## Why the unsigned executable may not start

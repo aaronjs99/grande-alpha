@@ -34,10 +34,9 @@ def test_runtime_parity_manifest_is_machine_readable_and_fail_closed() -> None:
     assert not RUNTIME_SIZING_PARITY_CERTIFIED
     assert {check.key for check in assessment.blockers} == {
         "market_observation_semantics",
-        "filled_entry_count",
-        "holding_time_provenance",
         "execution_timing_and_fill_economics",
         "autonomous_exit_lifecycle",
+        "provider_order_confirmation_contract",
     }
     assert all(check.requirement for check in assessment.blockers)
 
@@ -99,6 +98,8 @@ def test_shared_cadence_and_holding_clock_are_completed_bar_based() -> None:
     entered = datetime(2026, 8, 11, 15, 0, 59, tzinfo=UTC)
     observed = entered + timedelta(minutes=4, seconds=59)
     assert held_minutes(entered, observed) == 4
+    with pytest.raises(ValueError, match="cannot be later"):
+        held_minutes(observed, entered)
 
 
 def test_shadow_decision_stride_resets_at_each_broker_session() -> None:

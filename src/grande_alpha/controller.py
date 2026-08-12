@@ -69,7 +69,7 @@ from grande_alpha.policy import (
 from grande_alpha.risk import RiskEngine
 from grande_alpha.sandbox import load_sandbox_config
 from grande_alpha.shadow import LiveShadowEngine
-from grande_alpha.storage import AuditStore
+from grande_alpha.storage import EXACT_QUOTE_VALIDATOR_VERSION, AuditStore
 from grande_alpha.strategy import BarBuilder, StrategyConfig, build_strategy
 
 
@@ -109,6 +109,49 @@ class TradingSnapshot:
     pair_action_label: str = "(0,0)"
     last_analysis_at: datetime | None = None
     last_trade_decision_at: datetime | None = None
+
+
+@dataclass(frozen=True)
+class CancelOrderTarget:
+    order_id: str
+    ref_id: str
+    placed_agent: str
+    symbol: str
+    side: str
+    quantity: float | None
+    dollar_amount: float | None
+    order_type: str
+    market_hours: str
+    time_in_force: str
+    limit_price: float | None
+    created_at: datetime | None
+    reviewed_state: str
+
+    @property
+    def summary(self) -> str:
+        amount = self.quantity if self.quantity is not None else self.dollar_amount
+        unit = "shares" if self.quantity is not None else "dollars"
+        return (
+            f"{self.order_id} • {self.side.upper()} {self.symbol} • "
+            f"{amount:g} {unit} • {self.reviewed_state} • ref {self.ref_id}"
+        )
+
+
+@dataclass(frozen=True)
+class CancelPlan:
+    account_number: str
+    targets: tuple[CancelOrderTarget, ...]
+    unrelated_order_ids: tuple[str, ...]
+    created_at: datetime
+    token: str
+
+    @property
+    def order_ids(self) -> tuple[str, ...]:
+        return tuple(target.order_id for target in self.targets)
+
+    @property
+    def order_summaries(self) -> tuple[str, ...]:
+        return tuple(target.summary for target in self.targets)
 
 
 class TradingController(QObject):
@@ -152,13 +195,16 @@ class TradingController(QObject):
         self._reconcile_lock = asyncio.Lock()
         self._safe_read_only_refresh_lock = asyncio.Lock()
         self._last_qqq_timestamp: datetime | None = None
+        self._quote_stream_id = str(uuid.uuid4())
         self._last_submission_at: datetime | None = None
         self._submission_reconcile_required: dict[str, str | None] = {}
         self._uncertain_submission_refs: set[str] = set()
         self._live_submissions: dict[str, LiveSubmissionReconciliation] = {}
         self._confirmed_entry_order_ids: set[str] = set()
         self._prior_entry_upper_bound = 0
+        self._execution_provenance_gaps: set[str] = set()
         self._cleanup_unresolved = False
+        self._cancel_plans: dict[str, CancelPlan] = {}
         self._analysis_sequence = 0
         self._last_trade_decision_sequence = 0
         self._recent_returns = {"TQQQ": deque(maxlen=30), "SQQQ": deque(maxlen=30)}
@@ -180,6 +226,7 @@ class TradingController(QObject):
             raise RuntimeError(f"Auto-shadow runtime is read-only and cannot {action}")
 
     def _reset_signal_pipeline(self, reason: str) -> None:
+        self._quote_stream_id = str(uuid.uuid4())
         self.strategy = build_strategy(_runtime_strategy_config(self.config))
         self.bar_builder = BarBuilder("QQQ", self.config.bar_seconds)
         self._last_qqq_timestamp = None
@@ -281,8 +328,26 @@ class TradingController(QObject):
                 continue
             self.store.update_intent(ref_id, order.order_id, normalized_order_state(order.state))
             tracking = self._live_submissions.get(ref_id)
+            submitted_at = (
+                tracking.submitted_at
+                if tracking is not None
+                else self.store.intent_submission_started_at(ref_id)
+            )
+            if submitted_at is not None:
+                earliest_allowed = submitted_at - timedelta(seconds=5)
+                if order.created_at is None or order.created_at < earliest_allowed:
+                    raise BrokerError(
+                        "Broker order creation predates the durable placement invocation"
+                    )
+                if any(
+                    execution.timestamp < earliest_allowed for execution in order.executions
+                ):
+                    raise BrokerError(
+                        "Broker execution predates the durable placement invocation"
+                    )
             if tracking is not None:
                 try:
+                    order.validate_execution_provenance(require_snapshot=bool(order.executions))
                     execution = reconcile_execution(tracking, order, reconciled_positions)
                 except ValueError as exc:
                     self.log(
@@ -321,7 +386,7 @@ class TradingController(QObject):
                                 if execution.conservative_clock is not None
                                 else None
                             ),
-                            "actual_fill_timestamp_available": False,
+                            "actual_fill_timestamp_available": bool(order.executions),
                             "resolved": execution.resolved,
                             "reason": execution.reason,
                         },
@@ -346,7 +411,7 @@ class TradingController(QObject):
                                 self._prior_entry_upper_bound
                                 + len(self._confirmed_entry_order_ids)
                             ),
-                            "durable_fill_timestamp_available": False,
+                            "durable_fill_timestamp_available": bool(order.executions),
                         },
                     )
                 if not execution.resolved:
@@ -373,6 +438,32 @@ class TradingController(QObject):
                 f"{joined}; automation remains locked and no retry is allowed"
             )
         self._cleanup_unresolved = False
+
+    def _persist_execution_truth(self, account_number: str, orders: list[BrokerOrder]) -> None:
+        gaps: set[str] = set()
+        for order in orders:
+            if order.symbol.strip().upper() not in {"TQQQ", "SQQQ"}:
+                continue
+            state = normalized_order_state(order.state)
+            requires_provenance = (
+                state in {"filled", "partially_filled"}
+                or bool(order.executions)
+                or bool(order.cumulative_quantity)
+            )
+            if requires_provenance and (
+                order.cumulative_quantity is None
+                or (float(order.cumulative_quantity) > 1e-9 and not order.executions)
+            ):
+                gaps.add(order.order_id or "missing-order-id")
+                continue
+            try:
+                order.validate_execution_provenance(require_snapshot=requires_provenance)
+                self.store.record_broker_order_executions(account_number, order)
+            except ValueError as exc:
+                raise BrokerError(
+                    f"Execution provenance is incomplete for order {order.order_id}: {exc}"
+                ) from exc
+        self._execution_provenance_gaps = gaps
 
     def _validate_reconciled_live_state(self) -> None:
         leveraged = self._leveraged_positions()
@@ -444,20 +535,26 @@ class TradingController(QObject):
         )
         if not math.isfinite(age_limit) or age_limit <= 0:
             raise BrokerError(f"{context} quote-age limit is invalid")
-        timestamps = []
+        book_timestamps: list[datetime] = []
         for symbol in sorted(required):
             quote = quotes[symbol]
             quote.validate()
             if quote.symbol != symbol:
                 raise BrokerError(f"{context} quote key/symbol mismatch for {symbol}")
-            age = (observed - quote.timestamp).total_seconds()
-            if age < -2.0 or age > age_limit:
-                raise BrokerError(
-                    f"{context} {symbol} venue quote is not fresh ({age:.1f}s; "
-                    f"limit {age_limit:.1f}s)"
-                )
-            timestamps.append(quote.timestamp)
-        skew = (max(timestamps) - min(timestamps)).total_seconds()
+            if quote.bid_timestamp is None or quote.ask_timestamp is None:
+                raise BrokerError(f"{context} {symbol} lacks exact bid/ask venue clocks")
+            for side, timestamp in (
+                ("bid", quote.bid_timestamp),
+                ("ask", quote.ask_timestamp),
+            ):
+                age = (observed - timestamp).total_seconds()
+                if age < -2.0 or age > age_limit:
+                    raise BrokerError(
+                        f"{context} {symbol} venue {side} is not fresh ({age:.1f}s; "
+                        f"limit {age_limit:.1f}s)"
+                    )
+                book_timestamps.append(timestamp)
+        skew = (max(book_timestamps) - min(book_timestamps)).total_seconds()
         skew_limit = min(5.0, age_limit)
         if skew > skew_limit:
             raise BrokerError(
@@ -615,11 +712,25 @@ class TradingController(QObject):
         if self.shadow_only_runtime:
             await self.disconnect_shadow_only("Auto-shadow read-only disconnect")
             return
-        cleanup_verified = await self.stop_and_cancel("Disconnected by user")
-        if not cleanup_verified:
+        self._revoke_live_automation("Disconnected by user")
+        if not self.snapshot.connected or self.snapshot.account is None:
+            await self.broker.disconnect()
+            self.snapshot = TradingSnapshot()
+            self._emit()
+            return
+        account_number = self.snapshot.account.account_number
+        try:
+            async with self._reconcile_lock:
+                orders = await self._read_cancel_truth_locked(account_number)
+                owned_targets, _unrelated = self._cancel_scope(orders, account_number)
+        except Exception as exc:
             raise BrokerError(
-                "Disconnect blocked: GRANDE Alpha could not verify every Agentic order terminal. "
-                "Check Robinhood, retry STOP + CANCEL, and keep this window open."
+                f"Disconnect blocked because exact account cleanup truth failed: {exc}"
+            ) from exc
+        if owned_targets or self._submission_reconcile_required:
+            raise BrokerError(
+                "Disconnect blocked: GRANDE-owned open or unresolved orders were not cancelled. "
+                "Use STOP + CANCEL and explicitly confirm the exact GRANDE-owned scope first."
             )
         await self.broker.disconnect()
         self.snapshot = TradingSnapshot()
@@ -703,8 +814,15 @@ class TradingController(QObject):
                 )
             self.snapshot.quotes = quotes
             self.snapshot.last_refresh = utc_now()
-            for quote in quotes.values():
-                self.store.record_quote(quote)
+            age_limit = float(self.config.default_max_quote_age_seconds)
+            self.store.record_quote_batch(
+                quotes,
+                stream_id=self._quote_stream_id,
+                validation_profile="exact_execution_quotes",
+                validation_version=EXACT_QUOTE_VALIDATOR_VERSION,
+                max_age_seconds=age_limit,
+                max_skew_seconds=min(5.0, age_limit),
+            )
             self._validate_auto_shadow_config()
             self._reset_signal_pipeline("Auto-shadow clean start; warming up")
             self.start_shadow()
@@ -867,6 +985,22 @@ class TradingController(QObject):
                 )
                 require_inactive()
 
+                # A safe check is also the restart/crash reconciliation boundary.
+                # Durable fill truth and intent state must be current before the
+                # account snapshot can become fresh enough for later authority.
+                self._persist_execution_truth(account_number, orders)
+                if self._execution_provenance_gaps:
+                    raise BrokerError(
+                        "Scoped filled order lacks exact provider execution provenance"
+                    )
+                self._reconcile_submission_tracking(orders, positions)
+                if self._submission_reconcile_required or self._uncertain_submission_refs:
+                    raise BrokerError(
+                        "A prior placement outcome remains unresolved after safe reconciliation"
+                    )
+                self.store.validate_execution_inventory(account_number, positions)
+                require_inactive()
+
                 now = utc_now()
                 self.snapshot.portfolio = portfolio
                 self.snapshot.positions = positions
@@ -880,6 +1014,10 @@ class TradingController(QObject):
                     payload={"broker_write_attempted": False, "account_last4": account_number[-4:]},
                 )
             except Exception as exc:
+                # Never leave a prior timestamp looking like a successful current
+                # reconciliation after any provenance, inventory, or race failure.
+                self.snapshot.last_reconcile_at = None
+                self.snapshot.last_refresh = None
                 self.log(
                     f"Safe read-only activation checks stopped: {exc}",
                     "error",
@@ -909,12 +1047,24 @@ class TradingController(QObject):
                     positions = await self.broker.get_positions(account_number)
                     orders = await self.broker.get_orders(account_number)
                     self._validate_account_truth(portfolio, positions, orders)
+                    self._persist_execution_truth(account_number, orders)
+                    if (
+                        self.risk.grant is not None or self.snapshot.strategy_running
+                    ) and self._execution_provenance_gaps:
+                        raise BrokerError(
+                            "Scoped filled order lacks exact provider execution provenance"
+                        )
                     self.snapshot.portfolio = portfolio
                     self.snapshot.positions = positions
                     self.snapshot.orders = orders
                     self.snapshot.last_reconcile_at = utc_now()
                     self.risk.update_portfolio(portfolio)
                     self._reconcile_submission_tracking(orders, positions)
+                    if (
+                        (self.risk.grant is not None or self.snapshot.strategy_running)
+                        and not self._submission_reconcile_required
+                    ):
+                        self.store.validate_execution_inventory(account_number, positions)
                     self._validate_reconciled_live_state()
                     if (
                         self.risk.session_status() == "LOSS LIMIT"
@@ -925,6 +1075,7 @@ class TradingController(QObject):
                             "Daily-loss liquidation is confirmed flat; session authority revoked"
                         )
             except Exception as exc:
+                self.snapshot.last_reconcile_at = None
                 self.log(f"Account reconciliation failed: {exc}", "error", "broker")
                 if self.shadow_only_runtime and self.snapshot.shadow_running:
                     self.stop_shadow(f"AUTO SHADOW BLOCKED: account truth/invariant failure: {exc}")
@@ -945,7 +1096,7 @@ class TradingController(QObject):
                         )
                     self.snapshot = TradingSnapshot()
                 if self.snapshot.strategy_running or self.risk.grant is not None:
-                    await self.stop_and_cancel(
+                    self._revoke_live_automation(
                         "Account reconciliation failed; authority revoked and open orders require cancellation"
                     )
                     self.log(
@@ -956,17 +1107,84 @@ class TradingController(QObject):
             finally:
                 self._emit()
 
+    async def _refresh_exact_preplacement_truth(self) -> None:
+        """Serialize one indivisible post-review account/quote truth refresh.
+
+        Timer refreshes intentionally coalesce. A placement refresh cannot: it waits
+        for both locks, holds them in the same reconcile-then-quote order used here,
+        and does not release account truth while waiting for the quote read. This
+        keeps the account snapshot paired with the exact quote batch used for the
+        final authorization immediately before placement.
+        """
+
+        if self.snapshot.account is None:
+            raise BrokerError("Post-review refresh requires the bound Agentic account")
+        account_number = self.snapshot.account.account_number
+        async with self._reconcile_lock:
+            async with self._quote_lock:
+                try:
+                    portfolio = await self.broker.get_portfolio(account_number)
+                    positions = await self.broker.get_positions(account_number)
+                    orders = await self.broker.get_orders(account_number)
+                    self._validate_account_truth(portfolio, positions, orders)
+                    self._persist_execution_truth(account_number, orders)
+                    if self._execution_provenance_gaps:
+                        raise BrokerError(
+                            "Scoped filled order lacks exact provider execution provenance"
+                        )
+                    self.snapshot.portfolio = portfolio
+                    self.snapshot.positions = positions
+                    self.snapshot.orders = orders
+                    self.risk.update_portfolio(portfolio)
+                    self._reconcile_submission_tracking(orders, positions)
+                    if not self._submission_reconcile_required:
+                        self.store.validate_execution_inventory(account_number, positions)
+                    self._validate_reconciled_live_state()
+                    self.snapshot.last_reconcile_at = utc_now()
+
+                    quotes = await self.broker.get_quotes(["QQQ", "TQQQ", "SQQQ"])
+                    max_age = (
+                        self.risk.grant.max_quote_age_seconds
+                        if self.risk.grant is not None
+                        else self.config.default_max_quote_age_seconds
+                    )
+                    quotes = self._validated_execution_quotes(
+                        quotes,
+                        max_age_seconds=max_age,
+                        context="Post-review preplacement refresh",
+                    )
+                    self.snapshot.quotes = quotes
+                    self.snapshot.last_refresh = utc_now()
+                    self.store.record_quote_batch(
+                        quotes,
+                        stream_id=self._quote_stream_id,
+                        validation_profile="exact_execution_quotes",
+                        validation_version=EXACT_QUOTE_VALIDATOR_VERSION,
+                        max_age_seconds=float(max_age),
+                        max_skew_seconds=min(5.0, float(max_age)),
+                    )
+                except Exception:
+                    self.snapshot.last_reconcile_at = None
+                    self.snapshot.last_refresh = None
+                    raise
+
     async def refresh_quotes(self, evaluate: bool = True) -> None:
         """Read one batched quote snapshot; overlapping timer ticks are coalesced."""
         if not self.snapshot.connected or self.snapshot.account is None:
             return
         if self._quote_lock.locked():
             return
-        async with self._quote_lock:
-            try:
+        try:
+            async with self._quote_lock:
                 quotes = await self.broker.get_quotes(["QQQ", "TQQQ", "SQQQ"])
+                validation_profile = "passive_unvalidated"
+                validation_version = 0
+                validated_age_limit: float | None = None
                 if self.shadow_only_runtime:
                     quotes = self._validated_shadow_quotes(quotes)
+                    validation_profile = "exact_execution_quotes"
+                    validation_version = EXACT_QUOTE_VALIDATOR_VERSION
+                    validated_age_limit = float(self.config.default_max_quote_age_seconds)
                 elif self.risk.grant is not None or self.snapshot.strategy_running:
                     max_age = (
                         self.risk.grant.max_quote_age_seconds
@@ -978,14 +1196,35 @@ class TradingController(QObject):
                         max_age_seconds=max_age,
                         context="Autonomous live execution",
                     )
+                    validation_profile = "exact_execution_quotes"
+                    validation_version = EXACT_QUOTE_VALIDATOR_VERSION
+                    validated_age_limit = float(max_age)
                 self.snapshot.quotes = quotes
                 self.snapshot.last_refresh = utc_now()
-                for quote in quotes.values():
-                    self.store.record_quote(quote)
+                self.store.record_quote_batch(
+                    quotes,
+                    stream_id=self._quote_stream_id,
+                    validation_profile=validation_profile,
+                    validation_version=validation_version,
+                    max_age_seconds=validated_age_limit,
+                    max_skew_seconds=(
+                        min(5.0, validated_age_limit)
+                        if validated_age_limit is not None
+                        else None
+                    ),
+                )
                 qqq = quotes.get("QQQ")
-                if qqq and (self._last_qqq_timestamp is None or qqq.timestamp > self._last_qqq_timestamp):
-                    self._last_qqq_timestamp = qqq.timestamp
-                    bar = self.bar_builder.update(qqq)
+                qqq_observed_at = (
+                    qqq.latest_book_timestamp
+                    if qqq is not None and validation_profile == "exact_execution_quotes"
+                    else (qqq.timestamp if qqq is not None else None)
+                )
+                if qqq and qqq_observed_at and (
+                    self._last_qqq_timestamp is None
+                    or qqq_observed_at > self._last_qqq_timestamp
+                ):
+                    self._last_qqq_timestamp = qqq_observed_at
+                    bar = self.bar_builder.update(replace(qqq, timestamp=qqq_observed_at))
                     if bar is not None:
                         self.store.record_bar(bar)
                         signal = self.strategy.on_bar(bar)
@@ -1001,7 +1240,11 @@ class TradingController(QObject):
                             # following bar. Timestamp the virtual decision at the latest exact
                             # venue observation in the batch so a fill can never be recorded
                             # before the target quote used to price it.
-                            causal_timestamp = max(quote.timestamp for quote in quotes.values())
+                            causal_timestamp = max(
+                                quote.latest_book_timestamp
+                                for quote in quotes.values()
+                                if quote.latest_book_timestamp is not None
+                            )
                             if causal_timestamp <= signal.timestamp:
                                 raise BrokerError(
                                     "Shadow execution batch is not later than the completed analysis bar"
@@ -1015,38 +1258,40 @@ class TradingController(QObject):
                                     "shadow_fill",
                                     fill.as_dict(),
                                 )
-                if evaluate and self.snapshot.strategy_running:
-                    await self._evaluate_and_trade()
-            except Exception as exc:
-                self.log(f"Quote refresh failed: {exc}", "error", "broker")
-                if self.shadow_only_runtime and self.snapshot.shadow_running:
-                    self.stop_shadow(f"AUTO SHADOW BLOCKED: quote/data failure: {exc}")
+            # Live evaluation may perform a mandatory post-review quote read. Do
+            # not retain the quote lock across that placement pipeline.
+            if evaluate and self.snapshot.strategy_running:
+                await self._evaluate_and_trade()
+        except Exception as exc:
+            self.log(f"Quote refresh failed: {exc}", "error", "broker")
+            if self.shadow_only_runtime and self.snapshot.shadow_running:
+                self.stop_shadow(f"AUTO SHADOW BLOCKED: quote/data failure: {exc}")
+                self.log(
+                    "AUTO SHADOW BLOCKED: fresh exact quotes unavailable; virtual execution stopped",
+                    "critical",
+                    "shadow_only_boundary",
+                    {"error": str(exc), "broker_write_attempted": False},
+                )
+                try:
+                    await self.broker.disconnect()
+                except Exception as disconnect_exc:
                     self.log(
-                        "AUTO SHADOW BLOCKED: fresh exact quotes unavailable; virtual execution stopped",
-                        "critical",
+                        f"AUTO SHADOW BLOCKED: read-only disconnect failed: {disconnect_exc}",
+                        "error",
                         "shadow_only_boundary",
-                        {"error": str(exc), "broker_write_attempted": False},
                     )
-                    try:
-                        await self.broker.disconnect()
-                    except Exception as disconnect_exc:
-                        self.log(
-                            f"AUTO SHADOW BLOCKED: read-only disconnect failed: {disconnect_exc}",
-                            "error",
-                            "shadow_only_boundary",
-                        )
-                    self.snapshot = TradingSnapshot()
-                if self.snapshot.strategy_running or self.risk.grant is not None:
-                    await self.stop_and_cancel(
-                        "Fresh exact live quotes failed; authority revoked and open orders require cancellation"
-                    )
-                    self.log(
-                        "Strategy locked after quote refresh failure; filled positions may remain open",
-                        "critical",
-                        "risk",
-                    )
-            finally:
-                self._emit()
+                self.snapshot = TradingSnapshot()
+            if self.snapshot.strategy_running or self.risk.grant is not None:
+                self._revoke_live_automation(
+                    "Fresh exact live quotes failed; authority revoked and open orders require cancellation"
+                )
+                self.log(
+                    "Strategy locked after quote refresh failure; filled positions may remain open",
+                    "critical",
+                    "risk",
+                )
+        finally:
+            self._emit()
 
     def authorize_live(self, grant: LiveGrant) -> None:
         self._require_order_runtime("authorize live trading")
@@ -1121,6 +1366,20 @@ class TradingController(QObject):
                 f"{len(unresolved)} durable order intent(s) have unresolved broker outcomes; "
                 "new authority remains locked"
             )
+        if self._execution_provenance_gaps:
+            raise RuntimeError(
+                "A completed TQQQ/SQQQ order lacks exact provider execution provenance; "
+                "directional live authority remains locked"
+            )
+        try:
+            self.store.validate_execution_inventory(
+                self.snapshot.account.account_number,
+                self.snapshot.positions,
+            )
+        except ValueError as exc:
+            raise RuntimeError(
+                f"Durable execution history does not reconcile to broker inventory: {exc}"
+            ) from exc
         self._validated_execution_quotes(
             self.snapshot.quotes,
             max_age_seconds=grant.max_quote_age_seconds,
@@ -1131,10 +1390,23 @@ class TradingController(QObject):
             grant.account_number,
             grant.starts_at.astimezone(EASTERN).date().isoformat(),
         )
-        # The durable ledger currently proves placement invocations, not provider fills.  On
-        # each new authority, count every earlier invocation as a possible entry; this can only
-        # stop early and cannot understate same-day entry usage after a restart.
-        self._prior_entry_upper_bound = int(usage["submitted_orders"])
+        session_date = grant.starts_at.astimezone(EASTERN).date().isoformat()
+        provenance_gaps = self.store.incomplete_execution_provenance(
+            grant.account_number,
+            session_date,
+        )
+        if provenance_gaps:
+            raise RuntimeError(
+                "Same-day filled entry intent lacks durable provider execution provenance; "
+                "live authority remains locked"
+            )
+        self._prior_entry_upper_bound = len(
+            self.store.live_filled_entry_order_ids(
+                grant.account_number,
+                session_date,
+                strategy_fingerprint=grant.strategy_fingerprint,
+            )
+        )
         self._confirmed_entry_order_ids.clear()
         self.policy = self._policy_for_session(grant.market_hours)
         self.risk.arm(
@@ -1484,7 +1756,8 @@ class TradingController(QObject):
         self._emit()
 
     async def revoke_live_authority(self, reason: str = "Authority revoked by user") -> bool:
-        return await self.stop_and_cancel(reason)
+        self._revoke_live_automation(reason)
+        return not bool(self._nonterminal_orders(self.snapshot.orders))
 
     def start_shadow(self) -> None:
         if not self.config.broker_connection_enabled:
@@ -1574,6 +1847,212 @@ class TradingController(QObject):
         self._emit()
 
     async def stop_and_cancel(self, reason: str = "STOP + CANCEL pressed") -> bool:
+        """Lock order creation without an implicit provider cancellation write."""
+
+        return await self.execute_confirmed_cancel(None, reason=reason)
+
+    @staticmethod
+    def _cancel_order_target(
+        order: BrokerOrder, durable_binding: dict[str, Any]
+    ) -> CancelOrderTarget:
+        """Freeze the immutable provider identity covered by operator consent."""
+
+        durable_ref = str(durable_binding.get("ref_id", "")).strip()
+        durable_payload = durable_binding.get("payload")
+        if not isinstance(durable_payload, dict):
+            raise BrokerError("GRANDE-owned order lacks its durable intent ticket")
+        placed_agent = order.placed_agent.strip().lower()
+        symbol = order.symbol.strip().upper()
+        side = order.side.strip().lower()
+        order_type = str(order.raw.get("type", "")).strip().lower()
+        market_hours = str(order.raw.get("market_hours", "")).strip().lower()
+        time_in_force = str(order.raw.get("time_in_force", "")).strip().lower()
+        if not order.order_id.strip() or not durable_ref:
+            raise BrokerError("GRANDE-owned order lacks its durable ownership identity")
+        if placed_agent != "agentic":
+            raise BrokerError("GRANDE-owned order was not placed by the Agentic provider")
+        if symbol not in {"TQQQ", "SQQQ"} or side not in {"buy", "sell"}:
+            raise BrokerError("GRANDE-owned order has an unsupported symbol or side")
+        if not order_type or not market_hours or not time_in_force:
+            raise BrokerError("GRANDE-owned order lacks immutable execution instructions")
+        if order.created_at is None or order.created_at.tzinfo is None:
+            raise BrokerError("GRANDE-owned order lacks an aware creation timestamp")
+        if order.quantity is None and order.dollar_amount is None:
+            raise BrokerError("GRANDE-owned order lacks an exact requested amount")
+        raw_limit = order.raw.get("price")
+        limit_price = None if raw_limit is None else float(raw_limit)
+        for value in (order.quantity, order.dollar_amount, limit_price):
+            if value is not None and not math.isfinite(float(value)):
+                raise BrokerError("GRANDE-owned order has a non-finite immutable amount")
+        immutable_actual = {
+            "symbol": symbol,
+            "side": side,
+            "order_type": order_type,
+            "market_hours": market_hours,
+            "time_in_force": time_in_force,
+        }
+        for payload_field, actual in immutable_actual.items():
+            expected = str(durable_payload.get(payload_field, "")).strip().lower()
+            if not expected or actual.lower() != expected:
+                raise BrokerError(
+                    f"GRANDE-owned order {payload_field} differs from its durable intent ticket"
+                )
+        expected_quantity = durable_payload.get("quantity")
+        expected_dollars = durable_payload.get("dollar_amount")
+        expected_limit = durable_payload.get("limit_price")
+        if expected_quantity is not None:
+            if order.quantity is None or not math.isclose(
+                float(order.quantity), float(expected_quantity), rel_tol=1e-9, abs_tol=1e-9
+            ):
+                raise BrokerError(
+                    "GRANDE-owned order quantity differs from its durable intent ticket"
+                )
+        elif expected_dollars is not None:
+            if order.dollar_amount is None or not math.isclose(
+                float(order.dollar_amount),
+                float(expected_dollars),
+                rel_tol=1e-9,
+                abs_tol=0.005,
+            ):
+                raise BrokerError(
+                    "GRANDE-owned order dollars differ from its durable intent ticket"
+                )
+        else:
+            raise BrokerError("Durable intent ticket lacks an exact requested amount")
+        if (expected_limit is None) != (limit_price is None) or (
+            expected_limit is not None
+            and not math.isclose(
+                float(limit_price), float(expected_limit), rel_tol=1e-9, abs_tol=0.005
+            )
+        ):
+            raise BrokerError(
+                "GRANDE-owned order limit price differs from its durable intent ticket"
+            )
+        return CancelOrderTarget(
+            order_id=order.order_id.strip(),
+            ref_id=durable_ref.strip(),
+            placed_agent=placed_agent,
+            symbol=symbol,
+            side=side,
+            quantity=(float(order.quantity) if order.quantity is not None else None),
+            dollar_amount=(
+                float(order.dollar_amount) if order.dollar_amount is not None else None
+            ),
+            order_type=order_type,
+            market_hours=market_hours,
+            time_in_force=time_in_force,
+            limit_price=limit_price,
+            created_at=order.created_at,
+            reviewed_state=normalized_order_state(order.state),
+        )
+
+    def _cancel_scope(
+        self,
+        orders: list[BrokerOrder],
+        account_number: str,
+    ) -> tuple[tuple[CancelOrderTarget, ...], tuple[str, ...]]:
+        bindings = self.store.owned_broker_order_bindings(account_number)
+        nonterminal = self._nonterminal_orders(orders)
+        targets: list[CancelOrderTarget] = []
+        unrelated: list[str] = []
+        seen: set[str] = set()
+        for order in nonterminal:
+            if order.order_id in seen:
+                raise BrokerError("Broker returned duplicate order ids during cancellation review")
+            seen.add(order.order_id)
+            durable_binding = bindings.get(order.order_id)
+            if durable_binding is None:
+                unrelated.append(order.order_id)
+                continue
+            targets.append(self._cancel_order_target(order, durable_binding))
+        return (
+            tuple(sorted(targets, key=lambda item: item.order_id)),
+            tuple(sorted(unrelated)),
+        )
+
+    @staticmethod
+    def _cancel_identity(target: CancelOrderTarget) -> tuple[Any, ...]:
+        """Return only provider fields that must never change for an order id."""
+
+        return (
+            target.order_id,
+            target.ref_id,
+            target.placed_agent,
+            target.symbol,
+            target.side,
+            target.quantity,
+            target.dollar_amount,
+            target.order_type,
+            target.market_hours,
+            target.time_in_force,
+            target.limit_price,
+            target.created_at,
+        )
+
+    @classmethod
+    def _cancel_targets_match(
+        cls,
+        current: tuple[CancelOrderTarget, ...],
+        confirmed: tuple[CancelOrderTarget, ...],
+    ) -> bool:
+        return tuple(cls._cancel_identity(item) for item in current) == tuple(
+            cls._cancel_identity(item) for item in confirmed
+        )
+
+    async def _read_cancel_truth_locked(self, account_number: str) -> list[BrokerOrder]:
+        """Read and reconcile exact account truth while the caller owns the lock."""
+
+        accounts = await self.broker.get_accounts()
+        active = [
+            account
+            for account in accounts
+            if account.agentic_allowed and account.state.strip().lower() == "active"
+        ]
+        if len(active) != 1 or active[0].account_number != account_number:
+            raise BrokerError(
+                "Cancellation requires the same exact single active Agentic account"
+            )
+        portfolio = await self.broker.get_portfolio(account_number)
+        positions = await self.broker.get_positions(account_number)
+        orders = await self.broker.get_orders(account_number)
+        self._validate_account_truth(portfolio, positions, orders)
+        self._persist_execution_truth(account_number, orders)
+        if self._execution_provenance_gaps:
+            raise BrokerError("Cancellation truth contains incomplete execution provenance")
+        self._reconcile_submission_tracking(orders, positions)
+        self.snapshot.portfolio = portfolio
+        self.snapshot.positions = positions
+        self.snapshot.orders = orders
+        self.snapshot.last_reconcile_at = utc_now()
+        return orders
+
+    async def prepare_cancel_plan(self) -> CancelPlan:
+        """Read an exact GRANDE-owned cancellation scope without moving money."""
+
+        if self.shadow_only_runtime:
+            raise RuntimeError("Auto-shadow runtime has no real-order cancellation authority")
+        if not self.snapshot.connected or self.snapshot.account is None:
+            raise RuntimeError("Connect the Agentic account before preparing cancellation")
+        account_number = self.snapshot.account.account_number
+        async with self._reconcile_lock:
+            orders = await self._read_cancel_truth_locked(account_number)
+            targets, unrelated = self._cancel_scope(orders, account_number)
+        plan = CancelPlan(
+            account_number=account_number,
+            targets=targets,
+            unrelated_order_ids=unrelated,
+            created_at=utc_now(),
+            token=str(uuid.uuid4()),
+        )
+        self._cancel_plans[plan.token] = plan
+        return plan
+
+    async def execute_confirmed_cancel(
+        self,
+        plan: CancelPlan | None,
+        *,
+        reason: str = "STOP + CANCEL confirmed",
+    ) -> bool:
         if self.shadow_only_runtime:
             self.stop_shadow(f"{reason}; cancellation BLOCKED by auto-shadow runtime")
             self.snapshot.strategy_running = False
@@ -1592,72 +2071,143 @@ class TradingController(QObject):
         self.snapshot.session_expires_at = None
         self.risk.revoke(reason)
         self._persist_risk_receipts()
+        if plan is None:
+            self.log(
+                f"{reason}; new orders locked; broker cancellation requires explicit confirmation",
+                "critical",
+                "kill_switch",
+                {"cancel_accepted": [], "confirmation_required": True},
+            )
+            self._emit()
+            return False
+        stored = self._cancel_plans.pop(plan.token, None)
+        if stored != plan or (utc_now() - plan.created_at).total_seconds() > 30.0:
+            self.log(
+                f"{reason}; cancellation confirmation was missing, expired, or already used",
+                "critical",
+                "kill_switch",
+            )
+            self._emit()
+            return False
         cancel_accepted: list[str] = []
         failures: list[str] = []
-        target_ids: set[str] = set()
-        if self.snapshot.connected and self.snapshot.account is not None:
-            try:
-                orders = await self.broker.get_orders(self.snapshot.account.account_number)
-                self.snapshot.orders = orders
+        target_ids = set(plan.order_ids)
+        remaining = set(target_ids)
+        if (
+            not self.snapshot.connected
+            or self.snapshot.account is None
+            or self.snapshot.account.account_number != plan.account_number
+        ):
+            failures.append("Confirmed Agentic account changed; no orders cancelled")
+        else:
+            async with self._reconcile_lock:
                 try:
-                    self._reconcile_submission_tracking(orders, self.snapshot.positions)
+                    orders = await self._read_cancel_truth_locked(plan.account_number)
+                    current_targets, _unrelated = self._cancel_scope(
+                        orders, plan.account_number
+                    )
+                    if not self._cancel_targets_match(current_targets, plan.targets):
+                        raise BrokerError(
+                            "Confirmed GRANDE-owned cancellation identity or scope changed"
+                        )
                 except Exception as exc:
-                    failures.append(str(exc))
-                for order in orders:
-                    if not order_is_terminal(order):
-                        target_ids.add(order.order_id)
+                    failures.append(f"pre-cancel truth failed: {exc}")
+                else:
+                    for index, target in enumerate(plan.targets):
+                        if index:
+                            try:
+                                orders = await self._read_cancel_truth_locked(
+                                    plan.account_number
+                                )
+                                current_targets, _unrelated = self._cancel_scope(
+                                    orders, plan.account_number
+                                )
+                                current_by_id = {
+                                    item.order_id: item for item in current_targets
+                                }
+                                unprocessed = plan.targets[index:]
+                                if any(
+                                    current_by_id.get(item.order_id) is None
+                                    or self._cancel_identity(current_by_id[item.order_id])
+                                    != self._cancel_identity(item)
+                                    for item in unprocessed
+                                ) or any(
+                                    item.order_id not in plan.order_ids
+                                    for item in current_targets
+                                ):
+                                    raise BrokerError(
+                                        "Confirmed GRANDE-owned cancellation identity or scope changed"
+                                    )
+                            except Exception as exc:
+                                failures.append(f"pre-cancel truth failed: {exc}")
+                                break
+                        order = next(
+                            (item for item in orders if item.order_id == target.order_id),
+                            None,
+                        )
+                        if order is None or order_is_terminal(order):
+                            failures.append(
+                                f"{target.order_id}: confirmed target is no longer nonterminal"
+                            )
+                            break
                         if normalized_order_state(order.state) == "pending_cancelled":
                             continue
                         try:
                             accepted = await self.broker.cancel_order(
-                                self.snapshot.account.account_number, order.order_id
+                                plan.account_number, target.order_id
                             )
-                            (cancel_accepted if accepted else failures).append(order.order_id)
                         except Exception as exc:
-                            failures.append(f"{order.order_id}: {exc}")
-            except Exception as exc:
-                failures.append(str(exc))
-        elif self._nonterminal_orders(self.snapshot.orders):
-            target_ids.update(order.order_id for order in self._nonterminal_orders(self.snapshot.orders))
-            failures.append("Broker is disconnected; open-order state could not be refreshed")
+                            failures.append(f"{target.order_id}: {exc}")
+                            break
+                        if not accepted:
+                            failures.append(f"{target.order_id}: provider did not accept cancellation")
+                            break
+                        cancel_accepted.append(target.order_id)
 
-        remaining = set(target_ids)
-        if target_ids and self.snapshot.connected and self.snapshot.account is not None:
-            for attempt in range(4):
-                if attempt:
-                    await asyncio.sleep(0.5)
-                try:
-                    observed = await self.broker.get_orders(self.snapshot.account.account_number)
-                except Exception as exc:
-                    failures.append(f"terminal verification failed: {exc}")
-                    break
-                self.snapshot.orders = observed
-                observed_by_id = {order.order_id: order for order in observed}
-                remaining = {
-                    order_id
-                    for order_id in target_ids
-                    if order_id not in observed_by_id or not order_is_terminal(observed_by_id[order_id])
-                }
-                for order in observed:
-                    reference = self._order_ref_id(order)
-                    if reference:
-                        self.store.update_intent(
-                            reference,
-                            order.order_id,
-                            normalized_order_state(order.state),
-                        )
-                    if order_is_terminal(order):
-                        for tracked_ref, tracked_order_id in list(
-                            self._submission_reconcile_required.items()
-                        ):
-                            if tracked_order_id == order.order_id or (
-                                reference and tracked_ref == reference
-                            ):
-                                self._submission_reconcile_required.pop(tracked_ref, None)
-                                self._uncertain_submission_refs.discard(tracked_ref)
-                                self._live_submissions.pop(tracked_ref, None)
-                if not remaining:
-                    break
+                if not failures and target_ids:
+                    for attempt in range(4):
+                        if attempt:
+                            await asyncio.sleep(0.5)
+                        try:
+                            observed = await self._read_cancel_truth_locked(plan.account_number)
+                        except Exception as exc:
+                            failures.append(f"terminal verification failed: {exc}")
+                            break
+                        observed_by_id = {order.order_id: order for order in observed}
+                        remaining = {
+                            order_id
+                            for order_id in target_ids
+                            if order_id not in observed_by_id
+                            or not order_is_terminal(observed_by_id[order_id])
+                        }
+                        for target in plan.targets:
+                            observed_order = observed_by_id.get(target.order_id)
+                            if observed_order is not None:
+                                try:
+                                    binding = self.store.owned_broker_order_bindings(
+                                        plan.account_number
+                                    ).get(target.order_id)
+                                    if binding is None:
+                                        raise BrokerError(
+                                            "Durable cancellation ownership disappeared"
+                                        )
+                                    observed_identity = self._cancel_order_target(
+                                        observed_order, binding
+                                    )
+                                except Exception as exc:
+                                    failures.append(
+                                        f"terminal verification identity failed: {exc}"
+                                    )
+                                    break
+                                if self._cancel_identity(
+                                    observed_identity
+                                ) != self._cancel_identity(target):
+                                    failures.append(
+                                        "terminal verification found mutated order identity"
+                                    )
+                                    break
+                        if failures or not remaining:
+                            break
         if remaining:
             failures.append(
                 "nonterminal/unverified order ids: " + ", ".join(sorted(remaining))
@@ -1880,16 +2430,30 @@ class TradingController(QObject):
         held_quote = self.snapshot.quotes.get(held_symbol) if held else None
         held_duration_minutes = None
         if held:
-            entries = [
-                order.created_at
-                for order in self.snapshot.orders
-                if order.symbol.strip().upper() == held_symbol
-                and order.side.strip().lower() == "buy"
-                and order.created_at is not None
-                and normalized_order_state(order.state) in {"filled", "partially_filled"}
-            ]
-            if entries:
-                held_duration_minutes = held_minutes(max(entries), utc_now())
+            if self.snapshot.account is None:
+                raise BrokerError("Active holding lacks its bound Agentic account")
+            try:
+                entry_fill_at = self.store.active_holding_start(
+                    self.snapshot.account.account_number,
+                    held_symbol,
+                    held.quantity,
+                )
+            except ValueError as exc:
+                self._revoke_live_automation(
+                    f"Active {held_symbol} holding time lacks exact execution provenance: {exc}"
+                )
+                self.log(
+                    f"Automatic decision blocked: active {held_symbol} holding lacks exact fill time",
+                    "critical",
+                    "live_fill_reconciliation",
+                )
+                return
+            if entry_fill_at is None:
+                self._revoke_live_automation(
+                    f"Active {held_symbol} holding lacks an exact entry execution"
+                )
+                return
+            held_duration_minutes = held_minutes(entry_fill_at, utc_now())
         policy_position = (
             PolicyPosition(
                 held_symbol,
@@ -1967,7 +2531,7 @@ class TradingController(QObject):
                 {
                     "conservative_entries": conservative_entries,
                     "max_entries_per_day": contract.max_entries_per_day,
-                    "prior_placement_upper_bound": self._prior_entry_upper_bound,
+                    "prior_filled_entry_count": self._prior_entry_upper_bound,
                     "confirmed_in_process": len(self._confirmed_entry_order_ids),
                 },
             )
@@ -2035,7 +2599,7 @@ class TradingController(QObject):
                     False,
                 )
                 return
-            await self.stop_and_cancel(
+            self._revoke_live_automation(
                 "Daily loss limit reached while a prior non-exit submission remained unresolved"
             )
             self.log(
@@ -2046,7 +2610,7 @@ class TradingController(QObject):
             )
             return
         if self._has_open_order():
-            await self.stop_and_cancel(
+            self._revoke_live_automation(
                 "Daily loss limit reached while an untracked Agentic order remained open"
             )
             self.log(
@@ -2063,7 +2627,7 @@ class TradingController(QObject):
             )
             return
         if len(positions) != 1:
-            await self.stop_and_cancel(
+            self._revoke_live_automation(
                 "Daily loss limit reached with conflicting leveraged inventory"
             )
             self.log(
@@ -2248,6 +2812,87 @@ class TradingController(QObject):
         if not self._live_automation_current(allow_loss_liquidation=liquidation_only):
             self.store.update_intent(intent.ref_id, None, "blocked_evidence_revoked")
             return None
+        # Broker review is not an execution lock. Re-read exact account and quote
+        # truth after review, then replace the prior risk reservation using only
+        # that current state immediately before crossing the placement boundary.
+        try:
+            await self._refresh_exact_preplacement_truth()
+        except Exception as exc:
+            self.risk.release_authorization(
+                intent.ref_id, "Exact post-review broker refresh failed"
+            )
+            self._persist_risk_receipts()
+            self._revoke_live_automation(
+                f"Exact post-review broker refresh failed: {exc}"
+            )
+            self.store.update_intent(intent.ref_id, None, "post_review_refresh_failed")
+            return None
+        if not self._live_automation_current(allow_loss_liquidation=liquidation_only):
+            self.store.update_intent(intent.ref_id, None, "blocked_state_changed_after_review")
+            return None
+        if self._nonterminal_orders(self.snapshot.orders):
+            self._revoke_live_automation(
+                "A broker order appeared after review; placement was blocked"
+            )
+            self.store.update_intent(intent.ref_id, None, "open_order_after_review")
+            return None
+        refreshed_exit_position = None
+        if intent.side == "buy":
+            if self._leveraged_positions():
+                self._revoke_live_automation(
+                    "Leveraged inventory appeared after review; exposure-increasing placement blocked"
+                )
+                self.store.update_intent(intent.ref_id, None, "position_changed_after_review")
+                return None
+        else:
+            refreshed_exit_position = next(
+                (
+                    position
+                    for position in self._leveraged_positions()
+                    if position.symbol.strip().upper() == intent.symbol
+                ),
+                None,
+            )
+            if refreshed_exit_position is None:
+                self._revoke_live_automation(
+                    "Exit inventory disappeared after review; placement was blocked"
+                )
+                self.store.update_intent(intent.ref_id, None, "position_changed_after_review")
+                return None
+        refreshed_quote = self.snapshot.quotes.get(intent.symbol)
+        if refreshed_quote is None or self.snapshot.portfolio is None:
+            self._revoke_live_automation("Exact account or quote truth disappeared after review")
+            self.store.update_intent(intent.ref_id, None, "truth_missing_after_review")
+            return None
+        self.risk.release_authorization(
+            intent.ref_id, "Replacing pre-review authorization with exact post-review truth"
+        )
+        refreshed_decision = self.risk.authorize(
+            intent,
+            refreshed_quote,
+            self.snapshot.portfolio,
+            self._exposure(),
+            account_number=self.snapshot.account.account_number,
+            strategy_fingerprint=self.current_strategy_fingerprint(self.risk.grant),
+            reconciled_position_quantity=(
+                refreshed_exit_position.quantity
+                if refreshed_exit_position is not None
+                else None
+            ),
+            reconciled_sellable_quantity=(
+                refreshed_exit_position.sellable_quantity
+                if refreshed_exit_position is not None
+                else None
+            ),
+        )
+        self._persist_risk_receipts()
+        if not refreshed_decision.allowed:
+            self._revoke_live_automation(
+                f"Post-review risk authorization failed: {refreshed_decision.reason}"
+            )
+            self.store.update_intent(intent.ref_id, None, "post_review_risk_blocked")
+            return None
+        quote = refreshed_quote
         authorized_notional = float(self.risk.authorized_notionals.get(intent.ref_id, 0.0))
         grant = self.risk.grant
         if grant is None:
@@ -2365,7 +3010,7 @@ class TradingController(QObject):
         if quote is None:
             raise RuntimeError(f"No current {normalized_symbol} quote is available")
         quote.validate()
-        if quote.age_seconds() > self.config.default_max_quote_age_seconds:
+        if quote.age_seconds(utc_now()) > self.config.default_max_quote_age_seconds:
             raise RuntimeError(f"The {normalized_symbol} quote is stale")
         intent = OrderIntent(
             ref_id=str(uuid.uuid4()),
@@ -2380,6 +3025,19 @@ class TradingController(QObject):
         except Exception:
             self.store.update_intent(intent.ref_id, None, "review_failed")
             raise
+        try:
+            self._validated_execution_quotes(
+                {review.quote.symbol: review.quote, **{
+                    key: value
+                    for key, value in self.snapshot.quotes.items()
+                    if key != review.quote.symbol
+                }},
+                max_age_seconds=self.config.default_max_quote_age_seconds,
+                context="Manual flatten review",
+            )
+        except (BrokerError, ValueError) as exc:
+            self.store.update_intent(intent.ref_id, None, "review_quote_invalid")
+            raise RuntimeError(f"Manual flatten review quote is unusable: {exc}") from exc
         if review.market_data_disclosure:
             self.event.emit("market", review.market_data_disclosure)
         if review.checks:
@@ -2393,12 +3051,45 @@ class TradingController(QObject):
             raise RuntimeError("Real-order controls are disabled in Settings")
         if self.snapshot.account is None:
             raise RuntimeError("Robinhood is not connected")
-        if intent.ref_id != review.intent.ref_id or intent.side != "sell":
+        if intent != review.intent or intent.side != "sell":
             raise RuntimeError("Manual flatten preview no longer matches the order")
+        try:
+            review.quote.validate()
+        except ValueError as exc:
+            raise RuntimeError(f"Manual flatten review quote is invalid: {exc}") from exc
+        if (
+            review.quote.symbol.strip().upper() != intent.symbol.strip().upper()
+            or review.quote.bid_timestamp is None
+            or review.quote.ask_timestamp is None
+        ):
+            raise RuntimeError("Manual flatten review lacks exact venue quote data")
+        review_quote_bundle = dict(self.snapshot.quotes)
+        review_quote_bundle[intent.symbol] = review.quote
+        try:
+            self._validated_execution_quotes(
+                review_quote_bundle,
+                max_age_seconds=self.config.default_max_quote_age_seconds,
+                context="Manual flatten reviewed quote",
+            )
+        except BrokerError as exc:
+            self.store.update_intent(intent.ref_id, None, "review_quote_invalid")
+            raise RuntimeError(f"Manual flatten reviewed quote is unusable: {exc}") from exc
         if (utc_now() - intent.created_at).total_seconds() > 30.0:
             self.store.update_intent(intent.ref_id, None, "review_expired")
             raise RuntimeError("Manual flatten review expired; request a fresh review")
-        await self.reconcile()
+        try:
+            await self._refresh_exact_preplacement_truth()
+        except Exception as exc:
+            self.store.update_intent(intent.ref_id, None, "post_review_refresh_failed")
+            raise RuntimeError(
+                f"Manual flatten exact preplacement refresh failed: {exc}"
+            ) from exc
+        if not self.config.live_trading_enabled:
+            self.store.update_intent(intent.ref_id, None, "permission_revoked")
+            raise RuntimeError("Real-order controls were disabled after review")
+        if self.risk.grant is not None or self.snapshot.strategy_running:
+            self.store.update_intent(intent.ref_id, None, "authority_changed")
+            raise RuntimeError("Live authority changed after review; flatten was not placed")
         position = next(
             (
                 item
@@ -2407,7 +3098,17 @@ class TradingController(QObject):
             ),
             None,
         )
-        if position is None or position.sellable_quantity + 1e-9 < float(intent.quantity or 0.0):
+        reviewed_quantity = float(intent.quantity or 0.0)
+        if (
+            position is None
+            or reviewed_quantity <= 0
+            or not math.isclose(
+                float(position.sellable_quantity),
+                reviewed_quantity,
+                rel_tol=1e-9,
+                abs_tol=1e-9,
+            )
+        ):
             self.store.update_intent(intent.ref_id, None, "position_changed")
             raise RuntimeError("Sellable position changed after review; request a fresh flatten")
         if any(
@@ -2417,9 +3118,21 @@ class TradingController(QObject):
             self.store.update_intent(intent.ref_id, None, "open_order_detected")
             raise RuntimeError("A nonterminal order appeared after review; flatten was not placed")
         quote = self.snapshot.quotes.get(intent.symbol)
-        if quote is None or quote.age_seconds() > self.config.default_max_quote_age_seconds:
+        if (
+            quote is None
+            or quote.age_seconds(utc_now()) > self.config.default_max_quote_age_seconds
+        ):
             self.store.update_intent(intent.ref_id, None, "quote_stale")
             raise RuntimeError("A fresh quote is required immediately before manual flatten placement")
+        reviewed_bid = float(review.quote.bid)
+        bid_drift_bps = abs(float(quote.bid) - reviewed_bid) / reviewed_bid * 10_000.0
+        max_review_bid_drift_bps = 25.0
+        if bid_drift_bps > max_review_bid_drift_bps:
+            self.store.update_intent(intent.ref_id, None, "review_price_changed")
+            raise RuntimeError(
+                "Reviewed sell estimate changed materially; request a fresh flatten review "
+                f"({bid_drift_bps:.1f} bps; limit {max_review_bid_drift_bps:.1f} bps)"
+            )
         manual_authority_id = f"manual-flatten-{uuid.uuid4()}"
         self.store.mark_intent_submitting(
             intent.ref_id,
@@ -2478,7 +3191,9 @@ class TradingController(QObject):
 
     async def forget_broker_credentials(self) -> None:
         if self.snapshot.connected:
-            await self.disconnect()
+            raise RuntimeError(
+                "Disconnect before forgetting credentials; open orders are never cancelled implicitly"
+            )
         self.broker.clear_credentials()
         self.log(
             "Stored broker OAuth credentials were removed; reconnect to restore access",

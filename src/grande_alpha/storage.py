@@ -4,6 +4,7 @@ import json
 import math
 import sqlite3
 import threading
+import uuid
 from datetime import UTC, date, datetime, timedelta
 from numbers import Real
 from pathlib import Path
@@ -11,7 +12,10 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from grande_alpha.config import data_dir
-from grande_alpha.models import Bar, OrderIntent, Quote, Signal, utc_now
+from grande_alpha.models import Bar, BrokerOrder, OrderIntent, Quote, Signal, utc_now
+
+QUOTE_BATCH_SCHEMA_VERSION = 2
+EXACT_QUOTE_VALIDATOR_VERSION = 2
 
 
 def _parse_aware_utc(value: str, *, field: str) -> datetime:
@@ -46,9 +50,24 @@ class AuditStore:
                     bid REAL NOT NULL,
                     ask REAL NOT NULL,
                     last REAL NOT NULL,
-                    venue_timestamp TEXT NOT NULL
+                    venue_timestamp TEXT NOT NULL,
+                    bid_timestamp TEXT,
+                    ask_timestamp TEXT,
+                    batch_id TEXT,
+                    batch_position INTEGER
                 );
                 CREATE INDEX IF NOT EXISTS idx_quotes_symbol_time ON quotes(symbol, observed_at);
+                CREATE TABLE IF NOT EXISTS quote_batches (
+                    batch_id TEXT PRIMARY KEY,
+                    stream_id TEXT NOT NULL,
+                    observed_at TEXT NOT NULL,
+                    schema_version INTEGER NOT NULL CHECK(schema_version IN (1,2)),
+                    symbol_count INTEGER NOT NULL CHECK(symbol_count = 3)
+                    ,validation_profile TEXT NOT NULL DEFAULT 'passive_unvalidated'
+                    ,validation_version INTEGER NOT NULL DEFAULT 0
+                    ,max_age_seconds REAL
+                    ,max_skew_seconds REAL
+                );
                 CREATE TABLE IF NOT EXISTS bars (
                     id INTEGER PRIMARY KEY,
                     symbol TEXT NOT NULL,
@@ -90,6 +109,24 @@ class AuditStore:
                     authorized_notional REAL NOT NULL DEFAULT 0,
                     submission_started_at TEXT
                 );
+                CREATE TABLE IF NOT EXISTS broker_executions (
+                    id INTEGER PRIMARY KEY,
+                    recorded_at TEXT NOT NULL,
+                    account_number TEXT NOT NULL,
+                    execution_id TEXT NOT NULL,
+                    order_id TEXT NOT NULL,
+                    symbol TEXT NOT NULL CHECK(symbol IN ('TQQQ','SQQQ')),
+                    side TEXT NOT NULL CHECK(side IN ('buy','sell')),
+                    quantity REAL NOT NULL CHECK(quantity > 0),
+                    price REAL NOT NULL CHECK(price > 0),
+                    fees REAL NOT NULL CHECK(fees >= 0),
+                    executed_at TEXT NOT NULL,
+                    UNIQUE(account_number,execution_id)
+                );
+                CREATE INDEX IF NOT EXISTS idx_broker_executions_account_order
+                    ON broker_executions(account_number,order_id,executed_at,execution_id);
+                CREATE INDEX IF NOT EXISTS idx_broker_executions_account_symbol_time
+                    ON broker_executions(account_number,symbol,executed_at,execution_id);
                 CREATE TABLE IF NOT EXISTS research_fund (
                     id INTEGER PRIMARY KEY,
                     created_at TEXT NOT NULL,
@@ -260,8 +297,96 @@ class AuditStore:
                 """CREATE INDEX IF NOT EXISTS idx_order_intents_account_submission
                 ON order_intents(account_number,submission_started_at)"""
             )
+            duplicate_order_binding = self._connection.execute(
+                """SELECT account_number,broker_order_id,COUNT(*) AS n FROM order_intents
+                WHERE account_number IS NOT NULL AND broker_order_id IS NOT NULL
+                GROUP BY account_number,broker_order_id HAVING COUNT(*)>1 LIMIT 1"""
+            ).fetchone()
+            if duplicate_order_binding is not None:
+                raise ValueError("Legacy order intents contain duplicate broker-order bindings")
+            self._connection.execute(
+                """CREATE UNIQUE INDEX IF NOT EXISTS idx_order_intents_account_order
+                ON order_intents(account_number,broker_order_id)
+                WHERE account_number IS NOT NULL AND broker_order_id IS NOT NULL"""
+            )
+            quote_columns = {
+                row["name"]
+                for row in self._connection.execute("PRAGMA table_info(quotes)").fetchall()
+            }
+            if "batch_id" not in quote_columns:
+                self._connection.execute("ALTER TABLE quotes ADD COLUMN batch_id TEXT")
+            if "batch_position" not in quote_columns:
+                self._connection.execute("ALTER TABLE quotes ADD COLUMN batch_position INTEGER")
+            if "bid_timestamp" not in quote_columns:
+                self._connection.execute("ALTER TABLE quotes ADD COLUMN bid_timestamp TEXT")
+            if "ask_timestamp" not in quote_columns:
+                self._connection.execute("ALTER TABLE quotes ADD COLUMN ask_timestamp TEXT")
+            quote_batch_columns = {
+                row["name"]
+                for row in self._connection.execute("PRAGMA table_info(quote_batches)").fetchall()
+            }
+            if "stream_id" not in quote_batch_columns:
+                self._connection.execute(
+                    "ALTER TABLE quote_batches ADD COLUMN stream_id TEXT NOT NULL DEFAULT ''"
+                )
+            for column, declaration in {
+                "validation_profile": "TEXT NOT NULL DEFAULT 'passive_unvalidated'",
+                "validation_version": "INTEGER NOT NULL DEFAULT 0",
+                "max_age_seconds": "REAL",
+                "max_skew_seconds": "REAL",
+            }.items():
+                if column not in quote_batch_columns:
+                    self._connection.execute(
+                        f"ALTER TABLE quote_batches ADD COLUMN {column} {declaration}"
+                    )
+            quote_batch_sql = str(
+                self._connection.execute(
+                    "SELECT sql FROM sqlite_master WHERE type='table' AND name='quote_batches'"
+                ).fetchone()["sql"]
+            ).replace(" ", "").lower()
+            if "check(schema_version=1)" in quote_batch_sql:
+                self._connection.execute(
+                    """
+                    CREATE TABLE quote_batches_v2_migration (
+                        batch_id TEXT PRIMARY KEY,
+                        stream_id TEXT NOT NULL,
+                        observed_at TEXT NOT NULL,
+                        schema_version INTEGER NOT NULL CHECK(schema_version IN (1,2)),
+                        symbol_count INTEGER NOT NULL CHECK(symbol_count = 3),
+                        validation_profile TEXT NOT NULL DEFAULT 'passive_unvalidated',
+                        validation_version INTEGER NOT NULL DEFAULT 0,
+                        max_age_seconds REAL,
+                        max_skew_seconds REAL
+                    )
+                    """
+                )
+                self._connection.execute(
+                    """
+                    INSERT INTO quote_batches_v2_migration(
+                        batch_id,stream_id,observed_at,schema_version,symbol_count,
+                        validation_profile,validation_version,max_age_seconds,max_skew_seconds
+                    ) SELECT batch_id,stream_id,observed_at,schema_version,symbol_count,
+                        validation_profile,validation_version,max_age_seconds,max_skew_seconds
+                      FROM quote_batches
+                    """
+                )
+                self._connection.execute("DROP TABLE quote_batches")
+                self._connection.execute(
+                    "ALTER TABLE quote_batches_v2_migration RENAME TO quote_batches"
+                )
+            self._connection.execute(
+                """CREATE UNIQUE INDEX IF NOT EXISTS idx_quotes_batch_position
+                ON quotes(batch_id,batch_position) WHERE batch_id IS NOT NULL"""
+            )
+            self._connection.execute(
+                """CREATE UNIQUE INDEX IF NOT EXISTS idx_quotes_batch_symbol
+                ON quotes(batch_id,symbol) WHERE batch_id IS NOT NULL"""
+            )
 
     def record_quote(self, quote: Quote) -> None:
+        """Record one legacy unbound quote; never eligible for exact runtime replay."""
+
+        quote.validate()
         with self._lock, self._connection:
             self._connection.execute(
                 "INSERT INTO quotes(observed_at,symbol,bid,ask,last,venue_timestamp) VALUES(?,?,?,?,?,?)",
@@ -313,11 +438,41 @@ class AuditStore:
             )
 
     def update_intent(self, ref_id: str, order_id: str | None, state: str) -> None:
+        if not isinstance(ref_id, str) or not ref_id.strip():
+            raise ValueError("Intent reference must be a nonempty string")
+        if order_id is not None and (
+            not isinstance(order_id, str) or not order_id.strip()
+        ):
+            raise ValueError("Broker order id must be a nonempty string")
         with self._lock, self._connection:
-            self._connection.execute(
+            current = self._connection.execute(
+                "SELECT account_number FROM order_intents WHERE ref_id=?",
+                (ref_id.strip(),),
+            ).fetchone()
+            if current is None:
+                raise ValueError("Order intent is missing")
+            normalized_order_id = order_id.strip() if order_id is not None else None
+            account_number = current["account_number"]
+            if normalized_order_id is not None:
+                if account_number is None or not str(account_number).strip():
+                    raise ValueError(
+                        "Broker order id cannot be bound before durable account provenance"
+                    )
+                duplicate = self._connection.execute(
+                    """SELECT ref_id FROM order_intents
+                    WHERE account_number=? AND broker_order_id=? AND ref_id!=? LIMIT 1""",
+                    (str(account_number).strip(), normalized_order_id, ref_id.strip()),
+                ).fetchone()
+                if duplicate is not None:
+                    raise ValueError(
+                        "Broker order id is already bound to another durable order intent"
+                    )
+            cursor = self._connection.execute(
                 "UPDATE order_intents SET broker_order_id=?, broker_state=? WHERE ref_id=?",
-                (order_id, state, ref_id),
+                (normalized_order_id, state, ref_id.strip()),
             )
+            if cursor.rowcount != 1:
+                raise ValueError("Order intent is missing")
 
     def mark_intent_submitting(
         self,
@@ -363,6 +518,121 @@ class AuditStore:
             if cursor.rowcount != 1:
                 raise ValueError("Order intent is missing or placement was already invoked")
 
+    def record_quote_batch(
+        self,
+        quotes: dict[str, Quote],
+        *,
+        stream_id: str,
+        validation_profile: str = "passive_unvalidated",
+        validation_version: int = 0,
+        max_age_seconds: float | None = None,
+        max_skew_seconds: float | None = None,
+    ) -> str:
+        """Atomically persist one accepted provider response with durable batch identity."""
+
+        required = ("QQQ", "TQQQ", "SQQQ")
+        if not isinstance(stream_id, str) or not stream_id.strip():
+            raise ValueError("Quote batch stream ID must be a nonempty string")
+        exact_profile = validation_profile == "exact_execution_quotes"
+        if exact_profile:
+            if validation_version != EXACT_QUOTE_VALIDATOR_VERSION:
+                raise ValueError(
+                    f"Exact quote validator version must be {EXACT_QUOTE_VALIDATOR_VERSION}"
+                )
+            if any(
+                value is None or not math.isfinite(float(value)) or float(value) <= 0
+                for value in (max_age_seconds, max_skew_seconds)
+            ):
+                raise ValueError("Exact quote validator envelope must be finite and positive")
+            if float(max_skew_seconds) > min(5.0, float(max_age_seconds)):
+                raise ValueError("Exact quote skew limit exceeds its validator envelope")
+        elif (
+            validation_profile != "passive_unvalidated"
+            or validation_version != 0
+            or max_age_seconds is not None
+            or max_skew_seconds is not None
+        ):
+            raise ValueError("Unknown quote validator profile")
+        if tuple(sorted(quotes)) != tuple(sorted(required)):
+            raise ValueError("Quote batch must contain exactly QQQ, TQQQ, and SQQQ")
+        for symbol in required:
+            quote = quotes[symbol]
+            quote.validate()
+            if quote.symbol != symbol:
+                raise ValueError(f"Quote batch key/symbol mismatch for {symbol}")
+        observed = utc_now()
+        if exact_profile:
+            if any(
+                quotes[symbol].bid_timestamp is None
+                or quotes[symbol].ask_timestamp is None
+                for symbol in required
+            ):
+                raise ValueError("Exact quote batch requires bid and ask venue clocks")
+            book_times = [
+                timestamp
+                for symbol in required
+                for timestamp in (
+                    quotes[symbol].bid_timestamp,
+                    quotes[symbol].ask_timestamp,
+                )
+                if timestamp is not None
+            ]
+            ages = [(observed - timestamp).total_seconds() for timestamp in book_times]
+            if any(age < -2.0 or age > float(max_age_seconds) for age in ages):
+                raise ValueError("Exact quote batch violates its recorded age envelope")
+            if (max(book_times) - min(book_times)).total_seconds() > float(max_skew_seconds):
+                raise ValueError("Exact quote batch violates its recorded skew envelope")
+        batch_id = str(uuid.uuid4())
+        observed_at = observed.isoformat()
+        rows = [
+            (
+                observed_at,
+                symbol,
+                quotes[symbol].bid,
+                quotes[symbol].ask,
+                quotes[symbol].last,
+                quotes[symbol].timestamp.isoformat(),
+                (
+                    quotes[symbol].bid_timestamp.isoformat()
+                    if quotes[symbol].bid_timestamp is not None
+                    else None
+                ),
+                (
+                    quotes[symbol].ask_timestamp.isoformat()
+                    if quotes[symbol].ask_timestamp is not None
+                    else None
+                ),
+                batch_id,
+                position,
+            )
+            for position, symbol in enumerate(required)
+        ]
+        with self._lock, self._connection:
+            self._connection.execute(
+                """INSERT INTO quote_batches(
+                batch_id,stream_id,observed_at,schema_version,symbol_count,
+                validation_profile,validation_version,max_age_seconds,max_skew_seconds
+                ) VALUES(?,?,?,?,3,?,?,?,?)""",
+                (
+                    batch_id,
+                    stream_id.strip(),
+                    observed_at,
+                    QUOTE_BATCH_SCHEMA_VERSION,
+                    validation_profile,
+                    validation_version,
+                    max_age_seconds,
+                    max_skew_seconds,
+                ),
+            )
+            self._connection.executemany(
+                """INSERT INTO quotes(
+                observed_at,symbol,bid,ask,last,venue_timestamp,bid_timestamp,ask_timestamp,
+                batch_id,batch_position
+                ) VALUES(?,?,?,?,?,?,?,?,?,?)""",
+                rows,
+            )
+        return batch_id
+
     def unresolved_order_intents(self, account_number: str) -> list[dict[str, Any]]:
         """Return uncertain placements, including legacy rows with unknown account ownership."""
 
@@ -377,6 +647,424 @@ class AuditStore:
                 (account_number.strip(),),
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def owned_broker_order_ids(self, account_number: str) -> frozenset[str]:
+        """Return broker ids durably bound to GRANDE Alpha placement invocations."""
+
+        if not isinstance(account_number, str) or not account_number.strip():
+            raise ValueError("Account number must be a nonempty string")
+        with self._lock:
+            rows = self._connection.execute(
+                """SELECT broker_order_id FROM order_intents
+                WHERE account_number=? AND submission_started_at IS NOT NULL
+                AND broker_order_id IS NOT NULL""",
+                (account_number.strip(),),
+            ).fetchall()
+        return frozenset(str(row["broker_order_id"]) for row in rows)
+
+    def owned_broker_order_refs(self, account_number: str) -> dict[str, str]:
+        """Return exact broker-order to durable-intent ownership bindings."""
+
+        return {
+            order_id: str(binding["ref_id"])
+            for order_id, binding in self.owned_broker_order_bindings(account_number).items()
+        }
+
+    def owned_broker_order_bindings(
+        self, account_number: str
+    ) -> dict[str, dict[str, Any]]:
+        """Return durable intent tickets keyed by their unique provider order id."""
+
+        if not isinstance(account_number, str) or not account_number.strip():
+            raise ValueError("Account number must be a nonempty string")
+        with self._lock:
+            rows = self._connection.execute(
+                """SELECT broker_order_id,ref_id,payload_json,submission_started_at
+                FROM order_intents
+                WHERE account_number=? AND submission_started_at IS NOT NULL
+                AND broker_order_id IS NOT NULL""",
+                (account_number.strip(),),
+            ).fetchall()
+        result: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            try:
+                payload = json.loads(str(row["payload_json"]))
+            except (TypeError, ValueError) as exc:
+                raise ValueError("Durable order intent payload is invalid JSON") from exc
+            if not isinstance(payload, dict):
+                raise ValueError("Durable order intent payload must be an object")
+            result[str(row["broker_order_id"])] = {
+                "ref_id": str(row["ref_id"]),
+                "payload": payload,
+                "submission_started_at": str(row["submission_started_at"]),
+            }
+        return result
+
+    def intent_submission_started_at(self, ref_id: str) -> datetime | None:
+        """Return the exact durable pre-network submission boundary for one intent."""
+
+        if not isinstance(ref_id, str) or not ref_id.strip():
+            raise ValueError("Intent reference must be a nonempty string")
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT submission_started_at FROM order_intents WHERE ref_id=?",
+                (ref_id.strip(),),
+            ).fetchone()
+        if row is None or row["submission_started_at"] is None:
+            return None
+        return _parse_aware_utc(
+            row["submission_started_at"], field="intent submission_started_at"
+        )
+
+    def record_broker_order_executions(
+        self,
+        account_number: str,
+        order: BrokerOrder,
+    ) -> None:
+        """Idempotently persist provider execution identities, rejecting mutation."""
+
+        if not isinstance(account_number, str) or not account_number.strip():
+            raise ValueError("Account number must be a nonempty string")
+        order_id = order.order_id.strip()
+        symbol = order.symbol.strip().upper()
+        side = order.side.strip().lower()
+        if not order_id:
+            raise ValueError("Broker order id must be a nonempty string")
+        if symbol not in {"TQQQ", "SQQQ"} or side not in {"buy", "sell"}:
+            raise ValueError("Broker execution order identity is unsupported")
+        order.validate_execution_provenance(require_snapshot=bool(order.executions))
+        account = account_number.strip()
+        with self._lock, self._connection:
+            bound_intents = list(
+                self._connection.execute(
+                """SELECT ref_id,symbol,side,payload_json,authorized_notional,
+                submission_started_at,broker_order_id
+                FROM order_intents WHERE account_number=? AND broker_order_id=?""",
+                (account, order_id),
+                ).fetchall()
+            )
+            bind_by_reference = False
+            provider_ref = order.raw.get("ref_id")
+            if provider_ref is not None:
+                if not isinstance(provider_ref, str) or not provider_ref.strip():
+                    raise ValueError("Broker order reference must be a nonempty string")
+                referenced = self._connection.execute(
+                    """SELECT ref_id,symbol,side,payload_json,authorized_notional,
+                    account_number,broker_order_id,submission_started_at
+                    FROM order_intents WHERE ref_id=?""",
+                    (provider_ref.strip(),),
+                ).fetchone()
+                if referenced is not None:
+                    if str(referenced["account_number"] or "").strip() != account:
+                        raise ValueError(
+                            "Broker order reference differs from its durable account intent"
+                        )
+                    existing_order_id = referenced["broker_order_id"]
+                    if existing_order_id is not None and str(existing_order_id) != order_id:
+                        raise ValueError(
+                            "Broker order reference differs from its durable broker-order binding"
+                        )
+                    if all(row["ref_id"] != referenced["ref_id"] for row in bound_intents):
+                        bound_intents.append(referenced)
+                        bind_by_reference = existing_order_id is None
+            if len(bound_intents) > 1:
+                raise ValueError("Broker order id is bound to multiple durable order intents")
+            if bound_intents:
+                bound = bound_intents[0]
+                try:
+                    payload = json.loads(bound["payload_json"])
+                except (TypeError, json.JSONDecodeError) as exc:
+                    raise ValueError("Durable order intent payload is malformed") from exc
+                if not isinstance(payload, dict):
+                    raise ValueError("Durable order intent payload is malformed")
+                if bound["submission_started_at"] is None:
+                    raise ValueError("Durable order intent lacks submission chronology")
+                submitted_at = _parse_aware_utc(
+                    bound["submission_started_at"], field="intent submission_started_at"
+                )
+                if order.created_at is None:
+                    raise ValueError("Broker order lacks creation chronology")
+                if order.created_at.astimezone(UTC) < submitted_at - timedelta(seconds=5):
+                    raise ValueError("Broker order predates its durable submission intent")
+                if str(bound["symbol"]).strip().upper() != symbol or str(
+                    bound["side"]
+                ).strip().lower() != side:
+                    raise ValueError("Broker order identity differs from its durable order intent")
+                for payload_key, actual in (
+                    ("symbol", symbol),
+                    ("side", side),
+                    ("order_type", str(order.raw.get("type", "")).strip().lower()),
+                    ("market_hours", str(order.raw.get("market_hours", "")).strip().lower()),
+                    ("time_in_force", str(order.raw.get("time_in_force", "")).strip().lower()),
+                ):
+                    expected = str(payload.get(payload_key, "")).strip().lower()
+                    if not expected or str(actual).strip().lower() != expected:
+                        raise ValueError(
+                            f"Broker order {payload_key} differs from its durable order intent"
+                        )
+                intended_quantity = payload.get("quantity")
+                intended_dollars = payload.get("dollar_amount")
+                intended_limit = payload.get("limit_price")
+                if intended_quantity is not None:
+                    if order.quantity is None or not math.isclose(
+                        float(order.quantity),
+                        float(intended_quantity),
+                        rel_tol=1e-9,
+                        abs_tol=1e-9,
+                    ):
+                        raise ValueError(
+                            "Broker requested quantity differs from its durable order intent"
+                        )
+                elif intended_dollars is not None:
+                    if order.dollar_amount is None or not math.isclose(
+                        float(order.dollar_amount),
+                        float(intended_dollars),
+                        rel_tol=1e-9,
+                        abs_tol=0.005,
+                    ):
+                        raise ValueError(
+                            "Broker dollar amount differs from its durable order intent"
+                        )
+                if intended_limit is not None:
+                    raw_price = order.raw.get("price")
+                    if raw_price is None or not math.isclose(
+                        float(raw_price),
+                        float(intended_limit),
+                        rel_tol=1e-9,
+                        abs_tol=0.005,
+                    ):
+                        raise ValueError(
+                            "Broker limit price differs from its durable order intent"
+                        )
+                authorized = float(bound["authorized_notional"])
+                actual_notional = sum(
+                    float(execution.quantity) * float(execution.price)
+                    + float(execution.fees)
+                    for execution in order.executions
+                )
+                tolerance = max(0.05, authorized * 0.01)
+                if (
+                    not math.isfinite(authorized)
+                    or authorized < 0
+                    or actual_notional > authorized + tolerance
+                ):
+                    raise ValueError(
+                        "Broker executions exceed the durable authorized notional"
+                    )
+                if bind_by_reference:
+                    try:
+                        cursor = self._connection.execute(
+                            """UPDATE order_intents SET broker_order_id=?
+                            WHERE ref_id=? AND account_number=? AND broker_order_id IS NULL""",
+                            (order_id, str(bound["ref_id"]), account),
+                        )
+                    except sqlite3.IntegrityError as exc:
+                        raise ValueError(
+                            "Broker order id is already bound to another durable order intent"
+                        ) from exc
+                    if cursor.rowcount != 1:
+                        raise ValueError(
+                            "Durable order intent changed before broker-order binding"
+                        )
+            existing_identity = self._connection.execute(
+                """SELECT DISTINCT symbol,side FROM broker_executions
+                WHERE account_number=? AND order_id=?""",
+                (account, order_id),
+            ).fetchall()
+            if any(
+                row["symbol"] != symbol or row["side"] != side
+                for row in existing_identity
+            ):
+                raise ValueError(
+                    "Provider order identity changed symbol or side for an existing order id"
+                )
+            for execution in order.executions:
+                values = (
+                    account,
+                    execution.execution_id.strip(),
+                    order_id,
+                    symbol,
+                    side,
+                    float(execution.quantity),
+                    float(execution.price),
+                    float(execution.fees),
+                    execution.timestamp.astimezone(UTC).isoformat(),
+                )
+                existing = self._connection.execute(
+                    """SELECT account_number,execution_id,order_id,symbol,side,quantity,price,fees,executed_at
+                    FROM broker_executions WHERE account_number=? AND execution_id=?""",
+                    values[:2],
+                ).fetchone()
+                if existing is not None:
+                    stored = tuple(existing[key] for key in existing.keys())
+                    if stored != values:
+                        raise ValueError(
+                            "Provider execution identity was reused with conflicting immutable data"
+                        )
+                    continue
+                self._connection.execute(
+                    """INSERT INTO broker_executions(
+                    recorded_at,account_number,execution_id,order_id,symbol,side,
+                    quantity,price,fees,executed_at) VALUES(?,?,?,?,?,?,?,?,?,?)""",
+                    (utc_now().isoformat(), *values),
+                )
+
+    def broker_executions(
+        self,
+        account_number: str,
+        *,
+        order_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        if not isinstance(account_number, str) or not account_number.strip():
+            raise ValueError("Account number must be a nonempty string")
+        query = "SELECT * FROM broker_executions WHERE account_number=?"
+        arguments: list[Any] = [account_number.strip()]
+        if order_id is not None:
+            if not isinstance(order_id, str) or not order_id.strip():
+                raise ValueError("Order id must be a nonempty string")
+            query += " AND order_id=?"
+            arguments.append(order_id.strip())
+        query += " ORDER BY executed_at,execution_id"
+        with self._lock:
+            rows = self._connection.execute(query, arguments).fetchall()
+        return [dict(row) for row in rows]
+
+    def live_filled_entry_order_ids(
+        self,
+        account_number: str,
+        et_date: str,
+        *,
+        strategy_fingerprint: str | None = None,
+    ) -> frozenset[str]:
+        """Return exact distinct buy-order identities with executions on one ET date."""
+
+        try:
+            requested_date = date.fromisoformat(et_date)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Trading date must use YYYY-MM-DD") from exc
+        rows = self.broker_executions(account_number)
+        eligible_order_ids: set[str] | None = None
+        if strategy_fingerprint is not None:
+            if not isinstance(strategy_fingerprint, str) or not strategy_fingerprint.strip():
+                raise ValueError("Strategy fingerprint must be a nonempty string")
+            with self._lock:
+                intents = self._connection.execute(
+                    """SELECT broker_order_id FROM order_intents
+                    WHERE account_number=? AND strategy_fingerprint=? AND side='buy'
+                    AND broker_order_id IS NOT NULL""",
+                    (account_number.strip(), strategy_fingerprint.strip()),
+                ).fetchall()
+            eligible_order_ids = {str(row["broker_order_id"]) for row in intents}
+        eastern = ZoneInfo("America/New_York")
+        order_ids: set[str] = set()
+        for row in rows:
+            executed_at = _parse_aware_utc(row["executed_at"], field="execution timestamp")
+            if (
+                row["side"] == "buy"
+                and executed_at.astimezone(eastern).date() == requested_date
+                and (eligible_order_ids is None or row["order_id"] in eligible_order_ids)
+            ):
+                order_ids.add(str(row["order_id"]))
+        return frozenset(order_ids)
+
+    def active_holding_start(
+        self,
+        account_number: str,
+        symbol: str,
+        current_quantity: float,
+    ) -> datetime | None:
+        """Derive the current long holding clock from exact provider executions."""
+
+        normalized_symbol = symbol.strip().upper()
+        if normalized_symbol not in {"TQQQ", "SQQQ"}:
+            raise ValueError("Holding-time provenance supports only TQQQ and SQQQ")
+        if (
+            isinstance(current_quantity, bool)
+            or not isinstance(current_quantity, Real)
+            or not math.isfinite(float(current_quantity))
+            or float(current_quantity) < 0
+        ):
+            raise ValueError("Current quantity must be finite and nonnegative")
+        rows = [
+            row
+            for row in self.broker_executions(account_number)
+            if row["symbol"] == normalized_symbol
+        ]
+        quantity = 0.0
+        holding_start: datetime | None = None
+        for row in rows:
+            delta = float(row["quantity"]) * (1.0 if row["side"] == "buy" else -1.0)
+            previous = quantity
+            quantity += delta
+            if quantity < -1e-8:
+                raise ValueError("Execution ledger implies a short position")
+            quantity = max(0.0, quantity)
+            if previous <= 1e-8 and quantity > 1e-8:
+                holding_start = _parse_aware_utc(row["executed_at"], field="execution timestamp")
+            if quantity <= 1e-8:
+                holding_start = None
+        if not math.isclose(quantity, float(current_quantity), rel_tol=1e-8, abs_tol=1e-7):
+            raise ValueError("Execution ledger does not reconcile to current broker inventory")
+        if quantity > 1e-8 and holding_start is None:
+            raise ValueError("Execution ledger cannot prove the active holding start")
+        return holding_start
+
+    def validate_execution_inventory(
+        self,
+        account_number: str,
+        positions: list[Any],
+    ) -> None:
+        """Require the durable execution ledger to equal broker leveraged inventory."""
+
+        actual = {"TQQQ": 0.0, "SQQQ": 0.0}
+        for position in positions:
+            symbol = str(position.symbol).strip().upper()
+            if symbol in actual:
+                actual[symbol] += float(position.quantity)
+        rows = self.broker_executions(account_number)
+        ledger = {"TQQQ": 0.0, "SQQQ": 0.0}
+        for row in rows:
+            symbol = str(row["symbol"])
+            delta = float(row["quantity"]) * (1.0 if row["side"] == "buy" else -1.0)
+            ledger[symbol] += delta
+            if ledger[symbol] < -1e-8:
+                raise ValueError(f"Execution ledger implies a short {symbol} position")
+            ledger[symbol] = max(0.0, ledger[symbol])
+        for symbol in ("TQQQ", "SQQQ"):
+            if not math.isclose(ledger[symbol], actual[symbol], rel_tol=1e-8, abs_tol=1e-7):
+                raise ValueError(
+                    f"Durable {symbol} execution ledger does not match current broker inventory"
+                )
+
+    def incomplete_execution_provenance(self, account_number: str, et_date: str) -> list[str]:
+        """Return same-day submitted buy intents whose claimed fills lack executions."""
+
+        try:
+            requested_date = date.fromisoformat(et_date)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Trading date must use YYYY-MM-DD") from exc
+        eastern = ZoneInfo("America/New_York")
+        with self._lock:
+            rows = self._connection.execute(
+                """SELECT ref_id,broker_order_id,broker_state,submission_started_at
+                FROM order_intents WHERE account_number=? AND side='buy'
+                AND submission_started_at IS NOT NULL""",
+                (account_number.strip(),),
+            ).fetchall()
+        gaps: list[str] = []
+        for row in rows:
+            submitted_at = _parse_aware_utc(
+                row["submission_started_at"], field="submission timestamp"
+            )
+            if submitted_at.astimezone(eastern).date() != requested_date:
+                continue
+            state = str(row["broker_state"] or "").strip().lower()
+            if state not in {"filled", "partially_filled"}:
+                continue
+            order_id = str(row["broker_order_id"] or "").strip()
+            if not order_id or not self.broker_executions(account_number, order_id=order_id):
+                gaps.append(str(row["ref_id"]))
+        return gaps
 
     def live_daily_usage(self, account_number: str, et_date: str) -> dict[str, float | int | str]:
         """Restore placement-attempt usage and receipt-chain state for an ET trading date."""
@@ -453,6 +1141,13 @@ class AuditStore:
                     (modifier,),
                 )
                 removed[table] = max(0, cursor.rowcount)
+            cursor = self._connection.execute(
+                """DELETE FROM quote_batches
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM quotes WHERE quotes.batch_id=quote_batches.batch_id
+                )"""
+            )
+            removed["quote_batches"] = max(0, cursor.rowcount)
         return removed
 
     def plan_research_contribution(
@@ -921,9 +1616,14 @@ class AuditStore:
                     "Live-review eligibility is blocked until non-cash replay and runtime "
                     "share the certified sizing contract"
                 )
-            if not _valid_provenance_record(provenance_hash, provenance, dataset_hash):
+            if not _valid_provenance_record(
+                provenance_hash,
+                provenance,
+                dataset_hash,
+                require_runtime_observation=True,
+            ):
                 raise ValueError(
-                    "Live-review eligibility requires manifest-bound observed-data provenance"
+                    "Live-review eligibility requires exact runtime-observation provenance"
                 )
         with self._lock, self._connection:
             cursor = self._connection.execute(
@@ -1080,7 +1780,10 @@ class AuditStore:
             or evidence["dataset_hash"] != evidence["holdout_dataset_hash"]
             or evidence["provenance_hash"] != evidence["holdout_provenance_hash"]
             or not _valid_provenance_record(
-                evidence["provenance_hash"], provenance, evidence["dataset_hash"]
+                evidence["provenance_hash"],
+                provenance,
+                evidence["dataset_hash"],
+                require_runtime_observation=True,
             )
             or evidence["replay_end"] != evidence["sealed_holdout_end"]
             or not _valid_quality_record(
@@ -1125,6 +1828,8 @@ def _valid_provenance_record(
     provenance_hash: str,
     provenance: dict[str, Any] | None,
     dataset_hash: str,
+    *,
+    require_runtime_observation: bool = False,
 ) -> bool:
     if not isinstance(provenance, dict):
         return False
@@ -1139,6 +1844,7 @@ def _valid_provenance_record(
         return False
     return bool(
         record.evidence_eligible
+        and (not require_runtime_observation or record.runtime_observation_eligible)
         and record.digest == provenance_hash
         and record.canonical_dataset_hash == dataset_hash
     )

@@ -4,6 +4,12 @@ The v0.15 live-pilot path is integrated, but it is **not currently eligible for 
 trading**. Integration means the safety workflow exists and is testable; it does not mean a strategy
 has positive evidence, legal clearance, provider approval for distribution, or a profit expectation.
 
+The current Robinhood order-review tool contract requires the exact reviewed ticket and market
+disclosure to be presented for explicit confirmation before each placement. The app's same-day
+bounded grant does not satisfy that later per-order confirmation. Autonomous placement therefore
+remains machine-blocked unless a compliant per-order confirmation flow is implemented or Robinhood
+provides written clarification that expressly covers this exact session-authority design.
+
 ## Current stop state
 
 As of August 11, 2026:
@@ -25,18 +31,27 @@ pass the development gates, the one-use final holdout, sizing parity, and a moni
 period with positive after-cost evidence. Passing those gates would permit a separate live review; it
 would not guarantee future profit.
 
+Activation evidence must use policy v13, runtime-observation schema v2, quote-batch schema v2,
+and exact quote validator v2. Policy-v12 receipts and validator-v1 traces predate durable bid/ask
+book clocks and are intentionally stale; they cannot unlock live review.
+
 ## If the local OAuth session is revoked
 
 The latest check authenticated successfully. If a future check reports that the credential was
 revoked, do not repeatedly retry it.
 
-1. Open GRANDE Alpha and select **Broker → Forget Stored OAuth Credentials…**.
-2. Confirm removal. This removes the local Windows-stored credential and disconnects the app; it does
-   not itself revoke a connection inside Robinhood.
-3. Select **Connect Robinhood** and complete the new browser consent on Robinhood's site.
-4. Refresh and run the read-only broker diagnostic. Confirm exactly one active Agentic account and
+1. Revoke local authority so no new request can be authorized. If GRANDE Alpha reports an owned open
+   or unresolved order, use **STOP + CANCEL**, inspect its exact preview, explicitly confirm the
+   intended cancellations, and wait for terminal verification.
+2. Disconnect only after cleanup is clear. Disconnect refuses rather than silently cancelling an
+   owned open or unresolved order.
+3. Select **Broker → Forget Stored OAuth Credentials…** and confirm removal. Credential forgetting
+   is available only from the clean disconnected state; it does not cancel an order or revoke a
+   connection inside Robinhood.
+4. Select **Connect Robinhood** and complete the new browser consent on Robinhood's site.
+5. Refresh and run the read-only broker diagnostic. Confirm exactly one active Agentic account and
    current balances, positions, orders, and exact QQQ/TQQQ/SQQQ quotes.
-5. If reconnect still fails, stop. Do not work around OAuth or copy tokens into files. Review
+6. If reconnect still fails, stop. Do not work around OAuth or copy tokens into files. Review
    Robinhood's [Agentic Trading overview](https://robinhood.com/us/en/support/articles/agentic-trading-overview/)
    and [third-party connection guidance](https://robinhood.com/us/en/support/articles/third-party-connections/),
    then contact Robinhood Support.
@@ -101,14 +116,30 @@ duplicate real order.
 
 ## Stop, cancel, terminal verification, and exit
 
-**STOP + CANCEL** first locks new local requests, requests cancellation of nonterminal Agentic
-orders, and then polls broker order truth for a terminal state. A cancellation request is not proof
-of cancellation: it can race a fill, fail remotely, or remain pending.
+**STOP + CANCEL** first locks new local requests and performs a read-only refresh. It then presents a
+blocking confirmation with the exact count and details of nonterminal Agentic-account orders linked
+to GRANDE Alpha's durable order intents. Unrelated or manually placed orders are outside this scope
+and remain untouched. An order already reported as pending cancellation is disclosed and monitored
+for a terminal state, but GRANDE Alpha does not submit a duplicate cancellation request for it.
+
+No cancellation request is sent until the user explicitly confirms that exact preview. If the
+account or owned nonterminal-order set changes before execution, the preview is stale and the action
+must refuse and be reviewed again; its scope cannot silently expand. After confirmation, GRANDE
+Alpha requests cancellation only for the reviewed orders and polls broker truth for terminal states.
+A cancellation request is not proof of cancellation: it can race a fill, fail remotely, or remain
+pending.
+
+**Revoke authority**, disabling a capability in **Settings**, **Disconnect**, credential forgetting,
+and **Exit** never substitute for that order-specific confirmation. They lock new local activity and
+refuse to complete while a GRANDE-owned open or unresolved order remains, directing the user to the
+explicit **STOP + CANCEL** flow. Internal quote, reconciliation, and risk faults follow the same
+no-implicit-cancellation boundary.
 
 If any targeted order is missing, nonterminal, or cannot be refreshed, cleanup is unresolved. GRANDE
-Alpha refuses a clean connected exit and remains open. Check Robinhood directly, retry **STOP +
-CANCEL**, and close only after terminal verification passes. Filled positions are not automatically
-liquidated and remain the user's responsibility.
+Alpha remains connected and refuses Disconnect, permission disablement, credential forgetting, and
+Exit. Check Robinhood directly, repeat the explicit **STOP + CANCEL** preview if appropriate, and
+continue only after terminal verification passes. Filled positions are not automatically liquidated
+and remain the user's responsibility.
 
 ## Calendar, emergency closure, and halt limits
 

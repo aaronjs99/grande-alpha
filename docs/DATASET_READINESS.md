@@ -1,5 +1,18 @@
 # Observed-data readiness and sealed-holdout procedure
 
+## Runtime-observation traces are a separate schema
+
+Generic OHLCV CSV readiness is not runtime-observation parity. Exact replay requires GRANDE Alpha's
+synchronized venue-quote schema: three QQQ/TQQQ/SQQQ quote rows per recorder batch, venue timestamps,
+QQQ bid/ask-mid bar construction, and the first later causal target bid/ask batch. The runtime-trace
+importer reads SQLite with `mode=ro`, hashes the exact source rows, and can emit a manifest template
+that defaults every rights attestation to false. The user must verify the provider/product terms and
+complete those attestations; a source label is never enough.
+
+The trace contains no volume. This is recorded explicitly rather than imputed. It can close a
+bar/signal/fill-clock engineering blocker, but one day cannot satisfy the 141-session breadth needed
+to reserve 120 development sessions, one purge session, and a 20-session sealed final holdout.
+
 This procedure qualifies a data **input** for GRANDE Alpha. It does not show that a strategy is
 profitable, create a live-review certificate, authorize an order, or establish that a market-data
 license is legally sufficient. The audit is local and read-only: it does not call a broker, register

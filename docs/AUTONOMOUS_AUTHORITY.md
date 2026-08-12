@@ -56,8 +56,11 @@ An active authority surface must keep **Pause authority** and **Revoke authority
 - Expiry fails closed. Restarting the application returns to `LOCKED` even if capability remains
   enabled in Settings.
 
-Pause or revoke cannot cancel a fill already accepted by the broker. The existing stop/cancel path
-must remain available for open-order cancellation attempts, and the broker remains authoritative.
+Pause and Revoke only block local authority; neither cancels an order or a fill already accepted by
+the broker. The separate **STOP + CANCEL** path first previews the exact GRANDE-owned nonterminal
+Agentic orders and requires explicit confirmation. Manual/unrelated orders remain untouched, and an
+already-pending cancellation is disclosed and verified without a duplicate request. The broker
+remains authoritative.
 
 ## Immutable action receipts
 
@@ -95,5 +98,6 @@ context rejects the order. The authority model, risk engine, and UI components t
 broker write; only the separately gated controller can cross the broker review/placement boundary.
 
 An ambiguous placement acknowledgement is never retried. It is durably quarantined, authority is
-revoked, and broker reconciliation is required. Stop/cancel is not treated as complete until every
-target order is observed terminal; unresolved cleanup keeps the connected desktop app open.
+revoked, and broker reconciliation is required. Revoke, Settings, Disconnect, and Exit do not cancel
+it. A separately confirmed **STOP + CANCEL** action is not treated as complete until every exact
+target order is observed terminal; unresolved cleanup keeps the desktop app connected and open.
