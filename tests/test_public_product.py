@@ -1,7 +1,7 @@
 import asyncio
 import json
 from dataclasses import replace
-from datetime import timedelta
+from datetime import datetime, time, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -26,7 +26,17 @@ from grande_alpha.evidence import (
     strategy_fingerprint,
 )
 from grande_alpha.historical import DataProvenance, deterministic_demo
-from grande_alpha.models import Account, LiveGrant, Portfolio, Position, Quote, Regime, Signal, utc_now
+from grande_alpha.models import (
+    AUTHORITY_TIMEZONE,
+    Account,
+    LiveGrant,
+    Portfolio,
+    Position,
+    Quote,
+    Regime,
+    Signal,
+    utc_now,
+)
 from grande_alpha.privacy import export_diagnostics
 from grande_alpha.sandbox import SandboxConfig, SandboxReplayEngine
 from grande_alpha.storage import AuditStore
@@ -71,6 +81,13 @@ class DisabledBroker(Broker):
 
 def qt_app() -> QApplication:
     return QApplication.instance() or QApplication([])
+
+
+def same_eastern_day_expiry(starts_at: datetime) -> datetime:
+    eastern_date = starts_at.astimezone(AUTHORITY_TIMEZONE).date()
+    return datetime.combine(eastern_date, time.max, tzinfo=AUTHORITY_TIMEZONE).astimezone(
+        starts_at.tzinfo
+    )
 
 
 def test_public_defaults_are_research_only() -> None:
@@ -530,7 +547,7 @@ def test_controller_requires_matching_current_evidence_before_live_authority(
     grant = LiveGrant(
         account_number="123456789",
         starts_at=now,
-        expires_at=now + timedelta(hours=1),
+        expires_at=same_eastern_day_expiry(now),
         max_order_notional=10.0,
         max_total_exposure=20.0,
         max_daily_loss=2.0,
@@ -685,7 +702,7 @@ def test_cash_account_rejects_instant_settlement_live_authority(tmp_path, monkey
     grant = LiveGrant(
         account_number="123456789",
         starts_at=now,
-        expires_at=now + timedelta(hours=1),
+        expires_at=same_eastern_day_expiry(now),
         max_order_notional=10.0,
         max_total_exposure=20.0,
         max_daily_loss=2.0,
