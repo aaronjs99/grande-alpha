@@ -110,7 +110,7 @@ def test_public_defaults_are_research_only() -> None:
     assert config.market_hours == "regular_hours"
     assert config.order_type == "market"
     assert config.settlement_model == "cash_t1"
-    assert __version__ == "0.15.0"
+    assert __version__ == "0.15.1"
 
 
 def test_controller_constructs_whole_share_limit_intents_from_authorized_route(tmp_path) -> None:
@@ -162,7 +162,42 @@ def test_main_window_starts_with_independent_low_latency_clocks(tmp_path) -> Non
     assert controller.bar_builder.seconds == 1
     assert controller.config.trade_seconds == 3
     assert not controller.snapshot.connected
+    assert not window.timer.isActive()
+    assert not window.reconcile_timer.isActive()
 
+    window.close()
+    store.close()
+
+
+def test_broker_timers_pause_during_connection_and_auto_shadow_startup(tmp_path) -> None:
+    qt_app()
+    store = AuditStore(tmp_path / "audit.db")
+    config = AppConfig(broker_connection_enabled=True)
+    controller = TradingController(DisabledBroker(), config, store)
+    window = MainWindow(controller, config)
+    controller.snapshot.connected = True
+    controller.snapshot.account = Account("123456789", "Agentic", "cash", True, "active")
+
+    window._on_snapshot(controller.snapshot)
+    assert window.timer.isActive()
+    assert window.reconcile_timer.isActive()
+
+    window._on_busy(True)
+    assert not window.timer.isActive()
+    assert not window.reconcile_timer.isActive()
+
+    window._on_busy(False)
+    assert window.timer.isActive()
+    assert window.reconcile_timer.isActive()
+
+    window._auto_shadow_starting = True
+    window._sync_data_timers()
+    assert not window.timer.isActive()
+    assert not window.reconcile_timer.isActive()
+
+    controller.snapshot.connected = False
+    window._auto_shadow_starting = False
+    window._on_snapshot(controller.snapshot)
     window.close()
     store.close()
 

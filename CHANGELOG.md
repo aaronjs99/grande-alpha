@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.15.1 - 2026-08-19
+
+- Pause quote and account-reconciliation timers until broker connection and auto-shadow startup
+  have fully settled, preventing qasync task re-entry and destroyed pending tasks during expired-OAuth
+  reconnects.
+- Surface the actionable leaf broker/OAuth failure when AnyIO wraps it in a TaskGroup exception.
+- Run scheduled shadow as the hidden task host's foreground Python child so Task Scheduler retains
+  ownership of the supervisor instead of reporting Ready while a detached retry process survives.
+
 ## 0.15.0 - 2026-08-11
 
 - Added session-scoped live-pilot machinery with typed, non-persistent authority bound to one

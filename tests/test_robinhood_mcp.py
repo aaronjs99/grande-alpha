@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from grande_alpha.broker import robinhood_mcp
+from grande_alpha.broker.base import BrokerError
 from grande_alpha.broker.robinhood_mcp import RobinhoodMCPBroker
 
 REQUIRED_TOOLS = {
@@ -94,6 +95,26 @@ async def test_mcp_transport_calls_and_teardown_share_one_owner_task(monkeypatch
     assert transport.owner is not caller
     assert session.call_tasks == [transport.owner]
     assert session.timeouts[0].total_seconds() == 10
+
+
+@pytest.mark.asyncio
+async def test_connect_surfaces_actionable_leaf_from_taskgroup() -> None:
+    broker = RobinhoodMCPBroker(allow_interactive_auth=False)
+
+    async def fail_session(ready):
+        failure = ExceptionGroup(
+            "unhandled errors in a TaskGroup",
+            [BrokerError("Cached Robinhood authorization requires browser consent")],
+        )
+        ready.set_exception(failure)
+        raise failure
+
+    broker._session_owner = fail_session
+
+    with pytest.raises(BrokerError, match="requires browser consent") as captured:
+        await broker.connect()
+
+    assert "TaskGroup" not in str(captured.value)
 
 
 @pytest.mark.asyncio

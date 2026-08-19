@@ -59,7 +59,8 @@ The installed definition:
 - ignores a new trigger while the previous scheduled instance is still active;
 - uses validated absolute paths to Windows PowerShell, this source directory, and
   `scheduled-shadow.ps1`;
-- launches `pythonw -m grande_alpha.app --auto-shadow` and waits for the application to exit;
+- launches `python -m grande_alpha.app --auto-shadow` as the hidden task host's foreground child,
+  so Task Scheduler owns and monitors the complete supervisor lifetime;
 - keeps that single read-only process alive between sessions with no Task Scheduler time limit;
 - retries transient broker read failures with bounded 15-second-to-5-minute backoff during an
   eligible regular session, then returns to an idle wait after the close.

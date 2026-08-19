@@ -32,6 +32,19 @@ from grande_alpha.models import (
     utc_now,
 )
 
+
+def _exception_details(exc: BaseException) -> str:
+    """Expose actionable leaf failures hidden by AnyIO TaskGroup wrappers."""
+
+    if isinstance(exc, BaseExceptionGroup):
+        messages: list[str] = []
+        for child in exc.exceptions:
+            detail = _exception_details(child)
+            if detail and detail not in messages:
+                messages.append(detail)
+        return "; ".join(messages)
+    return str(exc).strip()
+
 TOOL_PRIORITIES = {
     "cancel_equity_order": 0,
     "place_equity_order": 1,
@@ -225,10 +238,20 @@ class RobinhoodMCPBroker(Broker):
             )
             try:
                 await ready
-            except BaseException:
+            except BaseException as exc:
                 if self._worker is not None and not self._worker.done():
                     self._worker.cancel()
-                await self._finish_worker()
+                try:
+                    await self._finish_worker()
+                except BaseException:
+                    # Preserve the readiness error. AnyIO may wrap the same leaf
+                    # failure in a TaskGroup exception while the transport unwinds.
+                    pass
+                if isinstance(exc, asyncio.CancelledError):
+                    raise
+                details = _exception_details(exc)
+                if details and details != str(exc):
+                    raise BrokerError(details) from exc
                 raise
 
     async def _session_owner(self, ready: asyncio.Future[None]) -> None:

@@ -13,10 +13,10 @@ ROOT = Path(__file__).resolve().parents[1]
 def test_scheduled_launcher_is_auto_shadow_only_and_waits_for_single_instance() -> None:
     script = (ROOT / "scheduled-shadow.ps1").read_text(encoding="utf-8")
 
-    assert "Get-GrandeAlphaPython $ProjectRoot -Windowed" in script
-    assert "'grande_alpha.app', '--auto-shadow'" in script
-    assert "PassThru = $true" in script
-    assert "Wait = $true" in script
+    assert "Get-GrandeAlphaPython $ProjectRoot" in script
+    assert "-m grande_alpha.app --auto-shadow" in script
+    assert "& $PythonExe -m grande_alpha.app --auto-shadow" in script
+    assert "Start-Process @" not in script
     assert "review_order" not in script
     assert "place_order" not in script
     assert "cancel_order" not in script

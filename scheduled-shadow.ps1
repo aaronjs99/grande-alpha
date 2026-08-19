@@ -15,7 +15,7 @@ if (-not (Test-FullyQualifiedPath $ProjectRoot) -or -not (Test-Path -LiteralPath
 }
 
 . $RuntimeHelper
-$PythonExe = [IO.Path]::GetFullPath((Get-GrandeAlphaPython $ProjectRoot -Windowed))
+$PythonExe = [IO.Path]::GetFullPath((Get-GrandeAlphaPython $ProjectRoot))
 if (-not (Test-FullyQualifiedPath $PythonExe) -or -not (Test-Path -LiteralPath $PythonExe -PathType Leaf)) {
     throw "GRANDE Alpha's managed Python runtime is missing. Run setup.ps1 before installing the schedule."
 }
@@ -31,16 +31,18 @@ function Write-ScheduledShadowLog([string]$Message) {
 
 try {
     Write-ScheduledShadowLog 'Launching GRANDE Alpha in --auto-shadow mode.'
-    $LaunchParameters = @{
-        FilePath = $PythonExe
-        ArgumentList = @('-m', 'grande_alpha.app', '--auto-shadow')
-        WorkingDirectory = $ProjectRoot
-        PassThru = $true
-        Wait = $true
+    Push-Location -LiteralPath $ProjectRoot
+    try {
+        # Run as a foreground child of the hidden Task Scheduler PowerShell host.
+        # Start-Process can outlive its wrapper after the wrapper is interrupted,
+        # leaving Task Scheduler Ready while an unowned retry process survives.
+        & $PythonExe -m grande_alpha.app --auto-shadow
+        $ExitCode = $LASTEXITCODE
+    } finally {
+        Pop-Location
     }
-    $Process = Start-Process @LaunchParameters
-    Write-ScheduledShadowLog "GRANDE Alpha exited with code $($Process.ExitCode)."
-    exit $Process.ExitCode
+    Write-ScheduledShadowLog "GRANDE Alpha exited with code $ExitCode."
+    exit $ExitCode
 } catch {
     Write-ScheduledShadowLog "Scheduled shadow launch failed: $($_.Exception.Message)"
     throw

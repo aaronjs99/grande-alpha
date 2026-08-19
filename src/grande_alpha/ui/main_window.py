@@ -120,6 +120,7 @@ class MainWindow(QMainWindow):
         self._chart_times: deque[float] = deque(maxlen=1800)
         self._chart_prices: deque[float] = deque(maxlen=1800)
         self._closing_after_cleanup = False
+        self._connection_busy = False
         self._auto_shadow_starting = False
         self._auto_shadow_retry_seconds = 15
         self._auto_shadow_retry_remaining = 0
@@ -135,11 +136,9 @@ class MainWindow(QMainWindow):
         self.timer = QTimer(self)
         self.timer.setInterval(int(config.poll_seconds * 1000))
         self.timer.timeout.connect(lambda: asyncio.create_task(self.controller.refresh_quotes()))
-        self.timer.start()
         self.reconcile_timer = QTimer(self)
         self.reconcile_timer.setInterval(int(config.reconcile_seconds * 1000))
         self.reconcile_timer.timeout.connect(lambda: asyncio.create_task(self.controller.reconcile()))
-        self.reconcile_timer.start()
         self.auto_shadow_close_timer = QTimer(self)
         self.auto_shadow_close_timer.setInterval(1_000)
         self.auto_shadow_close_timer.timeout.connect(self._check_auto_shadow_close)
@@ -755,6 +754,7 @@ class MainWindow(QMainWindow):
                 )
         finally:
             self._auto_shadow_starting = False
+            self._sync_data_timers()
 
     def _check_auto_shadow_close(self) -> None:
         if not self.auto_shadow:
@@ -973,6 +973,8 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Flatten failed", str(exc))
 
     def _on_busy(self, busy: bool) -> None:
+        self._connection_busy = busy
+        self._sync_data_timers()
         self.connect_button.setEnabled(not busy)
         self.connect_button.setText(
             "Connecting in browser…"
@@ -980,8 +982,30 @@ class MainWindow(QMainWindow):
             else ("Disconnect" if self._snapshot.connected else "Connect Robinhood")
         )
 
+    def _sync_data_timers(self) -> None:
+        """Run broker timers only after connection/startup has fully settled.
+
+        OAuth can spin a nested Qt event loop while a connection task is active.  Letting
+        timer callbacks create quote/reconcile tasks during that hand-off triggers qasync
+        task re-entry and leaves destroyed pending tasks after a failed reconnect.  The
+        controller still owns call coalescing; this UI boundary prevents calls from being
+        created before there is a stable connected snapshot.
+        """
+
+        should_run = (
+            self._snapshot.connected
+            and not self._connection_busy
+            and not self._auto_shadow_starting
+        )
+        for timer in (self.timer, self.reconcile_timer):
+            if should_run and not timer.isActive():
+                timer.start()
+            elif not should_run and timer.isActive():
+                timer.stop()
+
     def _on_snapshot(self, snapshot: TradingSnapshot) -> None:
         self._snapshot = snapshot
+        self._sync_data_timers()
         if snapshot.account:
             account_type = snapshot.account.account_type.strip().upper() or "UNKNOWN"
             self.account_card.title.setText(f"Agentic account • {account_type}")
