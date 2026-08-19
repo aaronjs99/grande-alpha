@@ -806,9 +806,17 @@ $Results | ConvertTo-Json -Compress
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="PowerShell lifecycle contract is Windows-only")
-def test_lifecycle_manifest_contract_is_exact_and_resolves_venv_process_image() -> None:
+def test_lifecycle_manifest_contract_is_exact_and_resolves_venv_process_image(tmp_path) -> None:
     helper = ROOT / "shadow-lifecycle.ps1"
-    python_launcher = ROOT / ".venv" / "Scripts" / "python.exe"
+    runtime_root = tmp_path / "runtime"
+    python_launcher = runtime_root / "Scripts" / "python.exe"
+    python_launcher.parent.mkdir(parents=True)
+    python_launcher.touch()
+    expected_process_executable = Path(sys.executable).resolve()
+    (runtime_root / "pyvenv.cfg").write_text(
+        f"executable = {expected_process_executable}\n",
+        encoding="utf-8",
+    )
     command = rf"""
 . '{helper}'
 $Root = '{ROOT}'
@@ -875,6 +883,7 @@ $Results | ConvertTo-Json -Compress
     assert contract["start_order"] is False
     assert Path(contract["python_process_executable"]).is_absolute()
     assert Path(contract["python_process_executable"]).is_file()
+    assert Path(contract["python_process_executable"]).resolve() == expected_process_executable
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="PowerShell process trees are Windows-only")
@@ -985,7 +994,8 @@ $FakeAction = [pscustomobject]@{{
     WorkingDirectory = $Spec.working_directory
 }}
 $FakeTrigger = [pscustomobject]@{{
-    StartBoundary = "2026-08-19T$($Spec.local_time):00"
+    # Keep the fixture independent of the hosted runner's Windows time zone.
+    StartBoundary = '2026-08-19T06:20:00'
     Enabled = $true
 }}
 $FakeTask = [pscustomobject]@{{
