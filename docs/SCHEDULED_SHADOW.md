@@ -61,6 +61,11 @@ The installed definition:
   `scheduled-shadow.ps1`;
 - launches `python -m grande_alpha.app --auto-shadow` as the hidden task host's foreground child,
   so Task Scheduler owns and monitors the complete supervisor lifetime;
+- restarts that foreground child after a nonzero exit with bounded 15-second-to-5-minute backoff,
+  resetting to 15 seconds after a run that stayed alive for at least five minutes; exit code `0`
+  remains a deliberate off switch until the next task start;
+- asks Task Scheduler to restart the PowerShell supervisor up to three times at one-minute intervals
+  if the wrapper itself fails;
 - keeps that single read-only process alive between sessions with no Task Scheduler time limit;
 - retries transient broker read failures with bounded 15-second-to-5-minute backoff during an
   eligible regular session, then returns to an idle wait after the close.
@@ -96,7 +101,13 @@ or live-order authorization.
 Keep the GUI visible and monitored. If OAuth needs renewed consent, the account or quotes disagree,
 another app instance is already running, or any readiness gate fails, the correct outcome is a
 visible blocked state rather than a late or partially checked start. Runtime launcher results are
-appended to `%LOCALAPPDATA%\GRANDEAlpha\scheduled-shadow.log`.
+appended to `%LOCALAPPDATA%\GRANDEAlpha\scheduled-shadow.log`. While the Qt event loop is responsive,
+the application atomically refreshes
+`%LOCALAPPDATA%\GRANDEAlpha\scheduled-shadow-heartbeat.json` every 60 seconds. The heartbeat contains
+only local lifecycle metadata and explicit `read_only=true`, `broker_writes=false`, and
+`live_authority=false` assertions. It also reports non-identifying runtime state: session-open,
+connected, shadow-running, refresh/reconcile clocks, virtual equity/P&L, and virtual-fill count. It
+contains no credentials, account/order IDs, real positions, or real account values.
 
 ## Verification
 
@@ -115,11 +126,19 @@ sleep before the trigger, `DisallowStartIfOnBatteries=False`, `StopIfGoingOnBatt
 task or reinstall only after returning to a supported zone; the task does not rewrite its trigger
 while traveling.
 
-`-Status` is a read-only contract verifier, not a presence check. It requires exactly one action and
+`-Status` is a read-only contract and runtime-health verifier, not a presence check. It requires exactly one action and
 one enabled Monday-Friday trigger, the mapped local time, the exact validated executable, arguments,
 and working directory, the current interactive limited user, the documented wake/battery/network/
-overlap settings, and the 14-hour execution limit. Any mismatch prints `INVALID / UNSAFE` and exits
-nonzero; it never describes a merely present or partially matching task as safe.
+overlap settings, the unlimited execution-time contract, and the three-at-one-minute wrapper restart
+policy. Any mismatch prints `INVALID / UNSAFE`
+and exits nonzero; it never describes a merely present or partially matching task as safe. When the
+task reports `Running`, `-Status` separately prints `EVENT_LOOP_FRESH` liveness and an operational
+state of `ACTIVE`, `WAITING`, or `DEGRADED`. A fresh event-loop timer never by itself means the broker
+or shadow loop is healthy: an open session without connected, active, current refresh/reconcile state
+is `DEGRADED` and makes `-Status` exit nonzero. Outside an open session, a fresh process may truthfully
+report `WAITING` without failing. A missing, invalid, stopped, dead-process, or older-than-180-second
+heartbeat also fails a running task's status. A task that has not yet reached its first trigger may
+legitimately report a missing heartbeat while still passing its static installation contract.
 The supervisor is a 24/7 process, not a 24/7 market. QQQ, TQQQ, and SQQQ virtual execution remains
 restricted to valid regular equity sessions. Overnight, weekends, and exchange holidays are idle;
 they never create virtual fills or order authority. A transient HTTP 502/503/504 or transport failure

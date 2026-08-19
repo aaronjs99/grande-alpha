@@ -31,6 +31,7 @@ from grande_alpha.candidate_execution import (
     CandidateExecutionContract,
     annualized_volatility,
     contract_from_app_and_sandbox,
+    contract_from_config,
     decision_due,
     held_minutes,
     runtime_parity_assessment,
@@ -47,6 +48,8 @@ from grande_alpha.models import (
     Account,
     BrokerOrder,
     LiveGrant,
+    OrderConfirmationDecision,
+    OrderConfirmationRequest,
     OrderIntent,
     OrderReview,
     Portfolio,
@@ -65,12 +68,21 @@ from grande_alpha.policy import (
     PolicyPosition,
     market_session_allowed,
     session_bounds,
+    session_key,
 )
 from grande_alpha.risk import RiskEngine
 from grande_alpha.sandbox import load_sandbox_config
 from grande_alpha.shadow import LiveShadowEngine
 from grande_alpha.storage import EXACT_QUOTE_VALIDATOR_VERSION, AuditStore
 from grande_alpha.strategy import BarBuilder, StrategyConfig, build_strategy
+
+MAX_REVIEW_PRICE_DRIFT_BPS = 25.0
+AUTHORITY_MODE_EVIDENCE = "evidence_gated"
+AUTHORITY_MODE_SUPERVISED_EXPERIMENTAL = "supervised_experimental"
+SUPERVISED_MAX_ORDER_NOTIONAL = 10.0
+SUPERVISED_MAX_DAILY_NOTIONAL = 50.0
+SUPERVISED_MAX_TOTAL_EXPOSURE = 40.0
+OrderConfirmer = Callable[[OrderConfirmationRequest], Awaitable[OrderConfirmationDecision]]
 
 
 def _runtime_strategy_config(config: AppConfig) -> StrategyConfig:
@@ -167,6 +179,7 @@ class TradingController(QObject):
         *,
         shadow_only_runtime: bool = False,
         auto_shadow_sleep: Callable[[float], Awaitable[None]] | None = None,
+        order_confirmer: OrderConfirmer | None = None,
     ) -> None:
         super().__init__()
         config.validate_cadence()
@@ -194,6 +207,9 @@ class TradingController(QObject):
         self._quote_lock = asyncio.Lock()
         self._reconcile_lock = asyncio.Lock()
         self._safe_read_only_refresh_lock = asyncio.Lock()
+        self._order_submission_lock = asyncio.Lock()
+        self._order_confirmer = order_confirmer
+        self._authority_mode: str | None = None
         self._last_qqq_timestamp: datetime | None = None
         self._quote_stream_id = str(uuid.uuid4())
         self._last_submission_at: datetime | None = None
@@ -210,6 +226,30 @@ class TradingController(QObject):
         self._recent_returns = {"TQQQ": deque(maxlen=30), "SQQQ": deque(maxlen=30)}
         self._previous_prices: dict[str, float] = {}
         self._shadow: LiveShadowEngine | None = None
+        self._shadow_checkpoint_sequence = 0
+        self._shadow_checkpoint_digest: str | None = None
+        self._shadow_session_key: str | None = None
+        self._shadow_account_fingerprint: str | None = None
+        self._shadow_strategy_fingerprint: str | None = None
+
+    def set_order_confirmer(self, confirmer: OrderConfirmer | None) -> None:
+        """Install the non-persistent UI callback used for each reviewed real-money order."""
+
+        if (
+            self._order_confirmer is not None
+            and self._order_confirmer is not confirmer
+            and (self.risk.grant is not None or self.snapshot.strategy_running)
+        ):
+            raise RuntimeError("Per-order confirmation handling cannot change during a live session")
+        self._order_confirmer = confirmer
+
+    @property
+    def authority_mode(self) -> str | None:
+        return self._authority_mode
+
+    @property
+    def order_confirmation_available(self) -> bool:
+        return self._order_confirmer is not None
 
     def _require_order_runtime(self, action: str) -> None:
         if self._safe_read_only_refresh_lock.locked():
@@ -225,8 +265,13 @@ class TradingController(QObject):
             )
             raise RuntimeError(f"Auto-shadow runtime is read-only and cannot {action}")
 
-    def _reset_signal_pipeline(self, reason: str) -> None:
+    def _rotate_quote_stream(self) -> None:
+        """Start a new durable identity for one causal signal-pipeline segment."""
+
         self._quote_stream_id = str(uuid.uuid4())
+
+    def _reset_signal_pipeline(self, reason: str) -> None:
+        self._rotate_quote_stream()
         self.strategy = build_strategy(_runtime_strategy_config(self.config))
         self.bar_builder = BarBuilder("QQQ", self.config.bar_seconds)
         self._last_qqq_timestamp = None
@@ -774,6 +819,14 @@ class TradingController(QObject):
                 raise RuntimeError(
                     "Auto-shadow is idle because no regular equity session is currently eligible"
                 )
+            # A continuously supervised process can survive from one market day to the
+            # next. Reset before connect(), because connect performs an exact quote read;
+            # otherwise that first batch would reuse yesterday's signal-pipeline stream.
+            # Keeping the reset coupled to the stream rotation also makes every recorded
+            # stream boundary mean the same thing to runtime replay. The clean-start reset
+            # immediately before start_shadow() still separates preflight observations
+            # from the active execution stream.
+            self._reset_signal_pipeline("Auto-shadow preflight stream; warming up")
             await self.connect()
             await self._refresh_auto_shadow_account_state()
             opened = self.auto_shadow_market_open()
@@ -1198,7 +1251,11 @@ class TradingController(QObject):
                     quotes = self._validated_execution_quotes(
                         quotes,
                         max_age_seconds=max_age,
-                        context="Autonomous live execution",
+                        context=(
+                            "Supervised live execution"
+                            if self._authority_mode == AUTHORITY_MODE_SUPERVISED_EXPERIMENTAL
+                            else "Evidence-gated live execution"
+                        ),
                     )
                     validation_profile = "exact_execution_quotes"
                     validation_version = EXACT_QUOTE_VALIDATOR_VERSION
@@ -1254,6 +1311,7 @@ class TradingController(QObject):
                                     "Shadow execution batch is not later than the completed analysis bar"
                                 )
                             fills = self._shadow.on_causal_quote(causal_timestamp, signal, quotes)
+                            self._persist_shadow_checkpoint("fill" if fills else "advance")
                             for fill in fills:
                                 self.log(
                                     f"SHADOW {fill.side.upper()} {fill.quantity:.6f} {fill.symbol} "
@@ -1297,8 +1355,56 @@ class TradingController(QObject):
         finally:
             self._emit()
 
+    def _validate_supervised_experimental_scope(self, grant: LiveGrant) -> None:
+        if self._order_confirmer is None:
+            raise RuntimeError(
+                "Supervised experimental authority requires the desktop per-order confirmation UI"
+            )
+        if grant.max_order_notional > SUPERVISED_MAX_ORDER_NOTIONAL:
+            raise RuntimeError(
+                f"Supervised experimental orders are capped at ${SUPERVISED_MAX_ORDER_NOTIONAL:.2f}"
+            )
+        if grant.max_daily_notional > SUPERVISED_MAX_DAILY_NOTIONAL:
+            raise RuntimeError(
+                "Supervised experimental gross daily notional is capped at "
+                f"${SUPERVISED_MAX_DAILY_NOTIONAL:.2f}"
+            )
+        if grant.max_total_exposure > SUPERVISED_MAX_TOTAL_EXPOSURE:
+            raise RuntimeError(
+                "Supervised experimental exposure is capped at "
+                f"${SUPERVISED_MAX_TOTAL_EXPOSURE:.2f}"
+            )
+        if (
+            grant.market_hours != "regular_hours"
+            or grant.order_type != "market"
+            or grant.time_in_force != "gfd"
+            or self.config.settlement_model != "cash_t1"
+        ):
+            raise RuntimeError(
+                "Supervised experimental mode is restricted to regular-hours market/GFD "
+                "orders under the cash-T+1 model"
+            )
+
     def authorize_live(self, grant: LiveGrant) -> None:
+        """Authorize the original evidence-gated path without weakening its gate."""
+
+        self._authorize_live(grant, authority_mode=AUTHORITY_MODE_EVIDENCE)
+
+    def authorize_supervised_experimental(self, grant: LiveGrant) -> None:
+        """Authorize a small attended session whose every order needs fresh consent."""
+
+        self._authorize_live(
+            grant,
+            authority_mode=AUTHORITY_MODE_SUPERVISED_EXPERIMENTAL,
+        )
+
+    def _authorize_live(self, grant: LiveGrant, *, authority_mode: str) -> None:
         self._require_order_runtime("authorize live trading")
+        if authority_mode not in {
+            AUTHORITY_MODE_EVIDENCE,
+            AUTHORITY_MODE_SUPERVISED_EXPERIMENTAL,
+        }:
+            raise RuntimeError("Unknown live authority mode")
         if not self.config.live_trading_enabled:
             raise RuntimeError("Real-order controls are disabled. Unlock them deliberately in Settings first")
         try:
@@ -1309,7 +1415,7 @@ class TradingController(QObject):
         if grant.strategy_fingerprint != expected_fingerprint:
             raise RuntimeError("Live grant does not match the exact installed candidate and order route")
         if grant.allowed_symbols != ("TQQQ", "SQQQ"):
-            raise RuntimeError("Autonomous pilot authority must bind exactly TQQQ and SQQQ")
+            raise RuntimeError("Live authority must bind exactly TQQQ and SQQQ")
         if grant.execution != execution_profile(self.config):
             raise RuntimeError(
                 "Live grant route differs from Settings; change the route in Settings and rerun evidence"
@@ -1322,7 +1428,7 @@ class TradingController(QObject):
         )
         if not pilot_route.aligned:
             raise RuntimeError(
-                "Autonomous live v1 is restricted to regular hours, market orders, GFD, cash T+1 settlement, "
+                "Bounded live execution is restricted to regular hours, market orders, GFD, cash T+1 settlement, "
                 "and zero-bar modeled latency; other routes remain research/shadow only"
             )
         if not market_session_allowed(
@@ -1332,14 +1438,16 @@ class TradingController(QObject):
             grant.market_hours,
         ):
             raise RuntimeError(
-                "Authorize and start the autonomous pilot only inside the regular-session "
+                "Authorize and start a bounded live session only inside the regular-session "
                 "entry window; premarket, close-blackout, holidays, and closed sessions stay locked"
             )
-        if not self.live_evidence_ready(grant):
+        if authority_mode == AUTHORITY_MODE_EVIDENCE and not self.live_evidence_ready(grant):
             raise RuntimeError(
                 "Real-order authority requires a current passing evidence certificate for this exact strategy. "
                 "Run the full Evidence Lab on eligible market history; failed or mismatched research stays shadow-only"
             )
+        if authority_mode == AUTHORITY_MODE_SUPERVISED_EXPERIMENTAL:
+            self._validate_supervised_experimental_scope(grant)
         if self._shadow is not None and self._shadow.state.active:
             raise RuntimeError("Stop live shadow mode before granting real-order authority")
         if self.snapshot.account is None or self.snapshot.portfolio is None:
@@ -1359,9 +1467,9 @@ class TradingController(QObject):
         ).total_seconds() > max(10.0, self.config.reconcile_seconds * 2.0):
             raise RuntimeError("Agentic account positions and orders are not freshly reconciled")
         if self._leveraged_positions():
-            raise RuntimeError("Start an autonomous live session only from a flat TQQQ/SQQQ account")
+            raise RuntimeError("Start a live session only from a flat TQQQ/SQQQ account")
         if self._nonterminal_orders(self.snapshot.orders):
-            raise RuntimeError("Start an autonomous live session only with zero nonterminal Agentic orders")
+            raise RuntimeError("Start a live session only with zero nonterminal Agentic orders")
         if self._submission_reconcile_required or self._uncertain_submission_refs:
             raise RuntimeError("A prior placement outcome is unresolved; reconcile it before new authority")
         unresolved = self.store.unresolved_order_intents(self.snapshot.account.account_number)
@@ -1420,10 +1528,16 @@ class TradingController(QObject):
             initial_trades=int(usage["submitted_orders"]),
             previous_receipt_digest=str(usage["last_receipt_digest"]),
         )
+        self._authority_mode = authority_mode
         self._persist_risk_receipts()
         self.snapshot.session_expires_at = grant.expires_at
         self.log(
-            f"Live authority granted until {grant.expires_at.astimezone().strftime('%I:%M %p')}",
+            (
+                "Supervised experimental authority granted until "
+                if authority_mode == AUTHORITY_MODE_SUPERVISED_EXPERIMENTAL
+                else "Evidence-gated live authority granted until "
+            )
+            + grant.expires_at.astimezone().strftime("%I:%M %p"),
             "warning",
             "authority",
             {
@@ -1440,6 +1554,8 @@ class TradingController(QObject):
                 "order_type": grant.order_type,
                 "time_in_force": grant.time_in_force,
                 "limit_offset_bps": grant.limit_offset_bps,
+                "authority_mode": authority_mode,
+                "per_order_confirmation_required": True,
             },
         )
         self._emit()
@@ -1467,6 +1583,7 @@ class TradingController(QObject):
         self.snapshot.strategy_running = False
         self.snapshot.session_expires_at = None
         self.risk.disarm(reason)
+        self._authority_mode = None
         self._persist_risk_receipts()
         if had_authority:
             self.log(reason, "critical", "authority")
@@ -1510,10 +1627,22 @@ class TradingController(QObject):
                 "Automatic trading stopped because a broker placement outcome is uncertain"
             )
             return False
-        if not self.live_evidence_ready(self.risk.grant):
-            self._revoke_live_automation(
-                "Automatic trading stopped because the exact evidence certificate is missing or expired"
-            )
+        if self._authority_mode == AUTHORITY_MODE_EVIDENCE:
+            if not self.live_evidence_ready(self.risk.grant):
+                self._revoke_live_automation(
+                    "Automatic trading stopped because the exact evidence certificate is missing or expired"
+                )
+                return False
+        elif self._authority_mode == AUTHORITY_MODE_SUPERVISED_EXPERIMENTAL:
+            try:
+                self._validate_supervised_experimental_scope(grant)
+            except RuntimeError as exc:
+                self._revoke_live_automation(
+                    f"Supervised experimental authority no longer matches its strict scope: {exc}"
+                )
+                return False
+        else:
+            self._revoke_live_automation("Automatic trading stopped because authority mode is missing")
             return False
         return True
 
@@ -1549,7 +1678,8 @@ class TradingController(QObject):
             "Real-order capability",
             self.config.live_trading_enabled,
             "Enabled" if self.config.live_trading_enabled else "Disabled",
-            "This remains disabled until exact evidence is eligible",
+            "Enable only after reviewing the attended supervised-ticket boundary in Settings; "
+            "autonomous use still requires exact evidence",
         )
         account_ready = bool(
             self.snapshot.connected
@@ -1637,7 +1767,7 @@ class TradingController(QObject):
             route_ready = False
             route_observed = str(exc)
         add(
-            "Autonomous pilot route",
+            "Supported real-order route",
             route_ready,
             route_observed,
             "Select Regular market, Market order, GFD, cash T+1, and zero modeled latency; "
@@ -1675,14 +1805,6 @@ class TradingController(QObject):
             "Current certificate" if evidence_ready else "No live-review-eligible certificate",
             "A noncash candidate must pass walk-forward, stressed costs, sealed holdout, and parity gates",
         )
-        rows.append(
-            {
-                "gate": "F-1 / tax suitability",
-                "status": "USER ACTION",
-                "observed": "Not decidable by the app",
-                "action": "Obtain written guidance from the UCLA DSO and qualified immigration counsel",
-            }
-        )
         return rows
 
     @property
@@ -1693,14 +1815,24 @@ class TradingController(QObject):
         self._require_order_runtime("start live trading")
         if not self.config.live_trading_enabled:
             raise RuntimeError("Real-order controls are disabled in Settings")
-        if not self.live_evidence_ready(self.risk.grant):
+        if self._authority_mode == AUTHORITY_MODE_EVIDENCE and not self.live_evidence_ready(
+            self.risk.grant
+        ):
             self.risk.disarm()
+            self._authority_mode = None
             self.snapshot.strategy_running = False
             self._emit()
             raise RuntimeError(
                 "The evidence certificate for this exact strategy is missing or expired; "
                 "real-order authority has been revoked"
             )
+        if self._authority_mode == AUTHORITY_MODE_SUPERVISED_EXPERIMENTAL:
+            grant = self.risk.grant
+            if grant is None:
+                raise RuntimeError("Authorize a supervised experimental session first")
+            self._validate_supervised_experimental_scope(grant)
+        elif self._authority_mode != AUTHORITY_MODE_EVIDENCE:
+            raise RuntimeError("Authorize a bounded live session first")
         if self._shadow is not None and self._shadow.state.active:
             raise RuntimeError("Stop live shadow mode before starting real-order automation")
         if self.risk.session_status() != "LIVE":
@@ -1708,12 +1840,12 @@ class TradingController(QObject):
         if self.snapshot.last_reconcile_at is None or (
             utc_now() - self.snapshot.last_reconcile_at
         ).total_seconds() > max(10.0, self.config.reconcile_seconds * 2.0):
-            raise RuntimeError("Refresh account truth before starting autonomous execution")
+            raise RuntimeError("Refresh account truth before starting live strategy execution")
         if self._leveraged_positions() or self._nonterminal_orders(self.snapshot.orders):
             self._revoke_live_automation(
-                "Autonomous start blocked because the Agentic account is no longer flat and order-free"
+                "Live strategy start blocked because the Agentic account is no longer flat and order-free"
             )
-            raise RuntimeError("Autonomous start requires flat TQQQ/SQQQ inventory and zero open orders")
+            raise RuntimeError("Live strategy start requires flat TQQQ/SQQQ inventory and zero open orders")
         grant = self.risk.grant
         if grant is None:
             raise RuntimeError("Authorize a bounded live session first")
@@ -1723,11 +1855,15 @@ class TradingController(QObject):
             self.config.no_trade_close_minutes,
             grant.market_hours,
         ):
-            raise RuntimeError("Autonomous start is outside the certified regular-session entry window")
+            raise RuntimeError("Live strategy start is outside the regular-session entry window")
         self._validated_execution_quotes(
             self.snapshot.quotes,
             max_age_seconds=grant.max_quote_age_seconds,
-            context="Autonomous-start preflight",
+            context=(
+                "Supervised-start preflight"
+                if self._authority_mode == AUTHORITY_MODE_SUPERVISED_EXPERIMENTAL
+                else "Evidence-gated start preflight"
+            ),
         )
         preflight_timestamp = self.snapshot.quotes["QQQ"].timestamp
         self._reset_signal_pipeline("Live session clean start; warming up on regular-session data")
@@ -1736,7 +1872,16 @@ class TradingController(QObject):
         self._last_qqq_timestamp = max(preflight_timestamp, utc_now())
         self.snapshot.strategy_running = True
         self._last_trade_decision_sequence = self._analysis_sequence
-        self.log("Automatic strategy started", "warning", "strategy")
+        self.log(
+            (
+                "Supervised experimental strategy started; every order still requires confirmation"
+                if self._authority_mode == AUTHORITY_MODE_SUPERVISED_EXPERIMENTAL
+                else "Evidence-gated strategy started"
+            ),
+            "warning",
+            "strategy",
+            {"authority_mode": self._authority_mode},
+        )
         self._emit()
 
     def pause_live_authority(self, reason: str = "Paused by user") -> None:
@@ -1751,8 +1896,15 @@ class TradingController(QObject):
         if self._submission_reconcile_required or self._uncertain_submission_refs:
             raise RuntimeError("Cannot resume while an order outcome is unresolved")
         grant = self.risk.grant
-        if grant is None or not self.live_evidence_ready(grant):
-            raise RuntimeError("Cannot resume without current exact evidence and authority")
+        if grant is None:
+            raise RuntimeError("Cannot resume without current authority")
+        if self._authority_mode == AUTHORITY_MODE_EVIDENCE:
+            if not self.live_evidence_ready(grant):
+                raise RuntimeError("Cannot resume without current exact evidence and authority")
+        elif self._authority_mode == AUTHORITY_MODE_SUPERVISED_EXPERIMENTAL:
+            self._validate_supervised_experimental_scope(grant)
+        else:
+            raise RuntimeError("Cannot resume without a bound authority mode")
         if not self.risk.resume(reason):
             raise RuntimeError("No paused live authority can be resumed")
         self._persist_risk_receipts()
@@ -1762,6 +1914,37 @@ class TradingController(QObject):
     async def revoke_live_authority(self, reason: str = "Authority revoked by user") -> bool:
         self._revoke_live_automation(reason)
         return not bool(self._nonterminal_orders(self.snapshot.orders))
+
+    def _persist_shadow_checkpoint(self, event: str) -> dict[str, Any]:
+        if (
+            self._shadow is None
+            or self._shadow_session_key is None
+            or self._shadow_account_fingerprint is None
+            or self._shadow_strategy_fingerprint is None
+        ):
+            raise RuntimeError("Shadow checkpoint identity is incomplete")
+        current_session = self._shadow.current_session
+        if current_session is not None:
+            self._shadow_session_key = current_session
+        checkpoint = self._shadow.checkpoint(
+            sequence=self._shadow_checkpoint_sequence + 1,
+            recorded_at=utc_now(),
+            session=self._shadow_session_key,
+            account_fingerprint=self._shadow_account_fingerprint,
+            strategy_fingerprint=self._shadow_strategy_fingerprint,
+            event=event,
+            previous_digest=self._shadow_checkpoint_digest,
+        )
+        try:
+            self.store.append_shadow_checkpoint(checkpoint)
+        except Exception:
+            # Continuing after a failed durable write would make the displayed ledger
+            # indistinguishable from a stale, restartable checkpoint. Stop in memory too.
+            self._shadow.state.active = False
+            raise
+        self._shadow_checkpoint_sequence = int(checkpoint["sequence"])
+        self._shadow_checkpoint_digest = str(checkpoint["digest"])
+        return checkpoint
 
     def start_shadow(self) -> None:
         if not self.config.broker_connection_enabled:
@@ -1775,18 +1958,103 @@ class TradingController(QObject):
         shadow_config = self._runtime_candidate_config()
         if self.snapshot.account.account_type.lower() == "cash":
             shadow_config = replace(shadow_config, settlement_model="cash_t1")
-        self._shadow = LiveShadowEngine(
-            shadow_config,
-            bar_minutes=self.config.bar_seconds / 60.0,
-        )
+        interval = f"{self.config.bar_seconds}s"
+        strategy_id = strategy_fingerprint(shadow_config, interval)
+        account_id = hashlib.sha256(self.snapshot.account.account_number.encode("utf-8")).hexdigest()
+        contract = contract_from_config(shadow_config)
+        current_session = session_key(utc_now(), contract.market_hours)
+        self._shadow = None
+        self._shadow_checkpoint_sequence = 0
+        self._shadow_checkpoint_digest = None
+        self._shadow_session_key = current_session
+        self._shadow_account_fingerprint = account_id
+        self._shadow_strategy_fingerprint = strategy_id
+
+        try:
+            latest = self.store.latest_shadow_checkpoint()
+        except Exception as exc:
+            self.log(
+                f"SHADOW RECOVERY BLOCKED: durable checkpoint chain is invalid: {exc}",
+                "critical",
+                "shadow_recovery",
+                {"error": str(exc), "broker_write_attempted": False},
+            )
+            raise RuntimeError("Shadow recovery blocked by an invalid durable checkpoint chain") from exc
+
+        recovered = False
+        if latest is not None and bool(latest["state"].get("active")):
+            try:
+                self._shadow = LiveShadowEngine.restore(
+                    shadow_config,
+                    latest,
+                    expected_session=current_session,
+                    expected_account_fingerprint=account_id,
+                    expected_strategy_fingerprint=strategy_id,
+                    bar_minutes=self.config.bar_seconds / 60.0,
+                )
+            except Exception as exc:
+                self.log(
+                    f"SHADOW RECOVERY BLOCKED: prior active run cannot be continued: {exc}",
+                    "critical",
+                    "shadow_recovery",
+                    {
+                        "prior_run_id": latest.get("run_id"),
+                        "prior_session": latest.get("session_key"),
+                        "error": str(exc),
+                        "broker_write_attempted": False,
+                    },
+                )
+                raise RuntimeError(
+                    "Prior active shadow run is incompatible; refusing to reset its virtual ledger"
+                ) from exc
+            self._shadow_checkpoint_sequence = int(latest["sequence"])
+            self._shadow_checkpoint_digest = str(latest["digest"])
+            recovered = True
+        else:
+            self._shadow = LiveShadowEngine(
+                shadow_config,
+                bar_minutes=self.config.bar_seconds / 60.0,
+            )
+
+        checkpoint = self._persist_shadow_checkpoint("recovered" if recovered else "started")
+        if recovered:
+            recovered_state = checkpoint["state"]
+            self.log(
+                "Live shadow recovered from its durable same-session checkpoint; "
+                "virtual ledger continuity retained",
+                "warning",
+                "shadow_recovery",
+                {
+                    "run_id": self._shadow.state.run_id,
+                    "checkpoint_sequence": checkpoint["sequence"],
+                    "session": checkpoint["session_key"],
+                    "virtual_cash": recovered_state["cash"],
+                    "virtual_unsettled_cash": recovered_state["unsettled_cash"],
+                    "virtual_equity": recovered_state["equity"],
+                    "virtual_pnl": recovered_state["pnl"],
+                    "position": recovered_state["position"],
+                    "fill_count": len(recovered_state["fills"]),
+                    "entries_by_session": recovered_state["entries_by_session"],
+                    "signal_pipeline_rewarms_after_process_restart": True,
+                    "broker_write_attempted": False,
+                },
+            )
         self.log(
-            "Live shadow started — virtual TQQQS/SQQQS fills only; no order authority granted",
+            (
+                "Live shadow resumed — virtual TQQQS/SQQQS fills only; no order authority granted"
+                if recovered
+                else "Live shadow started — virtual TQQQS/SQQQS fills only; no order authority granted"
+            ),
             "warning",
             "shadow_authority",
             {
                 "run_id": self._shadow.state.run_id,
                 "broker_calls_allowed": False,
-                "strategy_fingerprint": strategy_fingerprint(shadow_config, f"{self.config.bar_seconds}s"),
+                "strategy_fingerprint": strategy_id,
+                "contract_fingerprint": contract.fingerprint,
+                "session": current_session,
+                "checkpoint_sequence": checkpoint["sequence"],
+                "recovered": recovered,
             },
         )
         self._emit()
@@ -1808,6 +2076,7 @@ class TradingController(QObject):
             flatten_at=(timestamp or utc_now()) if flatten_virtual else None,
             flatten_reason="AUTO SHADOW DAILY FLAT at regular-session close",
         )
+        checkpoint = self._persist_shadow_checkpoint("stopped")
         if flatten_virtual:
             if starting_position is None:
                 self.log(
@@ -1845,6 +2114,8 @@ class TradingController(QObject):
                 "virtual_pnl": state.pnl,
                 "ending_position": state.position.symbol if state.position else None,
                 "fills": [fill.as_dict() for fill in state.fills],
+                "checkpoint_sequence": checkpoint["sequence"],
+                "checkpoint_digest": checkpoint["digest"],
                 "real_orders_submitted": 0,
             },
         )
@@ -2427,6 +2698,7 @@ class TradingController(QObject):
             )
             self.snapshot.strategy_running = False
             self.risk.disarm()
+            self._authority_mode = None
             self.log("Both TQQQ and SQQQ are held; automatic trading locked", "critical", "risk")
             return
 
@@ -2502,6 +2774,7 @@ class TradingController(QObject):
             except RuntimeError as exc:
                 self.snapshot.strategy_running = False
                 self.risk.disarm()
+                self._authority_mode = None
                 self.log(f"Automatic exit route blocked: {exc}", "critical", "risk")
                 return
             order = await self._submit(intent, quote)
@@ -2703,6 +2976,149 @@ class TradingController(QObject):
         liquidation_only: bool = False,
     ) -> BrokerOrder | None:
         self._require_order_runtime("submit an order")
+        if self._order_submission_lock.locked():
+            self.log(
+                "Order ticket held: another reviewed order is awaiting a decision or reconciliation",
+                "warning",
+                "order_confirmation",
+                {"ref_id": getattr(intent, "ref_id", None), "broker_write_attempted": False},
+            )
+            return None
+        async with self._order_submission_lock:
+            return await self._submit_serialized(
+                intent,
+                quote,
+                liquidation_only=liquidation_only,
+            )
+
+    async def _confirm_reviewed_order(
+        self,
+        intent: OrderIntent,
+        review: OrderReview,
+        *,
+        liquidation_only: bool,
+    ) -> OrderConfirmationRequest | None:
+        grant = self.risk.grant
+        account = self.snapshot.account
+        if grant is None or account is None:
+            self.store.update_intent(intent.ref_id, None, "confirmation_authority_missing")
+            return None
+        if intent != review.intent:
+            self.risk.release_authorization(intent.ref_id, "Broker review did not match exact intent")
+            self._persist_risk_receipts()
+            self.store.update_intent(intent.ref_id, None, "review_intent_mismatch")
+            self._revoke_live_automation("Broker review did not match the exact strategy ticket")
+            return None
+        try:
+            review_quotes = dict(self.snapshot.quotes)
+            review_quotes[intent.symbol] = review.quote
+            self._validated_execution_quotes(
+                review_quotes,
+                max_age_seconds=grant.max_quote_age_seconds,
+                context="Broker order review",
+            )
+        except (BrokerError, ValueError) as exc:
+            self.risk.release_authorization(intent.ref_id, "Broker review quote was invalid")
+            self._persist_risk_receipts()
+            self.store.update_intent(intent.ref_id, None, "review_quote_invalid")
+            self._revoke_live_automation(f"Broker review quote was invalid: {exc}")
+            return None
+        if self._order_confirmer is None:
+            self.risk.release_authorization(intent.ref_id, "Per-order confirmation UI was unavailable")
+            self._persist_risk_receipts()
+            self.store.update_intent(intent.ref_id, None, "confirmation_unavailable")
+            self._revoke_live_automation(
+                "Per-order confirmation UI was unavailable; no broker placement was attempted"
+            )
+            return None
+        requested_at = utc_now()
+        request = OrderConfirmationRequest(
+            account_number=account.account_number,
+            account_masked=account.masked,
+            intent=intent,
+            review=review,
+            authority_id=grant.authority_id,
+            strategy_fingerprint=grant.strategy_fingerprint,
+            requested_at=requested_at,
+            expires_at=min(requested_at + timedelta(seconds=30), grant.expires_at),
+            liquidation_only=liquidation_only,
+        )
+        try:
+            request.validate()
+        except ValueError as exc:
+            self.risk.release_authorization(intent.ref_id, "Order confirmation preview was invalid")
+            self._persist_risk_receipts()
+            self.store.update_intent(intent.ref_id, None, "confirmation_preview_invalid")
+            self._revoke_live_automation(f"Order confirmation preview was invalid: {exc}")
+            return None
+        payload = request.receipt_payload()
+        self.store.receipt(
+            "order_confirmation_requested",
+            f"Confirmation requested for {intent.side} {intent.symbol}",
+            payload,
+        )
+        try:
+            response = await self._order_confirmer(request)
+            if not isinstance(response, OrderConfirmationDecision):
+                raise TypeError("Per-order confirmation returned an unbound decision")
+            response.validate(request)
+        except BaseException as exc:
+            self.risk.release_authorization(intent.ref_id, "Per-order confirmation UI failed")
+            self._persist_risk_receipts()
+            self.store.update_intent(intent.ref_id, None, "confirmation_failed")
+            self.store.receipt(
+                "order_confirmation_decision",
+                f"Confirmation failed for {intent.side} {intent.symbol}",
+                {**payload, "accepted": False, "failure": type(exc).__name__},
+            )
+            self._revoke_live_automation(
+                "Per-order confirmation failed; no broker placement was attempted"
+            )
+            if isinstance(exc, asyncio.CancelledError):
+                raise
+            return None
+        accepted = response.accepted and utc_now() <= request.expires_at
+        self.store.receipt(
+            "order_confirmation_decision",
+            (
+                f"Confirmed {intent.side} {intent.symbol}"
+                if accepted
+                else f"Declined {intent.side} {intent.symbol}"
+            ),
+            {
+                **payload,
+                "accepted": accepted,
+                "typed_phrase_matched": (
+                    response.typed_phrase.strip() == request.confirmation_phrase
+                ),
+                "confirmed_at": response.confirmed_at.isoformat(),
+                "expired": utc_now() > request.expires_at,
+            },
+        )
+        if not accepted:
+            self.risk.release_authorization(
+                intent.ref_id,
+                "Order confirmation declined or expired",
+            )
+            self._persist_risk_receipts()
+            self.store.update_intent(intent.ref_id, None, "confirmation_declined")
+            self.log(
+                f"No order placed: {intent.side.upper()} {intent.symbol} confirmation was declined or expired",
+                "info",
+                "order_confirmation",
+                {"preview_id": request.preview_id, "broker_write_attempted": False},
+            )
+            return None
+        return request
+
+    async def _submit_serialized(
+        self,
+        intent: OrderIntent,
+        quote: Quote | None,
+        *,
+        liquidation_only: bool = False,
+    ) -> BrokerOrder | None:
+        self._require_order_runtime("submit an order")
         if self.snapshot.account is None or self.snapshot.portfolio is None or quote is None:
             return None
         if liquidation_only and intent.side != "sell":
@@ -2759,6 +3175,7 @@ class TradingController(QObject):
                 self._persist_risk_receipts()
                 self.snapshot.strategy_running = False
                 self.risk.disarm("24 Hour Market eligibility check failed")
+                self._authority_mode = None
                 self._persist_risk_receipts()
                 self.log(f"24 Hour Market eligibility check failed: {exc}", "error", "risk")
                 return None
@@ -2769,6 +3186,7 @@ class TradingController(QObject):
                 self._persist_risk_receipts()
                 self.snapshot.strategy_running = False
                 self.risk.disarm("24 Hour Market symbol was ineligible")
+                self._authority_mode = None
                 self._persist_risk_receipts()
                 self.log(
                     f"Order blocked: {intent.symbol} is not currently eligible for the 24 Hour Market",
@@ -2806,6 +3224,7 @@ class TradingController(QObject):
             self.store.update_intent(intent.ref_id, None, "blocked_by_review")
             self.snapshot.strategy_running = False
             self.risk.disarm("Robinhood review blocked placement")
+            self._authority_mode = None
             self._persist_risk_receipts()
             self.log(
                 f"Robinhood review alert blocked {intent.side} {intent.symbol}: {review.checks}",
@@ -2816,9 +3235,19 @@ class TradingController(QObject):
         if not self._live_automation_current(allow_loss_liquidation=liquidation_only):
             self.store.update_intent(intent.ref_id, None, "blocked_evidence_revoked")
             return None
+        confirmation = await self._confirm_reviewed_order(
+            intent,
+            review,
+            liquidation_only=liquidation_only,
+        )
+        if confirmation is None:
+            return None
+        if not self._live_automation_current(allow_loss_liquidation=liquidation_only):
+            self.store.update_intent(intent.ref_id, None, "blocked_state_changed_after_confirmation")
+            return None
         # Broker review is not an execution lock. Re-read exact account and quote
-        # truth after review, then replace the prior risk reservation using only
-        # that current state immediately before crossing the placement boundary.
+        # truth after the one-use confirmation, then replace the prior risk reservation
+        # using only that current state immediately before crossing the placement boundary.
         try:
             await self._refresh_exact_preplacement_truth()
         except Exception as exc:
@@ -2833,6 +3262,29 @@ class TradingController(QObject):
             return None
         if not self._live_automation_current(allow_loss_liquidation=liquidation_only):
             self.store.update_intent(intent.ref_id, None, "blocked_state_changed_after_review")
+            return None
+        current_grant = self.risk.grant
+        current_account = self.snapshot.account
+        if (
+            current_grant is None
+            or current_account is None
+            or current_grant.authority_id != confirmation.authority_id
+            or current_grant.strategy_fingerprint != confirmation.strategy_fingerprint
+            or current_account.account_number != confirmation.account_number
+            or utc_now() > confirmation.expires_at
+        ):
+            self.risk.release_authorization(
+                intent.ref_id,
+                "Confirmed order expired or its account/authority binding changed",
+            )
+            self._persist_risk_receipts()
+            self.store.update_intent(intent.ref_id, None, "confirmation_binding_changed")
+            self.log(
+                "Confirmed order was not placed because its one-use preview expired or changed",
+                "warning",
+                "order_confirmation",
+                {"preview_id": confirmation.preview_id, "broker_write_attempted": False},
+            )
             return None
         if self._nonterminal_orders(self.snapshot.orders):
             self._revoke_live_automation(
@@ -2867,6 +3319,36 @@ class TradingController(QObject):
         if refreshed_quote is None or self.snapshot.portfolio is None:
             self._revoke_live_automation("Exact account or quote truth disappeared after review")
             self.store.update_intent(intent.ref_id, None, "truth_missing_after_review")
+            return None
+        reviewed_price = review.estimated_execution_price
+        current_price = refreshed_quote.ask if intent.side == "buy" else refreshed_quote.bid
+        price_drift_bps = abs(current_price - reviewed_price) / reviewed_price * 10_000.0
+        if price_drift_bps > MAX_REVIEW_PRICE_DRIFT_BPS:
+            if refreshed_quote.spread_bps > current_grant.max_spread_bps:
+                self._revoke_live_automation(
+                    "Post-confirmation spread exceeded the bounded session limit"
+                )
+            else:
+                self.risk.release_authorization(
+                    intent.ref_id,
+                    "Reviewed price changed materially after confirmation",
+                )
+                self._persist_risk_receipts()
+            self.store.update_intent(intent.ref_id, None, "review_price_changed")
+            self.log(
+                "Confirmed order was not placed because the reviewed price changed materially; "
+                "a fresh ticket and confirmation are required",
+                "warning",
+                "order_confirmation",
+                {
+                    "preview_id": confirmation.preview_id,
+                    "reviewed_price": reviewed_price,
+                    "current_price": current_price,
+                    "price_drift_bps": price_drift_bps,
+                    "max_price_drift_bps": MAX_REVIEW_PRICE_DRIFT_BPS,
+                    "broker_write_attempted": False,
+                },
+            )
             return None
         self.risk.release_authorization(
             intent.ref_id, "Replacing pre-review authorization with exact post-review truth"
@@ -2914,6 +3396,17 @@ class TradingController(QObject):
         # never retried with a new reference.
         self.risk.record_submission(intent)
         self._persist_risk_receipts()
+        self.store.receipt(
+            "order_confirmation_consumed",
+            f"Consumed one-use confirmation for {intent.side} {intent.symbol}",
+            {
+                "preview_id": confirmation.preview_id,
+                "ref_id": intent.ref_id,
+                "authority_id": confirmation.authority_id,
+                "account_last4": confirmation.account_number[-4:],
+                "consumed_at": utc_now().isoformat(),
+            },
+        )
         self._submission_reconcile_required[intent.ref_id] = None
         self._uncertain_submission_refs.add(intent.ref_id)
         submitted_at = utc_now()

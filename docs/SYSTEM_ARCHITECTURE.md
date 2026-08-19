@@ -8,7 +8,7 @@ readiness.
 GRANDE project family
 ├── GRANDE Marine       robotics, sensing, navigation, and field validation
 ├── GRANDE Research     experiments, papers, and evidence governance
-└── GRANDE Alpha        personal trading workstation and contribution ledger
+└── GRANDE Alpha        trading research workstation and optional capital ledger
 ```
 
 ## Reused design pattern
@@ -31,15 +31,15 @@ GRANDE project family
 ## Hard separation
 
 - No ROS dependency, shared process, database, credential, or runtime authority.
-- No university, lab, grant, reimbursement, equipment, or robot funds may enter the brokerage
-  account or the Research Fund ledger.
+- No money the operator does not own or is not authorized to allocate may enter the brokerage
+  account or the capital planning ledger.
 - No nonpublic sponsor, procurement, or research information may become a trading signal.
 - Trading profit is not evidence that a robotics algorithm works.
 - A simulation, backtest, or successful trade is not evidence of marine field readiness.
 
 The permitted connection is organizational and evidentiary: GRANDE Alpha uses the same style of
-bounded authority, explicit confirmation, stop control, and auditable receipts. Its Research Fund
-feature records only intended and externally confirmed contributions of personal realized profit.
+bounded authority, explicit confirmation, stop control, and auditable receipts. Its optional capital
+planning feature records intended and externally confirmed contributions without moving money.
 
 Real-order capability and real-money authority are different layers. Configuration may remember that
 session controls are available, but never stores a money-moving grant. The immutable grant binds the

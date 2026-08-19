@@ -13,12 +13,17 @@ After `setup.ps1`, the repo-local wrapper is the easiest entry point:
 .\cli.ps1 evidence show
 .\cli.ps1 evidence show --failures-only --width 150
 .\cli.ps1 glossary "Deflated Sharpe"
+.\cli.ps1 plans
 .\cli.ps1 receipts --limit 20
 ```
 
 The installed command is also available as `grande-alpha-cli` when its Python Scripts directory is
 on `PATH`. Every table wraps to the terminal width; `--width N` gives explicit control without
 truncating long evidence requirements.
+
+`plans` prints the same built-in Community entitlement and Pro-coming-soon roadmap as the desktop
+dialog. `plans --json` reports that checkout and paid entitlement are unavailable. The optional
+`GRANDE_ALPHA_UPGRADE_URL` value is identified as an information link only; it cannot change access.
 
 If PowerShell blocks local scripts, use the signed-system PowerShell wrapper through the provided CMD
 launcher:
@@ -78,6 +83,25 @@ All fills are virtual `TQQQS`/`SQQQS` fills. Add `--json` to any inspection comm
 .\cli.ps1 evidence run --source csv --csv .\history.csv --interval 1m
 ```
 
+An attested exact runtime trace has a separate, range-bound source path. `--start` and `--end`
+are inclusive U.S. equity trading dates and are mandatory for an Evidence Lab trace run:
+
+```powershell
+& ".\GRANDE Alpha CLI.cmd" evidence run `
+  --source runtime-trace `
+  --database "$env:LOCALAPPDATA\GRANDEAlpha\grande_alpha.db" `
+  --bar-seconds 5 `
+  --session regular_hours `
+  --start 2026-08-20 `
+  --end 2027-03-12 `
+  --manifest "C:\data\grande-runtime-20260820-20270312.manifest.json" `
+  --width 150
+```
+
+This explicit `evidence run` is the only runtime-trace CLI path that enters the normal Evidence Lab
+service. If the range is input-ready, that service records trials and may reserve, freeze, claim, and
+consume the one-use final holdout. Audit and template commands below never do so.
+
 The CLI calls the same shared pipeline as the GUI and records the trial ledger and promotion receipt.
 It prints all independent gates, then explains every blocker and its next defensible action. Passing
 every gate creates only a time-limited local review certificate; it does not start a strategy or
@@ -108,3 +132,37 @@ For a supplied file, `--interval` is mandatory because the command never guesses
 Add `--manifest` to bind exact source, license attestations, construction method, native resolution,
 coverage, and hashes. See [Observed-data readiness](DATASET_READINESS.md) for the complete schema and
 one-use sealed-holdout checklist.
+
+### Exact runtime quote traces
+
+Audit a selected SQLite range without a broker call, evidence trial, or holdout action:
+
+```powershell
+& ".\GRANDE Alpha CLI.cmd" data runtime-trace audit `
+  --database "$env:LOCALAPPDATA\GRANDEAlpha\grande_alpha.db" `
+  --bar-seconds 5 `
+  --session regular_hours `
+  --start 2026-08-20 `
+  --end 2027-03-12 `
+  --width 150
+```
+
+Then print a template bound to that exact date range, selected source rows, canonical dataset hash,
+and source-trace hash:
+
+```powershell
+& ".\GRANDE Alpha CLI.cmd" data runtime-trace manifest-template `
+  --database "$env:LOCALAPPDATA\GRANDEAlpha\grande_alpha.db" `
+  --bar-seconds 5 `
+  --session regular_hours `
+  --start 2026-08-20 `
+  --end 2027-03-12
+```
+
+The template is printed only; the command does not create a file. Its rights attestations default to
+`false`. Save a copy outside the command, review the actual provider/product terms, complete only
+truthful fields, then rerun `data runtime-trace audit` with `--manifest PATH`. A changed range or
+source row invalidates the old manifest instead of silently expanding the evidence dataset.
+`manifest-template` requires both dates, and a manifest-backed audit also requires the matching
+`--start` and `--end`. An unbounded audit is collection-progress reporting only; it cannot define an
+Evidence Lab input range.

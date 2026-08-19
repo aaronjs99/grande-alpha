@@ -31,6 +31,7 @@ $Launcher = [IO.Path]::GetFullPath((Join-Path $ProjectRoot 'scheduled-shadow.ps1
 $PowerShellExe = [IO.Path]::GetFullPath((Get-Command powershell.exe -ErrorAction Stop).Source)
 $CurrentUser = [Security.Principal.WindowsIdentity]::GetCurrent().Name
 $HostTimeZoneId = [TimeZoneInfo]::Local.Id
+$HeartbeatPath = [IO.Path]::GetFullPath((Join-Path $env:LOCALAPPDATA 'GRANDEAlpha\scheduled-shadow-heartbeat.json'))
 $LocalTriggerTimes = [ordered]@{
     'Eastern Standard Time' = '09:20'
     'Central Standard Time' = '08:20'
@@ -82,7 +83,14 @@ $Spec = [ordered]@{
     network_required = $false
     multiple_instances = 'IgnoreNew'
     execution_time_limit_hours = 0
+    task_restart_count = 3
+    task_restart_interval_minutes = 1
     application_mode = '--auto-shadow'
+    supervisor_restart_initial_seconds = 15
+    supervisor_restart_maximum_seconds = 300
+    heartbeat_interval_seconds = 60
+    heartbeat_stale_after_seconds = 180
+    heartbeat_path = $HeartbeatPath
 }
 
 if ($Definition) {
@@ -172,8 +180,183 @@ function Get-GrandeAlphaTaskContractMismatches($Task) {
     } catch {
         $Mismatches.Add('execution time limit is invalid')
     }
+    if ([int]$Settings.RestartCount -ne $Spec.task_restart_count) {
+        $Mismatches.Add("task restart count is '$($Settings.RestartCount)', expected '$($Spec.task_restart_count)'")
+    }
+    try {
+        $RestartInterval = [Xml.XmlConvert]::ToTimeSpan([string]$Settings.RestartInterval)
+        if ($RestartInterval -ne [timespan]::FromMinutes($Spec.task_restart_interval_minutes)) {
+            $Mismatches.Add('task restart interval is not one minute')
+        }
+    } catch {
+        $Mismatches.Add('task restart interval is invalid')
+    }
 
     return $Mismatches.ToArray()
+}
+
+function Get-GrandeAlphaHeartbeatStatus {
+    $Result = [ordered]@{
+        liveness = 'MISSING'
+        operational_state = 'DEGRADED'
+        observed_at_utc = $null
+        age_seconds = $null
+        process_id = $null
+        process_alive = $false
+        state = $null
+        connected = $false
+        shadow_running = $false
+        session_open = $false
+        last_refresh_utc = $null
+        last_refresh_age_seconds = $null
+        last_reconcile_at_utc = $null
+        last_reconcile_age_seconds = $null
+        shadow_equity = $null
+        shadow_pnl = $null
+        shadow_fills = $null
+        detail = 'No auto-shadow heartbeat has been recorded yet.'
+    }
+    if (-not (Test-Path -LiteralPath $HeartbeatPath -PathType Leaf)) {
+        return [pscustomobject]$Result
+    }
+
+    try {
+        $Heartbeat = Get-Content -LiteralPath $HeartbeatPath -Raw -Encoding utf8 | ConvertFrom-Json
+        $ObservedAt = [datetimeoffset]::Parse(
+            [string]$Heartbeat.observed_at_utc,
+            [Globalization.CultureInfo]::InvariantCulture,
+            [Globalization.DateTimeStyles]::RoundtripKind
+        ).ToUniversalTime()
+        $AgeSeconds = [int][Math]::Floor(([datetimeoffset]::UtcNow - $ObservedAt).TotalSeconds)
+        $ProcessId = [int]$Heartbeat.process_id
+        $ProcessAlive = $null -ne (Get-Process -Id $ProcessId -ErrorAction SilentlyContinue)
+        $RuntimeFields = @(
+            'connected',
+            'shadow_running',
+            'session_open',
+            'last_refresh_utc',
+            'last_reconcile_at_utc',
+            'shadow_equity',
+            'shadow_pnl',
+            'shadow_fills'
+        )
+        $RuntimeFieldNames = @($Heartbeat.runtime.PSObject.Properties.Name)
+        $ContractValid = (
+            [int]$Heartbeat.schema_version -eq 1 -and
+            [string]$Heartbeat.mode -eq '--auto-shadow' -and
+            [string]$Heartbeat.liveness_source -eq 'qt_event_loop_timer' -and
+            $Heartbeat.read_only -eq $true -and
+            $Heartbeat.broker_writes -eq $false -and
+            $Heartbeat.live_authority -eq $false -and
+            $null -ne $Heartbeat.runtime -and
+            @($RuntimeFields | Where-Object { $_ -notin $RuntimeFieldNames }).Count -eq 0
+        )
+
+        $Connected = $Heartbeat.runtime.connected -eq $true
+        $ShadowRunning = $Heartbeat.runtime.shadow_running -eq $true
+        $SessionOpen = $Heartbeat.runtime.session_open -eq $true
+        $ShadowEquity = [double]$Heartbeat.runtime.shadow_equity
+        $ShadowPnl = [double]$Heartbeat.runtime.shadow_pnl
+        $ShadowFills = [int]$Heartbeat.runtime.shadow_fills
+        $RuntimeValuesValid = (
+            -not [double]::IsNaN($ShadowEquity) -and
+            -not [double]::IsInfinity($ShadowEquity) -and
+            -not [double]::IsNaN($ShadowPnl) -and
+            -not [double]::IsInfinity($ShadowPnl) -and
+            $ShadowFills -ge 0
+        )
+
+        $LastRefresh = $null
+        $LastRefreshAgeSeconds = $null
+        if (-not [string]::IsNullOrWhiteSpace([string]$Heartbeat.runtime.last_refresh_utc)) {
+            $LastRefresh = [datetimeoffset]::Parse(
+                [string]$Heartbeat.runtime.last_refresh_utc,
+                [Globalization.CultureInfo]::InvariantCulture,
+                [Globalization.DateTimeStyles]::RoundtripKind
+            ).ToUniversalTime()
+            $LastRefreshAgeSeconds = [int][Math]::Floor(
+                ([datetimeoffset]::UtcNow - $LastRefresh).TotalSeconds
+            )
+        }
+        $LastReconcile = $null
+        $LastReconcileAgeSeconds = $null
+        if (-not [string]::IsNullOrWhiteSpace([string]$Heartbeat.runtime.last_reconcile_at_utc)) {
+            $LastReconcile = [datetimeoffset]::Parse(
+                [string]$Heartbeat.runtime.last_reconcile_at_utc,
+                [Globalization.CultureInfo]::InvariantCulture,
+                [Globalization.DateTimeStyles]::RoundtripKind
+            ).ToUniversalTime()
+            $LastReconcileAgeSeconds = [int][Math]::Floor(
+                ([datetimeoffset]::UtcNow - $LastReconcile).TotalSeconds
+            )
+        }
+
+        $Result.observed_at_utc = $ObservedAt.ToString('o')
+        $Result.age_seconds = $AgeSeconds
+        $Result.process_id = $ProcessId
+        $Result.process_alive = $ProcessAlive
+        $Result.state = [string]$Heartbeat.state
+        $Result.connected = $Connected
+        $Result.shadow_running = $ShadowRunning
+        $Result.session_open = $SessionOpen
+        $Result.last_refresh_utc = if ($null -eq $LastRefresh) { $null } else { $LastRefresh.ToString('o') }
+        $Result.last_refresh_age_seconds = $LastRefreshAgeSeconds
+        $Result.last_reconcile_at_utc = if ($null -eq $LastReconcile) { $null } else { $LastReconcile.ToString('o') }
+        $Result.last_reconcile_age_seconds = $LastReconcileAgeSeconds
+        $Result.shadow_equity = $ShadowEquity
+        $Result.shadow_pnl = $ShadowPnl
+        $Result.shadow_fills = $ShadowFills
+        if (-not $ContractValid -or -not $RuntimeValuesValid) {
+            $Result.liveness = 'INVALID'
+            $Result.detail = 'Heartbeat read-only contract fields are invalid.'
+        } elseif ($AgeSeconds -lt -5) {
+            $Result.liveness = 'INVALID'
+            $Result.detail = 'Heartbeat timestamp is unexpectedly in the future.'
+        } elseif ([string]$Heartbeat.state -ne 'running') {
+            $Result.liveness = 'STOPPED'
+            $Result.detail = "Application heartbeat state is '$($Heartbeat.state)'."
+        } elseif (-not $ProcessAlive) {
+            $Result.liveness = 'DEAD_PROCESS'
+            $Result.detail = "Heartbeat process $ProcessId is not running."
+        } elseif ($AgeSeconds -gt $Spec.heartbeat_stale_after_seconds) {
+            $Result.liveness = 'STALE'
+            $Result.detail = "Heartbeat is older than $($Spec.heartbeat_stale_after_seconds) seconds."
+        } else {
+            $Result.liveness = 'EVENT_LOOP_FRESH'
+            if (-not $SessionOpen) {
+                $Result.operational_state = 'WAITING'
+                $Result.detail = (
+                    'Event-loop liveness is fresh and the equity session is not open; ' +
+                    'broker/shadow inactivity is expected.'
+                )
+            } elseif (-not $Connected -or -not $ShadowRunning) {
+                $Result.operational_state = 'DEGRADED'
+                $Result.detail = (
+                    'The equity session is open, but the broker connection or shadow session ' +
+                    'is not active.'
+                )
+            } elseif (
+                $null -eq $LastRefreshAgeSeconds -or
+                $null -eq $LastReconcileAgeSeconds -or
+                $LastRefreshAgeSeconds -lt -5 -or
+                $LastReconcileAgeSeconds -lt -5 -or
+                $LastRefreshAgeSeconds -gt $Spec.heartbeat_stale_after_seconds -or
+                $LastReconcileAgeSeconds -gt $Spec.heartbeat_stale_after_seconds
+            ) {
+                $Result.operational_state = 'DEGRADED'
+                $Result.detail = (
+                    'Event-loop liveness is fresh, but active shadow refresh or reconcile data is stale.'
+                )
+            } else {
+                $Result.operational_state = 'ACTIVE'
+                $Result.detail = 'Shadow is active with current refresh and reconcile clocks.'
+            }
+        }
+    } catch {
+        $Result.liveness = 'INVALID'
+        $Result.detail = "Heartbeat could not be parsed: $($_.Exception.Message)"
+    }
+    return [pscustomobject]$Result
 }
 
 function Write-ScheduleStatus {
@@ -218,8 +401,43 @@ function Write-ScheduleStatus {
     Write-Host "Stop on battery:   $($Task.Settings.StopIfGoingOnBatteries)"
     Write-Host "Network required:  $($Task.Settings.RunOnlyIfNetworkAvailable)"
     Write-Host "Overlap policy:    $($Task.Settings.MultipleInstances)"
+    Write-Host "Task restart:      $($Task.Settings.RestartCount) attempts every $($Task.Settings.RestartInterval)"
     Write-Host "Trigger enabled:   $($Trigger.Enabled)"
     Write-Host 'Mode:              --auto-shadow (no live-order authorization)'
+    $HeartbeatStatus = Get-GrandeAlphaHeartbeatStatus
+    $HeartbeatColor = switch ($HeartbeatStatus.operational_state) {
+        'ACTIVE' { 'Green' }
+        'WAITING' { 'Yellow' }
+        default { 'Red' }
+    }
+    Write-Host (
+        "Event-loop liveness: $($HeartbeatStatus.liveness) | state $($HeartbeatStatus.state) | " +
+        "age $($HeartbeatStatus.age_seconds)s | PID $($HeartbeatStatus.process_id)"
+    ) -ForegroundColor $HeartbeatColor
+    Write-Host "Operational state:  $($HeartbeatStatus.operational_state)" -ForegroundColor $HeartbeatColor
+    Write-Host (
+        "Shadow runtime:    connected=$($HeartbeatStatus.connected) | " +
+        "shadow_running=$($HeartbeatStatus.shadow_running) | " +
+        "session_open=$($HeartbeatStatus.session_open) | " +
+        "equity=$($HeartbeatStatus.shadow_equity) | P/L=$($HeartbeatStatus.shadow_pnl) | " +
+        "fills=$($HeartbeatStatus.shadow_fills)"
+    )
+    Write-Host (
+        "Data clocks:       refresh age $($HeartbeatStatus.last_refresh_age_seconds)s | " +
+        "reconcile age $($HeartbeatStatus.last_reconcile_age_seconds)s"
+    )
+    Write-Host "Heartbeat detail:  $($HeartbeatStatus.detail)"
+    Write-Host "Heartbeat file:    $HeartbeatPath"
+    if (
+        $Task.State -eq 'Running' -and
+        (
+            $HeartbeatStatus.liveness -ne 'EVENT_LOOP_FRESH' -or
+            ($HeartbeatStatus.session_open -and $HeartbeatStatus.operational_state -eq 'DEGRADED')
+        )
+    ) {
+        Write-Host 'The task contract is valid, but the running supervisor is not healthy.' -ForegroundColor Red
+        return $false
+    }
     return $true
 }
 
@@ -278,6 +496,8 @@ $SettingsParameters = @{
     AllowStartIfOnBatteries = $true
     DontStopIfGoingOnBatteries = $true
     RunOnlyIfNetworkAvailable = $false
+    RestartCount = $Spec.task_restart_count
+    RestartInterval = [TimeSpan]::FromMinutes($Spec.task_restart_interval_minutes)
     # Across the explicitly supported continental-U.S. time zones, the mapped
     # local trigger falls between 07:00 and 09:20 ET. Fourteen hours extends
     # beyond the 4:00 ET close. Unsupported zones are rejected above instead of

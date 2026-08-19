@@ -7,16 +7,18 @@ GRANDE Alpha now presents this same checklist in **Live Readiness** and in the t
 ```
 
 The checklist is fail-closed. It explains a lock; it does not offer a bypass. The activation assistant
-cannot grant, schedule, review, place, or cancel orders. A passing checklist only makes a separate
-bounded live-session review available. It does not predict or guarantee profit.
+cannot grant, schedule, review, place, or cancel orders. Shared account, route, and capability checks can
+expose the attended supervised review; a fully passing checklist is required only for evidence-gated
+autonomous review. Neither route predicts or guarantees profit.
 
 ## First: identify which process you opened
 
 - **Scheduled auto-shadow** is structurally read-only. Its broker facade blocks order review,
   placement, and cancellation. It cannot turn itself into live trading, even if every other item later
   passes.
-- **Normal GRANDE Alpha** can display consent-gated live controls only after the exact evidence and
-  runtime conditions pass. It still starts without a saved money-moving grant.
+- **Normal GRANDE Alpha** has an attended supervised experimental path with fresh confirmation for
+  every exact reviewed order and a separate autonomous path that remains locked until exact evidence
+  and runtime conditions pass. It still starts without a saved money-moving grant.
 
 If the title or checklist says `AUTO-SHADOW PROCESS — STRUCTURALLY READ-ONLY`, let it collect virtual
 observations or close it. Do not look for a live checkbox in that process.
@@ -78,29 +80,26 @@ review after-cost performance, drawdown, data gaps, and every receipt.
 Neither Codex nor a GPU can compress future market sessions into genuine forward evidence. Shadow
 results can reject a candidate; they cannot guarantee that later real trades will profit.
 
-### 6. Complete external reviews — you do this outside the app
+### 6. Complete external reviews — each operator does this outside the app
 
-For F-1 circumstances, obtain written guidance for the exact facts from the UCLA DSO and qualified
-U.S. immigration counsel. Start with the [UCLA Dashew Center](https://internationalcenter.ucla.edu/contact-us).
-The app cannot convert a checkbox or attestation into immigration, employment, tax, or legal clearance.
+Account eligibility and the legal, tax, employment, residency, sanctions, and business rules that
+apply to trading software vary by user, account, and jurisdiction. Before enabling real orders, each
+operator must review the exact facts with appropriately qualified professionals and the broker. The
+app cannot convert a checkbox or attestation into legal, tax, employment, residency, account, or
+product-distribution clearance.
 
-Copy-paste draft for a UCLA F-1 counselor (review and personalize before sending):
+The **Jurisdiction & account suitability** responsibility is deliberately shown **outside** the
+pass-count table because GRANDE Alpha cannot inspect or certify it. The notice does not infer a user's
+location, citizenship, visa, employment, tax, or business status, and it does not ask the user to put
+sensitive status details into the app. Distributors can add official local resources to the UI by
+setting `GRANDE_ALPHA_EXTERNAL_GUIDANCE_LINKS` to a JSON array of HTTPS links, for example:
 
-> Subject: Request for written F-1 guidance on automated own-account securities trading
->
-> Hello, I am a UCLA F-1 student seeking written guidance before using a local application that I
-> developed to trade only my own funds in a dedicated U.S. brokerage account. The proposed system
-> could analyze QQQ/TQQQ/SQQQ market data every 5 seconds and make a bounded decision approximately
-> every 15 seconds during regular market hours, subject to same-day dollar, loss, order-count, and
-> exposure limits. I would not manage anyone else's money. Could this level of automated,
-> high-frequency own-account securities trading be treated as employment, self-employment, a trade or
-> business, or another activity restricted by F-1 status? What authorization, reporting, or additional
-> review would be required before I develop, operate, monetize, or publicly distribute this software?
-> Please distinguish personal investing from software commercialization and let me know what facts or
-> documents you need. I will not begin the proposed live activity based only on this message.
+```powershell
+$env:GRANDE_ALPHA_EXTERNAL_GUIDANCE_LINKS = '[{"label":"Local regulator guidance","url":"https://regulator.example/guidance"}]'
+```
 
-This is a request for advice, not a claim that the activity is permitted. A DSO may appropriately
-refer the immigration-law question to qualified counsel.
+Only HTTPS links with safe labels are shown. Configured links are references, not endorsements or a
+substitute for individualized professional advice.
 
 For public distribution involving Robinhood connectivity, obtain written Robinhood approval covering
 the intended users, product, order flow, branding, and data handling. Review Robinhood's
@@ -110,12 +109,12 @@ Copy-paste draft for Robinhood Support (review and personalize before sending):
 
 > Subject: Written scope confirmation for local Agentic Trading MCP application
 >
-> Hello, I am requesting written confirmation of the permitted scope for a local application I
-> developed for my own dedicated Robinhood Agentic account. It connects through the official Agentic
-> Trading MCP, reads account/position/order and QQQ/TQQQ/SQQQ quote data, and—only after explicit
-> same-day authorization—could submit bounded orders for my own account. Is this private local use
-> permitted under the current Agentic Trading and API terms? Please also confirm whether separate
-> written authorization is required before I publish or distribute the application to other users,
+> Hello, I am requesting written confirmation of the permitted scope for a public desktop application.
+> It connects through the official Agentic Trading MCP, reads account/position/order and
+> QQQ/TQQQ/SQQQ quote data, and—only after explicit same-day authorization—could submit bounded orders
+> for an authorized account holder. Please confirm which private-use and public-distribution scenarios
+> are permitted under the current Agentic Trading and API terms, whether a separate written agreement
+> is required before publishing or distributing the application to other users,
 > and what approval process covers order flow, branding, OAuth/data handling, support duties, and use
 > of Robinhood or Agentic Trading names. I will not represent the application as approved or expose
 > public Robinhood connectivity without your written confirmation.
@@ -155,9 +154,10 @@ Agentic account for its app views and does not select the regular investing acco
 - If a placement acknowledgement is ambiguous, reconcile its exact client reference against Robinhood
   and never retry it blindly.
 
-### 9. Enable the real-order capability — you do this only after the app marks evidence ready
+### 9. Enable supervised real-order ticket controls — you do this deliberately
 
-Only after the exact evidence and parity conditions pass:
+The attended supervised experiment does not require or claim an autonomous evidence certificate. It
+does require the constrained supported route and a new confirmation for every reviewed order:
 
 1. Open **Settings & Permissions** in normal GRANDE Alpha.
 2. Click **Apply bounded pilot settings** to preview Regular market, Market order, GFD, and cash T+1.
@@ -166,10 +166,10 @@ Only after the exact evidence and parity conditions pass:
 3. Check **Make bounded real-order session controls available**.
 4. Type the displayed exact phrase and save.
 
-If Save is disabled, return to **Live Readiness**. The evidence lock is doing its job; Settings cannot
-override it.
+If Save is disabled, read the in-dialog reason and correct the constrained route or permission state.
+The autonomous evidence status remains a separate lock and is not bypassed by supervised mode.
 
-### 10. Authorize one bounded same-day session — you review this every live day
+### 10. Authorize one bounded same-day supervised session — review it every live day
 
 During the supported regular-session entry window, select **Authorize & Start Live Session** and review
 the exact Agentic account, TQQQ/SQQQ scope, strategy fingerprint, route, expiry, per-order limit, daily
@@ -177,16 +177,21 @@ gross-notional limit, total exposure, daily loss, order count/rate, spread, and 
 the same-day typed confirmation yourself.
 
 The grant is never stored or scheduled. Restart, expiry, revocation, account change, fingerprint change,
-or unresolved broker state returns the app to locked. Keep Robinhood open, monitor receipts, and use
-**STOP + CANCEL** if state is unclear; inspect and explicitly confirm its exact GRANDE-owned order
-preview before any cancellation request is sent.
+or unresolved broker state returns the app to locked. Each strategy ticket shows the immutable broker
+preview and requires a fresh one-use typed confirmation before placement. Keep Robinhood open, monitor
+receipts, and use **STOP + CANCEL** if state is unclear; inspect and explicitly confirm its exact
+GRANDE-owned order preview before any cancellation request is sent.
+
+The separate autonomous path remains unavailable until exact evidence, sealed holdout, and runtime
+parity all pass for the same candidate. Supervised outcomes do not satisfy those gates, and neither
+path is represented as profitable.
 
 ## What Codex or GRANDE Alpha cannot do for you
 
 - manufacture qualifying market history or future forward-shadow time;
 - turn a negative or unstable strategy into a truthful profitable one by changing thresholds;
 - accept Robinhood consent, make inventory decisions, or authorize use of your money;
-- provide F-1, immigration, legal, or tax clearance;
+- provide legal, tax, employment, residency, account-eligibility, or jurisdictional clearance;
 - obtain Robinhood's written public-product authorization on your behalf; or
 - guarantee profit, prevent market losses, or make an evidence failure safe to bypass.
 

@@ -17,11 +17,12 @@ from grande_alpha.candidate_execution import (
 )
 from grande_alpha.execution import execution_profile
 from grande_alpha.historical import DataQuality, HistoricalBundle, assess_quality
+from grande_alpha.models import Regime, Signal
 from grande_alpha.policy import session_key
 from grande_alpha.sandbox import (
     INTERVAL_MINUTES,
     SandboxConfig,
-    SandboxReplayEngine,
+    SandboxReplayRunner,
     SandboxResult,
     interval_minutes,
 )
@@ -92,6 +93,7 @@ FORCED_FLATTEN_REASONS = frozenset(
     {
         "Session-end forced virtual flatten",
         "End of replay forced virtual flatten",
+        "AUTO SHADOW DAILY FLAT at regular-session close",
     }
 )
 
@@ -250,10 +252,22 @@ def tested_risk_envelope(config: SandboxConfig) -> dict[str, float | int]:
     }
 
 
-def compare_configs(bundle: HistoricalBundle, configs: dict[str, SandboxConfig]) -> list[ComparisonRow]:
+def _run_replay(
+    bundle: HistoricalBundle,
+    config: SandboxConfig,
+    replay_runner: SandboxReplayRunner | None,
+) -> SandboxResult:
+    return (replay_runner or SandboxReplayRunner()).run(bundle, config)
+
+
+def compare_configs(
+    bundle: HistoricalBundle,
+    configs: dict[str, SandboxConfig],
+    replay_runner: SandboxReplayRunner | None = None,
+) -> list[ComparisonRow]:
     rows = []
     for name, config in configs.items():
-        result = SandboxReplayEngine(config).run(bundle)
+        result = _run_replay(bundle, config, replay_runner)
         rows.append(
             ComparisonRow(
                 name,
@@ -345,10 +359,14 @@ def candidate_grid(base: SandboxConfig, compact: bool = True) -> list[SandboxCon
     return configs
 
 
-def parameter_sweep(bundle: HistoricalBundle, configs: Iterable[SandboxConfig]) -> list[SensitivityPoint]:
+def parameter_sweep(
+    bundle: HistoricalBundle,
+    configs: Iterable[SandboxConfig],
+    replay_runner: SandboxReplayRunner | None = None,
+) -> list[SensitivityPoint]:
     points = []
     for config in configs:
-        result = SandboxReplayEngine(config).run(bundle)
+        result = _run_replay(bundle, config, replay_runner)
         points.append(
             SensitivityPoint(
                 config.strategy_name,
@@ -399,6 +417,7 @@ def _subset(bundle: HistoricalBundle, session_names: list[str]) -> HistoricalBun
         dataset_hash=quality.dataset_hash,
         quality=quality,
         market_hours=bundle.market_hours,
+        provenance=bundle.provenance,
     )
 
 
@@ -409,6 +428,7 @@ def walk_forward(
     test_sessions: int = 5,
     step_sessions: int = 5,
     purge_sessions: int = 1,
+    replay_runner: SandboxReplayRunner | None = None,
 ) -> WalkForwardResult:
     names = sorted(_sessions(bundle))
     if len(names) < train_sessions + test_sessions:
@@ -427,11 +447,11 @@ def walk_forward(
         test_bundle = _subset(bundle, test_names)
         scored = []
         for config in candidates:
-            result = SandboxReplayEngine(config).run(train_bundle)
+            result = _run_replay(train_bundle, config, replay_runner)
             score = result.return_pct - 0.5 * result.max_drawdown_pct
             scored.append((score, config, result))
         _, selected, train_result = max(scored, key=lambda item: item[0])
-        test_result = SandboxReplayEngine(selected).run(test_bundle)
+        test_result = _run_replay(test_bundle, selected, replay_runner)
         folds.append(
             WalkForwardFold(
                 train_names[0],
@@ -513,9 +533,17 @@ def deflated_sharpe_ratio(
     return probabilistic_sharpe_ratio(returns, benchmark, periods_per_year)
 
 
-def cost_stress(bundle: HistoricalBundle, base: SandboxConfig) -> dict[float, SandboxResult]:
+def cost_stress(
+    bundle: HistoricalBundle,
+    base: SandboxConfig,
+    replay_runner: SandboxReplayRunner | None = None,
+) -> dict[float, SandboxResult]:
     return {
-        multiplier: SandboxReplayEngine(cost_stressed_config(base, multiplier)).run(bundle)
+        multiplier: _run_replay(
+            bundle,
+            cost_stressed_config(base, multiplier),
+            replay_runner,
+        )
         for multiplier in (1.0, 2.0, 3.0)
     }
 
@@ -545,8 +573,20 @@ def random_entry_control(
     config: SandboxConfig,
     strategy_return_pct: float,
     trials: int = 100,
+    replay_runner: SandboxReplayRunner | None = None,
 ) -> RandomControl:
     rng = random.Random(config.random_seed + 99)
+    if replay_runner is not None and replay_runner.exact_runtime_observation:
+        returns = [
+            replay_runner.run(
+                bundle,
+                config,
+                signals=_random_runtime_signals(bundle, config, rng),
+            ).return_pct
+            for _ in range(trials)
+        ]
+        return _random_control_summary(returns, strategy_return_pct)
+
     grouped = _sessions(bundle)
     hold_bars = max(1, round(config.max_hold_minutes / interval_minutes(bundle.interval)))
     returns = []
@@ -570,10 +610,64 @@ def random_entry_control(
                 costs += 2 * config.commission_per_order
                 pnl += gross - costs
         returns.append(pnl / config.initial_cash * 100.0)
+    return _random_control_summary(returns, strategy_return_pct)
+
+
+def _random_runtime_signals(
+    bundle: HistoricalBundle,
+    config: SandboxConfig,
+    rng: random.Random,
+) -> tuple[Signal, ...]:
+    """Build one seeded, feasible random policy for the exact causal execution path."""
+
+    indices_by_session: dict[str, list[int]] = {}
+    for index, frame in enumerate(bundle.frames):
+        indices_by_session.setdefault(
+            session_key(frame.start, bundle.market_hours),
+            [],
+        ).append(index)
+    regimes = [Regime.FLAT] * len(bundle.frames)
+    hold_bars = max(1, round(config.max_hold_minutes / interval_minutes(bundle.interval)))
+    for indices in indices_by_session.values():
+        if len(indices) < 3:
+            continue
+        entries = min(config.max_entries_per_day, max(1, len(indices) // hold_bars))
+        if config.settlement_model == "cash_t1":
+            settled_tranches = max(1, int(config.initial_cash // config.order_notional))
+            entries = min(entries, settled_tranches)
+        local_choices = sorted(
+            rng.sample(range(1, len(indices) - 1), min(entries, len(indices) - 2))
+        )
+        occupied_until = -1
+        for local_entry in local_choices:
+            if local_entry <= occupied_until:
+                continue
+            local_exit = min(len(indices) - 1, local_entry + hold_bars)
+            regime = Regime.BULLISH if rng.random() < 0.5 else Regime.BEARISH
+            for local_index in range(local_entry, local_exit):
+                regimes[indices[local_index]] = regime
+            occupied_until = local_exit
+    return tuple(
+        Signal(
+            regime,
+            0.5 if regime is not Regime.FLAT else 0.0,
+            "Seeded random-entry control",
+            timestamp=frame.qqq.start,
+        )
+        for frame, regime in zip(bundle.frames, regimes, strict=True)
+    )
+
+
+def _random_control_summary(
+    returns: list[float],
+    strategy_return_pct: float,
+) -> RandomControl:
+    if not returns:
+        raise ValueError("Random-entry control requires at least one trial")
     ordered = sorted(returns)
     rank = sum(value <= strategy_return_pct for value in ordered) / len(ordered) * 100.0
     return RandomControl(
-        trials,
+        len(ordered),
         statistics.median(ordered),
         ordered[max(0, round(0.10 * (len(ordered) - 1)))],
         ordered[min(len(ordered) - 1, round(0.90 * (len(ordered) - 1)))],

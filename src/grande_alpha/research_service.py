@@ -23,7 +23,7 @@ from grande_alpha.evidence import (
     walk_forward,
 )
 from grande_alpha.historical import HistoricalBundle, split_final_holdout
-from grande_alpha.sandbox import SandboxConfig, SandboxReplayEngine, SandboxResult
+from grande_alpha.sandbox import SandboxConfig, SandboxReplayRunner, SandboxResult
 from grande_alpha.storage import AuditStore
 
 
@@ -64,6 +64,7 @@ def run_evidence_lab(
     """Run and record the shared GUI/CLI evidence pipeline without any broker access."""
 
     config.validate()
+    replay_runner = SandboxReplayRunner.for_evidence_bundle(bundle)
     sessions = bundle.quality.sessions if bundle.quality else 0
     development = bundle
     holdout_bundle = None
@@ -112,9 +113,9 @@ def run_evidence_lab(
             store.invalidate_research_holdout(holdout_id)
 
     try:
-        base = SandboxReplayEngine(config).run(development)
+        base = replay_runner.run(development, config)
         candidates = candidate_grid(config)
-        points = parameter_sweep(development, candidates)
+        points = parameter_sweep(development, candidates, replay_runner)
         store.record_research_trials(
             development.dataset_hash,
             [
@@ -127,8 +128,13 @@ def run_evidence_lab(
             ],
         )
         total_trial_count = store.research_trial_count(development.dataset_hash)
-        stressed = cost_stress(development, config)
-        random_control = random_entry_control(development, config, base.return_pct)
+        stressed = cost_stress(development, config, replay_runner)
+        random_control = random_entry_control(
+            development,
+            config,
+            base.return_pct,
+            replay_runner=replay_runner,
+        )
         development_sessions = development.quality.sessions if development.quality else 0
         walk = None
         if development_sessions >= 15:
@@ -141,6 +147,8 @@ def run_evidence_lab(
                     train_sessions,
                     test_sessions,
                     test_sessions,
+                    1,
+                    replay_runner,
                 )
 
         selected_fingerprint = strategy_fingerprint(config, bundle.interval)
@@ -169,7 +177,7 @@ def run_evidence_lab(
             store.freeze_research_holdout(holdout_id, selected_fingerprint)
             store.claim_research_holdout(holdout_id, selected_fingerprint)
             stressed_holdout_config = cost_stressed_config(config, 3.0)
-            holdout_result = SandboxReplayEngine(stressed_holdout_config).run(holdout_bundle)
+            holdout_result = replay_runner.run(holdout_bundle, stressed_holdout_config)
             store.consume_research_holdout(
                 holdout_id,
                 selected_fingerprint,

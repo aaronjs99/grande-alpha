@@ -1,6 +1,6 @@
 # Safety and compliance boundaries
 
-This is general product documentation, not investment, legal, immigration, accounting, or tax advice.
+This is general product documentation, not investment, legal, accounting, or tax advice.
 
 ## Research and live authority
 
@@ -20,8 +20,9 @@ states that order placement is restricted to the dedicated Agentic account, that
 orders without confirmation when instructed, and that agentic trading can result in total loss.
 However, the current order-review tool contract separately requires the exact preview and disclosure
 to be presented for explicit confirmation before placement. GRANDE Alpha applies the stricter current
-tool contract: its session grant is not treated as per-order confirmation, and autonomous placement
-remains blocked pending a compliant per-order flow or written provider clarification. Review the
+tool contract: its session grant is not treated as per-order confirmation. The distinct
+[supervised experimental mode](SUPERVISED_EXPERIMENTAL.md) requires a fresh, transaction-bound typed
+decision for every reviewed order; the autonomous path remains evidence/parity blocked. Review the
 provider's current [Agentic Trading overview](https://robinhood.com/us/en/support/articles/agentic-trading-overview/)
 before connecting.
 
@@ -40,16 +41,16 @@ fractional-share, and order-type constraints. Extended and overnight automation 
 limits; a limit is not guaranteed to fill. GTC orders can remain live at the broker after the desktop
 app exits. Review the exact behavior in [Trading sessions and order routes](TRADING_SESSIONS.md).
 
-## International, student, employment, and business status
+## Jurisdiction, account, employment, and business status
 
 Users with visa, residency, employment-authorization, sanctions, cross-border, or business-classification questions must obtain advice applicable to their facts before enabling automation. The application attestation is a consent checkpoint, not legal clearance. Never use it to manage another person's money, accept outside capital, sell managed-account services, or evade a restriction.
 
-For the current F-1 user, both a UCLA DSO/F-1 counselor and qualified immigration counsel are an
-external gate before live automation or commercialization. UCLA directs status-specific questions to
-its [Dashew Center F-1 counselors](https://internationalcenter.ucla.edu/contact-us); federal
-[SEVP employment guidance](https://www.ice.gov/sevis/employment) explains that employment categories
-have specific authorization rules. Neither source makes the app capable of deciding whether a
-particular trading or software-business activity is permitted.
+GRANDE Alpha deliberately presents this as an outside-app responsibility rather than a pass/fail
+condition it could falsely certify. It does not collect or infer citizenship, visa, employer,
+tax-residency, professional-status, or business-formation details. Each user must consult the broker,
+relevant authorities, and appropriately qualified professionals for their exact circumstances.
+Distributors can configure official HTTPS reference links as described in
+[Activation checklist](ACTIVATION_CHECKLIST.md); a configured link never becomes app-issued approval.
 
 Public distribution with Robinhood connectivity is also blocked pending written Robinhood approval
 covering the exact product/API and distribution model. Review Robinhood's

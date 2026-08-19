@@ -1,4 +1,5 @@
 import asyncio
+import json
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
@@ -6,11 +7,13 @@ import pytest
 from PySide6.QtWidgets import QApplication
 
 import grande_alpha.broker.robinhood_mcp as robinhood_mcp
-from grande_alpha.app import auto_shadow_runtime_config
+from grande_alpha import __version__
+from grande_alpha.app import auto_shadow_runtime_config, record_auto_shadow_heartbeat
 from grande_alpha.broker.base import Broker, BrokerError, ShadowOnlyBroker
 from grande_alpha.broker.robinhood_mcp import RobinhoodMCPBroker
 from grande_alpha.config import AppConfig
-from grande_alpha.controller import TradingController
+from grande_alpha.controller import TradingController, TradingSnapshot
+from grande_alpha.historical import load_runtime_quote_trace
 from grande_alpha.models import (
     Account,
     Bar,
@@ -23,6 +26,7 @@ from grande_alpha.models import (
     Regime,
     Signal,
 )
+from grande_alpha.policy import session_key
 from grande_alpha.storage import AuditStore
 from grande_alpha.strategy import CashStrategy, MomentumStrategy
 from grande_alpha.ui.main_window import MainWindow
@@ -60,6 +64,67 @@ def test_scheduled_shadow_uses_nonpersistent_regular_read_only_profile() -> None
     assert effective.settlement_model == "cash_t1"
     assert saved.market_hours == "all_day_hours"
     assert saved.live_trading_enabled
+
+
+def test_auto_shadow_heartbeat_is_atomic_and_structurally_read_only(tmp_path) -> None:
+    path = tmp_path / "scheduled-shadow-heartbeat.json"
+    observed_at = datetime(2026, 8, 19, 14, 30, tzinfo=UTC)
+
+    record_auto_shadow_heartbeat(
+        path,
+        state="running",
+        observed_at=observed_at,
+        process_id=4321,
+        session_open=True,
+        snapshot=TradingSnapshot(
+            connected=True,
+            shadow_running=True,
+            last_refresh=observed_at - timedelta(seconds=2),
+            last_reconcile_at=observed_at - timedelta(seconds=3),
+            shadow_equity=50.25,
+            shadow_pnl=0.25,
+            shadow_fills=2,
+        ),
+    )
+
+    heartbeat = json.loads(path.read_text(encoding="utf-8"))
+    assert heartbeat == {
+        "broker_writes": False,
+        "live_authority": False,
+        "liveness_source": "qt_event_loop_timer",
+        "mode": "--auto-shadow",
+        "observed_at_utc": "2026-08-19T14:30:00+00:00",
+        "process_id": 4321,
+        "read_only": True,
+        "runtime": {
+            "connected": True,
+            "last_reconcile_at_utc": "2026-08-19T14:29:57+00:00",
+            "last_refresh_utc": "2026-08-19T14:29:58+00:00",
+            "session_open": True,
+            "shadow_equity": 50.25,
+            "shadow_fills": 2,
+            "shadow_pnl": 0.25,
+            "shadow_running": True,
+        },
+        "schema_version": 1,
+        "state": "running",
+        "version": __version__,
+    }
+    assert list(tmp_path.glob("*.tmp")) == []
+
+
+def test_auto_shadow_heartbeat_rejects_ambiguous_state_or_naive_time(tmp_path) -> None:
+    path = tmp_path / "scheduled-shadow-heartbeat.json"
+
+    with pytest.raises(ValueError, match="Unsupported"):
+        record_auto_shadow_heartbeat(path, state="unknown")
+    with pytest.raises(ValueError, match="timezone-aware"):
+        record_auto_shadow_heartbeat(
+            path,
+            state="running",
+            observed_at=datetime(2026, 8, 19, 14, 30),
+        )
+    assert not path.exists()
 
 
 class AutoShadowBroker(Broker):
@@ -476,6 +541,55 @@ async def test_auto_shadow_connects_early_waits_without_real_sleep_and_resets_at
     assert controller.snapshot.shadow_running
     assert controller._analysis_sequence == 0
     assert not controller.strategy.bars
+    store.close()
+
+
+@pytest.mark.asyncio
+async def test_surviving_auto_shadow_rotates_trace_stream_before_next_session_connect(
+    tmp_path, monkeypatch
+) -> None:
+    clock = FakeClock(START)
+    broker = AutoShadowBroker(quote_clock=lambda: clock.now)
+    monkeypatch.setattr("grande_alpha.controller.utc_now", lambda: clock.now)
+    controller, store = _controller(tmp_path, broker, clock=clock, bar_seconds=5)
+
+    assert await controller.auto_start_shadow()
+    first_active_stream = controller._quote_stream_id
+    for _ in range(2):
+        clock.now += timedelta(seconds=5)
+        await controller.refresh_quotes(evaluate=False)
+    clock.now = datetime(2026, 8, 11, 20, 0, tzinfo=UTC)
+    await controller.disconnect_shadow_only(
+        "First session complete",
+        flatten_virtual=True,
+    )
+
+    # Keep the same controller/process alive into the next regular session. The
+    # first connect-time exact read must not retain the prior session's stream ID.
+    clock.now = datetime(2026, 8, 12, 13, 31, tzinfo=UTC)
+    assert await controller.auto_start_shadow()
+    assert controller._quote_stream_id != first_active_stream
+    for _ in range(2):
+        clock.now += timedelta(seconds=5)
+        await controller.refresh_quotes(evaluate=False)
+
+    rows = store._connection.execute(
+        """SELECT quote_batches.stream_id,quotes.venue_timestamp
+        FROM quote_batches JOIN quotes ON quotes.batch_id=quote_batches.batch_id
+        WHERE quotes.symbol='QQQ' ORDER BY quote_batches.rowid"""
+    ).fetchall()
+    sessions_by_stream: dict[str, set[str]] = {}
+    for row in rows:
+        observed = datetime.fromisoformat(str(row["venue_timestamp"]))
+        sessions_by_stream.setdefault(str(row["stream_id"]), set()).add(
+            session_key(observed, "regular_hours")
+        )
+    assert sessions_by_stream
+    assert all(len(sessions) == 1 for sessions in sessions_by_stream.values())
+
+    bundle = load_runtime_quote_trace(store.path, bar_seconds=5)
+    assert bundle.quality is not None and bundle.quality.sessions == 2
+    assert broker.review_calls == broker.place_calls == broker.cancel_calls == 0
     store.close()
 
 

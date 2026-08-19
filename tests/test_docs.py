@@ -41,7 +41,8 @@ def test_activation_doc_separates_automation_consent_and_external_review() -> No
 
     assert "structurally read-only" in text
     assert "APP CHECK" in text and "APP GATE" in text
-    assert "UCLA F-1 counselor" in text
+    assert "Jurisdiction & account suitability" in text
+    assert "GRANDE_ALPHA_EXTERNAL_GUIDANCE_LINKS" in text
     assert "Robinhood Support" in text
     assert "Apply bounded pilot settings" in text
     assert "cannot grant, schedule, review, place, or cancel" in text

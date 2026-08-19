@@ -7,6 +7,7 @@ import shutil
 import sys
 import textwrap
 from dataclasses import asdict, replace
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -32,11 +33,20 @@ from grande_alpha.evidence import (
 )
 from grande_alpha.gate_guidance import GATE_GUIDANCE, gate_detail, promotion_overview
 from grande_alpha.historical import (
+    RUNTIME_ANALYSIS_PRICE_SEMANTICS,
+    RUNTIME_EXECUTION_PRICE_SEMANTICS,
+    RUNTIME_OBSERVATION_SCHEMA,
+    RUNTIME_VOLUME_SEMANTICS,
     HistoricalBundle,
     HistoricalDataProvider,
     deterministic_demo,
     load_csv_history,
+    load_runtime_quote_trace_with_row_count,
+    runtime_trace_manifest_template,
 )
+from grande_alpha.market_calendar import regular_session_times
+from grande_alpha.policy import session_key
+from grande_alpha.product import PRODUCT_PLANS, configured_upgrade_url, current_entitlement
 from grande_alpha.research_service import run_evidence_lab
 from grande_alpha.sandbox import SandboxConfig, SandboxReplayEngine, load_sandbox_config
 from grande_alpha.storage import AuditStore
@@ -199,6 +209,42 @@ async def _bundle_from_args(
 ) -> HistoricalBundle:
     if args.source == "demo":
         return await asyncio.to_thread(deterministic_demo, config.lookback_days)
+    if args.source == "runtime-trace":
+        if args.database is None:
+            raise ValueError("--database PATH is required when --source runtime-trace is selected")
+        if require_evidence_ready and (args.start is None or args.end is None):
+            raise ValueError(
+                "Runtime-trace evidence requires explicit inclusive --start and --end trading dates"
+            )
+        if require_evidence_ready and args.manifest is None:
+            raise ValueError(
+                "Runtime-trace evidence requires --manifest PATH and a passing read-only audit"
+            )
+        manifest = _load_json_object(args.manifest, "runtime-trace manifest")
+        bundle, row_count = await asyncio.to_thread(
+            load_runtime_quote_trace_with_row_count,
+            args.database,
+            bar_seconds=args.bar_seconds,
+            market_hours=config.market_hours,
+            manifest=manifest,
+            start=args.start,
+            end=args.end,
+        )
+        readiness = _runtime_trace_readiness(
+            bundle,
+            quote_row_count=row_count,
+            range_start=args.start,
+            range_end=args.end,
+        )
+        if require_evidence_ready and not readiness["input_ready"]:
+            failures = ", ".join(
+                check["name"] for check in readiness["checks"] if not check["passed"]
+            )
+            raise ValueError(
+                f"Runtime-trace evidence input is not ready: {failures}. "
+                "Run `data runtime-trace audit` for details; no final holdout was reserved or evaluated"
+            )
+        return bundle
     if args.source == "csv":
         if args.csv is None:
             raise ValueError("--csv PATH is required when --source csv is selected")
@@ -246,6 +292,147 @@ async def _bundle_from_args(
             f"Remote {args.interval} history is capped at {maximum_days[args.interval]} calendar days"
         )
     return await provider.fetch(config.lookback_days, args.interval, market_hours=config.market_hours)
+
+
+def _load_json_object(path: Path | None, label: str) -> dict[str, Any] | None:
+    if path is None:
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"Could not read {label}: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise ValueError(f"{label.capitalize()} must contain one JSON object")
+    return payload
+
+
+def _runtime_trace_readiness(
+    bundle: HistoricalBundle,
+    *,
+    quote_row_count: int,
+    range_start: date | None,
+    range_end: date | None,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    quality = bundle.quality
+    provenance = bundle.provenance
+    if quality is None or provenance is None:
+        raise ValueError("Runtime trace has no quality or provenance record")
+    reference = now or datetime.now(UTC)
+    age_days = (reference - bundle.end).total_seconds() / 86_400
+    actual_sessions = {
+        session_key(frame.start, bundle.market_hours) for frame in bundle.frames
+    }
+    actual_start = date.fromisoformat(min(actual_sessions))
+    actual_end = date.fromisoformat(max(actual_sessions))
+    expected_start = range_start or actual_start
+    expected_end = range_end or actual_end
+    expected_sessions: list[str] = []
+    cursor = expected_start
+    while cursor <= expected_end:
+        if regular_session_times(cursor) is not None:
+            expected_sessions.append(cursor.isoformat())
+        cursor += timedelta(days=1)
+    missing_range_sessions = sorted(set(expected_sessions) - actual_sessions)
+    interval_seconds = int(bundle.interval[:-1]) if bundle.interval.endswith("s") else 60
+    exact_schema = bool(
+        bundle.frames
+        and all(frame.has_exact_runtime_observation for frame in bundle.frames)
+        and provenance.observation_schema == RUNTIME_OBSERVATION_SCHEMA
+        and provenance.analysis_price_semantics == RUNTIME_ANALYSIS_PRICE_SEMANTICS
+        and provenance.execution_price_semantics == RUNTIME_EXECUTION_PRICE_SEMANTICS
+        and provenance.volume_semantics == RUNTIME_VOLUME_SEMANTICS
+        and provenance.validator_profile == "exact_execution_quotes"
+    )
+    exact_cadence = bool(
+        provenance.source_resolution_seconds is not None
+        and 0 < provenance.source_resolution_seconds <= interval_seconds
+    )
+    checks = [
+        {
+            "name": "Exact runtime observation schema",
+            "passed": exact_schema,
+            "observed": (
+                f"{len(bundle.frames)} causal frames; schema={provenance.observation_schema}; "
+                f"validator={provenance.validator_profile} v{provenance.validator_version}"
+            ),
+            "requirement": "Every frame is one synchronized QQQ/TQQQ/SQQQ causal runtime observation",
+        },
+        {
+            "name": "Provenance and source rights",
+            "passed": bundle.evidence_provenance_eligible,
+            "observed": (
+                f"kind={provenance.source_kind}; manifest v{provenance.manifest_version}; "
+                f"eligible={bundle.evidence_provenance_eligible}"
+            ),
+            "requirement": "Content-bound manifest v1 with user-reviewed research and automated-research rights",
+        },
+        {
+            "name": "Exact native cadence",
+            "passed": exact_cadence,
+            "observed": f"maximum accepted within-stream delta {provenance.source_resolution_seconds}s",
+            "requirement": f"Positive source cadence no coarser than {interval_seconds}s",
+        },
+        {
+            "name": "Requested range coverage",
+            "passed": not missing_range_sessions,
+            "observed": (
+                f"{len(actual_sessions)} observed sessions; {len(expected_sessions)} expected; "
+                f"{len(missing_range_sessions)} absent"
+            ),
+            "requirement": "Every scheduled equity session in the inclusive requested range is present",
+        },
+        {
+            "name": "Data breadth",
+            "passed": quality.sessions >= 141,
+            "observed": f"{quality.sessions} sessions",
+            "requirement": "At least 141 sessions: 120 development, one purge, and 20 final holdout",
+        },
+        {
+            "name": "Data recency",
+            "passed": 0 <= age_days <= 30,
+            "observed": f"{age_days:.1f} days old",
+            "requirement": "Final observation no more than 30 days old",
+        },
+        {
+            "name": "Data integrity",
+            "passed": bool(
+                quality.clean
+                and quality.missing_intervals == 0
+                and quality.missing_sessions == 0
+                and quality.session_coverage_pct >= 95.0
+            ),
+            "observed": (
+                f"{quality.missing_intervals} missing intervals; "
+                f"{quality.missing_sessions} omitted sessions; "
+                f"{quality.duplicate_timestamps} duplicates; "
+                f"{quality.session_coverage_pct:.1f}% complete"
+            ),
+            "requirement": "Zero missing/duplicate intervals or sessions and at least 95% complete sessions",
+        },
+    ]
+    return {
+        "operation": "read_only_runtime_trace_audit",
+        "broker_calls": 0,
+        "holdout_reserved_or_evaluated": False,
+        "database_open_mode": "ro",
+        "source": bundle.source,
+        "dataset_hash": bundle.dataset_hash,
+        "provenance_hash": bundle.provenance_hash,
+        "source_trace_sha256": provenance.source_trace_sha256,
+        "interval": bundle.interval,
+        "market_hours": bundle.market_hours,
+        "range_start": range_start.isoformat() if range_start is not None else None,
+        "range_end": range_end.isoformat() if range_end is not None else None,
+        "observed_start": bundle.start.isoformat(),
+        "observed_end": bundle.end.isoformat(),
+        "quote_row_count": quote_row_count,
+        "frames": len(bundle.frames),
+        "sessions": quality.sessions,
+        "complete_sessions": quality.complete_sessions,
+        "checks": checks,
+        "input_ready": all(check["passed"] for check in checks),
+    }
 
 
 def _record_sandbox(store: AuditStore, config: SandboxConfig, bundle: HistoricalBundle, result, note: str) -> None:
@@ -317,7 +504,11 @@ def command_status(args: argparse.Namespace) -> int:
             ["Version", __version__, "Installed GRANDE Alpha Python package"],
             ["Mode", "RESEARCH / LOCKED", "This CLI never grants standing live-order authority"],
             ["Broker-data permission", "ENABLED" if config.broker_connection_enabled else "DISABLED", "Local setting only; no broker call was made"],
-            ["Real-order setting", "ENABLED" if config.live_trading_enabled else "DISABLED", "The GUI still requires matching evidence and a bounded live grant"],
+            [
+                "Real-order setting",
+                "ENABLED" if config.live_trading_enabled else "DISABLED",
+                "The GUI still requires an attended bounded session and fresh per-order confirmation; autonomy also requires exact evidence",
+            ],
             ["Remote-data permission", "ENABLED" if config.remote_market_data_enabled else "DISABLED", "CLI downloads also require an explicit acknowledgement flag"],
             [
                 "Latest historical receipt",
@@ -426,7 +617,7 @@ def command_activation(args: argparse.Namespace) -> int:
                 "observed": "Enabled" if config.broker_connection_enabled else "Disabled",
             },
             {
-                "gate": "Autonomous pilot route",
+                "gate": "Supported real-order route",
                 "status": "PASS" if route_ready else "BLOCKED",
                 "observed": route_observed,
             },
@@ -449,11 +640,6 @@ def command_activation(args: argparse.Namespace) -> int:
                 "gate": "Live broker preflight",
                 "status": "USER ACTION",
                 "observed": "Not evaluated by this offline CLI command",
-            },
-            {
-                "gate": "F-1 / tax suitability",
-                "status": "USER ACTION",
-                "observed": "Not decidable by the app",
             },
             {
                 "gate": "Bounded same-day authority",
@@ -490,6 +676,10 @@ def command_activation(args: argparse.Namespace) -> int:
                     "latest_receipt_matches_current_fingerprint": latest_receipt_matches_fingerprint,
                     "current_exact_evidence": evidence_ready,
                     "conditions": rows,
+                    "external_responsibility": (
+                        "The app does not collect or certify jurisdiction, account eligibility, "
+                        "legal, tax, employment, residency, or business status."
+                    ),
                     "evidence_failures": evidence_failures,
                 }
             )
@@ -516,6 +706,11 @@ def command_activation(args: argparse.Namespace) -> int:
                 ],
                 args.width,
             )
+        )
+        print(
+            "\nOutside-app responsibility: GRANDE Alpha does not collect or certify jurisdiction, "
+            "account eligibility, legal, tax, employment, residency, or business status. Review "
+            "applicable requirements with the broker and appropriately qualified professionals."
         )
         if evidence_failures:
             print("\nExact failed-evidence actions")
@@ -741,6 +936,92 @@ def command_data_manifest_template(args: argparse.Namespace) -> int:
     return 0
 
 
+def _load_runtime_trace_from_data_args(
+    args: argparse.Namespace,
+    *,
+    include_manifest: bool,
+) -> tuple[HistoricalBundle, int]:
+    if include_manifest and args.manifest is not None and (args.start is None or args.end is None):
+        raise ValueError("A manifest-backed runtime-trace audit requires --start and --end")
+    manifest = _load_json_object(args.manifest, "runtime-trace manifest") if include_manifest else None
+    return load_runtime_quote_trace_with_row_count(
+        args.database,
+        bar_seconds=args.bar_seconds,
+        market_hours=args.session,
+        manifest=manifest,
+        start=args.start,
+        end=args.end,
+    )
+
+
+def command_data_runtime_trace_audit(args: argparse.Namespace) -> int:
+    """Audit one exact trace range without opening the evidence ledger for writes."""
+
+    bundle, row_count = _load_runtime_trace_from_data_args(args, include_manifest=True)
+    payload = _runtime_trace_readiness(
+        bundle,
+        quote_row_count=row_count,
+        range_start=args.start,
+        range_end=args.end,
+    )
+    if args.json:
+        _json(payload)
+    else:
+        print(
+            "READ-ONLY RUNTIME-TRACE AUDIT - SQLite mode=ro; no broker call, trial, "
+            "holdout reservation, or holdout evaluation was performed."
+        )
+        print(
+            format_table(
+                ["Item", "Value"],
+                [
+                    ["Range", f"{payload['range_start'] or 'first row'} through {payload['range_end'] or 'last row'}"],
+                    ["Observed", f"{payload['observed_start']} through {payload['observed_end']}"],
+                    ["Source rows", payload["quote_row_count"]],
+                    ["Causal frames", payload["frames"]],
+                    ["Sessions", f"{payload['sessions']} total; {payload['complete_sessions']} complete"],
+                    ["Dataset hash", payload["dataset_hash"]],
+                ],
+                args.width,
+            )
+        )
+        print()
+        print(
+            format_table(
+                ["Gate", "Status", "Observed", "Requirement"],
+                [
+                    [
+                        check["name"],
+                        "PASS" if check["passed"] else "FAIL",
+                        check["observed"],
+                        check["requirement"],
+                    ]
+                    for check in payload["checks"]
+                ],
+                args.width,
+            )
+        )
+        print(
+            "\nINPUT READY" if payload["input_ready"] else "\nINPUT NOT READY - do not run Evidence Lab on this range."
+        )
+    return 0 if payload["input_ready"] else 1
+
+
+def command_data_runtime_trace_manifest_template(args: argparse.Namespace) -> int:
+    """Print a range-bound template; never save it or touch the holdout ledger."""
+
+    bundle, row_count = _load_runtime_trace_from_data_args(args, include_manifest=False)
+    _json(
+        runtime_trace_manifest_template(
+            bundle,
+            row_count,
+            range_start=args.start,
+            range_end=args.end,
+        )
+    )
+    return 0
+
+
 def command_sandbox_run(args: argparse.Namespace) -> int:
     config = _config_from_args(args)
     bundle = asyncio.run(_bundle_from_args(args, config))
@@ -887,6 +1168,64 @@ def command_glossary(args: argparse.Namespace) -> int:
     return 0
 
 
+def command_plans(args: argparse.Namespace) -> int:
+    entitlement = current_entitlement()
+    upgrade_url = configured_upgrade_url()
+    plans = [
+        {
+            **asdict(plan),
+            "features": [asdict(feature) for feature in plan.features],
+        }
+        for plan in PRODUCT_PLANS
+    ]
+    payload = {
+        "current_entitlement": asdict(entitlement),
+        "plans": plans,
+        "upgrade_information": {
+            "configured": bool(upgrade_url),
+            "url": upgrade_url,
+            "checkout": False,
+        },
+        "never_paywalled": (
+            "Evidence, provenance, risk, stop, privacy, and per-order consent controls"
+        ),
+    }
+    if args.json:
+        _json(payload)
+        return 0
+
+    rows = []
+    for plan in PRODUCT_PLANS:
+        feature_summary = "; ".join(
+            f"{feature.status.value}: {feature.label}" for feature in plan.features
+        )
+        rows.append(
+            [
+                plan.name,
+                plan.price_label,
+                "CURRENT" if plan.plan_id == entitlement.plan_id else plan.availability_label,
+                feature_summary,
+            ]
+        )
+    print("GRANDE Alpha plans")
+    print(
+        f"Current plan: {entitlement.plan_name} ($0) via {entitlement.source}; "
+        "no checkout or paid entitlement backend."
+    )
+    print()
+    print(format_table(["Plan", "Price", "Status", "Features"], rows, args.width))
+    print()
+    print(
+        "Never paywalled: evidence, provenance, risk, stop, privacy, and per-order consent controls."
+    )
+    print(
+        f"Pro information: {upgrade_url} (information only; not checkout)"
+        if upgrade_url
+        else "Pro information: no URL configured; Pro remains coming soon."
+    )
+    return 0
+
+
 def _output_options(parser: argparse.ArgumentParser, *, compact: bool = False) -> None:
     parser.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
     parser.add_argument("--width", type=int, help="Wrap the table to this terminal width")
@@ -894,19 +1233,67 @@ def _output_options(parser: argparse.ArgumentParser, *, compact: bool = False) -
         parser.add_argument("--compact", action="store_true", help="Hide per-failure guidance")
 
 
-def _source_options(parser: argparse.ArgumentParser) -> None:
+def _trading_date_arg(raw: str) -> date:
+    try:
+        return date.fromisoformat(raw)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("expected an ISO trading date in YYYY-MM-DD form") from exc
+
+
+def _runtime_trace_options(
+    parser: argparse.ArgumentParser,
+    *,
+    allow_manifest: bool,
+    require_range: bool = False,
+) -> None:
+    parser.add_argument("--database", type=Path, required=True, help="GRANDE Alpha SQLite quote ledger")
+    parser.add_argument("--bar-seconds", type=int, choices=range(1, 301), default=5)
+    parser.add_argument(
+        "--session",
+        choices=("regular_hours", "extended_hours", "all_day_hours"),
+        default="regular_hours",
+    )
+    parser.add_argument(
+        "--start",
+        type=_trading_date_arg,
+        required=require_range,
+        help="Inclusive first trading date (YYYY-MM-DD)",
+    )
+    parser.add_argument(
+        "--end",
+        type=_trading_date_arg,
+        required=require_range,
+        help="Inclusive last trading date (YYYY-MM-DD)",
+    )
+    if allow_manifest:
+        parser.add_argument("--manifest", type=Path, help="Completed range-bound runtime-trace manifest")
+
+
+def _source_options(
+    parser: argparse.ArgumentParser,
+    *,
+    allow_runtime_trace: bool = False,
+) -> None:
+    source_choices = ["demo", "csv", "remote", "full-daily"]
+    if allow_runtime_trace:
+        source_choices.insert(2, "runtime-trace")
     parser.add_argument(
         "--source",
-        choices=("demo", "csv", "remote", "full-daily"),
+        choices=tuple(source_choices),
         default="demo",
         help="Research dataset source; demo is deterministic and never promotion-eligible",
     )
     parser.add_argument("--days", type=int, help="Calendar lookback")
     parser.add_argument("--csv", type=Path, help="Aligned QQQ/TQQQ/SQQQ CSV")
+    if allow_runtime_trace:
+        parser.add_argument("--database", type=Path, help="SQLite quote ledger for --source runtime-trace")
+        parser.add_argument("--bar-seconds", type=int, choices=range(1, 301), default=5)
+        parser.add_argument("--start", type=_trading_date_arg, help="Inclusive runtime-trace start date")
+        parser.add_argument("--end", type=_trading_date_arg, help="Inclusive runtime-trace end date")
     parser.add_argument(
         "--manifest",
         type=Path,
-        help="Provenance manifest; mandatory and fully validated for CSV Evidence Lab runs",
+        help="Provenance manifest; mandatory for CSV and runtime-trace Evidence Lab runs",
     )
     parser.add_argument("--interval", default="1m", help="CSV or remote interval, such as 5s, 1m, 5m, 60m")
     parser.add_argument("--acknowledge-community-data", action="store_true")
@@ -951,7 +1338,7 @@ def build_parser() -> argparse.ArgumentParser:
     _output_options(evidence_show, compact=True)
     evidence_show.set_defaults(func=command_evidence_show)
     evidence_run = evidence_commands.add_parser("run", help="Run and record the shared evidence pipeline")
-    _source_options(evidence_run)
+    _source_options(evidence_run, allow_runtime_trace=True)
     evidence_run.add_argument("--failures-only", action="store_true")
     _output_options(evidence_run, compact=True)
     evidence_run.set_defaults(func=command_evidence_run)
@@ -987,6 +1374,32 @@ def build_parser() -> argparse.ArgumentParser:
     data_template.add_argument("--target-interval", default="5s")
     data_template.set_defaults(func=command_data_manifest_template)
 
+    runtime_trace = data_commands.add_parser(
+        "runtime-trace",
+        help="Audit or describe a synchronized runtime quote trace without broker access",
+    )
+    runtime_trace_commands = runtime_trace.add_subparsers(
+        dest="runtime_trace_command",
+        required=True,
+    )
+    runtime_trace_audit = runtime_trace_commands.add_parser(
+        "audit",
+        help="Audit one inclusive trace range read-only",
+    )
+    _runtime_trace_options(runtime_trace_audit, allow_manifest=True)
+    _output_options(runtime_trace_audit)
+    runtime_trace_audit.set_defaults(func=command_data_runtime_trace_audit)
+    runtime_trace_template = runtime_trace_commands.add_parser(
+        "manifest-template",
+        help="Print a range-bound rights/provenance template without writing a file",
+    )
+    _runtime_trace_options(
+        runtime_trace_template,
+        allow_manifest=False,
+        require_range=True,
+    )
+    runtime_trace_template.set_defaults(func=command_data_runtime_trace_manifest_template)
+
     sandbox = commands.add_parser("sandbox", help="Run a broker-isolated virtual replay")
     sandbox_commands = sandbox.add_subparsers(dest="sandbox_command", required=True)
     sandbox_run = sandbox_commands.add_parser("run", help="Run a virtual sandbox replay")
@@ -1011,6 +1424,12 @@ def build_parser() -> argparse.ArgumentParser:
     glossary.add_argument("query", nargs="?")
     _output_options(glossary)
     glossary.set_defaults(func=command_glossary)
+
+    plans = commands.add_parser(
+        "plans", help="Show the free Community entitlement and truthful Pro roadmap"
+    )
+    _output_options(plans)
+    plans.set_defaults(func=command_plans)
     return parser
 
 

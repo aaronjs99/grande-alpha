@@ -1,35 +1,33 @@
 # Live-pilot activation and external gates
 
-The v0.15 live-pilot path is integrated, but it is **not currently eligible for directional live
-trading**. Integration means the safety workflow exists and is testable; it does not mean a strategy
-has positive evidence, legal clearance, provider approval for distribution, or a profit expectation.
+The current live-pilot paths are integrated, but the **autonomous strategy path is not currently
+eligible for directional trading**. Integration means the safety workflow exists and is testable; it
+does not mean a strategy has positive evidence, legal clearance, provider approval for distribution,
+or a profit expectation.
 
 The current Robinhood order-review tool contract requires the exact reviewed ticket and market
-disclosure to be presented for explicit confirmation before each placement. The app's same-day
-bounded grant does not satisfy that later per-order confirmation. Autonomous placement therefore
-remains machine-blocked unless a compliant per-order confirmation flow is implemented or Robinhood
-provides written clarification that expressly covers this exact session-authority design.
+disclosure to be presented for explicit confirmation before each placement. The desktop now has a
+separate [supervised experimental mode](SUPERVISED_EXPERIMENTAL.md) that enforces that confirmation
+for every ticket. That attended mode does not convert the strategy to `LIVE_REVIEW_ELIGIBLE` and does
+not unlock autonomous placement. The original autonomous path remains machine-blocked by its
+evidence and runtime-parity requirements.
 
-## Current stop state
-
-As of August 11, 2026:
+## Current release state
 
 - the installed runtime defaults to deterministic **CASH / hold**, which requests no TQQQ or SQQQ
   position;
 - `RUNTIME_SIZING_PARITY_CERTIFIED` is `false`, so a non-cash candidate cannot obtain a valid
   directional live certificate;
-- the sealed final holdout has not established a positive deployable result, and monitored forward
-  shadow evidence is still required; and
-- the latest local noninteractive regular-session check authenticated to exactly one active Agentic
-  cash account, found no real positions or nonterminal orders, and passed the strict exact-symbol,
-  venue-timestamp freshness, and batch-skew checks for QQQ/TQQQ/SQQQ. The structural read-only
-  boundary reported zero broker write calls. Re-run this check at every future activation time.
+- this release bundles no user-specific certificate or proof of a positive deployable result; each
+  operator must run the read-only broker preflight and evaluate evidence for their exact installation.
 
-Therefore, do not represent the app as profitable, live-ready, or approved to trade directionally.
-The correct runtime decision remains CASH or shadow-only research. A directional candidate must first
-pass the development gates, the one-use final holdout, sizing parity, and a monitored forward-shadow
-period with positive after-cost evidence. Passing those gates would permit a separate live review; it
-would not guarantee future profit.
+Therefore, do not represent the app or any strategy as profitable, recommended, or autonomous-live
+ready. The evidence-gated autonomous runtime decision remains CASH or shadow-only research. An
+autonomous directional candidate must first pass the development gates, the one-use final holdout,
+sizing parity, and a monitored forward-shadow period with positive after-cost evidence. Passing those
+gates would permit a separate autonomous review; it would not guarantee future profit. The supervised
+experimental route is different: it permits only attended, hard-capped, individually confirmed broker
+tickets and is not evidence of an edge or a recommendation.
 
 Activation evidence must use policy v13, runtime-observation schema v2, quote-batch schema v2,
 and exact quote validator v2. Policy-v12 receipts and validator-v1 traces predate durable bid/ask
@@ -37,8 +35,7 @@ book clocks and are intentionally stale; they cannot unlock live review.
 
 ## If the local OAuth session is revoked
 
-The latest check authenticated successfully. If a future check reports that the credential was
-revoked, do not repeatedly retry it.
+If a check reports that the credential was revoked, do not repeatedly retry it.
 
 1. Revoke local authority so no new request can be authorized. If GRANDE Alpha reports an owned open
    or unresolved order, use **STOP + CANCEL**, inspect its exact preview, explicitly confirm the
@@ -61,8 +58,8 @@ revoked, do not repeatedly retry it.
 The pilot supports **regular market hours and GFD orders only**. Extended-hours, overnight, or GTC
 live authority is rejected even if those routes are available in research views.
 
-One deliberate **Authorize & Start Live Session** action inside the regular-session entry window
-creates and starts one bounded authority for the same Eastern calendar day. The live signal pipeline
+One deliberate **Authorize & Start Supervised Session** action inside the regular-session entry
+window creates and starts one bounded authority for the same Eastern calendar day. The live signal pipeline
 is reset at that moment, so premarket and pre-start observations cannot warm the candidate. The grant
 binds exactly one active Robinhood Agentic account, both
 TQQQ and SQQQ, the current strategy fingerprint, the regular-hours/GFD route, expiry, and numeric
@@ -73,18 +70,21 @@ Pause/resume may continue the same still-valid grant but cannot extend or alter 
 There is **no automatic live schedule**. The optional Windows scheduled task starts read-only live
 shadow only and cannot authorize, review, place, or cancel orders.
 
-Before authority is created—and again before autonomous start—the app requires:
+Before either bounded authority is created—and again before live strategy start—the app requires:
 
 - the exact connected Agentic account to be active and freshly reconciled;
 - zero real TQQQ/SQQQ position and zero nonterminal Agentic orders;
 - no durable or in-memory unresolved placement outcome;
 - positive broker-reported account value and buying power;
 - exact QQQ, TQQQ, and SQQQ quotes, with matching symbols, valid prices, bounded timestamp skew, and
-  age within the grant's quote-age cap; and
-- a current evidence certificate for the exact candidate, cadence, route, settlement/sizing contract,
-  and requested risk envelope.
+  age within the grant's quote-age cap.
 
-Any failed preflight leaves real-order automation locked.
+The **autonomous evidence-gated** path additionally requires a current certificate for the exact
+candidate, cadence, route, settlement/sizing contract, and requested risk envelope. The **supervised
+experimental** path does not claim that certificate; it remains attended, hard-capped, and requires a
+fresh exact confirmation for every reviewed order.
+
+Any failed preflight leaves the relevant real-order path locked.
 
 ## Daily budgets survive restart
 
@@ -153,16 +153,17 @@ Stale/missing quotes, broker warnings, an ineligible route, or unresolved order 
 closed. Never bypass a lock because a weekday or locally calculated session says the market should
 be open. Robinhood and the relevant venue remain authoritative.
 
-## F-1 and public-product release gates
+## Jurisdiction and public-product release gates
 
-For this user's F-1 circumstances, live automated trading and commercialization remain externally
-blocked until both the UCLA Designated School Official and qualified U.S. immigration counsel review
-the exact facts and provide applicable guidance. The in-app attestation is not immigration clearance.
-Start with the UCLA Dashew Center's
-[F-1 counselor contact page](https://internationalcenter.ucla.edu/contact-us) and the federal
-[SEVP employment guidance](https://www.ice.gov/sevis/employment). Do not infer that personal trading,
-software development, selling software, subscriptions, managed accounts, or other monetization share
-the same immigration treatment.
+Live automated trading and commercial distribution can raise different account-eligibility, legal,
+tax, employment, residency, sanctions, licensing, and business questions for different operators and
+jurisdictions. GRANDE Alpha does not infer these facts and cannot determine the answer. The in-app
+attestation is a consent checkpoint, not professional advice or clearance. Operators and distributors
+must obtain guidance applicable to their exact circumstances before proceeding.
+
+Distributors may expose official local references in **Live Readiness** with the documented
+`GRANDE_ALPHA_EXTERNAL_GUIDANCE_LINKS` setting. Those links remain informational and must not be
+presented as an app-issued approval.
 
 Before distributing a public product that connects to Robinhood or exposing a Robinhood-backed API,
 obtain written Robinhood approval that expressly covers the intended product, users, order flow,

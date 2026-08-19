@@ -176,7 +176,7 @@ acceptable, and no unresolved control failure occurred. Reduce size or stop if t
 
 ## What “success” means for a first evaluation
 
-For the next shadow-only engineering session, success is not a target dollar profit. It is:
+For a monitored shadow-only engineering session, success is not a target dollar profit. It is:
 
 - Robinhood and app data matched;
 - no real-order session was authorized and no real order was submitted;
