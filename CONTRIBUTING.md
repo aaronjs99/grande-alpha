@@ -1,6 +1,9 @@
 # Contributing
 
-Contributions are welcome after a public repository and issue tracker are selected.
+Contributions are welcome through the public
+[GitHub issue tracker](https://github.com/aaronjs99/grande-alpha/issues) and pull requests. Search
+existing issues before opening a new one, and use the support and security channels for their
+respective scopes.
 
 ## Development
 

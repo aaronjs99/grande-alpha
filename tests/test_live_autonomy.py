@@ -23,6 +23,8 @@ from grande_alpha.models import (
     BrokerExecution,
     BrokerOrder,
     LiveGrant,
+    OrderConfirmationDecision,
+    OrderConfirmationRequest,
     OrderIntent,
     OrderReview,
     Portfolio,
@@ -32,6 +34,7 @@ from grande_alpha.models import (
     Signal,
 )
 from grande_alpha.storage import AuditStore
+from grande_alpha.ui.dialogs import OrderConfirmationDialog
 from grande_alpha.ui.main_window import MainWindow
 
 NOW = datetime(2026, 8, 11, 15, 0, tzinfo=UTC)  # Tuesday, 11:00 AM ET.
@@ -40,6 +43,17 @@ ACCOUNT_NUMBER = "123456789"
 
 def _account(number: str = ACCOUNT_NUMBER) -> Account:
     return Account(number, "Agentic", "cash", True, "active")
+
+
+async def _accept_reviewed_order(
+    request: OrderConfirmationRequest,
+) -> OrderConfirmationDecision:
+    return OrderConfirmationDecision(
+        preview_id=request.preview_id,
+        accepted=True,
+        typed_phrase=request.confirmation_phrase,
+        confirmed_at=request.requested_at,
+    )
 
 
 def _quotes(timestamp: datetime = NOW) -> dict[str, Quote]:
@@ -284,7 +298,12 @@ def _controller(
         no_trade_open_minutes=0,
         no_trade_close_minutes=0,
     )
-    controller = TradingController(active_broker, config, store)
+    controller = TradingController(
+        active_broker,
+        config,
+        store,
+        order_confirmer=_accept_reviewed_order,
+    )
     controller.snapshot.connected = True
     controller.snapshot.account = _account()
     controller.snapshot.portfolio = active_broker.portfolio
@@ -455,6 +474,51 @@ async def test_manual_flatten_ui_shows_exact_reviewed_estimate_and_verbatim_disc
     store.close()
 
 
+def test_strategy_order_dialog_is_exact_one_use_and_safe_default() -> None:
+    _qt_app()
+    intent = _intent("preview-dialog-ref")
+    review = OrderReview(
+        intent,
+        "PROVIDER VERBATIM: market prices can move.",
+        {},
+        _quotes()["TQQQ"],
+        {},
+    )
+    request = OrderConfirmationRequest(
+        account_number=ACCOUNT_NUMBER,
+        account_masked=_account().masked,
+        intent=intent,
+        review=review,
+        authority_id="authority-preview",
+        strategy_fingerprint="a" * 64,
+        requested_at=NOW,
+        expires_at=NOW + timedelta(seconds=30),
+    )
+
+    dialog = OrderConfirmationDialog(request)
+
+    preview = dialog.details.toPlainText()
+    assert f"Account: {_account().masked} (ending 6789)" in preview
+    assert "Symbol: TQQQ" in preview
+    assert "Side: BUY" in preview
+    assert "Dollar amount: $10.00" in preview
+    assert "Order type: market" in preview
+    assert "Market hours: regular_hours" in preview
+    assert "Time in force: gfd" in preview
+    assert "Limit price: none (market order)" in preview
+    assert "Estimated order value: $10.00" in preview
+    assert "Session authority: authority-preview" in preview
+    assert f"Strategy fingerprint: {'a' * 64}" in preview
+    assert f"Preview id: {request.preview_id}" in preview
+    assert dialog.disclosure.toPlainText() == "PROVIDER VERBATIM: market prices can move."
+    assert dialog.cancel_button.isDefault()
+    assert not dialog.confirm_button.isEnabled()
+
+    dialog.confirmation.setText(request.confirmation_phrase)
+    assert dialog.confirm_button.isEnabled()
+    dialog.close()
+
+
 @pytest.mark.asyncio
 async def test_multiple_active_agentic_accounts_fail_connection(tmp_path) -> None:
     broker = DeterministicBroker()
@@ -472,6 +536,239 @@ async def test_multiple_active_agentic_accounts_fail_connection(tmp_path) -> Non
     assert broker.connect_calls == 1
     assert not controller.snapshot.connected
     assert controller.snapshot.account is None
+    store.close()
+
+
+@pytest.mark.asyncio
+async def test_strategy_submission_fails_closed_without_per_order_confirmation(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    controller, broker, store, grant = _controller(
+        tmp_path,
+        monkeypatch,
+        name="confirmation-unavailable",
+    )
+    controller.set_order_confirmer(None)
+    controller.authorize_live(grant)
+    controller.start_strategy()
+    intent = _intent("confirmation-unavailable-ref")
+
+    assert await controller._submit(intent, controller.snapshot.quotes["TQQQ"]) is None
+
+    assert broker.review_calls == [intent.ref_id]
+    assert broker.place_calls == []
+    assert controller.risk.grant is None
+    assert not controller.snapshot.strategy_running
+    receipts = store.recent_receipts()
+    assert any(row["category"] == "order_review" for row in receipts)
+    assert not any(row["category"] == "order_confirmation_consumed" for row in receipts)
+    store.close()
+
+
+@pytest.mark.asyncio
+async def test_declined_strategy_ticket_places_nothing_and_session_can_continue(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen: list[OrderConfirmationRequest] = []
+
+    async def decline(request: OrderConfirmationRequest) -> OrderConfirmationDecision:
+        seen.append(request)
+        return OrderConfirmationDecision(
+            preview_id=request.preview_id,
+            accepted=False,
+            typed_phrase="",
+            confirmed_at=request.requested_at,
+        )
+
+    controller, broker, store, grant = _controller(
+        tmp_path,
+        monkeypatch,
+        name="confirmation-declined",
+    )
+    controller.set_order_confirmer(decline)
+    controller.authorize_live(grant)
+    controller.start_strategy()
+    intent = _intent("confirmation-declined-ref")
+
+    assert await controller._submit(intent, controller.snapshot.quotes["TQQQ"]) is None
+
+    assert len(seen) == 1
+    assert seen[0].intent == intent
+    assert seen[0].review.intent == intent
+    assert seen[0].account_number == ACCOUNT_NUMBER
+    assert seen[0].confirmation_phrase == "PLACE BUY $10.00 TQQQ ON 6789"
+    assert broker.place_calls == []
+    assert controller.risk.grant is grant
+    assert controller.snapshot.strategy_running
+    decision = next(
+        row for row in store.recent_receipts() if row["category"] == "order_confirmation_decision"
+    )
+    assert json.loads(decision["payload_json"])["accepted"] is False
+    store.close()
+
+
+@pytest.mark.asyncio
+async def test_confirmed_strategy_ticket_is_bound_consumed_and_then_placed(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen: list[OrderConfirmationRequest] = []
+
+    async def confirm(request: OrderConfirmationRequest) -> OrderConfirmationDecision:
+        seen.append(request)
+        return OrderConfirmationDecision(
+            preview_id=request.preview_id,
+            accepted=True,
+            typed_phrase=request.confirmation_phrase,
+            confirmed_at=request.requested_at,
+        )
+
+    controller, broker, store, grant = _controller(
+        tmp_path,
+        monkeypatch,
+        name="confirmation-accepted",
+    )
+    controller.set_order_confirmer(confirm)
+    controller.authorize_live(grant)
+    controller.start_strategy()
+    intent = _intent("confirmation-accepted-ref")
+
+    order = await controller._submit(intent, controller.snapshot.quotes["TQQQ"])
+
+    assert order is not None
+    assert len(seen) == 1
+    assert len(seen[0].preview_id) == 64
+    assert broker.review_calls == [intent.ref_id]
+    assert broker.place_calls == [intent.ref_id]
+    receipts = store.recent_receipts()
+    consumed = next(row for row in receipts if row["category"] == "order_confirmation_consumed")
+    assert json.loads(consumed["payload_json"])["preview_id"] == seen[0].preview_id
+    store.close()
+
+
+@pytest.mark.asyncio
+async def test_supervised_experimental_authority_is_distinct_and_hard_capped(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    controller, _broker, store, grant = _controller(
+        tmp_path,
+        monkeypatch,
+        name="supervised-experimental-authority",
+    )
+    monkeypatch.setattr(controller, "live_evidence_ready", lambda grant=None: False)
+    supervised_grant = replace(
+        grant,
+        max_order_notional=10.0,
+        max_daily_notional=50.0,
+        max_total_exposure=40.0,
+    )
+
+    controller.authorize_supervised_experimental(supervised_grant)
+    controller.start_strategy()
+
+    assert controller.authority_mode == "supervised_experimental"
+    assert controller.snapshot.strategy_running
+    controller._revoke_live_automation("test complete")
+
+    oversized = replace(supervised_grant, max_order_notional=10.01)
+    with pytest.raises(RuntimeError, match=r"capped at \$10\.00"):
+        controller.authorize_supervised_experimental(oversized)
+    store.close()
+
+
+@pytest.mark.asyncio
+async def test_review_with_stale_one_side_book_clock_never_reaches_confirmation(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    controller, broker, store, grant = _controller(
+        tmp_path,
+        monkeypatch,
+        name="confirmation-stale-one-side",
+    )
+    confirmations: list[OrderConfirmationRequest] = []
+
+    async def should_not_confirm(request: OrderConfirmationRequest) -> OrderConfirmationDecision:
+        confirmations.append(request)
+        return await _accept_reviewed_order(request)
+
+    async def stale_review(_account_number: str, intent: OrderIntent) -> OrderReview:
+        quote = replace(
+            broker.quotes[intent.symbol],
+            bid_timestamp=NOW - timedelta(seconds=9),
+            ask_timestamp=NOW,
+        )
+        return OrderReview(intent, "verbatim", {}, quote, {})
+
+    controller.set_order_confirmer(should_not_confirm)
+    monkeypatch.setattr(broker, "review_order", stale_review)
+    controller.authorize_live(grant)
+    controller.start_strategy()
+
+    assert await controller._submit(
+        _intent("stale-one-side-ref"), controller.snapshot.quotes["TQQQ"]
+    ) is None
+    assert confirmations == []
+    assert broker.place_calls == []
+    assert controller.risk.grant is None
+    store.close()
+
+
+@pytest.mark.asyncio
+async def test_expired_order_confirmation_places_nothing_and_session_continues(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    controller, broker, store, grant = _controller(
+        tmp_path,
+        monkeypatch,
+        name="confirmation-expired",
+    )
+
+    async def expire(request: OrderConfirmationRequest) -> OrderConfirmationDecision:
+        monkeypatch.setattr(controller_module, "utc_now", lambda: NOW + timedelta(seconds=31))
+        return await _accept_reviewed_order(request)
+
+    controller.set_order_confirmer(expire)
+    controller.authorize_live(grant)
+    controller.start_strategy()
+
+    assert await controller._submit(
+        _intent("confirmation-expired-ref"), controller.snapshot.quotes["TQQQ"]
+    ) is None
+    assert broker.place_calls == []
+    assert controller.risk.grant is grant
+    assert controller.snapshot.strategy_running
+    store.close()
+
+
+@pytest.mark.asyncio
+async def test_post_confirmation_price_drift_requires_a_new_preview(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    controller, broker, store, grant = _controller(
+        tmp_path,
+        monkeypatch,
+        name="confirmation-price-drift",
+    )
+
+    async def confirm_then_move(request: OrderConfirmationRequest) -> OrderConfirmationDecision:
+        broker.quotes["TQQQ"] = Quote("TQQQ", 50.19, 50.21, 50.20, NOW, NOW, NOW)
+        return await _accept_reviewed_order(request)
+
+    controller.set_order_confirmer(confirm_then_move)
+    controller.authorize_live(grant)
+    controller.start_strategy()
+
+    assert await controller._submit(
+        _intent("confirmation-drift-ref"), controller.snapshot.quotes["TQQQ"]
+    ) is None
+    assert broker.place_calls == []
+    assert controller.risk.grant is grant
+    receipt = next(
+        row
+        for row in store.recent_receipts()
+        if row["category"] == "order_confirmation"
+        and "changed materially" in row["summary"]
+    )
+    assert json.loads(receipt["payload_json"])["broker_write_attempted"] is False
     store.close()
 
 
@@ -569,7 +866,7 @@ def test_live_authority_and_readiness_reject_limit_route_even_with_regular_gfd(
     grant = replace(draft, strategy_fingerprint=controller.current_strategy_fingerprint(draft))
 
     readiness = {row["gate"]: row for row in controller.live_readiness()}
-    assert readiness["Autonomous pilot route"]["status"] == "BLOCKED"
+    assert readiness["Supported real-order route"]["status"] == "BLOCKED"
     with pytest.raises(RuntimeError, match="market orders"):
         controller.authorize_live(grant)
 
@@ -1966,11 +2263,10 @@ def test_live_readiness_tab_renders_operator_gates_and_next_actions(
         "No working Agentic orders",
         "No ambiguous placements",
         "Fresh exact venue quotes",
-        "Autonomous pilot route",
+        "Supported real-order route",
         "Immutable runtime contract",
         "Runtime execution parity",
         "Positive exact evidence",
-        "F-1 / tax suitability",
     } <= rows.keys()
     assert rows["Fresh exact venue quotes"][0] == "APP CHECK"
     assert rows["Fresh exact venue quotes"][1] == "PASS"
@@ -1978,11 +2274,14 @@ def test_live_readiness_tab_renders_operator_gates_and_next_actions(
     assert rows["Runtime execution parity"][0] == "APP GATE"
     assert rows["Runtime execution parity"][1] == "BLOCKED"
     assert "execution_timing_and_fill_economics" in rows["Runtime execution parity"][2]
-    assert rows["F-1 / tax suitability"][0] == "EXTERNAL REVIEW"
-    assert rows["F-1 / tax suitability"][1] == "USER ACTION"
-    assert "UCLA DSO" in rows["F-1 / tax suitability"][3]
+    assert "Jurisdiction & account suitability" not in rows
+    assert "does not collect or certify jurisdiction" in (
+        window.activation_widget.external_resources.text()
+    )
     assert "structurally read-only" in window.activation_widget.mode_notice.text().lower()
-    assert "separate, bounded" in window.activation_widget.summary.text().lower()
+    readiness_summary = window.activation_widget.summary.text().lower()
+    assert "hard-capped supervised" in readiness_summary
+    assert "evidence-gated autonomous" in readiness_summary
 
     window._closing_after_cleanup = True
     window.close()
@@ -2158,7 +2457,7 @@ async def test_restart_reconciliation_rejects_order_predating_durable_submission
     store.close()
 
 
-def test_authorize_and_start_is_one_click_with_exact_operator_label(
+def test_authorize_and_start_prefers_evidence_route_with_exact_operator_label(
     tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _qt_app()
@@ -2186,21 +2485,20 @@ def test_authorize_and_start_is_one_click_with_exact_operator_label(
             return expected_grant
 
     monkeypatch.setattr(main_window_module, "LiveGrantDialog", AcceptingGrantDialog)
-    monkeypatch.setattr(
-        controller,
-        "authorize_live",
-        lambda grant: calls.append(("authorize", grant)),
-    )
+    monkeypatch.setattr(controller, "authorize_live", lambda grant: calls.append(("authorize", grant)))
     monkeypatch.setattr(
         controller,
         "start_strategy",
         lambda: calls.append(("start", None)),
     )
 
-    assert window.authorize_button.text().replace("&&", "&") == "Authorize & Start Live Session"
+    assert (
+        window.authorize_button.text().replace("&&", "&")
+        == "Authorize & Start Evidence-Gated Session"
+    )
     assert (
         window.authorize_action.text().replace("&&", "&").removesuffix("…")
-        == "Authorize & Start Live Session"
+        == "Authorize & Start Evidence-Gated Session"
     )
     assert window.authorize_button.isEnabled()
     window.authorize_button.click()

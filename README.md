@@ -2,16 +2,24 @@
 
 GRANDE Alpha is a local-first Windows desktop workstation for researching leveraged-ETF strategies. It starts in research mode, provides deterministic and historical replay for synthetic `TQQQS`/`SQQQS` instruments, and keeps broker access and real-order controls behind separate, revocable permissions.
 
-> Community preview: this software is experimental, provides no investment advice, and cannot promise profit. Leveraged and inverse ETFs seek daily objectives; results over longer periods can differ materially. You can lose the entire amount traded.
+> Community plan: the current local product costs $0 and is functional without an account, payment,
+> checkout, or entitlement server. Pro is a clearly labeled coming-soon direction for convenience and
+> scale; no paid activation exists in this release. This software is experimental, provides no
+> investment advice, and cannot promise profit. Leveraged and inverse ETFs seek daily objectives;
+> results over longer periods can differ materially. You can lose the entire amount traded.
 
 GRANDE Alpha is independent software. It is not affiliated with, endorsed by, or sponsored by Robinhood Markets, Inc., ProShares, Nasdaq, or any broker, exchange, or fund sponsor.
+
+Open **Help → Plans & Upgrade** to see the active Community plan and the truthful Pro roadmap. Safety,
+evidence, provenance, privacy, and transaction-consent controls are never plan-gated. See
+[Community and Pro plans](docs/PRODUCT_PLANS.md).
 
 ## Public-safety defaults
 
 - First launch opens a disclosure-led onboarding flow; research mode is the default.
-- Broker access, remote community market data, the optional personal ledger, and real-order controls are independent opt-ins.
+- Broker access, remote community market data, the optional capital planning ledger, and real-order controls are independent opt-ins.
 - Broker OAuth credentials are stored through the operating-system credential vault, never in project files.
-- Enabling real-order controls requires a current passing Evidence Lab certificate for the exact strategy settings plus an explicit settings phrase. Every application launch still starts locked, and each live session needs a separate typed, non-persistent authority bound to one account, ticker set, route, strategy fingerprint, Eastern-day expiry, and numeric limits. It includes visible pause/revoke controls and hash-chained action receipts; none of these controls guarantees profit.
+- The attended **supervised experimental** path uses an explicit settings phrase, a separately confirmed bounded session, hard $10/order, $50 gross-day, and $40 exposure ceilings, and a fresh exact confirmation for every broker-reviewed order. It is not autonomous and does not claim an evidence certificate. The separate autonomous path requires a current passing Evidence Lab certificate for the exact strategy and runtime contract. Every application launch starts locked; neither path guarantees profit.
 - **STOP + CANCEL** first locks new local requests and shows an exact, blocking preview of the nonterminal Agentic-account orders owned by GRANDE Alpha's durable intent ledger. It sends cancellation requests only after explicit confirmation, never includes unrelated or manually placed orders, and discloses already-pending cancellations for terminal verification without submitting them twice. Revoke, Settings disable, Disconnect, credential forgetting, and Exit do not silently cancel: they lock or refuse while GRANDE-owned open or unresolved order state remains. A confirmed cancellation can still fail during a network or provider failure and never liquidates a filled position.
 - A redacted diagnostic export is available for support. The application sends no first-party telemetry.
 - Normal and scheduled runtime default to the deterministic **CASH / hold** champion: flat signal,
@@ -66,12 +74,14 @@ that bypasses the desktop application's bounded live-session consent workflow.
 The optional adapter uses Robinhood's official Trading MCP endpoint and browser OAuth. Robinhood states that a connected third-party agent can read data across Robinhood accounts, while trading is restricted to the dedicated Agentic account. The provider consent is broader than the app's read-only diagnostic: that diagnostic never invokes order review, placement, cancellation, or watchlist tools, but the granted OAuth scope can include those capabilities. Review the current provider disclosures before opting in: <https://robinhood.com/us/en/support/articles/agentic-trading-overview/>.
 
 Scheduled shadow uses one continuously supervised read-only process. It waits outside regular equity
-sessions and retries transient provider read failures with bounded backoff during an eligible session.
+sessions, retries transient provider read failures with bounded backoff during an eligible session,
+restarts a failed foreground child with bounded backoff, and records liveness plus non-identifying
+runtime health in a local heartbeat. A clean app exit remains an off switch.
 Continuous process uptime does not mean 24/7 TQQQ/SQQQ trading and cannot grant live-order authority.
 
 ## Project status
 
-Version `0.15.1` keeps the session-scoped live-pilot safety machinery from 0.15.0 and hardens unattended read-only operation: broker polling now stays paused until OAuth/connection startup settles, nested transport errors surface their actionable leaf failure, and the hidden scheduled launcher keeps the Python supervisor as its foreground child so Task Scheduler owns the complete lifetime. The repository default champion remains deterministic **CASH / hold**, the runtime execution-parity assessment remains blocked for non-cash candidates, and no strategy currently receives live authority. These controls do not establish an edge or guarantee profit, so scheduled operation remains engineering-only read-only shadow. See the [champion selection report](docs/CHAMPION_SELECTION_2026-08-11.md), [scheduled shadow](docs/SCHEDULED_SHADOW.md), [trading sessions](docs/TRADING_SESSIONS.md), [Action Lab methodology](docs/ACTION_LAB.md), and the [public release checklist](docs/PUBLIC_RELEASE_CHECKLIST.md).
+Version `0.16.0` adds a responsive desktop layout, durable same-session virtual-shadow recovery, event-loop heartbeat and bounded scheduled-shadow restart, a fully causal runtime-trace Evidence Lab path, and a separate supervised experimental order flow capped at $10 per order with fresh confirmation for every broker preview. Autonomous live authority remains fail-closed: the runtime-parity assessment is not certified, the local trace is not evidence-ready, and no strategy is claimed profitable. The scheduled path remains broker-write-blocked read-only shadow. See the [supervised experimental boundary](docs/SUPERVISED_EXPERIMENTAL.md), [responsive UI audit](docs/RESPONSIVE_UI_AUDIT_2026-08-19.md), [Evidence Lab](docs/EVIDENCE_LAB.md), [scheduled shadow](docs/SCHEDULED_SHADOW.md), and the [public release checklist](docs/PUBLIC_RELEASE_CHECKLIST.md).
 
 ## Contributing and support
 

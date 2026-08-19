@@ -32,7 +32,7 @@ TERM_HELP: dict[str, str] = {
     "Authorized time in force": "How long submitted limit orders may remain active during this session.",
     "Base spread": "The fixed bid-ask spread charged to every modeled sandbox fill, measured in basis points.",
     "Breakout buffer": "Extra distance beyond an opening range required before the strategy treats it as a breakout.",
-    "Broker fees": "Explicit brokerage or execution fees deducted from a personal research-fund calculation.",
+    "Broker fees": "Explicit brokerage or execution fees deducted from a capital-planning calculation.",
     "Buying power": "Broker-reported cash or purchasing capacity currently available to the selected account.",
     "Calendar lookback": (
         "Calendar days requested from the data source. Weekends and holidays mean fewer market sessions."
@@ -42,7 +42,7 @@ TERM_HELP: dict[str, str] = {
     "Completed analysis bar": (
         "Length of each completed causal price bar used to update the signal. It must match qualifying evidence data."
     ),
-    "Contribution rate": "Percentage of eligible personal profit reserved for the optional planning ledger.",
+    "Contribution rate": "Percentage of eligible realized profit recorded in the optional planning ledger.",
     "Daily loss pause": "Session loss threshold that prevents new virtual entries after it is reached.",
     "Eligible contribution": (
         "Calculated planning amount after fees and tax reserve. GRANDE Alpha never transfers this money."
@@ -103,7 +103,7 @@ TERM_HELP: dict[str, str] = {
         "Current command for TQQQ and SQQQ: -1 sell, 0 hold, or +1 buy. Inventory and risk masks can block a command."
     ),
     "Pause after losses": "Number of consecutive losing exits that pauses new virtual entries.",
-    "Period (YYYY-MM)": "Month assigned to an optional personal research-fund planning entry.",
+    "Period (YYYY-MM)": "Month assigned to an optional capital-planning entry.",
     "Preset": "A named starting configuration. Applying it replaces the visible sandbox parameters.",
     "Provenance manifest": (
         "Sidecar metadata declaring a dataset's source, license, timezone, session, interval, and "

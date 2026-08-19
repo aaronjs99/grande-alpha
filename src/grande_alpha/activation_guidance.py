@@ -27,7 +27,8 @@ ACTIVATION_GUIDANCE: dict[str, ActivationGuidance] = {
         destination="inspect",
         next_action=(
             "Use scheduled auto-shadow only for observations and virtual fills. It cannot become live; "
-            "after all gates pass, launch normal GRANDE Alpha for a separate same-day review."
+            "launch normal GRANDE Alpha for attended supervised review after its shared checks, or for "
+            "autonomous review only after every evidence and runtime gate passes."
         ),
         explanation="The scheduled process is wrapped in a broker facade that blocks every order method.",
     ),
@@ -41,13 +42,18 @@ ACTIVATION_GUIDANCE: dict[str, ActivationGuidance] = {
         explanation="Connecting broker data is an optional capability that requires your consent.",
     ),
     "Real-order capability": ActivationGuidance(
-        owner="APP GATE",
-        destination="evidence",
+        owner="YOU",
+        destination="settings",
         next_action=(
-            "Leave this locked. First earn Positive exact evidence and runtime parity for the selected "
-            "candidate. Only then can Settings offer a separate typed capability review."
+            "Open Settings & Permissions only if you deliberately want attended supervised tickets. "
+            "Enabling the capability grants no session authority: the hard-capped session is reviewed "
+            "separately and every broker preview requires a fresh typed confirmation. Autonomous use "
+            "still requires exact evidence and runtime parity."
         ),
-        explanation="The app must not turn evidence failure into a user-overridable checkbox.",
+        explanation=(
+            "This user-controlled capability exposes only the supervised per-order path; it cannot "
+            "override autonomous evidence or create standing authority."
+        ),
     ),
     "Exact Agentic account": ActivationGuidance(
         owner="APP + YOU",
@@ -103,16 +109,18 @@ ACTIVATION_GUIDANCE: dict[str, ActivationGuidance] = {
         ),
         explanation="The app can repeat this read-only quote check; it cannot manufacture freshness.",
     ),
-    "Autonomous pilot route": ActivationGuidance(
+    "Supported real-order route": ActivationGuidance(
         owner="YOU",
         destination="settings",
         next_action=(
             "Open Settings and click Apply bounded pilot settings to preview Regular market, Market order, "
-            "GFD, and cash T+1. In Research Sandbox keep Extra latency at 0 bars for this pilot. Review, "
-            "explicitly Save, then rerun Evidence Lab because route or latency changes alter the exact "
-            "candidate fingerprint."
+            "GFD, and cash T+1. Review and explicitly Save. Evidence-gated autonomy must also keep Research "
+            "Sandbox Extra latency at 0 bars and rerun Evidence Lab because route or latency changes alter "
+            "the exact candidate fingerprint."
         ),
-        explanation="The bounded pilot accepts only its certified regular-hours/GFD route.",
+        explanation=(
+            "Both supervised tickets and evidence-gated autonomy use the bounded regular-hours/GFD route."
+        ),
     ),
     "Immutable runtime contract": ActivationGuidance(
         owner="RESEARCH",
@@ -141,15 +149,6 @@ ACTIVATION_GUIDANCE: dict[str, ActivationGuidance] = {
         ),
         explanation="A synthetic or partially passing result cannot authorize real-money automation.",
     ),
-    "F-1 / tax suitability": ActivationGuidance(
-        owner="EXTERNAL REVIEW",
-        destination="external",
-        next_action=(
-            "Obtain written guidance from the UCLA DSO and qualified U.S. immigration counsel for your exact "
-            "F-1 facts. Keep that decision outside the app; a checkbox is not legal clearance."
-        ),
-        explanation="The app cannot determine immigration, employment, tax, or personal suitability.",
-    ),
     "Live broker preflight": ActivationGuidance(
         owner="APP + YOU",
         destination="connect",
@@ -163,8 +162,9 @@ ACTIVATION_GUIDANCE: dict[str, ActivationGuidance] = {
         owner="YOU",
         destination="manual_review",
         next_action=(
-            "Only after every prior condition passes, review exact account, symbols, route, expiry, and dollar "
-            "limits in normal GRANDE Alpha and complete Authorize & Start Live Session."
+            "In normal GRANDE Alpha, review the exact account, symbols, route, expiry, and dollar limits. "
+            "A supervised session additionally requires fresh confirmation for each reviewed order; the "
+            "autonomous path requires every evidence and parity condition first."
         ),
         explanation="Authority is never stored, scheduled, or inferred from a previous session.",
     ),
@@ -199,7 +199,6 @@ def decorate_readiness(rows: Iterable[Mapping[str, Any]]) -> list[dict[str, str]
 def activation_summary(rows: Iterable[Mapping[str, Any]], *, shadow_only: bool = False) -> str:
     values = list(rows)
     passed = sum(str(row.get("status", "")) == "PASS" for row in values)
-    external = sum(str(row.get("owner", "")) == "EXTERNAL REVIEW" for row in values)
     blocked = len(values) - passed
     mode = (
         "This scheduled auto-shadow process is structurally read-only and has no live-order path. "
@@ -207,8 +206,9 @@ def activation_summary(rows: Iterable[Mapping[str, Any]], *, shadow_only: bool =
         else "Scheduled auto-shadow is structurally read-only and cannot become a live session. "
     )
     return (
-        f"{passed}/{len(values)} conditions currently pass; {blocked} still require work"
-        f"{f', including {external} external review' if external else ''}. {mode}"
-        "Passing this checklist only makes a separate, bounded authorize-and-start review available; "
-        "it never guarantees profit or grants standing authority."
+        f"{passed}/{len(values)} platform conditions currently pass; {blocked} are blocked. {mode}"
+        "Normal GRANDE Alpha may separately offer an attended, hard-capped supervised session when its "
+        "account, route, and capability checks pass; every order still requires fresh confirmation. "
+        "Runtime parity and evidence govern only evidence-gated autonomous eligibility. Neither path "
+        "guarantees profit or grants standing authority."
     )

@@ -6,7 +6,14 @@ Only the latest tagged community-preview release receives security fixes.
 
 ## Report a vulnerability
 
-Do not open a public issue containing a vulnerability, credential, account identifier, or live-order detail. Until a private security contact is published, stop using broker features, disconnect the app in Robinhood, and retain only redacted evidence. A public release is blocked until the maintainer adds a monitored private reporting address here.
+Report vulnerabilities through a
+[private GitHub Security Advisory](https://github.com/aaronjs99/grande-alpha/security/advisories/new).
+Do not open a public issue containing a vulnerability, credential, account identifier, position,
+broker receipt, or live-order detail. Do not include working credentials or unnecessary account data
+even in the private report; begin with a redacted description and coordinate any sensitive evidence
+only if a maintainer requests it. If broker safety may be affected, stop using broker features,
+disconnect the app in Robinhood when safe to do so, and verify account and order state directly with
+the broker. A private report does not guarantee response time or remediation.
 
 ## Security model
 

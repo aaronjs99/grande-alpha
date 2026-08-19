@@ -23,13 +23,34 @@ Policy-v12 receipts and validator-v1 batches are stale and cannot activate live 
 stored as `passive_unvalidated` and excluded. A stale passive snapshot cannot become eligible later
 through a rights manifest or source label.
 
-The exact clock-replay engine is available for deterministic engineering comparisons and has no
-broker dependency or order-write path. The current broad performance/evidence pipeline still
-returns generic `SandboxResult` metrics, so its `runtime_observation_replay` marker remains false.
-Consequently the new gate remains closed even when an exact trace is loaded. Truthful closure
-requires routing every sensitivity, cost-stress, walk-forward, and sealed-holdout evaluation through
-the exact causal engine and returning the canonical metrics from that path. This change does not set
-the separate global runtime-parity certification flag and does not make any profitability claim.
+The evidence service locks the whole run to one replay family. An eligible runtime trace routes the
+base candidate, every neighboring-parameter trial, 1x/2x/3x cost stress, seeded random-entry
+control, every purged walk-forward train/test fold, and the one-use final holdout through the exact
+causal engine. Those executions are summarized into the same canonical `SandboxResult` metrics and
+carry `runtime_observation_replay=true`. If any child partition loses an exact quote observation the
+run fails; it never falls back to generic OHLCV. Ordinary OHLCV continues through the generic
+sandbox and keeps the marker false, so a label or source-name change cannot pass the schema gate.
+
+Multi-session exact replay follows scheduled auto-shadow lifecycle semantics. Signal state, virtual
+capital, T+1 proceeds, and the seeded execution RNG start clean each session. Per-session P/L is
+then aggregated onto one canonical starting-capital curve for evidence statistics. A production-style
+virtual close is reproduced only when the recorded causal quote reaches the declared session close;
+a partial trace cannot invent a closing fill. Any such failure-bypassing daily flatten is counted by
+the ending-flat and holdout gates. This exact evidence path still does not set the separate global
+runtime-sizing parity certification flag and makes no profitability claim.
+
+Before any Evidence Lab run, use the dedicated range-bound audit and template commands:
+
+```powershell
+& ".\GRANDE Alpha CLI.cmd" data runtime-trace audit `
+  --database "$env:LOCALAPPDATA\GRANDEAlpha\grande_alpha.db" `
+  --bar-seconds 5 --session regular_hours `
+  --start YYYY-MM-DD --end YYYY-MM-DD --manifest "C:\data\runtime.manifest.json"
+```
+
+Audit and template commands are query-only and cannot reserve or evaluate a holdout. The explicit
+`evidence run --source runtime-trace` command requires the same range and attested manifest, rejects
+input that is not ready before opening the evidence store, and then uses the normal one-use lifecycle.
 
 The evidence lab is designed to make a promising backtest harder to fool. Its strongest outcome,
 `LIVE_REVIEW_ELIGIBLE`, creates a local, 30-day certificate for the exact strategy fingerprint.

@@ -19,7 +19,7 @@ KEYRING_SERVICE = "GRANDEAlpha.RobinhoodMCP"
 LEGACY_KEYRING_SERVICE = "MomentumTrader.RobinhoodMCP"
 CHUNKED_CREDENTIAL_PREFIX = "GRANDE_ALPHA_CREDENTIAL_V1:"
 # Windows Credential Manager limits generic credential blobs to 2,560 bytes. The Windows keyring
-# backend stores text as UTF-16, so keep each base64 (ASCII) chunk comfortably below that boundary.
+# backend stores two-byte Unicode text, so keep each base64 (ASCII) chunk below that boundary.
 CHUNK_CHARACTERS = 900
 
 

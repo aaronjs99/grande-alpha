@@ -4,7 +4,7 @@ import argparse
 import sys
 from pathlib import Path
 
-WINDOWS_APP_USER_MODEL_ID = "AaronJS.GRANDEAlpha"
+WINDOWS_APP_USER_MODEL_ID = "GRANDEAlpha.Desktop"
 
 
 def _property_store(shortcut_path: Path, *, writable: bool):

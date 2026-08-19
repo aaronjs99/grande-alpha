@@ -42,7 +42,9 @@ jobs:
       - run: python -m pip install -e ".[dev]"
       - shell: powershell
         run: .\build.ps1
-      - uses: actions/upload-artifact@v4
-        with:
-          name: GRANDEAlpha-unsigned-windows-x64
-          path: dist/GRANDEAlpha
+      - name: Audit packaged Python metadata present in the frozen tree
+        run: >-
+          python -m pip_audit --strict --progress-spinner off
+          --path dist/GRANDEAlpha/_internal
+      # Smoke-build only. Do not upload this unsigned tree from ordinary push/PR CI.
+      # Public candidate artifacts remain isolated to the manual/tag release workflow.

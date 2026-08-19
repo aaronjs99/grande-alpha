@@ -1,5 +1,7 @@
 import asyncio
 import json
+import subprocess
+import sys
 from dataclasses import replace
 from datetime import datetime, time, timedelta
 from pathlib import Path
@@ -24,6 +26,10 @@ from grande_alpha.evidence import (
     EVIDENCE_POLICY_VERSION,
     REQUIRED_LIVE_GATE_NAMES,
     strategy_fingerprint,
+)
+from grande_alpha.external_guidance import (
+    DEFAULT_EXTERNAL_GUIDANCE_LINKS,
+    external_guidance_links,
 )
 from grande_alpha.historical import (
     RUNTIME_OBSERVATION_SCHEMA,
@@ -110,7 +116,7 @@ def test_public_defaults_are_research_only() -> None:
     assert config.market_hours == "regular_hours"
     assert config.order_type == "market"
     assert config.settlement_model == "cash_t1"
-    assert __version__ == "0.15.1"
+    assert __version__ == "0.16.0"
 
 
 def test_controller_constructs_whole_share_limit_intents_from_authorized_route(tmp_path) -> None:
@@ -212,9 +218,9 @@ def test_main_window_exposes_complete_desktop_navigation(tmp_path) -> None:
     menu_titles = [action.text().replace("&", "") for action in window.menuBar().actions()]
     assert menu_titles == ["File", "View", "Broker", "Research", "Safety", "Help"]
     assert window.settings_button.text() == "Settings && Permissions"
-    assert window.minimumWidth() >= 1180
-    assert window.minimumHeight() >= 720
-    assert window.market_splitter.minimumHeight() >= 220
+    assert window.minimumWidth() <= 900
+    assert window.minimumHeight() <= 700
+    assert window.market_splitter.minimumHeight() == 170
     assert window.refresh_action.shortcut().toString() == "F5"
     assert window.full_screen_action.shortcut().toString() == "F11"
     assert window.stop_cancel_action.shortcut().toString() == "Ctrl+Shift+X"
@@ -292,17 +298,22 @@ def test_live_setting_requires_broker_and_exact_phrase() -> None:
     assert updated.broker_connection_enabled and updated.live_trading_enabled
 
 
-def test_live_setting_stays_blocked_without_passing_evidence() -> None:
+def test_supervised_live_setting_can_save_without_autonomous_evidence_on_bounded_route() -> None:
     qt_app()
     dialog = SettingsDialog(AppConfig(), live_evidence_ready=False)
     save = dialog.buttons.button(QDialogButtonBox.StandardButton.Save)
     dialog.broker.setChecked(True)
     dialog.live.setChecked(True)
     dialog.live_phrase.setText(LIVE_PHRASE)
+    assert save.isEnabled()
+    assert "AUTONOMOUS EVIDENCE  •  LOCKED" in dialog.evidence_status.text()
+    assert "SUPERVISED PER-ORDER  •  AVAILABLE" in dialog.supervised_status.text()
+    assert dialog.updated_config().live_trading_enabled
+
+    dialog.market_hours.setCurrentIndex(dialog.market_hours.findData("extended_hours"))
     assert not save.isEnabled()
-    assert "shadow-only" in dialog.validation.text()
-    assert "Uncheck real-order automation" in dialog.validation.text()
-    assert "Uncheck real-order automation" in save.toolTip()
+    assert "Regular market, Market order, GFD, and cash T+1" in dialog.validation.text()
+    assert "SUPERVISED PER-ORDER  •  ROUTE LOCKED" in dialog.supervised_status.text()
 
 
 def test_glossary_terms_are_dashed_discoverable_and_searchable() -> None:
@@ -413,6 +424,9 @@ def test_live_grant_binds_exact_scope_and_control_panel_exposes_pause_revoke() -
     assert grant.allowed_symbols == ("TQQQ", "SQQQ")
     assert grant.strategy_fingerprint == fingerprint
     assert grant.max_daily_notional == dialog.max_daily_notional.value()
+    assert grant.max_order_notional == 10.0
+    assert grant.max_daily_notional <= 50.0
+    assert grant.max_total_exposure <= 40.0
     assert "never remembered" in dialog.scope_note.text()
 
     events = []
@@ -468,8 +482,8 @@ def test_settings_dialog_is_scrollable_and_explains_agentic_account_scope() -> N
     assert isinstance(dialog.scroll, QScrollArea)
     assert dialog.scroll.widgetResizable()
     assert dialog.scroll.horizontalScrollBarPolicy() == Qt.ScrollBarPolicy.ScrollBarAlwaysOff
-    assert dialog.minimumWidth() >= 780
-    assert dialog.minimumHeight() >= 650
+    assert dialog.minimumWidth() <= 640
+    assert dialog.minimumHeight() <= 520
     assert dialog.broker.text() == "Connect Robinhood broker data"
     assert dialog.broker_note.wordWrap()
     assert "active Agentic account" in dialog.broker_note.text()
@@ -870,19 +884,131 @@ def test_windows_scripts_share_short_managed_runtime_fallback() -> None:
     assert "GRANDE_ALPHA_RUNTIME_DIR" in runtime
 
 
+def test_packaged_gui_includes_the_documentation_referenced_by_readme_and_about() -> None:
+    root = Path(__file__).resolve().parents[1]
+    script = (root / "build.ps1").read_text(encoding="utf-8")
+
+    assert "(Join-Path $ProjectRoot 'docs')" in script
+    assert "(Join-Path $ProjectRoot 'SUPPORT.md')" in script
+    assert "(Join-Path $ProjectRoot 'CODE_OF_CONDUCT.md')" in script
+    assert "(Join-Path $ProjectRoot 'CONTRIBUTING.md')" in script
+
+
+def test_community_history_client_uses_the_current_package_version() -> None:
+    root = Path(__file__).resolve().parents[1]
+    historical = (root / "src" / "grande_alpha" / "historical.py").read_text(encoding="utf-8")
+
+    assert "from grande_alpha import __version__" in historical
+    assert 'f"GRANDE-Alpha/{__version__} research client"' in historical
+    assert "GRANDE-Alpha/0.7" not in historical
+
+
 def test_release_labels_unsigned_binary_and_produces_source_bundle() -> None:
     root = Path(__file__).resolve().parents[1]
     script = (root / "release.ps1").read_text(encoding="utf-8")
+    workflow = (root / ".github" / "workflows" / "release.yml").read_text(encoding="utf-8")
     doctor = (root / "doctor.ps1").read_text(encoding="utf-8")
 
     assert "unsigned-windows-x64" in script
     assert "UNSIGNED_BUILD.txt" in script
     assert "windows-source" in script
+    assert "status --porcelain=v1 --untracked-files=all" in script
+    assert "archive --format=zip" in script
+    assert "Release artifacts must be built from an exact clean commit" in script
+    assert "Copy-Item -LiteralPath (Join-Path $ProjectRoot $Directory)" not in script
+    assert "cyclonedx_py environment $RuntimePython" in script
+    assert "$SetuptoolsRequirement = 'setuptools>=83'" in script
+    assert "--constraint $RuntimeConstraints $SetuptoolsRequirement" in script
+    assert "pyinstaller-hooks-contrib" in script
+    assert "packaging==$($BuilderVersions.packaging)" in script
+    assert "setuptools==$($BuilderVersions.setuptools)" in script
+    assert "BUILD-PROVENANCE.txt" in script
+    assert "--disable-pip --no-deps" in script
+    assert "--requirement $BuilderAuditRequirements" in script
+    assert "pip uninstall --yes pip wheel" in script
+    assert "pip uninstall --yes pip setuptools wheel" not in script
+    assert "-m pip_audit --strict --progress-spinner off --path $PackagedPythonRoot" in script
+    assert "RUNTIME-SBOM.cdx.json" in script
+    assert "including the setuptools/pkg_resources runtime embedded in the package" in script
+    assert "frozen installed application runtime environment" in script
+    assert "not an exact inventory of the packaged files" in script
+    assert "Signing alone is insufficient" in script
+    assert "--output-reproducible" in script
+    assert "-m venv $RuntimeEnvironment" in script
+    assert "-m venv $BuildEnvironment" in script
+    assert "-PythonExecutable $BuildPython" in script
+    assert "Release builder does not contain the exact frozen runtime dependency closure" in script
+    assert "grande[-_]alpha)(?:==|\\s*@\\s)" in script
+    assert "artifacts\\wheel-check" in script
+    assert "no development-only components" in script
+    assert "Refusing to publish an SBOM containing a local workstation path" in script
+    assert "ConvertFrom-Json -Depth" not in script
+    assert "release/*" not in workflow
+    assert "steps.release_version.outputs.version" in workflow
+    assert "if-no-files-found: error" in workflow
+    assert "python -m venv .venv" in workflow
+    assert '.\\.venv\\Scripts\\python.exe -m pip install -e ".[dev]"' in workflow
     assert "Get-AuthenticodeSignature" in doctor
     assert "SOURCE APP READY" in doctor
-    assert "install-local.ps1" in script
-    assert "cli.ps1" in script
-    assert "GRANDE Alpha CLI.cmd" in script
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows PowerShell compatibility")
+def test_release_sbom_component_counts_are_windows_powershell_compatible(tmp_path) -> None:
+    root = Path(__file__).resolve().parents[1]
+    script = (root / "release.ps1").read_text(encoding="utf-8")
+    component_logic = script[
+        script.index("$OwnComponents =") : script.index("\nif (", script.index("$OwnComponents ="))
+    ]
+    sbom_path = tmp_path / "RUNTIME-SBOM.cdx.json"
+    sbom_path.write_text(
+        json.dumps(
+            {
+                "metadata": {
+                    "component": {
+                        "type": "application",
+                        "name": "grande-alpha",
+                        "version": "0.16.0",
+                    }
+                },
+                "components": [
+                    {"type": "library", "name": "httpx", "version": "0.28.1"},
+                    {"type": "library", "name": "setuptools", "version": "83.1.0"},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    escaped_sbom_path = str(sbom_path).replace("'", "''")
+    command = f"""
+$Sbom = Get-Content -Raw -LiteralPath '{escaped_sbom_path}' | ConvertFrom-Json
+{component_logic}
+[pscustomobject]@{{
+    own = $OwnComponents.Count
+    setuptools = $SetuptoolsComponents.Count
+    development = $DevelopmentComponents.Count
+}} | ConvertTo-Json -Compress
+"""
+
+    result = subprocess.run(
+        ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", command],
+        cwd=root,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert json.loads(result.stdout) == {"own": 1, "setuptools": 1, "development": 0}
+
+
+def test_public_release_inputs_exclude_legacy_identity_bearing_images() -> None:
+    root = Path(__file__).resolve().parents[1]
+    removed_assets = [
+        root / "assets" / "social" / "grande-alpha-0.3-instagram-feed.png",
+        root / "assets" / "social" / "grande-alpha-0.3-instagram-story.png",
+        root / "docs" / "images" / "audit" / "08-activation-after.png",
+    ]
+
+    assert all(not path.exists() for path in removed_assets)
 
 
 def test_local_installer_uses_trusted_launcher_and_both_shortcut_locations() -> None:
@@ -914,7 +1040,7 @@ def test_windows_app_identity_uses_the_grande_alpha_logo_group() -> None:
     app_source = (root / "src" / "grande_alpha" / "app.py").read_text(encoding="utf-8")
     shortcut_source = (root / "src" / "grande_alpha" / "windows_shortcut.py").read_text(encoding="utf-8")
 
-    assert 'WINDOWS_APP_USER_MODEL_ID = "AaronJS.GRANDEAlpha"' in shortcut_source
+    assert 'WINDOWS_APP_USER_MODEL_ID = "GRANDEAlpha.Desktop"' in shortcut_source
     assert "SetCurrentProcessExplicitAppUserModelID" in app_source
     assert "window.setWindowIcon(app.windowIcon())" in app_source
     assert "System.AppUserModel.ID" in shortcut_source
@@ -965,7 +1091,7 @@ def test_diagnostic_export_redacts_identifiers(tmp_path) -> None:
     secret = "0123456789abcdef0123456789abcdef"
     store.receipt(
         "test",
-        f"Account ending 8900 order {secret}",
+        f"Account ending 3456 order {secret}",
         {"account_number": "123456789", "token": "secret-token", "safe": "visible"},
     )
     destination = tmp_path / "diagnostics.json"
@@ -977,6 +1103,52 @@ def test_diagnostic_export_redacts_identifiers(tmp_path) -> None:
     assert secret not in encoded
     assert "visible" in encoded
     store.close()
+
+
+def test_public_source_and_docs_use_generalized_platform_language() -> None:
+    root = Path(__file__).resolve().parents[1]
+    public_files = [
+        *sorted((root / "src").rglob("*.py")),
+        *sorted((root / "docs").rglob("*.md")),
+        root / "README.md",
+        root / "PRIVACY.md",
+        root / "SUPPORT.md",
+        root / "pyproject.toml",
+        root / "NOTICE",
+    ]
+    approved_project_urls = (
+        "https://github.com/aaronjs99/grande-alpha/issues",
+        "https://github.com/aaronjs99/grande-alpha/security/advisories/new",
+    )
+
+    combined = ""
+    for path in public_files:
+        text = path.read_text(encoding="utf-8")
+        for url in approved_project_urls:
+            text = text.replace(url, "")
+        combined += text
+
+    assert "Capital Planning Ledger" in combined
+    assert "jurisdiction" in combined.casefold()
+    assert "outside-app responsibility" in combined.casefold()
+
+
+def test_distribution_guidance_links_are_configurable_https_resources() -> None:
+    raw = json.dumps(
+        [
+            {"label": "Local regulator", "url": "https://regulator.example/rules"},
+            {"label": "Unsafe handler", "url": "file:///private.txt"},
+            {"label": "<script>", "url": "https://example.com/injected"},
+        ]
+    )
+
+    links = external_guidance_links(raw)
+
+    assert links[: len(DEFAULT_EXTERNAL_GUIDANCE_LINKS)] == DEFAULT_EXTERNAL_GUIDANCE_LINKS
+    assert links[-1].label == "Local regulator"
+    assert links[-1].url == "https://regulator.example/rules"
+    assert all(link.url.startswith("https://") for link in links)
+    assert all("<" not in link.label for link in links)
 
 
 def test_market_history_pruning_never_deletes_receipts(tmp_path) -> None:

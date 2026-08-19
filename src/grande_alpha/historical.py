@@ -9,13 +9,14 @@ import math
 import random
 import sqlite3
 from dataclasses import asdict, dataclass, replace
-from datetime import UTC, datetime, time, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
 import httpx
 
+from grande_alpha import __version__
 from grande_alpha.config import data_dir
 from grande_alpha.market_calendar import regular_session_times
 from grande_alpha.models import Bar, Quote, utc_now
@@ -32,6 +33,7 @@ RUNTIME_ANALYSIS_PRICE_SEMANTICS = "qqq_bid_ask_mid_ohlc"
 RUNTIME_EXECUTION_PRICE_SEMANTICS = "causal_target_bid_ask"
 RUNTIME_VOLUME_SEMANTICS = "absent"
 RUNTIME_REQUIRED_SYMBOLS = ("QQQ", "TQQQ", "SQQQ")
+EASTERN = ZoneInfo("America/New_York")
 RUNTIME_PROVENANCE_FIELDS = frozenset(
     {
         "observation_schema",
@@ -642,7 +644,13 @@ def load_bundle(path: Path) -> HistoricalBundle:
     )
 
 
-def runtime_trace_manifest_template(bundle: HistoricalBundle, quote_row_count: int) -> dict[str, Any]:
+def runtime_trace_manifest_template(
+    bundle: HistoricalBundle,
+    quote_row_count: int,
+    *,
+    range_start: date | None = None,
+    range_end: date | None = None,
+) -> dict[str, Any]:
     """Return a fail-closed manifest template bound to one imported runtime trace."""
 
     provenance = bundle.provenance
@@ -676,6 +684,8 @@ def runtime_trace_manifest_template(bundle: HistoricalBundle, quote_row_count: i
         "market_hours": bundle.market_hours,
         "start": bundle.start.isoformat(),
         "end": bundle.end.isoformat(),
+        "range_start": range_start.isoformat() if range_start is not None else None,
+        "range_end": range_end.isoformat() if range_end is not None else None,
         "source_trace_sha256": provenance.source_trace_sha256,
         "dataset_hash": bundle.dataset_hash,
         "quote_row_count": quote_row_count,
@@ -703,6 +713,8 @@ def _runtime_trace_provenance(
     source_resolution_seconds: float,
     start: datetime,
     end: datetime,
+    range_start: date | None,
+    range_end: date | None,
 ) -> DataProvenance:
     if manifest is None:
         return DataProvenance(
@@ -745,6 +757,8 @@ def _runtime_trace_provenance(
         "market_hours": market_hours,
         "start": start.isoformat(),
         "end": end.isoformat(),
+        "range_start": range_start.isoformat() if range_start is not None else None,
+        "range_end": range_end.isoformat() if range_end is not None else None,
         "source_trace_sha256": source_trace_sha256,
         "dataset_hash": dataset_hash_value,
         "quote_row_count": quote_row_count,
@@ -812,13 +826,38 @@ def _aware_trace_timestamp(raw: object, field: str) -> datetime:
     return parsed.astimezone(UTC)
 
 
-def load_runtime_quote_trace(
+def _runtime_trace_observed_bounds(
+    range_start: date | None,
+    range_end: date | None,
+    market_hours: str,
+) -> tuple[datetime | None, datetime | None]:
+    if range_start is not None and range_end is not None and range_start > range_end:
+        raise ValueError("Runtime trace --start must be on or before --end")
+
+    def bounds_for(trading_day: date) -> tuple[datetime, datetime]:
+        anchor = datetime.combine(trading_day, time(12, 0), tzinfo=EASTERN)
+        return session_bounds(anchor, market_hours)
+
+    started = bounds_for(range_start)[0].astimezone(UTC) if range_start is not None else None
+    # Exact batches permit book age up to eight seconds and a two-second future-clock tolerance.
+    # The observed recorder clock can therefore fall just after the venue session boundary.
+    ended = (
+        bounds_for(range_end)[1].astimezone(UTC) + timedelta(seconds=10)
+        if range_end is not None
+        else None
+    )
+    return started, ended
+
+
+def _load_runtime_quote_trace(
     database_path: Path,
     *,
     bar_seconds: int = 60,
     market_hours: str = "regular_hours",
     manifest: dict[str, Any] | None = None,
-) -> HistoricalBundle:
+    start: date | None = None,
+    end: date | None = None,
+) -> tuple[HistoricalBundle, int]:
     """Read GRANDE Alpha's quote ledger in SQLite read-only mode into causal frames.
 
     Every accepted response must have a current durable batch record and exact
@@ -833,6 +872,15 @@ def load_runtime_quote_trace(
         raise ValueError("Runtime trace bar duration must be between 1 and 300 seconds")
     if market_hours not in {"regular_hours", "extended_hours", "all_day_hours"}:
         raise ValueError("Unsupported runtime trace market hours")
+    observed_start, observed_end = _runtime_trace_observed_bounds(start, end, market_hours)
+    range_sql = ""
+    range_parameters: list[str] = []
+    if observed_start is not None:
+        range_sql += " AND observed_at>=?"
+        range_parameters.append(observed_start.isoformat())
+    if observed_end is not None:
+        range_sql += " AND observed_at<=?"
+        range_parameters.append(observed_end.isoformat())
     resolved = database_path.resolve(strict=True)
     connection = sqlite3.connect(f"{resolved.as_uri()}?mode=ro", uri=True)
     connection.row_factory = sqlite3.Row
@@ -863,17 +911,24 @@ def load_runtime_quote_trace(
             raise ValueError("Database has no compatible GRANDE Alpha quote ledger")
         legacy_count = int(
             connection.execute(
-                "SELECT COUNT(*) AS n FROM quotes WHERE batch_id IS NULL OR batch_position IS NULL"
+                "SELECT COUNT(*) AS n FROM quotes "
+                f"WHERE (batch_id IS NULL OR batch_position IS NULL){range_sql}",
+                range_parameters,
             ).fetchone()["n"]
         )
         excluded_nonexact = int(
             connection.execute(
                 """SELECT COUNT(*) AS n FROM quote_batches
-                WHERE validation_profile!='exact_execution_quotes'
+                WHERE (validation_profile!='exact_execution_quotes'
                    OR schema_version!=?
                    OR validation_version!=?
-                   OR max_age_seconds IS NULL OR max_skew_seconds IS NULL"""
-                , (QUOTE_BATCH_SCHEMA_VERSION, EXACT_QUOTE_VALIDATOR_VERSION)
+                   OR max_age_seconds IS NULL OR max_skew_seconds IS NULL)"""
+                + range_sql,
+                (
+                    QUOTE_BATCH_SCHEMA_VERSION,
+                    EXACT_QUOTE_VALIDATOR_VERSION,
+                    *range_parameters,
+                ),
             ).fetchone()["n"]
         )
         batch_rows = connection.execute(
@@ -883,8 +938,14 @@ def load_runtime_quote_trace(
             WHERE validation_profile='exact_execution_quotes' AND schema_version=?
               AND validation_version=?
               AND max_age_seconds IS NOT NULL AND max_skew_seconds IS NOT NULL
-            ORDER BY rowid""",
-            (QUOTE_BATCH_SCHEMA_VERSION, EXACT_QUOTE_VALIDATOR_VERSION),
+            """
+            + range_sql
+            + " ORDER BY rowid",
+            (
+                QUOTE_BATCH_SCHEMA_VERSION,
+                EXACT_QUOTE_VALIDATOR_VERSION,
+                *range_parameters,
+            ),
         ).fetchall()
         rows = connection.execute(
             """SELECT id,observed_at,symbol,bid,ask,last,venue_timestamp,
@@ -892,11 +953,18 @@ def load_runtime_quote_trace(
             FROM quotes WHERE batch_id IN (
                 SELECT batch_id FROM quote_batches
                 WHERE validation_profile='exact_execution_quotes' AND schema_version=?
-                  AND validation_version=?
-                  AND max_age_seconds IS NOT NULL AND max_skew_seconds IS NOT NULL
+                   AND validation_version=?
+                   AND max_age_seconds IS NOT NULL AND max_skew_seconds IS NOT NULL
+            """
+            + range_sql
+            + """
             ) AND batch_position IS NOT NULL
             ORDER BY batch_id,batch_position""",
-            (QUOTE_BATCH_SCHEMA_VERSION, EXACT_QUOTE_VALIDATOR_VERSION),
+            (
+                QUOTE_BATCH_SCHEMA_VERSION,
+                EXACT_QUOTE_VALIDATOR_VERSION,
+                *range_parameters,
+            ),
         ).fetchall()
     finally:
         connection.close()
@@ -928,12 +996,17 @@ def load_runtime_quote_trace(
         batch_id = str(batch_record["batch_id"])
         batch_sequence = int(batch_record["batch_sequence"])
         stream_id = str(batch_record["stream_id"]).strip()
+        schema_version = int(batch_record["schema_version"])
+        symbol_count = int(batch_record["symbol_count"])
+        validation_profile = str(batch_record["validation_profile"])
+        validation_version = int(batch_record["validation_version"])
         if not stream_id:
             raise ValueError("Runtime quote batch lacks a bound signal-pipeline stream ID")
         if (
-            int(batch_record["schema_version"]) != QUOTE_BATCH_SCHEMA_VERSION
-            or int(batch_record["validation_version"]) != EXACT_QUOTE_VALIDATOR_VERSION
-            or int(batch_record["symbol_count"]) != 3
+            schema_version != QUOTE_BATCH_SCHEMA_VERSION
+            or validation_profile != "exact_execution_quotes"
+            or validation_version != EXACT_QUOTE_VALIDATOR_VERSION
+            or symbol_count != len(RUNTIME_REQUIRED_SYMBOLS)
         ):
             raise ValueError("Runtime quote batch has an unsupported or inconsistent schema")
         batch_observed_at = _aware_trace_timestamp(
@@ -969,7 +1042,8 @@ def load_runtime_quote_trace(
             quotes[symbol] = quote
             observed_times.append(observed_at)
             trace_digest.update(
-                f"{batch_sequence}|{stream_id}|{batch_id}|1|3|exact_execution_quotes|1|"
+                f"{batch_sequence}|{stream_id}|{batch_id}|{schema_version}|{symbol_count}|"
+                f"{validation_profile}|{validation_version}|"
                 f"{validator_max_age_seconds:.6f}|{validator_max_skew_seconds:.6f}|"
                 f"{row['batch_position']}|{row['id']}|"
                 f"{observed_at.isoformat()}|{symbol}|{quote.bid:.8f}|"
@@ -1088,16 +1162,64 @@ def load_runtime_quote_trace(
         source_resolution_seconds=source_resolution_seconds,
         start=frames[0].start,
         end=frames[-1].start,
+        range_start=start,
+        range_end=end,
     )
-    return HistoricalBundle(
-        source="GRANDE Alpha synchronized runtime venue quote trace",
-        downloaded_at=utc_now(),
-        frames=frames,
-        interval=interval,
-        dataset_hash=quality.dataset_hash,
-        quality=quality,
+    return (
+        HistoricalBundle(
+            source="GRANDE Alpha synchronized runtime venue quote trace",
+            downloaded_at=utc_now(),
+            frames=frames,
+            interval=interval,
+            dataset_hash=quality.dataset_hash,
+            quality=quality,
+            market_hours=market_hours,
+            provenance=provenance,
+        ),
+        len(rows),
+    )
+
+
+def load_runtime_quote_trace(
+    database_path: Path,
+    *,
+    bar_seconds: int = 60,
+    market_hours: str = "regular_hours",
+    manifest: dict[str, Any] | None = None,
+    start: date | None = None,
+    end: date | None = None,
+) -> HistoricalBundle:
+    """Load a range-bound exact quote trace without opening SQLite for writes."""
+
+    bundle, _ = _load_runtime_quote_trace(
+        database_path,
+        bar_seconds=bar_seconds,
         market_hours=market_hours,
-        provenance=provenance,
+        manifest=manifest,
+        start=start,
+        end=end,
+    )
+    return bundle
+
+
+def load_runtime_quote_trace_with_row_count(
+    database_path: Path,
+    *,
+    bar_seconds: int = 60,
+    market_hours: str = "regular_hours",
+    manifest: dict[str, Any] | None = None,
+    start: date | None = None,
+    end: date | None = None,
+) -> tuple[HistoricalBundle, int]:
+    """Return the range-bound bundle and exact selected source-row count."""
+
+    return _load_runtime_quote_trace(
+        database_path,
+        bar_seconds=bar_seconds,
+        market_hours=market_hours,
+        manifest=manifest,
+        start=start,
+        end=end,
     )
 
 
@@ -1154,7 +1276,7 @@ class HistoricalDataProvider:
         )
         if use_cache and cache_path.exists():
             return load_bundle(cache_path)
-        headers = {"User-Agent": "GRANDE-Alpha/0.7 research client"}
+        headers = {"User-Agent": f"GRANDE-Alpha/{__version__} research client"}
         async with httpx.AsyncClient(timeout=self.timeout_seconds, headers=headers) as client:
             qqq, tqqq, sqqq = await asyncio.gather(
                 self._fetch_symbol(client, "QQQ", days, interval, market_hours != "regular_hours"),

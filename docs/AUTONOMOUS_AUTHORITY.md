@@ -8,8 +8,8 @@ configuration or restored after restart.
 These controls limit authority; they do not make a strategy profitable, suitable, lawful, or likely
 to fill. Shadow mode remains the default and submits no orders.
 
-The controller integration described below is present in the v0.15 live pilot. That is an
-engineering statement, not deployment approval. See [Live-pilot activation and external
+The controller integration was introduced in v0.15 and is retained in the current release. That is
+an engineering statement, not deployment approval. See [Live-pilot activation and external
 gates](LIVE_ACTIVATION.md) for the current CASH/evidence/OAuth stop state and operating procedure.
 
 ## Exact session scope
@@ -79,7 +79,7 @@ budgets. When arming, the controller restores the same-ET-day gross placement-in
 order count from append-only receipts. It also supplies the preceding receipt digest so the chain can
 continue across restart. Restored usage is validated and cannot exceed the new grant's caps.
 
-## Integrated v0.15 controller contract
+## Integrated controller contract
 
 The live-pilot controller:
 

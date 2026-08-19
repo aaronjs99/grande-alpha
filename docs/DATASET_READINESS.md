@@ -5,9 +5,12 @@
 Generic OHLCV CSV readiness is not runtime-observation parity. Exact replay requires GRANDE Alpha's
 synchronized venue-quote schema: three QQQ/TQQQ/SQQQ quote rows per recorder batch, venue timestamps,
 QQQ bid/ask-mid bar construction, and the first later causal target bid/ask batch. The runtime-trace
-importer reads SQLite with `mode=ro`, hashes the exact source rows, and can emit a manifest template
-that defaults every rights attestation to false. The user must verify the provider/product terms and
-complete those attestations; a source label is never enough.
+importer reads SQLite with `mode=ro`, hashes the exact selected source rows, and can emit a
+range-bound manifest template that defaults every rights attestation to false. The user must verify
+the provider/product terms and complete those attestations; a source label is never enough.
+Inclusive `--start` and `--end` trading dates let a future clean, contiguous block exclude earlier
+partial collection days. The range, first/last observations, dataset hash, source-trace hash, and
+source-row count are revalidated when the manifest is loaded.
 
 The trace contains no volume. This is recorded explicitly rather than imputed. It can close a
 bar/signal/fill-clock engineering blocker, but one day cannot satisfy the 141-session breadth needed
@@ -115,9 +118,42 @@ An exit code of `0` and `INPUT READY` mean only that all input checks passed. An
 means the input is not ready; it does not alter the file or evidence ledger. `--json` produces a
 machine-readable report. The audit opens SQLite with `mode=ro` and `query_only`, and reports explicit
 zero broker calls and zero holdout actions. It also reports locally collected quote/bar counts and
-time ranges as forward-collection progress. Those runtime traces are not an eligible HistoricalBundle
-until aligned OHLCV bars for all three symbols, complete sessions, exact construction, and manifest-
-bound provenance are established.
+time ranges as forward-collection progress. Those aggregate counts alone are not an eligible
+HistoricalBundle. The dedicated importer must reconstruct exact causal frames from complete atomic
+quote batches, pass full-session/cadence checks, and bind the selected source range to an attested
+manifest.
+
+For the synchronized runtime quote ledger, use its dedicated read-only audit instead of treating the
+database as a generic CSV:
+
+```powershell
+& ".\GRANDE Alpha CLI.cmd" data runtime-trace audit `
+  --database "$env:LOCALAPPDATA\GRANDEAlpha\grande_alpha.db" `
+  --bar-seconds 5 `
+  --session regular_hours `
+  --start 2026-08-20 `
+  --end 2027-03-12 `
+  --width 150
+```
+
+Print the exact range-bound template, without saving or changing the database:
+
+```powershell
+& ".\GRANDE Alpha CLI.cmd" data runtime-trace manifest-template `
+  --database "$env:LOCALAPPDATA\GRANDEAlpha\grande_alpha.db" `
+  --bar-seconds 5 `
+  --session regular_hours `
+  --start 2026-08-20 `
+  --end 2027-03-12
+```
+
+After completing the template truthfully, add `--manifest PATH` to the audit. `INPUT READY` means
+only that the selected trace can enter evidence governance. The audit and template commands do not
+instantiate the evidence store, register a trial, or reserve/reveal a holdout. Only an explicit
+`evidence run --source runtime-trace ...` can enter the one-use Evidence Lab service.
+The template always requires explicit `--start` and `--end`; an audit carrying `--manifest` requires
+the same bounds. Omitting dates is supported only for a read-only collection-progress audit and
+does not create an Evidence Lab selection.
 
 ## One-use final-holdout checklist
 
@@ -138,18 +174,13 @@ bound provenance are established.
 8. Passing the final holdout still requires every other current gate and monitored forward shadow.
    It permits a separate live review only; it never guarantees profit or starts trading.
 
-## Current local snapshot (2026-08-11)
+## Inspect this installation
 
-The read-only audit found:
+Data counts, gaps, recency, trial history, and holdout state belong to each local installation and
+change as observations are collected. Public documentation therefore does not ship one developer's
+machine-local readiness snapshot as a product claim. Run the query-only `data audit`,
+`data runtime-trace audit`, and `activation` commands to inspect the current installation.
 
-| Local source | Native interval | Sessions | Final bar | Exact 5s input? |
-|---|---:|---:|---:|---:|
-| Unsupported community daily cache | 1 day | 4,147 | 2026-08-07 | No |
-| Unsupported community intraday cache | 5 minutes | 40 | 2026-08-07 | No |
-| Unsupported community intraday cache | 1 minute | 5 | 2026-08-07 | No |
-
-All three caches passed their stored canonical content hashes. They remain useful for exploratory
-daily/5-minute/1-minute research at their native cadence, but none can support the exact 5-second
-runtime claim. The local ledger contained 81 registered trials on two deterministic scenario hashes,
-five `SHADOW_ONLY` promotion receipts, and **zero** reserved/frozen/evaluating/consumed holdouts.
-These values are a dated snapshot; rerun `data audit` for current state.
+An input that passes data readiness can still fail certificate promotion. Autonomous promotion also
+requires every current runtime-parity check and every Evidence Lab gate to pass independently;
+collecting more rows never turns a failed machine gate into a pass.

@@ -4,6 +4,7 @@ from collections.abc import Callable
 from dataclasses import replace
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QResizeEvent
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -55,8 +56,9 @@ class SettingsDialog(QDialog):
         )
         self._pending_settlement_model = config.settlement_model
         self.setWindowTitle("GRANDE Alpha settings and permissions")
-        self.setMinimumSize(780, 650)
+        self.setMinimumSize(640, 520)
         self.resize(840, 720)
+        self.setSizeGripEnabled(True)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(20, 18, 20, 16)
         layout.setSpacing(12)
@@ -107,19 +109,20 @@ class SettingsDialog(QDialog):
         self.account_scope_status.setStyleSheet("background:#142b3d;color:#8fd3ff;border:1px solid #315b78;")
         permissions_layout.addWidget(self.account_scope_status)
 
-        self.live = QCheckBox("Make bounded real-order session controls available")
-        self.live.setAccessibleName("Allow real-order automation")
+        self.live = QCheckBox("Make supervised real-order ticket controls available")
+        self.live.setAccessibleName("Allow supervised real-order tickets")
         self.live.setChecked(config.live_trading_enabled)
         apply_help(
             self.live,
-            "Allow real-order automation",
-            "Makes evidence-gated live controls available. A separate bounded session is still required every launch.",
+            "Allow supervised real-order tickets",
+            "Makes attended, per-order-confirmed controls available. A separate bounded session and a fresh "
+            "typed confirmation for every exact broker-reviewed order are still required.",
         )
         permissions_layout.addWidget(self.live)
         self.evidence_status = QLabel(
-            "EVIDENCE GATE  •  READY FOR SEPARATE SESSION REVIEW"
+            "AUTONOMOUS EVIDENCE  •  READY FOR SEPARATE REVIEW"
             if live_evidence_ready
-            else "EVIDENCE GATE  •  LOCKED — SHADOW ONLY"
+            else "AUTONOMOUS EVIDENCE  •  LOCKED"
         )
         self.evidence_status.setObjectName("settingsStatus")
         self.evidence_status.setStyleSheet(
@@ -129,11 +132,14 @@ class SettingsDialog(QDialog):
         )
         apply_help(
             self.evidence_status,
-            "Evidence gate",
+            "Autonomous evidence gate",
             "A current LIVE_REVIEW_ELIGIBLE certificate for the exact strategy, cadence, route, and risk "
-            "envelope is required. Return to Live Readiness for the owner and exact next action for every blocker.",
+            "envelope is required for the separate evidence-gated path. It is not bypassed by supervised mode.",
         )
         permissions_layout.addWidget(self.evidence_status)
+        self.supervised_status = QLabel("SUPERVISED PER-ORDER  •  CHECKING ROUTE")
+        self.supervised_status.setObjectName("settingsStatus")
+        permissions_layout.addWidget(self.supervised_status)
         self.live_phrase = QLineEdit()
         self.live_phrase.setPlaceholderText(LIVE_PHRASE)
         self.live_phrase.setAccessibleName("Live-order capability confirmation phrase")
@@ -141,9 +147,9 @@ class SettingsDialog(QDialog):
         permissions_layout.addWidget(self.live_phrase)
         self.live_note = self._description(
             "This grants no standing or remembered money-moving authority. Every launch remains locked. Each "
-            "session requires a current matching evidence certificate, exact account/ticker/route/strategy "
-            "scope, daily expiry, numeric caps, attestation, and typed confirmation. Active sessions must keep "
-            "Pause and Revoke controls visible."
+            "supervised session requires exact account/ticker/route/strategy scope, daily expiry, strict "
+            "$10 order / $50 gross-day / $40 exposure caps, attestation, and one fresh typed confirmation "
+            "for every broker-reviewed order. It does not claim LIVE_REVIEW_ELIGIBLE or profitability."
         )
         permissions_layout.addWidget(self.live_note)
         body_layout.addWidget(permissions)
@@ -165,17 +171,17 @@ class SettingsDialog(QDialog):
             "ranges. No broker or account data is included."
         )
         optional_layout.addWidget(self.remote_data_note)
-        self.personal_ledger = QCheckBox("Show the personal research-fund ledger")
-        self.personal_ledger.setAccessibleName("Show the personal research-fund ledger")
+        self.personal_ledger = QCheckBox("Show the capital planning ledger")
+        self.personal_ledger.setAccessibleName("Show the capital planning ledger")
         self.personal_ledger.setChecked(config.personal_ledger_enabled)
         apply_help(
             self.personal_ledger,
-            "Personal research-fund ledger",
-            "Shows a local planning ledger. It never moves money or connects to university, grant, or laboratory funds.",
+            "Capital planning ledger",
+            "Shows an optional local planning ledger. It records entries but cannot transfer money.",
         )
         optional_layout.addWidget(self.personal_ledger)
         self.personal_ledger_note = self._description(
-            "A local planning ledger only. It never transfers brokerage, university, grant, or laboratory funds."
+            "An optional local planning ledger only. It never initiates a bank or brokerage transfer."
         )
         optional_layout.addWidget(self.personal_ledger_note)
         body_layout.addWidget(optional)
@@ -209,14 +215,14 @@ class SettingsDialog(QDialog):
         self.strategy_name.setCurrentIndex(max(0, self.strategy_name.findData(config.strategy_name)))
         add_explained_row(runtime_form, "Selected runtime policy", self.strategy_name)
         self.runtime_strategy_note = self._description(
-            "CASH / hold is the evidence-backed fail-safe default and requests no TQQQ or SQQQ position. "
+            "CASH / hold is the fail-safe default and requests no TQQQ or SQQQ position. "
             "Selecting another supported policy is deliberate, changes the evidence fingerprint, and does "
             "not imply profitability or unlock real orders."
         )
         runtime_form.addRow(self.runtime_strategy_note)
         body_layout.addWidget(runtime)
 
-        routing = QGroupBox("Automatic order route defaults")
+        routing = QGroupBox("Research, shadow, and live-pilot route")
         routing_form = QFormLayout(routing)
         routing_form.setVerticalSpacing(9)
         self.market_hours = QComboBox()
@@ -255,7 +261,9 @@ class SettingsDialog(QDialog):
         routing_form.addRow(pilot_buttons)
         self.pilot_route_status = self._description(
             "Changes stay in this dialog until you explicitly click Save; Cancel discards them. Applying "
-            "the route never enables real-order automation or grants a live session."
+            "the route never enables real-order automation or grants a live session. Both current live "
+            "pilots require Regular market, Market order, GFD, and cash T+1; other routes remain research "
+            "and shadow settings."
         )
         routing_form.addRow(self.pilot_route_status)
         self.routing_note = self._description("")
@@ -322,6 +330,32 @@ class SettingsDialog(QDialog):
         self.time_in_force.currentIndexChanged.connect(self._update_route_note)
         self._update_route_note()
         self._validate()
+        self._responsive_forms = (
+            privacy_form,
+            runtime_form,
+            routing_form,
+            cadence_form,
+        )
+        self._responsive_wrapped: bool | None = None
+        self._apply_responsive_layout(self.width())
+
+    def _apply_responsive_layout(self, width: int) -> None:
+        wrapped = width < 720
+        if wrapped == self._responsive_wrapped:
+            return
+        self._responsive_wrapped = wrapped
+        row_policy = (
+            QFormLayout.RowWrapPolicy.WrapLongRows
+            if wrapped
+            else QFormLayout.RowWrapPolicy.DontWrapRows
+        )
+        for form in self._responsive_forms:
+            form.setRowWrapPolicy(row_policy)
+            form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
+
+    def resizeEvent(self, event: QResizeEvent) -> None:  # noqa: N802 - Qt API
+        super().resizeEvent(event)
+        self._apply_responsive_layout(event.size().width())
 
     @staticmethod
     def _description(text: str) -> QLabel:
@@ -364,7 +398,10 @@ class SettingsDialog(QDialog):
                 "GTC orders can remain at Robinhood after the app exits."
             )
         if self.market_hours.currentData() == "all_day_hours":
-            text += " Current symbol eligibility is rechecked before every 24 Hour Market submission."
+            text += (
+                " This route is available for research and shadow evaluation only in the current release; "
+                "both live pilots remain locked to Regular market, Market order, GFD, and cash T+1."
+            )
         self.routing_note.setText(text)
         self._validate()
 
@@ -404,9 +441,9 @@ class SettingsDialog(QDialog):
         if self.live_evidence_checker is not None:
             evidence_ready = self.live_evidence_checker(self.updated_config())
         self.evidence_status.setText(
-            "EVIDENCE GATE  •  READY FOR SEPARATE SESSION REVIEW"
+            "AUTONOMOUS EVIDENCE  •  READY FOR SEPARATE REVIEW"
             if evidence_ready
-            else "EVIDENCE GATE  •  LOCKED — SHADOW ONLY"
+            else "AUTONOMOUS EVIDENCE  •  LOCKED"
         )
         self.evidence_status.setStyleSheet(
             "background:#17301f;color:#80e899;border:1px solid #376d45;"
@@ -414,17 +451,33 @@ class SettingsDialog(QDialog):
             else "background:#2b2315;color:#ffd27a;border:1px solid #6f5727;"
         )
         self.live_phrase.setVisible(enabling_live)
+        candidate = self.updated_config()
+        supervised_route = (
+            candidate.market_hours == "regular_hours"
+            and candidate.order_type == "market"
+            and candidate.time_in_force == "gfd"
+            and candidate.settlement_model == "cash_t1"
+        )
+        self.supervised_status.setText(
+            "SUPERVISED PER-ORDER  •  AVAILABLE WITH SEPARATE SESSION"
+            if supervised_route
+            else "SUPERVISED PER-ORDER  •  ROUTE LOCKED"
+        )
+        self.supervised_status.setStyleSheet(
+            "background:#17301f;color:#80e899;border:1px solid #376d45;"
+            if supervised_route
+            else "background:#2b2315;color:#ffd27a;border:1px solid #6f5727;"
+        )
         valid = True
         message = ""
         if self.live.isChecked() and not self.broker.isChecked():
             valid = False
             message = "Real-order automation requires the broker connection capability."
-        elif self.live.isChecked() and not evidence_ready:
+        elif self.live.isChecked() and not supervised_route:
             valid = False
             message = (
-                "Real-order automation remains shadow-only. Return to Live Readiness for the owner and exact "
-                "next action for every blocker; evidence locks cannot be overridden here. Uncheck real-order "
-                "automation to save broker-only or research settings now."
+                "Supervised real-order tickets require Regular market, Market order, GFD, and cash T+1. "
+                "Apply bounded pilot settings or keep real-order controls disabled."
             )
         elif enabling_live and self.live_phrase.text().strip() != LIVE_PHRASE:
             valid = False

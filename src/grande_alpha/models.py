@@ -457,6 +457,131 @@ class OrderReview:
 
 
 @dataclass(frozen=True)
+class OrderConfirmationRequest:
+    """One-use, transaction-bound preview for a reviewed real-money order."""
+
+    account_number: str
+    account_masked: str
+    intent: OrderIntent
+    review: OrderReview
+    authority_id: str
+    strategy_fingerprint: str
+    requested_at: datetime
+    expires_at: datetime
+    liquidation_only: bool = False
+
+    def validate(self) -> None:
+        if self.intent != self.review.intent:
+            raise ValueError("The reviewed order does not match the proposed order")
+        if not self.account_number.strip() or len(self.account_number) < 4:
+            raise ValueError("A bound broker account is required for order confirmation")
+        if not self.account_masked.strip():
+            raise ValueError("A masked broker account label is required for order confirmation")
+        if not self.authority_id.strip():
+            raise ValueError("A bound session authority is required for order confirmation")
+        if len(self.strategy_fingerprint) != 64 or any(
+            character not in "0123456789abcdef" for character in self.strategy_fingerprint
+        ):
+            raise ValueError("A valid strategy fingerprint is required for order confirmation")
+        for label, value in (("Requested at", self.requested_at), ("Expires at", self.expires_at)):
+            if value.tzinfo is None or value.utcoffset() is None:
+                raise ValueError(f"{label} must be timezone-aware")
+        if self.expires_at <= self.requested_at:
+            raise ValueError("The order confirmation must expire after it is requested")
+
+    @property
+    def confirmation_phrase(self) -> str:
+        if self.intent.dollar_amount is not None:
+            amount = f"${float(self.intent.dollar_amount):.2f}"
+        else:
+            quantity = f"{float(self.intent.quantity or 0.0):.6f}".rstrip("0").rstrip(".")
+            amount = f"{quantity} SHARES"
+        return (
+            f"PLACE {self.intent.side.upper()} {amount} {self.intent.symbol} "
+            f"ON {self.account_number[-4:]}"
+        )
+
+    @property
+    def preview_id(self) -> str:
+        quote = self.review.quote
+        payload = {
+            "account_number": self.account_number,
+            "authority_id": self.authority_id,
+            "strategy_fingerprint": self.strategy_fingerprint,
+            "intent": self.intent.as_dict(),
+            "review": {
+                "market_data_disclosure": self.review.market_data_disclosure,
+                "checks": self.review.checks,
+                "quote": {
+                    "symbol": quote.symbol,
+                    "bid": quote.bid,
+                    "ask": quote.ask,
+                    "last": quote.last,
+                    "timestamp": quote.timestamp.isoformat(),
+                    "bid_timestamp": (
+                        quote.bid_timestamp.isoformat() if quote.bid_timestamp is not None else None
+                    ),
+                    "ask_timestamp": (
+                        quote.ask_timestamp.isoformat() if quote.ask_timestamp is not None else None
+                    ),
+                },
+            },
+            "requested_at": self.requested_at.isoformat(),
+            "expires_at": self.expires_at.isoformat(),
+            "liquidation_only": self.liquidation_only,
+        }
+        encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+        return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+    def receipt_payload(self) -> dict[str, Any]:
+        self.validate()
+        return {
+            "preview_id": self.preview_id,
+            "account_last4": self.account_number[-4:],
+            "account_masked": self.account_masked,
+            "authority_id": self.authority_id,
+            "strategy_fingerprint": self.strategy_fingerprint,
+            "intent": self.intent.as_dict(),
+            "reviewed_bid": self.review.quote.bid,
+            "reviewed_ask": self.review.quote.ask,
+            "reviewed_quote_at": (
+                self.review.quote.book_timestamp or self.review.quote.timestamp
+            ).isoformat(),
+            "estimated_execution_price": self.review.estimated_execution_price,
+            "estimated_notional": self.review.estimated_notional,
+            "market_data_disclosure": self.review.market_data_disclosure,
+            "confirmation_phrase": self.confirmation_phrase,
+            "requested_at": self.requested_at.isoformat(),
+            "expires_at": self.expires_at.isoformat(),
+            "liquidation_only": self.liquidation_only,
+        }
+
+
+@dataclass(frozen=True)
+class OrderConfirmationDecision:
+    """Explicit UI decision cryptographically bound to one immutable preview."""
+
+    preview_id: str
+    accepted: bool
+    typed_phrase: str
+    confirmed_at: datetime
+
+    def validate(self, request: OrderConfirmationRequest) -> None:
+        if self.preview_id != request.preview_id:
+            raise ValueError("The confirmation decision targets a different order preview")
+        if not isinstance(self.accepted, bool):
+            raise ValueError("The confirmation decision must be an explicit boolean")
+        if self.confirmed_at.tzinfo is None or self.confirmed_at.utcoffset() is None:
+            raise ValueError("The confirmation decision time must be timezone-aware")
+        if self.confirmed_at < request.requested_at:
+            raise ValueError("The confirmation decision predates the order preview")
+        if self.accepted and self.confirmed_at > request.expires_at:
+            raise ValueError("The accepted confirmation is outside the preview validity window")
+        if self.accepted and self.typed_phrase.strip() != request.confirmation_phrase:
+            raise ValueError("The typed confirmation does not match the exact order preview")
+
+
+@dataclass(frozen=True)
 class LiveGrant:
     account_number: str
     starts_at: datetime

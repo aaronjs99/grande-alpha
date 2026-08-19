@@ -116,7 +116,8 @@ def test_cli_activation_is_offline_owner_labeled_and_has_no_authority_command(
     assert "local inspection only" in output
     assert "structurally read-only" in output
     assert "APP GATE" in output
-    assert "EXTERNAL REVIEW" in output
+    assert "Outside-app responsibility" in output
+    assert "does not collect or certify jurisdiction" in output
     assert "Positive exact evidence" in output
     assert "Historical source" not in output
     assert "never pass this gate" not in output.replace("\n", " ")
@@ -181,7 +182,7 @@ def test_cli_activation_flags_nonpilot_persisted_route(tmp_path, monkeypatch, ca
     route = next(
         condition
         for condition in payload["conditions"]
-        if condition["gate"] == "Autonomous pilot route"
+        if condition["gate"] == "Supported real-order route"
     )
 
     assert result == 0
@@ -211,7 +212,7 @@ def test_cli_activation_pilot_route_uses_contract_latency_check(
     route = next(
         condition
         for condition in payload["conditions"]
-        if condition["gate"] == "Autonomous pilot route"
+        if condition["gate"] == "Supported real-order route"
     )
 
     assert result == 0

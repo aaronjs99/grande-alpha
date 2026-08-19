@@ -4,11 +4,11 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "grande-alpha"
-version = "0.15.1"
+version = "0.16.0"
 description = "Local-first leveraged-ETF strategy research and consent-gated execution workstation"
 readme = "README.md"
 license = "Apache-2.0"
-authors = [{name = "AaronJS"}]
+authors = [{name = "GRANDE Alpha contributors"}]
 requires-python = ">=3.11,<3.13"
 dependencies = [
   "httpx>=0.28,<1",

@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.16.0 - 2026-08-19
+
+- Added an explicit free Community plan, a truthful Pro-coming-soon dialog, and a local entitlement
+  model that reports no checkout or paid backend. Implemented safety, evidence, provenance, risk,
+  privacy, stop, and per-order consent controls remain available without a paid plan.
+- Made the desktop session action prefer the original evidence-gated authority when the exact grant
+  has a current certificate; otherwise it clearly opens the bounded supervised route. Both paths
+  retain a fresh confirmation for every reviewed order.
+- Added a separate supervised experimental authority mode for attended $10 tickets. It is restricted
+  to regular-hours market/GFD cash-account routing, capped at $50 gross daily notional and $40 total
+  exposure, and requires a fresh immutable Robinhood preview plus explicit confirmation for every
+  individual order. It does not satisfy or bypass autonomous evidence eligibility.
+- Added hash-chained same-session virtual-shadow checkpoints for cash, T+1 settlement, positions,
+  fills, pending transitions, counters, volatility history, and deterministic RNG state. Recovery
+  requires the exact account, candidate, execution contract, session, and intact checkpoint chain.
+- Added a foreground scheduled-shadow restart supervisor and atomic event-loop heartbeat. Scheduler
+  status now distinguishes healthy, waiting, and degraded operation without granting broker writes.
+- Routed exact runtime quote traces through the causal execution engine for base replay, parameter
+  sensitivity, 1x/2x/3x cost stress, random control, walk-forward folds, and the one-use sealed
+  holdout. Generic OHLCV inputs remain explicitly ineligible for the exact-observation gate.
+- Added read-only, range-bound runtime-trace audit and manifest-template CLI workflows. An explicit
+  Evidence Lab run rejects unattested, incomplete, stale, or under-breadth input before opening the
+  writable evidence ledger or reserving a holdout.
+- Reworked the desktop UI for exact 900x1200, 1024x700, 1366x768, and 1920x1080 layouts. Header
+  actions, metric cards, chart/quotes, Sandbox, Live Readiness, Settings, and supervised confirmation
+  dialogs reflow or scroll while keeping safety actions visible.
+- Kept autonomous non-cash runtime parity uncertified and the scheduled runtime broker-write-blocked.
+  This release does not establish an investment edge or guarantee profit.
+
 ## 0.15.1 - 2026-08-19
 
 - Pause quote and account-reconciliation timers until broker connection and auto-shadow startup
@@ -242,11 +271,11 @@
 ## 0.4.0 - 2026-08-09
 
 - Added research-first onboarding and a Getting Started workspace.
-- Split broker access, real orders, remote market data, and the optional personal ledger into independent permissions.
+- Split broker access, real orders, remote market data, and the optional capital planning ledger into independent permissions.
 - Added immediate revocation, credential-forget support, and redacted diagnostic export.
 - Disabled remote community data by default and added per-session disclosure.
 - Added application branding, version metadata, privacy/security/support policies, and public release automation.
-- Reworked public documentation to remove personal account, tax, immigration, and balance assumptions.
+- Reworked public documentation to remove installation-specific legal-status, account, and balance assumptions.
 
 ## 0.3.0
 

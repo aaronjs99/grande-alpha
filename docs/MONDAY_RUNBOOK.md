@@ -2,12 +2,11 @@
 
 Real-order automation is optional and high risk. Complete the [research quickstart](QUICKSTART.md), evidence checks, and a monitored shadow session first. No result proves future profitability.
 
-## Next scheduled shadow session
+## Monitored shadow session
 
-The next scheduled run is a **shadow-only engineering session**. No strategy currently has a live certificate, so
-do not enable Real-order automation, do not select **Authorize Live Session**, and do not submit an
-order. The objective is to prove that the read path, locally derived bars, policy timing, receipts,
-and virtual settlement ledger behave coherently under monitoring.
+Use a **shadow-only engineering session** before any real-money experiment. Shadow mode cannot submit
+an order. The objective is to prove that the read path, locally derived bars, policy timing, receipts,
+and virtual settlement ledger behave coherently under monitoring, not to establish profitability.
 
 1. Run **Morning Check.cmd** before the market opens. Save its output and stop on any unexpected
    account identity, position, open order, read failure, or evidence state.
@@ -41,7 +40,7 @@ virtual fills begin. Keep the application monitored.
 - Run **Morning Check.cmd**. Continue only if the broker read path passes and the app reports the
   expected account, no unexplained position, and no open order.
 - Read [Safety and compliance](SAFETY_AND_COMPLIANCE.md) and current provider/fund disclosures.
-- Resolve account, tax, legal, immigration, employment, and suitability questions with qualified professionals.
+- Resolve account, tax, legal, residency, employment, and suitability questions with qualified professionals.
 - Keep the broker's official app available as an independent emergency control.
 - Use only money whose complete loss would not impair rent, tuition, taxes, debt payments, emergency reserves, or other obligations.
 - If the Agentic account is a cash account, treat broker buying power as authoritative. Same-day sale
@@ -50,26 +49,31 @@ virtual fills begin. Keep the application monitored.
   unsettled cash and releases them only when the next market session is observed; this is a
   conservative session-level approximation, not the broker ledger.
 
-## Later live review, only after evidence passes
+## Separate supervised and autonomous paths
 
-The remaining sections are not the next session's procedure. Use them only if a future policy-v13 Evidence
-Lab run produces a current `LIVE_REVIEW_ELIGIBLE` certificate for the exact strategy, cadence,
-execution route, settlement model, and risk envelope, and all personal compliance questions have
-been resolved.
+An attended supervised experiment may be made available without claiming an evidence certificate,
+but it is hard-capped and requires a fresh exact confirmation for every reviewed order. Autonomous
+live review remains unavailable unless a policy-v13 Evidence Lab run produces a current
+`LIVE_REVIEW_ELIGIBLE` certificate for the exact strategy, cadence, execution route, settlement
+model, and risk envelope. For either path, resolve all outside-app jurisdiction, account, legal, tax,
+employment, residency, and business responsibilities first.
 
 ## Enable capabilities
 
-1. Confirm Evidence Lab shows `LIVE_REVIEW_ELIGIBLE` for current historical data and the exact current strategy. If it does not, remain in sandbox or shadow mode.
+1. Choose the intended path. For autonomous review, confirm Evidence Lab shows
+   `LIVE_REVIEW_ELIGIBLE` for the exact current strategy. Supervised mode does not claim or satisfy
+   that gate and remains attended with one confirmation per order.
 2. Open **Settings & Permissions**.
 3. Enable **Broker connection** and save. Complete OAuth only on the provider's site.
 4. Compare account identity, value, buying power, positions, and open orders in both applications.
 5. Stop on any discrepancy, restriction, stale quote, pending order, or unexplained position.
-6. Return to settings, enable **Real-order automation**, and type the exact settings phrase.
+6. Return to settings, enable **Supervised real-order tickets**, and type the exact settings phrase.
 
-This enables controls, not a standing trading session. The app checks the certificate again before
-authorization, strategy start, every automatic decision, broker review, and final placement call.
-Changing any runtime setting revokes the grant and stops the strategy; missing, expired, malformed,
-or mismatched evidence fails closed.
+This enables controls, not a standing trading session. The autonomous path checks its certificate
+again before authorization, strategy start, every automatic decision, broker review, and final
+placement call. Supervised mode instead requires a new immutable preview and typed confirmation for
+every order. Changing any runtime setting revokes the grant and stops the strategy; missing,
+expired, malformed, or mismatched evidence fails the autonomous path closed.
 
 ## Grant one bounded session
 

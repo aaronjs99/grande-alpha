@@ -42,9 +42,11 @@ readable positions and orders. Order states are normalized; only recognized term
 closed, so an unknown provider state is conservatively reported as open. Output explicitly reports
 the enforced read-only boundary and `Write tools called: 0`.
 
-A successful result ends with `READY FOR RESEARCH AND LIVE SHADOW`. Real-order controls remain
-locked unless the exact current strategy has a fully passing evidence certificate and the user later
-completes a separate bounded live-session confirmation.
+A successful result ends with `READY FOR RESEARCH AND LIVE SHADOW`. It does not grant any real-order
+authority. Autonomous live review remains locked unless the exact current strategy has a fully
+passing evidence certificate. The distinct supervised experimental path is attended and still
+requires an explicit capability phrase, a bounded same-day session, and fresh confirmation of every
+exact broker-reviewed order.
 
 ## Research session
 
@@ -67,15 +69,19 @@ as permission to review risk—not as evidence that the next trade will be profi
 Open **Settings & Permissions** to enable capabilities one at a time:
 
 - **Broker connection** allows provider-exposed read data and OAuth storage.
-- **Real-order automation** is a second permission and requires a current matching Evidence Lab certificate plus an exact typed phrase.
+- **Supervised real-order tickets** are a second permission. They require the exact settings phrase,
+  the constrained supported route, a bounded attended session, and one fresh exact confirmation per
+  broker-reviewed order. They do not claim or bypass autonomous evidence eligibility.
+- **Autonomous live review** remains a separate path that requires the current matching Evidence Lab
+  certificate and every runtime-parity gate.
 - **Community remote market data** sends symbol/time-range queries to an unsupported external endpoint.
-- **Personal ledger** shows a local planning ledger; it never transfers funds.
+- **Capital planning ledger** shows an optional local ledger; it never transfers funds.
 
-**Automatic order route defaults** chooses regular, extended, or 24 Hour Market behavior without
-granting authority. The choice appears again in every live-session confirmation. Extended and
-overnight routes are whole-share limit-only; a route without matching session-complete evidence
-remains locked. Read [Trading sessions and order routes](TRADING_SESSIONS.md) before changing the
-regular-hours market GFD default.
+**Research, shadow, and live-pilot route** chooses regular, extended, or 24 Hour Market behavior for
+research and shadow without granting authority. Both current real-order pilots are hard-locked to
+Regular market, Market order, GFD, and cash T+1; the session review displays that saved route read-only.
+Extended and overnight settings cannot be unlocked for live placement by evidence in this release.
+Read [Trading sessions and order routes](TRADING_SESSIONS.md) before changing the default.
 
 Removing broker or real-order permission first locks new local activity. If a GRANDE-owned open or
 unresolved order exists, Save refuses and directs the user to the explicit **STOP + CANCEL** preview;
@@ -92,9 +98,10 @@ The always-visible menu bar keeps infrequent controls out of the trading header:
   the locally stored OAuth credential after confirmation. Disconnect refuses when GRANDE-owned open
   or unresolved order state still needs explicit handling; it never cancels an order.
 - **Research** opens each sandbox result surface directly.
-- **Safety** exposes only evidence-gated live controls plus the order-specific stop/cancel and flatten
-  paths. **STOP + CANCEL** shows the exact GRANDE-owned nonterminal-order count and scope before a
-  required confirmation; manual and unrelated orders are untouched.
+- **Safety** exposes the supervised per-order path, the separate evidence-gated autonomous path, and
+  the order-specific stop/cancel and flatten controls. **STOP + CANCEL** shows the exact GRANDE-owned
+  nonterminal-order count and scope before a required confirmation; manual and unrelated orders are
+  untouched.
 - **Help** explains quick start, account scope, privacy, safety locks, version ownership, and opens the
   searchable terminology glossary with `F1`. Dashed-underlined labels also show the same definitions
   on hover or click.

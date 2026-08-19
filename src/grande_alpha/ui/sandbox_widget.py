@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pyqtgraph as pg
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QColor
+from PySide6.QtGui import QColor, QResizeEvent
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -162,6 +162,7 @@ class SandboxWidget(QWidget):
 
     def _build_ui(self) -> None:
         outer = QVBoxLayout(self)
+        self.outer_layout = outer
         banner = QLabel(
             "SANDBOX ONLY — TQQQS/SQQQS are fictional aliases. Every fill is virtual; this tab has "
             "no broker object and cannot submit, review, cancel, or modify a Robinhood order."
@@ -174,9 +175,12 @@ class SandboxWidget(QWidget):
         outer.addWidget(banner)
         outer.addWidget(help_hint())
         splitter = QSplitter(Qt.Orientation.Horizontal)
+        self.main_splitter = splitter
+        splitter.setObjectName("sandboxWorkspaceSplitter")
         config_scroll = QScrollArea()
+        self.config_scroll = config_scroll
         config_scroll.setWidgetResizable(True)
-        config_scroll.setMinimumWidth(470)
+        config_scroll.setMinimumWidth(360)
         panel = QWidget()
         layout = QVBoxLayout(panel)
 
@@ -398,7 +402,11 @@ class SandboxWidget(QWidget):
         results = QWidget()
         results_layout = QVBoxLayout(results)
         metrics = QGridLayout()
+        self.metrics_layout = metrics
+        metrics.setHorizontalSpacing(5)
+        metrics.setVerticalSpacing(5)
         self.metric_labels: dict[str, QLabel] = {}
+        self.metric_cards: list[QGroupBox] = []
         names = [
             ("final", "Final equity"),
             ("pnl", "Net P/L"),
@@ -414,13 +422,14 @@ class SandboxWidget(QWidget):
             ("cost", "Execution cost"),
             ("unsettled", "Unsettled cash"),
         ]
-        for index, (key, title) in enumerate(names):
+        for key, title in names:
             card = QGroupBox(title)
             card_layout = QVBoxLayout(card)
+            card_layout.setContentsMargins(7, 8, 7, 6)
             label = QLabel("—")
-            label.setStyleSheet("font-size:13pt;font-weight:650")
+            label.setStyleSheet("font-size:12pt;font-weight:650")
             card_layout.addWidget(label)
-            metrics.addWidget(card, index // 6, index % 6)
+            self.metric_cards.append(card)
             self.metric_labels[key] = label
         results_layout.addLayout(metrics)
 
@@ -520,6 +529,8 @@ class SandboxWidget(QWidget):
         controls.addWidget(self.replay_slider, 1)
         replay_layout.addLayout(controls)
         fill_split = QSplitter(Qt.Orientation.Horizontal)
+        self.fill_splitter = fill_split
+        fill_split.setObjectName("sandboxFillInspectorSplitter")
         self.fills_table = self._table(
             ["Time", "Alias", "Side", "Qty", "Fill", "Filled", "Cost", "Realized P/L", "Reason"]
         )
@@ -629,6 +640,7 @@ class SandboxWidget(QWidget):
         action_split.setStretchFactor(1, 3)
         action_layout.addWidget(action_split, 1)
         self.action_tab_index = self.tabs.addTab(action_lab, "9-action lab")
+        self.tabs.setUsesScrollButtons(True)
         results_layout.addWidget(self.tabs, 1)
         self.status = QLabel("Configure a virtual replay. Robinhood is not required.")
         self.status.setWordWrap(True)
@@ -639,6 +651,71 @@ class SandboxWidget(QWidget):
         splitter.setStretchFactor(1, 1)
         splitter.setSizes([480, 920])
         outer.addWidget(splitter)
+        self._responsive_mode: tuple[str, int, str] | None = None
+        QTimer.singleShot(0, lambda: self.apply_responsive_layout(self.width(), self.height()))
+
+    @staticmethod
+    def _reflow_metrics(layout: QGridLayout, cards: list[QGroupBox], columns: int) -> None:
+        for card in cards:
+            layout.removeWidget(card)
+        for index, card in enumerate(cards):
+            layout.addWidget(card, index // columns, index % columns)
+        for column in range(columns):
+            layout.setColumnStretch(column, 1)
+
+    def apply_responsive_layout(self, width: int, height: int) -> None:
+        """Keep the research controls and results usable across portrait and landscape."""
+
+        if not hasattr(self, "main_splitter"):
+            return
+        available_width = max(1, self.width() if self.isVisible() else width)
+        available_height = max(1, self.height() if self.isVisible() else height)
+        portrait = width < 960 or height > width
+        main_orientation = Qt.Orientation.Vertical if portrait else Qt.Orientation.Horizontal
+        result_width = (
+            available_width if portrait else max(420, int(available_width * 0.64))
+        )
+        metric_columns = 6 if result_width >= 780 else 4 if result_width >= 560 else 3
+        fill_orientation = (
+            Qt.Orientation.Vertical if result_width < 760 else Qt.Orientation.Horizontal
+        )
+        mode = (
+            "portrait" if portrait else "landscape",
+            metric_columns,
+            "vertical" if fill_orientation == Qt.Orientation.Vertical else "horizontal",
+        )
+        if mode == getattr(self, "_responsive_mode", None):
+            return
+        self._responsive_mode = mode
+        self.main_splitter.setOrientation(main_orientation)
+        self.config_scroll.setMinimumWidth(0 if portrait else 340)
+        if portrait:
+            self.config_scroll.setMinimumHeight(210)
+            self.main_splitter.setSizes(
+                [max(220, int(available_height * 0.42)), max(260, int(available_height * 0.58))]
+            )
+        else:
+            self.config_scroll.setMinimumHeight(0)
+            self.main_splitter.setSizes(
+                [max(340, int(available_width * 0.34)), max(420, int(available_width * 0.66))]
+            )
+        self.fill_splitter.setOrientation(fill_orientation)
+        self.fill_splitter.setSizes(
+            [420, 190] if fill_orientation == Qt.Orientation.Horizontal else [180, 130]
+        )
+        self._reflow_metrics(self.metrics_layout, self.metric_cards, metric_columns)
+        wrap_policy = (
+            QFormLayout.RowWrapPolicy.WrapLongRows
+            if portrait or width < 900
+            else QFormLayout.RowWrapPolicy.DontWrapRows
+        )
+        for form in self.findChildren(QFormLayout):
+            form.setRowWrapPolicy(wrap_policy)
+            form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
+
+    def resizeEvent(self, event: QResizeEvent) -> None:  # noqa: N802 - Qt API
+        super().resizeEvent(event)
+        self.apply_responsive_layout(event.size().width(), event.size().height())
 
     def _table(self, headers: list[str]) -> QTableWidget:
         table = QTableWidget(0, len(headers))

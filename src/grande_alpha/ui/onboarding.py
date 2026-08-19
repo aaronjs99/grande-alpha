@@ -68,7 +68,7 @@ class OnboardingWizard(QWizard):
             "Community remote market data — sends requested symbols, dates, and intervals to an unsupported third-party endpoint"
         )
         self.personal_ledger = QCheckBox(
-            "Personal research-fund ledger — local planning records only; never transfers money"
+            "Capital planning ledger — optional local records only; never transfers money"
         )
         for checkbox in (self.broker, self.remote_data, self.personal_ledger):
             checkbox.setChecked(False)

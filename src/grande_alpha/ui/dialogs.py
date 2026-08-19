@@ -11,10 +11,12 @@ from PySide6.QtWidgets import (
     QDoubleSpinBox,
     QFormLayout,
     QGroupBox,
+    QHBoxLayout,
     QLabel,
     QLineEdit,
     QPlainTextEdit,
     QPushButton,
+    QScrollArea,
     QSpinBox,
     QVBoxLayout,
     QWidget,
@@ -22,8 +24,19 @@ from PySide6.QtWidgets import (
 
 from grande_alpha.config import AppConfig
 from grande_alpha.execution import MARKET_HOURS_LABELS, ORDER_TYPE_LABELS, TIME_IN_FORCE_LABELS
-from grande_alpha.models import AUTHORITY_TIMEZONE, Account, LiveGrant, Portfolio, utc_now
+from grande_alpha.models import (
+    AUTHORITY_TIMEZONE,
+    Account,
+    LiveGrant,
+    OrderConfirmationRequest,
+    Portfolio,
+    utc_now,
+)
 from grande_alpha.ui.glossary import add_explained_row, apply_help, help_hint
+
+SUPERVISED_MAX_ORDER_NOTIONAL = 10.0
+SUPERVISED_MAX_DAILY_NOTIONAL = 50.0
+SUPERVISED_MAX_TOTAL_EXPOSURE = 40.0
 
 
 class LiveGrantDialog(QDialog):
@@ -35,31 +48,54 @@ class LiveGrantDialog(QDialog):
         parent=None,
         *,
         strategy_fingerprint: str | None = None,
+        evidence_gated: bool = False,
     ) -> None:
         super().__init__(parent)
         self.account = account
         self.portfolio = portfolio
         self.config = config
         self.strategy_fingerprint = strategy_fingerprint or ""
+        self.evidence_gated = evidence_gated
         self.phrase = ""
-        self.setWindowTitle("Authorize bounded live trading")
+        self.setWindowTitle(
+            "Authorize bounded evidence-gated trading"
+            if evidence_gated
+            else "Authorize bounded supervised trading"
+        )
         self.setModal(True)
-        self.setMinimumSize(700, 620)
+        self.setMinimumSize(620, 520)
         self.resize(720, 650)
         self.setSizeGripEnabled(True)
 
-        layout = QVBoxLayout(self)
-        title = QLabel("Real-money automatic orders")
+        outer = QVBoxLayout(self)
+        title = QLabel(
+            "Real-money evidence-gated orders"
+            if evidence_gated
+            else "Real-money supervised orders"
+        )
         title.setObjectName("dialogTitle")
-        layout.addWidget(title)
+        outer.addWidget(title)
         details = QLabel(
             f"Account: {account.nickname} {account.masked} ({account.account_type})\n"
             f"Broker value: ${portfolio.total_value:,.2f}   Buying power: ${portfolio.buying_power:,.2f}\n\n"
-            "Within this session the strategy may place TQQQ/SQQQ orders without asking again. "
-            "The numeric limits below are enforced outside the strategy and expire automatically."
+            "Within this session the strategy may generate reviewed TQQQ/SQQQ order tickets. "
+            "Every ticket still requires a separate exact confirmation before placement. "
+            + (
+                "The exact current evidence certificate is rechecked before authorization and each "
+                "automatic decision. "
+                if evidence_gated
+                else "This attended experimental route does not claim an evidence-eligible strategy. "
+            )
+            + "The numeric limits below are enforced outside the strategy and expire automatically."
         )
         details.setWordWrap(True)
-        layout.addWidget(details)
+        outer.addWidget(details)
+        self.scroll = QScrollArea()
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        body = QWidget()
+        layout = QVBoxLayout(body)
         if account.account_type.lower() == "cash":
             cash_notice = QLabel(
                 "Cash-account constraint: sale proceeds generally do not restore spendable buying "
@@ -79,15 +115,26 @@ class LiveGrantDialog(QDialog):
 
         risk_group = QGroupBox("Session risk limits")
         form = QFormLayout(risk_group)
+        form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
+        form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
         self.minutes = QSpinBox()
         self.minutes.setRange(5, 240)
         self.minutes.setValue(config.default_session_minutes)
-        self.max_order = self._money(config.default_max_order_notional, max(1.0, portfolio.buying_power))
-        self.max_daily_notional = self._money(
-            config.default_max_daily_notional,
-            max(1.0, portfolio.buying_power * config.default_max_trades),
+        self.max_order = self._money(
+            min(config.default_max_order_notional, SUPERVISED_MAX_ORDER_NOTIONAL),
+            min(SUPERVISED_MAX_ORDER_NOTIONAL, max(1.0, portfolio.buying_power)),
         )
-        self.max_exposure = self._money(config.default_max_total_exposure, max(1.0, portfolio.buying_power))
+        self.max_daily_notional = self._money(
+            min(config.default_max_daily_notional, SUPERVISED_MAX_DAILY_NOTIONAL),
+            min(
+                SUPERVISED_MAX_DAILY_NOTIONAL,
+                max(1.0, portfolio.buying_power * config.default_max_trades),
+            ),
+        )
+        self.max_exposure = self._money(
+            min(config.default_max_total_exposure, SUPERVISED_MAX_TOTAL_EXPOSURE),
+            min(SUPERVISED_MAX_TOTAL_EXPOSURE, max(1.0, portfolio.buying_power)),
+        )
         self.max_loss = self._money(config.default_max_daily_loss, max(1.0, portfolio.total_value))
         self.max_trades = QSpinBox()
         self.max_trades.setRange(1, 50)
@@ -112,6 +159,8 @@ class LiveGrantDialog(QDialog):
 
         route_group = QGroupBox("Order routing")
         route = QFormLayout(route_group)
+        route.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
+        route.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
         self.market_hours = QComboBox()
         for value, label in MARKET_HOURS_LABELS.items():
             self.market_hours.addItem(label, value)
@@ -145,28 +194,34 @@ class LiveGrantDialog(QDialog):
         layout.addWidget(self.scope_note)
 
         self.attest = QCheckBox(
-            "I am trading only my own account and have obtained the immigration/tax guidance\n"
-            "needed for my circumstances."
+            "I am authorized to control this account and have reviewed the legal, tax, employment,\n"
+            "residency, and account-eligibility requirements that apply to my circumstances."
         )
         apply_help(
             self.attest,
             "Live-session attestation",
-            "Confirm this only when every statement is true. It is a consent checkpoint, not immigration or tax advice.",
+            "Confirm this only when every statement is true. It is a consent checkpoint, not legal, tax, employment, or eligibility advice.",
         )
-        layout.addWidget(self.attest)
+        self.scroll.setWidget(body)
+        outer.addWidget(self.scroll, 1)
+        outer.addWidget(self.attest)
 
         self.prompt = QLabel("")
         self.prompt.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self.prompt.setWordWrap(True)
-        layout.addWidget(self.prompt)
+        outer.addWidget(self.prompt)
         self.confirmation = QLineEdit()
         self.confirmation.setPlaceholderText(self.phrase)
-        layout.addWidget(self.confirmation)
+        outer.addWidget(self.confirmation)
 
         self.buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Cancel | QDialogButtonBox.StandardButton.Ok
         )
-        self.buttons.button(QDialogButtonBox.StandardButton.Ok).setText("Authorize and start live session")
+        self.buttons.button(QDialogButtonBox.StandardButton.Ok).setText(
+            "Authorize and start evidence-gated session"
+            if evidence_gated
+            else "Authorize and start supervised session"
+        )
         self.buttons.button(QDialogButtonBox.StandardButton.Ok).setEnabled(False)
         self.buttons.accepted.connect(self.accept)
         self.buttons.rejected.connect(self.reject)
@@ -186,10 +241,15 @@ class LiveGrantDialog(QDialog):
             route_control.setEnabled(False)
         self.route_note.setText(
             self.route_note.text()
-            + " The route is locked to the evidence-certified Settings profile; change Settings and "
-            "rerun evidence to use another route."
+            + (
+                " Evidence-gated authority remains bound to the exact certified regular-hours "
+                "market/GFD, cash-T+1 Settings profile."
+                if evidence_gated
+                else " Supervised experimental mode is locked to the regular-hours market/GFD, "
+                "cash-T+1 Settings profile. Other routes remain research/shadow only."
+            )
         )
-        layout.addWidget(self.buttons)
+        outer.addWidget(self.buttons)
 
     def _money(self, value: float, maximum: float) -> QDoubleSpinBox:
         widget = QDoubleSpinBox()
@@ -297,6 +357,138 @@ class LiveGrantDialog(QDialog):
         return grant
 
 
+class OrderConfirmationDialog(QDialog):
+    """Exact, one-use confirmation for one strategy-generated Robinhood order."""
+
+    def __init__(self, request: OrderConfirmationRequest, parent=None) -> None:
+        super().__init__(parent)
+        request.validate()
+        self.request = request
+        self.setWindowTitle("Confirm one real-money order")
+        self.setModal(True)
+        self.setMinimumSize(620, 520)
+        self.resize(760, 720)
+        self.setSizeGripEnabled(True)
+
+        outer = QVBoxLayout(self)
+        title = QLabel("Review one Robinhood order")
+        title.setObjectName("dialogTitle")
+        outer.addWidget(title)
+
+        warning = QLabel(
+            "This strategy ticket is not an order yet. GRANDE Alpha will place only this exact "
+            "ticket if you confirm it below. The decision is one-use, expires in 30 seconds or "
+            "at session expiry, and is never remembered."
+        )
+        warning.setObjectName("validationWarning")
+        warning.setWordWrap(True)
+        outer.addWidget(warning)
+
+        self.review_scroll = QScrollArea()
+        self.review_scroll.setWidgetResizable(True)
+        self.review_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        self.review_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        body = QWidget()
+        layout = QVBoxLayout(body)
+
+        intent = request.intent
+        review = request.review
+        amount_line = (
+            f"Dollar amount: ${float(intent.dollar_amount):,.2f}"
+            if intent.dollar_amount is not None
+            else f"Quantity: {float(intent.quantity or 0.0):g} shares"
+        )
+        limit_line = (
+            f"Limit price: ${float(intent.limit_price):,.2f}"
+            if intent.limit_price is not None
+            else "Limit price: none (market order)"
+        )
+        reviewed_at = review.quote.book_timestamp or review.quote.timestamp
+        self.details = QPlainTextEdit()
+        self.details.setReadOnly(True)
+        self.details.setAccessibleName("Exact reviewed order preview")
+        self.details.setPlainText(
+            f"Account: {request.account_masked} (ending {request.account_number[-4:]})\n"
+            f"Symbol: {intent.symbol}\n"
+            f"Side: {intent.side.upper()}\n"
+            f"{amount_line}\n"
+            f"Order type: {intent.order_type}\n"
+            f"Market hours: {intent.market_hours}\n"
+            f"Time in force: {intent.time_in_force}\n"
+            f"{limit_line}\n"
+            f"Reviewed bid: ${review.quote.bid:,.4f}\n"
+            f"Reviewed ask: ${review.quote.ask:,.4f}\n"
+            f"Reviewed venue quote time: {reviewed_at.isoformat()}\n"
+            f"Estimated execution price: ${review.estimated_execution_price:,.4f}\n"
+            f"Estimated order value: ${review.estimated_notional:,.2f}\n"
+            f"Strategy reason: {intent.reason}\n"
+            f"Session authority: {request.authority_id}\n"
+            f"Strategy fingerprint: {request.strategy_fingerprint}\n"
+            f"Preview id: {request.preview_id}\n"
+            f"Confirmation expires: {request.expires_at.isoformat()}"
+        )
+        self.details.setMinimumHeight(210)
+        layout.addWidget(self.details)
+
+        estimate_note = QLabel(
+            "The reviewed quote and order value are estimates, not guaranteed fills. A market order "
+            "can execute at a different price. If the reviewed price moves materially or account, "
+            "inventory, authority, route, or risk truth changes, this preview is rejected and a new "
+            "review is required."
+        )
+        estimate_note.setWordWrap(True)
+        layout.addWidget(estimate_note)
+
+        disclosure_label = QLabel("Robinhood market-data disclosure (verbatim)")
+        disclosure_label.setObjectName("settingsDescription")
+        layout.addWidget(disclosure_label)
+        self.disclosure = QPlainTextEdit()
+        self.disclosure.setReadOnly(True)
+        self.disclosure.setAccessibleName("Robinhood market data disclosure")
+        self.disclosure.setPlainText(
+            review.market_data_disclosure
+            if review.market_data_disclosure is not None
+            else "Robinhood returned no market-data disclosure for this review."
+        )
+        self.disclosure.setMaximumHeight(110)
+        layout.addWidget(self.disclosure)
+
+        self.review_scroll.setWidget(body)
+        outer.addWidget(self.review_scroll, 1)
+
+        prompt = QLabel(f"Type exactly to place only this order:\n{request.confirmation_phrase}")
+        prompt.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        prompt.setWordWrap(True)
+        outer.addWidget(prompt)
+        self.confirmation = QLineEdit()
+        self.confirmation.setPlaceholderText(request.confirmation_phrase)
+        self.confirmation.setAccessibleName("Exact one-order confirmation phrase")
+        outer.addWidget(self.confirmation)
+
+        self.buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Cancel | QDialogButtonBox.StandardButton.Ok
+        )
+        self.confirm_button = self.buttons.button(QDialogButtonBox.StandardButton.Ok)
+        self.cancel_button = self.buttons.button(QDialogButtonBox.StandardButton.Cancel)
+        self.confirm_button.setText("Place this one order")
+        self.confirm_button.setEnabled(False)
+        self.confirm_button.setAutoDefault(False)
+        self.confirm_button.setDefault(False)
+        self.cancel_button.setText("Decline — place nothing")
+        self.cancel_button.setAutoDefault(True)
+        self.cancel_button.setDefault(True)
+        self.buttons.accepted.connect(self.accept)
+        self.buttons.rejected.connect(self.reject)
+        self.confirmation.textChanged.connect(self._validate)
+        outer.addWidget(self.buttons)
+        self.cancel_button.setFocus(Qt.FocusReason.OtherFocusReason)
+
+    def _validate(self) -> None:
+        self.confirm_button.setEnabled(
+            self.confirmation.text().strip() == self.request.confirmation_phrase
+        )
+
+
 class AuthorityControlPanel(QWidget):
     """Reusable, always-visible session pause/revoke controls for the main window."""
 
@@ -306,12 +498,13 @@ class AuthorityControlPanel(QWidget):
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
-        layout = QVBoxLayout(self)
+        layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
         self.status = QLabel("AUTHORITY • LOCKED")
         self.status.setObjectName("settingsStatus")
         self.status.setWordWrap(True)
-        layout.addWidget(self.status)
+        layout.addWidget(self.status, 1)
         self.pause_button = QPushButton("Pause authority")
         self.resume_button = QPushButton("Resume authority")
         self.revoke_button = QPushButton("Revoke authority")
@@ -355,16 +548,16 @@ class FundPlanDialog(QDialog):
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
-        self.setWindowTitle("Plan GRANDE Research Fund contribution")
+        self.setWindowTitle("Plan capital-ledger contribution")
         self.setModal(True)
         self.setMinimumWidth(520)
         layout = QVBoxLayout(self)
-        title = QLabel("Personal contribution ledger")
+        title = QLabel("Capital planning ledger")
         title.setObjectName("dialogTitle")
         layout.addWidget(title)
         explanation = QLabel(
             "Enter realized brokerage results and a reserve. GRANDE Alpha calculates a planned "
-            "personal contribution only; it cannot transfer funds. Mark the entry confirmed only "
+            "capital-allocation entry only; it cannot transfer funds. Mark the entry confirmed only "
             "after you independently complete and verify a transfer."
         )
         explanation.setWordWrap(True)

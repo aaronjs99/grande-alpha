@@ -1,13 +1,14 @@
 # Trading sessions and automatic order routes
 
-GRANDE Alpha exposes the three equity sessions currently accepted by Robinhood Trading MCP. A
-selection is an execution constraint, not a prediction or a reason to trade.
+GRANDE Alpha exposes three equity-session models for research and shadow configuration. A selection
+is an execution constraint, not a prediction or a reason to trade. Both current real-order pilots are
+hard-locked to Regular market, Market order, GFD, and cash T+1.
 
-| User selection | Eastern time | Automatic order choices | Sizing |
+| Research/shadow selection | Eastern time | Modeled order choices | Sizing |
 |---|---|---|---|
 | Regular market | 9:30 AM-4:00 PM | Market GFD; limit GFD/GTC | Market buys may use dollars/fractions; limits use whole shares |
 | Extended market | 7:00 AM-8:00 PM | Limit GFD/GTC only | Whole shares |
-| 24 Hour Market | 8:00 PM-8:00 PM on eligible trading days | Limit GFD/GTC only | Whole shares; live eligibility rechecked before submission |
+| 24 Hour Market | 8:00 PM-8:00 PM on eligible trading days | Limit GFD/GTC only | Whole-share modeled sizing; no current live-pilot route |
 
 Robinhood does not execute equity market orders during extended or overnight sessions. A market
 order sent then may queue for regular open, so GRANDE Alpha does not create that combination. The
@@ -18,17 +19,17 @@ authoritative. See Robinhood's current [extended-hours](https://robinhood.com/us
 
 ## Where the choice is made
 
-**Settings & Permissions → Automatic order route defaults** stores a default only. It grants no
-authority. **Safety → Authorize Live Session** displays the route again and allows the user to change
-it before typing the account-specific confirmation. The resulting live grant binds the exact session,
-order type, time in force, limit offset, account, ticker tuple, and strategy fingerprint. It expires
-within the same Eastern calendar day and is never restored after restart. Any intent that differs is
-rejected locally before broker review.
+**Settings & Permissions → Research, shadow, and live-pilot route** stores a default only. It grants
+no authority. The live-session review displays the saved route read-only. In the current release,
+both supervised and evidence-gated live pilots reject every route except Regular market, Market order,
+GFD, and cash T+1. A resulting grant binds that exact route, account, ticker tuple, and strategy
+fingerprint; it expires within the same Eastern calendar day and is never restored after restart. Any
+intent that differs is rejected locally before broker review.
 
-The sandbox exposes the same fields. Evidence-policy version 13 binds them and the settlement model
+The sandbox exposes the broader research fields. Evidence-policy version 13 binds them and the settlement model
 into the strategy fingerprint, adds a complete-session-coverage gate, and requires a one-use final
 holdout. Regular data cannot certify an extended or
-overnight route. The community adapter can request pre/post-market bars for extended research, but it
+overnight route, and evidence does not unlock those live routes in the current release. The community adapter can request pre/post-market bars for extended research, but it
 rejects 24-hour certification because it does not provide complete overnight coverage. Use a lawful,
 aligned QQQ/TQQQ/SQQQ CSV with overnight timestamps and a consistent
 `market_hours=all_day_hours` column for that research path. The importer requires both evening and

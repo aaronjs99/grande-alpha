@@ -1,8 +1,10 @@
 # Live shadow mode
 
 Live shadow uses current Robinhood quotes and the same shared decision policy as replay/live logic,
-but executes only fictional `TQQQS` and `SQQQS` positions in memory. Its module does not import a
-broker and contains no review, placement, or cancellation method.
+but executes only fictional `TQQQS` and `SQQQS` positions. Its execution module does not import a
+broker and contains no review, placement, or cancellation method. The active virtual ledger is
+checkpointed locally so an unexpected supervisor restart cannot silently manufacture a fresh $50
+run in the middle of the same market session.
 
 ## Procedure
 
@@ -28,9 +30,37 @@ different supported runtime policy is deliberate, changes the strategy fingerpri
 imply profitability or unlock real orders. Changing runtime settings stops the active shadow run so
 old virtual execution assumptions cannot continue under a new signal configuration.
 
-## Tuesday, August 11, 2026 engineering session
+## Durable restart boundary
 
-Tomorrow's session is **shadow only**. Its purpose is to validate the application, data path, timing,
+Every shadow start, completed analysis advance, virtual fill, and stop appends an immutable SQLite
+checkpoint. Each checkpoint is versioned, atomically committed, and hash-chained to the preceding
+checkpoint in that run. The canonical hashed payload includes settled and T+1-unsettled cash, equity, P/L,
+the open virtual position and fill history, pending transition, analysis and entry counters,
+session loss controls, recent volatility inputs, prior prices, and the deterministic RNG state.
+
+Recovery is deliberately narrow. GRANDE Alpha resumes only the latest checkpoint when all of these
+identities match exactly:
+
+- market session;
+- hashed Agentic account identity;
+- candidate strategy fingerprint and analysis cadence;
+- candidate execution-contract fingerprint and checkpoint schema.
+
+A corrupt or gapped chain, a changed candidate, a different account, a different market session,
+or an active checkpoint with an incompatible contract blocks shadow startup. The app records a
+critical `shadow_recovery` receipt instead of resetting cash, unsettled proceeds, P/L, entry count,
+or an open position. A normally stopped prior run is not resumed and the next start creates a new
+run explicitly.
+
+After a process restart, the virtual execution ledger and its causal controls are restored, while
+the controller's live QQQ bar/indicator pipeline deliberately warms up again from newly observed
+quotes. The recovery receipt states that boundary; it must not be described as uninterrupted market
+data continuity. Checkpointing remains local and read-only with respect to Robinhood: it grants no
+authority and invokes no broker review, placement, or cancellation path.
+
+## Example monitored engineering session
+
+This example session is **shadow only**. Its purpose is to validate the application, data path, timing,
 receipts, and virtual ledger under observation. It is not an attempt to earn money or a test of real
 execution.
 
