@@ -487,6 +487,27 @@ async def test_auto_shadow_transport_failure_stops_and_read_only_disconnects(
 
 
 @pytest.mark.asyncio
+async def test_auto_shadow_reconcile_records_successful_account_truth_clock(
+    tmp_path, monkeypatch
+) -> None:
+    clock = FakeClock(START)
+    broker = AutoShadowBroker(quote_clock=lambda: clock.now)
+    monkeypatch.setattr("grande_alpha.controller.utc_now", lambda: clock.now)
+    controller, store = _controller(tmp_path, broker, clock=clock)
+    assert await controller.auto_start_shadow()
+    assert controller.snapshot.last_reconcile_at == START
+
+    clock.now += timedelta(seconds=5)
+    await controller.reconcile()
+
+    assert controller.snapshot.last_reconcile_at == clock.now
+    assert controller.snapshot.connected
+    assert controller.snapshot.shadow_running
+    assert broker.review_calls == broker.place_calls == broker.cancel_calls == 0
+    store.close()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("broker", "blocker"),
     [

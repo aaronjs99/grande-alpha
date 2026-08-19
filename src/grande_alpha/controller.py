@@ -1098,6 +1098,7 @@ class TradingController(QObject):
                 # the entire reconciliation batch.
                 if self.shadow_only_runtime:
                     await self._refresh_auto_shadow_account_state()
+                    self.snapshot.last_reconcile_at = utc_now()
                 else:
                     account_number = self.snapshot.account.account_number
                     portfolio = await self.broker.get_portfolio(account_number)
