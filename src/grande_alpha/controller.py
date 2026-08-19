@@ -72,7 +72,7 @@ from grande_alpha.policy import (
 )
 from grande_alpha.risk import RiskEngine
 from grande_alpha.sandbox import load_sandbox_config
-from grande_alpha.shadow import LiveShadowEngine
+from grande_alpha.shadow import LiveShadowEngine, shadow_checkpoint_requires_continuity
 from grande_alpha.storage import EXACT_QUOTE_VALIDATOR_VERSION, AuditStore
 from grande_alpha.strategy import BarBuilder, StrategyConfig, build_strategy
 
@@ -231,6 +231,7 @@ class TradingController(QObject):
         self._shadow_session_key: str | None = None
         self._shadow_account_fingerprint: str | None = None
         self._shadow_strategy_fingerprint: str | None = None
+        self._auto_shadow_daily_close_completed = False
 
     def set_order_confirmer(self, confirmer: OrderConfirmer | None) -> None:
         """Install the non-persistent UI callback used for each reviewed real-money order."""
@@ -789,7 +790,14 @@ class TradingController(QObject):
     ) -> None:
         """Disconnect without reviewing, placing, or cancelling any broker order."""
 
+        daily_close = bool(flatten_virtual and self.auto_shadow_session_complete())
         self.stop_shadow(reason, flatten_virtual=flatten_virtual)
+        # A quote timer can already be awaiting the provider when the regular-session
+        # close stops the virtual run. Keep this marker through the off-session idle
+        # period so only that request's deterministic disconnect result is ignored.
+        # The next eligible start clears it before making any provider reads.
+        if daily_close:
+            self._auto_shadow_daily_close_completed = True
         self.snapshot.strategy_running = False
         self.snapshot.session_expires_at = None
         self.risk.disarm()
@@ -808,6 +816,7 @@ class TradingController(QObject):
     async def auto_start_shadow(self) -> bool:
         """Connect and start a fresh, read-only live-shadow run."""
 
+        self._auto_shadow_daily_close_completed = False
         if not self.shadow_only_runtime:
             raise RuntimeError("Auto-shadow startup requires the shadow-only runtime boundary")
         self.risk.disarm()
@@ -1326,6 +1335,16 @@ class TradingController(QObject):
             if evaluate and self.snapshot.strategy_running:
                 await self._evaluate_and_trade()
         except Exception as exc:
+            expected_close_disconnect = bool(
+                self.shadow_only_runtime
+                and self._auto_shadow_daily_close_completed
+                and not self.snapshot.shadow_running
+                and self.auto_shadow_session_complete()
+                and isinstance(exc, BrokerError)
+                and str(exc).strip() == "Robinhood disconnected"
+            )
+            if expected_close_disconnect:
+                return
             self.log(f"Quote refresh failed: {exc}", "error", "broker")
             if self.shadow_only_runtime and self.snapshot.shadow_running:
                 self.stop_shadow(f"AUTO SHADOW BLOCKED: quote/data failure: {exc}")
@@ -1973,6 +1992,12 @@ class TradingController(QObject):
 
         try:
             latest = self.store.latest_shadow_checkpoint()
+            inactive_continuity_required = bool(
+                latest is not None
+                and not bool(latest["state"].get("active"))
+                and latest["session_key"] == current_session
+                and shadow_checkpoint_requires_continuity(latest)
+            )
         except Exception as exc:
             self.log(
                 f"SHADOW RECOVERY BLOCKED: durable checkpoint chain is invalid: {exc}",
@@ -1981,6 +2006,38 @@ class TradingController(QObject):
                 {"error": str(exc), "broker_write_attempted": False},
             )
             raise RuntimeError("Shadow recovery blocked by an invalid durable checkpoint chain") from exc
+
+        if inactive_continuity_required:
+            prior_state = latest["state"]
+            compatibility = {
+                "account": latest["account_fingerprint"] == account_id,
+                "strategy": latest["strategy_fingerprint"] == strategy_id,
+                "contract": latest["contract_fingerprint"] == contract.fingerprint,
+            }
+            self.log(
+                "SHADOW RECOVERY BLOCKED: prior stopped same-session run retains "
+                "unresolved virtual state",
+                "critical",
+                "shadow_recovery",
+                {
+                    "prior_run_id": latest["run_id"],
+                    "prior_session": latest["session_key"],
+                    "open_position": (
+                        prior_state["position"].get("symbol")
+                        if isinstance(prior_state.get("position"), dict)
+                        else None
+                    ),
+                    "pending_transition": prior_state.get("pending") is not None,
+                    "virtual_unsettled_cash": prior_state.get("unsettled_cash"),
+                    "compatible": all(compatibility.values()),
+                    "compatibility": compatibility,
+                    "broker_write_attempted": False,
+                },
+            )
+            raise RuntimeError(
+                "Prior stopped same-session shadow run retains unresolved virtual state; "
+                "refusing to reset its virtual ledger"
+            )
 
         recovered = False
         if latest is not None and bool(latest["state"].get("active")):

@@ -23,7 +23,11 @@ from grande_alpha.models import (
 )
 from grande_alpha.policy import session_key
 from grande_alpha.sandbox import SandboxConfig
-from grande_alpha.shadow import LiveShadowEngine
+from grande_alpha.shadow import (
+    LiveShadowEngine,
+    shadow_checkpoint_digest,
+    shadow_checkpoint_requires_continuity,
+)
 from grande_alpha.storage import AuditStore
 
 NOW = datetime(2026, 8, 19, 16, 0, tzinfo=UTC)
@@ -206,12 +210,8 @@ def _controller(store: AuditStore, config: AppConfig) -> TradingController:
     return controller
 
 
-def test_controller_recovers_compatible_same_session_without_resetting_ledger(
-    tmp_path: Path, monkeypatch
-) -> None:
-    store = AuditStore(tmp_path / "controller.db")
-    sandbox = _config()
-    config = AppConfig(
+def _app_config(sandbox: SandboxConfig) -> AppConfig:
+    return AppConfig(
         broker_connection_enabled=True,
         strategy_name=sandbox.strategy_name,
         warmup_bars=sandbox.warmup_bars,
@@ -226,6 +226,14 @@ def test_controller_recovers_compatible_same_session_without_resetting_ledger(
         settlement_model="cash_t1",
         bar_seconds=60,
     )
+
+
+def test_controller_recovers_compatible_same_session_without_resetting_ledger(
+    tmp_path: Path, monkeypatch
+) -> None:
+    store = AuditStore(tmp_path / "controller.db")
+    sandbox = _config()
+    config = _app_config(sandbox)
     monkeypatch.setattr("grande_alpha.controller.utc_now", lambda: NOW)
     monkeypatch.setattr("grande_alpha.storage.utc_now", lambda: NOW)
     monkeypatch.setattr("grande_alpha.controller.load_sandbox_config", lambda: sandbox)
@@ -290,3 +298,107 @@ def test_controller_fails_closed_instead_of_resetting_an_incompatible_active_run
     assert changed._shadow is None
     assert len(store.shadow_checkpoints(first._shadow.state.run_id)) == checkpoint_count
     store.close()
+
+
+def test_controller_blocks_stopped_same_session_run_with_open_position(
+    tmp_path: Path, monkeypatch
+) -> None:
+    store = AuditStore(tmp_path / "stopped-position.db")
+    sandbox = _config()
+    config = _app_config(sandbox)
+    monkeypatch.setattr("grande_alpha.controller.utc_now", lambda: NOW)
+    monkeypatch.setattr("grande_alpha.storage.utc_now", lambda: NOW)
+    monkeypatch.setattr("grande_alpha.controller.load_sandbox_config", lambda: sandbox)
+    first = _controller(store, config)
+    first.start_shadow()
+    assert first._shadow is not None
+    first._shadow.on_causal_quote(NOW, Signal(Regime.BULLISH, 1, "enter"), _quotes(NOW))
+    first._shadow.on_causal_quote(
+        NOW + timedelta(minutes=1),
+        Signal(Regime.BULLISH, 1, "enter"),
+        _quotes(NOW + timedelta(minutes=1)),
+    )
+    assert first._shadow.state.position is not None
+    first._persist_shadow_checkpoint("fill")
+    run_id = first._shadow.state.run_id
+    first.stop_shadow("transport failure")
+    stopped = store.latest_shadow_checkpoint()
+    assert stopped is not None
+    assert not stopped["state"]["active"]
+    assert stopped["state"]["position"] is not None
+    checkpoint_count = len(store.shadow_checkpoints(run_id))
+
+    restarted = _controller(store, config)
+    with pytest.raises(RuntimeError, match="unresolved virtual state.*refusing to reset"):
+        restarted.start_shadow()
+
+    assert restarted._shadow is None
+    assert len(store.shadow_checkpoints(run_id)) == checkpoint_count
+    assert store.latest_shadow_checkpoint() == stopped
+    recovery_receipts = [
+        row for row in store.recent_receipts() if row["category"] == "shadow_recovery"
+    ]
+    assert recovery_receipts
+    recovery_payload = json.loads(recovery_receipts[0]["payload_json"])
+    assert recovery_payload["prior_run_id"] == run_id
+    assert recovery_payload["open_position"] == "TQQQS"
+    assert recovery_payload["compatible"] is True
+    assert recovery_payload["broker_write_attempted"] is False
+    store.close()
+
+
+def test_controller_allows_fresh_run_after_clean_flat_same_session_stop(
+    tmp_path: Path, monkeypatch
+) -> None:
+    store = AuditStore(tmp_path / "clean-stop.db")
+    sandbox = _config()
+    config = _app_config(sandbox)
+    monkeypatch.setattr("grande_alpha.controller.utc_now", lambda: NOW)
+    monkeypatch.setattr("grande_alpha.storage.utc_now", lambda: NOW)
+    monkeypatch.setattr("grande_alpha.controller.load_sandbox_config", lambda: sandbox)
+    first = _controller(store, config)
+    first.start_shadow()
+    assert first._shadow is not None
+    prior_run_id = first._shadow.state.run_id
+    first.stop_shadow("deliberate clean stop")
+    stopped = store.latest_shadow_checkpoint()
+    assert stopped is not None
+    assert not shadow_checkpoint_requires_continuity(stopped)
+
+    restarted = _controller(store, config)
+    restarted.start_shadow()
+
+    assert restarted._shadow is not None
+    assert restarted._shadow.state.active
+    assert restarted._shadow.state.run_id != prior_run_id
+    latest = store.latest_shadow_checkpoint()
+    assert latest is not None
+    assert latest["event"] == "started"
+    assert latest["run_id"] == restarted._shadow.state.run_id
+    restarted.stop_shadow("test complete")
+    store.close()
+
+
+def test_stopped_checkpoint_continuity_includes_pending_and_unsettled_state() -> None:
+    pending_engine = LiveShadowEngine(_config(), bar_minutes=1)
+    pending_engine.on_bar(NOW, Signal(Regime.BULLISH, 1, "enter"), _quotes(NOW))
+    pending_checkpoint = _checkpoint(pending_engine, sequence=1)
+    assert pending_checkpoint["state"]["pending"] is not None
+    pending_checkpoint["state"]["active"] = False
+    pending_checkpoint["digest"] = shadow_checkpoint_digest(pending_checkpoint)
+    assert shadow_checkpoint_requires_continuity(pending_checkpoint)
+
+    unsettled_engine = LiveShadowEngine(_config(), bar_minutes=1)
+    unsettled_engine.on_causal_quote(
+        NOW,
+        Signal(Regime.BULLISH, 1, "enter"),
+        _quotes(NOW),
+    )
+    unsettled_engine.stop(
+        _quotes(NOW + timedelta(minutes=1)),
+        flatten_at=NOW + timedelta(minutes=1),
+    )
+    unsettled_checkpoint = _checkpoint(unsettled_engine, sequence=1, event="stopped")
+    assert unsettled_checkpoint["state"]["position"] is None
+    assert unsettled_checkpoint["state"]["unsettled_cash"] > 0
+    assert shadow_checkpoint_requires_continuity(unsettled_checkpoint)
