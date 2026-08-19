@@ -487,6 +487,188 @@ async def test_auto_shadow_transport_failure_stops_and_read_only_disconnects(
 
 
 @pytest.mark.asyncio
+async def test_inflight_quote_disconnect_at_daily_close_is_not_a_false_error(
+    tmp_path, monkeypatch
+) -> None:
+    clock = FakeClock(START)
+
+    class CloseRaceBroker(AutoShadowBroker):
+        def __init__(self) -> None:
+            super().__init__(quote_clock=lambda: clock.now)
+            self.block_next_quote = False
+            self.quote_started = asyncio.Event()
+            self.release_quote = asyncio.Event()
+
+        async def get_quotes(self, symbols: list[str]) -> dict[str, Quote]:
+            if not self.block_next_quote:
+                return await super().get_quotes(symbols)
+            self.quote_started.set()
+            await self.release_quote.wait()
+            raise BrokerError("Robinhood disconnected")
+
+        async def disconnect(self) -> None:
+            self.disconnect_calls += 1
+            self.release_quote.set()
+            await asyncio.sleep(0)
+
+    broker = CloseRaceBroker()
+    monkeypatch.setattr("grande_alpha.controller.utc_now", lambda: clock.now)
+    controller, store = _controller(tmp_path, broker, clock=clock)
+    assert await controller.auto_start_shadow()
+
+    broker.block_next_quote = True
+    refresh = asyncio.create_task(controller.refresh_quotes(evaluate=False))
+    await broker.quote_started.wait()
+    clock.now = datetime(2026, 8, 11, 20, 0, tzinfo=UTC)
+
+    await controller.disconnect_shadow_only(
+        "AUTO SHADOW COMPLETE at regular-session close (4:00 PM ET)",
+        flatten_virtual=True,
+    )
+    await refresh
+
+    receipts = store.recent_receipts(30)
+    assert not any(
+        item["summary"] == "Quote refresh failed: Robinhood disconnected"
+        for item in receipts
+    )
+    assert any("AUTO SHADOW DAILY FLAT" in item["summary"] for item in receipts)
+    assert any(
+        "AUTO SHADOW COMPLETE at regular-session close" in item["summary"]
+        and "broker writes remained BLOCKED" in item["summary"]
+        for item in receipts
+    )
+    latest = store.latest_shadow_checkpoint()
+    assert latest is not None
+    assert latest["event"] == "stopped"
+    assert not latest["state"]["active"]
+    assert latest["state"]["position"] is None
+    assert not controller.snapshot.connected
+    assert not controller.snapshot.shadow_running
+    assert broker.review_calls == broker.place_calls == broker.cancel_calls == 0
+    store.close()
+
+
+@pytest.mark.asyncio
+async def test_broker_disconnect_error_before_daily_close_remains_fail_closed(
+    tmp_path, monkeypatch
+) -> None:
+    clock = FakeClock(START)
+    broker = AutoShadowBroker(quote_clock=lambda: clock.now)
+    monkeypatch.setattr("grande_alpha.controller.utc_now", lambda: clock.now)
+    controller, store = _controller(tmp_path, broker, clock=clock)
+    assert await controller.auto_start_shadow()
+
+    async def disconnected_quotes(_symbols: list[str]) -> dict[str, Quote]:
+        raise BrokerError("Robinhood disconnected")
+
+    broker.get_quotes = disconnected_quotes  # type: ignore[method-assign]
+    await controller.refresh_quotes(evaluate=False)
+
+    receipts = store.recent_receipts(30)
+    assert any(
+        item["summary"] == "Quote refresh failed: Robinhood disconnected"
+        for item in receipts
+    )
+    assert any("AUTO SHADOW BLOCKED" in item["summary"] for item in receipts)
+    assert not controller.snapshot.connected
+    assert not controller.snapshot.shadow_running
+    assert broker.disconnect_calls >= 1
+    assert broker.review_calls == broker.place_calls == broker.cancel_calls == 0
+    store.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure_source", ["quote", "reconcile"])
+async def test_failure_with_virtual_position_blocks_fresh_ledger_on_restart(
+    tmp_path, monkeypatch, failure_source
+) -> None:
+    clock = FakeClock(START)
+    broker = AutoShadowBroker(quote_clock=lambda: clock.now)
+
+    async def rising_quotes(symbols: list[str]) -> dict[str, Quote]:
+        if broker.fail_quotes:
+            raise RuntimeError("transport unavailable")
+        step = max(0, int((clock.now - START).total_seconds() // 5))
+        return {
+            symbol: Quote(
+                symbol,
+                (100.0 + step * 0.2 if symbol == "QQQ" else 100.0),
+                (100.02 + step * 0.2 if symbol == "QQQ" else 100.02),
+                (100.01 + step * 0.2 if symbol == "QQQ" else 100.01),
+                clock.now,
+                clock.now,
+                clock.now,
+            )
+            for symbol in symbols
+        }
+
+    broker.get_quotes = rising_quotes  # type: ignore[method-assign]
+    monkeypatch.setattr("grande_alpha.controller.utc_now", lambda: clock.now)
+    controller, store = _controller(
+        tmp_path,
+        broker,
+        clock=clock,
+        strategy_name="ema_momentum",
+        warmup_bars=4,
+        fast_ema=1,
+        slow_ema=2,
+        momentum_bars=1,
+        trend_threshold_bps=0.1,
+        trade_every_bars=2,
+        no_trade_open_minutes=0,
+    )
+    assert await controller.auto_start_shadow()
+    for _ in range(10):
+        clock.now += timedelta(seconds=5)
+        await controller.refresh_quotes(evaluate=False)
+    assert controller._shadow is not None
+    assert controller._shadow.state.position is not None
+    run_id = controller._shadow.state.run_id
+
+    if failure_source == "quote":
+        broker.fail_quotes = True
+        await controller.refresh_quotes(evaluate=False)
+        broker.fail_quotes = False
+    else:
+        healthy_get_portfolio = broker.get_portfolio
+
+        async def failed_get_portfolio(account_number: str) -> Portfolio:
+            raise RuntimeError("account truth unavailable")
+
+        broker.get_portfolio = failed_get_portfolio  # type: ignore[method-assign]
+        await controller.reconcile()
+        broker.get_portfolio = healthy_get_portfolio  # type: ignore[method-assign]
+
+    stopped = store.latest_shadow_checkpoint()
+    assert stopped is not None
+    assert stopped["run_id"] == run_id
+    assert stopped["event"] == "stopped"
+    assert not stopped["state"]["active"]
+    assert stopped["state"]["position"] is not None
+    checkpoint_count = len(store.shadow_checkpoints(run_id))
+
+    restarted = TradingController(
+        broker,
+        controller.config,
+        store,
+        shadow_only_runtime=True,
+        auto_shadow_sleep=clock.sleep,
+    )
+    assert not await restarted.auto_start_shadow()
+
+    assert restarted._shadow is None
+    assert store.latest_shadow_checkpoint() == stopped
+    assert len(store.shadow_checkpoints(run_id)) == checkpoint_count
+    assert broker.review_calls == broker.place_calls == broker.cancel_calls == 0
+    assert any(
+        "prior stopped same-session run retains unresolved virtual state" in item["summary"]
+        for item in store.recent_receipts(40)
+    )
+    store.close()
+
+
+@pytest.mark.asyncio
 async def test_auto_shadow_reconcile_records_successful_account_truth_clock(
     tmp_path, monkeypatch
 ) -> None:

@@ -34,6 +34,15 @@ these commands from the installed source directory:
 # Show its current state and next run.
 .\manage-shadow-schedule.ps1 -Status
 
+# Start the installed task now and require a new owned child plus fresh heartbeat.
+.\manage-shadow-schedule.ps1 -Start
+
+# Stop only the exact current-user task and its identity-verified lifecycle child.
+.\manage-shadow-schedule.ps1 -Stop
+
+# Perform the same verified stop, then start a new owned instance.
+.\manage-shadow-schedule.ps1 -Restart
+
 # Remove only the GRANDE Alpha task.
 .\manage-shadow-schedule.ps1 -Remove
 ```
@@ -59,8 +68,15 @@ The installed definition:
 - ignores a new trigger while the previous scheduled instance is still active;
 - uses validated absolute paths to Windows PowerShell, this source directory, and
   `scheduled-shadow.ps1`;
-- launches `python -m grande_alpha.app --auto-shadow` as the hidden task host's foreground child,
-  so Task Scheduler owns and monitors the complete supervisor lifetime;
+- launches `python -m grande_alpha.app --auto-shadow` as a child that the hidden task host waits for;
+- creates that child suspended inside an anonymous Windows Job Object, with job membership applied
+  atomically by `PROC_THREAD_ATTRIBUTE_JOB_LIST` and `KILL_ON_JOB_CLOSE`; it records the exact PID and
+  start time before resuming Python, so stopping or crashing the wrapper cannot strand a child in the
+  launch-to-manifest gap;
+- atomically records a local lifecycle manifest containing a random instance ID, exact source/runtime
+  paths, current-user SID, wrapper/child PIDs, and both process start times;
+- refuses a duplicate launch while an owned wrapper or child is still present, including a child
+  orphaned by an externally interrupted Task Scheduler wrapper;
 - restarts that foreground child after a nonzero exit with bounded 15-second-to-5-minute backoff,
   resetting to 15 seconds after a run that stayed alive for at least five minutes; exit code `0`
   remains a deliberate off switch until the next task start;
@@ -108,6 +124,68 @@ only local lifecycle metadata and explicit `read_only=true`, `broker_writes=fals
 `live_authority=false` assertions. It also reports non-identifying runtime state: session-open,
 connected, shadow-running, refresh/reconcile clocks, virtual equity/P&L, and virtual-fill count. It
 contains no credentials, account/order IDs, real positions, or real account values.
+The separate `%LOCALAPPDATA%\GRANDEAlpha\scheduled-shadow-lifecycle.json` contains only local process
+ownership metadata. It exists so lifecycle commands can reject PID reuse and avoid broad process-name
+or command-line scans.
+
+## Start, stop, and restart
+
+`-Start`, `-Stop`, and `-Restart` operate on the installed **current-user, limited-privilege** task and
+do not request elevation. They first validate the entire Scheduled Task contract. A mismatched action,
+principal, trigger, or setting stops the command before any task or process change.
+
+Explicit `-Install` and `-Remove` can repair or remove a task whose trigger or non-identity settings
+drifted, but only when the task still has the exact current-user, limited principal and exact validated
+PowerShell/launcher/working-directory identity. An action, project path, user, logon type, or privilege
+mismatch remains fail-closed and is never overwritten or unregistered as though it were this product.
+For these two explicit maintenance operations only, an exact-identity task whose state is `Disabled`
+is treated as repairable setting drift: any exact attributable runtime is first stopped, and the app
+must then prove terminal lifecycle state with no known live heartbeat PID. Normal `-Start`, `-Stop`,
+and `-Restart` remain strict and do not reinterpret a Disabled task.
+Even when Task Scheduler says the task is absent, both commands inspect lifecycle and heartbeat state.
+An exactly verified orphan can be stopped through the same scoped identity checks, including when its
+heartbeat is stale. A live heartbeat PID that cannot be attributed exactly, including one reported by
+contract-invalid heartbeat data, makes the command fail nonzero. `-Install` does not register a
+replacement before that preflight succeeds, and `-Remove` never reports “already absent” while an
+unresolved PID is known alive.
+
+A child is controllable only when its lifecycle record, current-user SID, PID, process start time,
+exact managed Python launcher/process executable, and anchored `-m grande_alpha.app --auto-shadow`
+argument string all match. Windows virtual environments can retain a small launcher process in front
+of the base Python application, so both members and their direct parent relationship are verified.
+The wrapper identity receives equivalent checks against the exact PowerShell executable and
+scheduled launcher arguments. There is no `python.exe` name scan, wildcard command-line termination,
+or fallback that might target a separately launched application. If the heartbeat is unavailable,
+the only discovery fallback is the recorded launcher's direct-child relationship, followed by the
+same exact owner/executable/argv/start-order checks and a requirement for one unambiguous match. The
+first restart from an older
+launcher can be attributed only while its exact process chain still leads to the exact scheduled
+PowerShell parent and a contract-valid heartbeat; an unprovable legacy orphan fails closed.
+
+The scheduled wrapper requires Windows 10 or newer process-creation job-list support. If Windows
+cannot atomically create the suspended child in the private kill-on-close job, launch fails before
+Python application code is resumed. The base Python process and other non-breakaway descendants
+inherit that same containment boundary. This is independent of Task Scheduler's own process state
+and requires no administrator privilege.
+
+`-Stop` makes a best-effort normal Windows close request to the exact verified GUI child and allows up
+to 10 seconds for that path before stopping the validated task wrapper. The total application-stop
+window is 30 seconds. If the same PID/start-time/executable/argv/owner identity is still present, it
+terminates only that exact process. This is not a guarantee that the GUI
+will accept the close request or write a final `stopped` checkpoint. Existing durable shadow
+checkpoints and audit data are never deleted, truncated, or reset; after a forced termination, normal
+same-session recovery uses the latest successfully committed active checkpoint.
+
+`-Start` will not create a duplicate. If the manifest proves an orphaned task child, it uses the same
+scoped stop path first. Success requires Task Scheduler to report `Running`, a verified wrapper/
+launcher/application chain, and a fresh heartbeat from that exact application process within 45
+seconds. `-Restart` composes the verified
+stop and start operations. `-Remove` and a refresh through `-Install` also run the scoped lifecycle
+shutdown for an identity-verified existing instance so unregistering or replacing the wrapper cannot
+strand its child.
+An explicit stop also cancels a Task Scheduler `Queued` instance and requires the task to reach exact
+`Ready` state before reporting success; `Queued`, `Disabled`, and other scheduler states never fall
+through as if they were already off.
 
 ## Verification
 
@@ -126,7 +204,7 @@ sleep before the trigger, `DisallowStartIfOnBatteries=False`, `StopIfGoingOnBatt
 task or reinstall only after returning to a supported zone; the task does not rewrite its trigger
 while traveling.
 
-`-Status` is a read-only contract and runtime-health verifier, not a presence check. It requires exactly one action and
+`-Status` is a read-only contract, ownership, and runtime-health verifier, not a presence check. It requires exactly one action and
 one enabled Monday-Friday trigger, the mapped local time, the exact validated executable, arguments,
 and working directory, the current interactive limited user, the documented wake/battery/network/
 overlap settings, the unlimited execution-time contract, and the three-at-one-minute wrapper restart
@@ -139,6 +217,15 @@ is `DEGRADED` and makes `-Status` exit nonzero. Outside an open session, a fresh
 report `WAITING` without failing. A missing, invalid, stopped, dead-process, or older-than-180-second
 heartbeat also fails a running task's status. A task that has not yet reached its first trigger may
 legitimately report a missing heartbeat while still passing its static installation contract.
+PID evidence is extracted and checked before timestamps or runtime fields are parsed. Therefore a
+malformed timestamp/runtime payload cannot hide a live heartbeat PID. A present heartbeat with a
+malformed or non-numeric PID is itself unsafe and blocks lifecycle mutation rather than being treated
+as a missing heartbeat.
+Task Scheduler `Ready` is reported as `OFF` only when there is no verified live wrapper/child and no
+heartbeat PID known alive, including a stale or contract-invalid heartbeat. `Ready` plus a verified child is `ORPHANED` and exits nonzero;
+`Running` without a verified child is `STARTING`, `RETRYING`, or `UNVERIFIED`, never silently healthy.
+Only exact `Ready`/off and `Running`/healthy combinations can pass status; `Queued`, `Disabled`, and
+all other scheduler states exit nonzero.
 The supervisor is a 24/7 process, not a 24/7 market. QQQ, TQQQ, and SQQQ virtual execution remains
 restricted to valid regular equity sessions. Overnight, weekends, and exchange holidays are idle;
 they never create virtual fills or order authority. A transient HTTP 502/503/504 or transport failure

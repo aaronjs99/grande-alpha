@@ -145,6 +145,27 @@ def validate_shadow_checkpoint(checkpoint: object) -> dict[str, Any]:
     return checkpoint
 
 
+def shadow_checkpoint_requires_continuity(checkpoint: object) -> bool:
+    """Return whether an inactive checkpoint still owns unresolved virtual state.
+
+    A stopped, flat checkpoint with fully settled cash is a completed run. Any
+    position, pending transition, or material unsettled cash still belongs to
+    that run and must not be replaced by a fresh virtual ledger in the same
+    market session.
+    """
+
+    validated = validate_shadow_checkpoint(checkpoint)
+    state = validated["state"]
+    unsettled_cash = _finite(state.get("unsettled_cash"), field="unsettled_cash")
+    if unsettled_cash < -1e-6:
+        raise ValueError("Shadow checkpoint ledger contains impossible unsettled cash")
+    return bool(
+        state.get("position") is not None
+        or state.get("pending") is not None
+        or unsettled_cash > 1e-6
+    )
+
+
 @dataclass(frozen=True)
 class ShadowFill:
     timestamp: datetime
