@@ -14,6 +14,14 @@ Nothing is sent merely by launching the app or using deterministic/CSV research.
 
 - Enabling **Broker connection** permits the app to exchange authentication and account/trading data with the configured broker MCP. The provider may expose data from multiple accounts even though writes are restricted to the Agentic account.
 - Enabling **Community remote market data** permits symbol, interval, and time-range requests to an unsupported Yahoo chart endpoint. No broker or account data is included.
+- Starting **Agent · Stocks + Crypto** reads equity watchlists/saved scans and supported crypto
+  quotes through the existing consented broker connection. Cycle observations and proposals are
+  stored in local receipts. The workspace does not read positions across crypto accounts.
+- The separately optional **local Ollama analyst** sends symbols and numeric market observations
+  to the loopback Ollama service only while an analysis run is active. GRANDE does not send account
+  balances, account IDs, positions, or credentials to the model. Ollama's configuration controls
+  further processing; use an installed local model for local inference. Stop the agent to revoke
+  these requests. Neither broker nor model requests begin just by opening the Agent tab.
 - Opening external documentation uses the system browser and is governed by the destination's privacy policy.
 
 ## Diagnostics

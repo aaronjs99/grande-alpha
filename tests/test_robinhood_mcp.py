@@ -85,10 +85,19 @@ async def test_mcp_transport_calls_and_teardown_share_one_owner_task(monkeypatch
     caller = asyncio.current_task()
     await broker.connect()
     assert broker.connected
+    contracts = broker.agent_tool_contracts()
+    assert set(contracts["tools"]) == REQUIRED_TOOLS
+    assert contracts["tools"]["get_accounts"]["input_schema"] == {}
+    assert session.call_tasks == []  # Export reads only the cached tool catalog.
+    contracts["tools"]["get_accounts"]["input_schema"]["modified"] = True
+    assert "modified" not in broker.agent_tool_contracts()["tools"]["get_accounts"]["input_schema"]
     assert await broker.get_accounts() == []
     await broker.disconnect()
 
     assert not broker.connected
+    assert not broker._agent_tool_contracts
+    with pytest.raises(BrokerError, match="Connect"):
+        broker.agent_tool_contracts()
     assert transport.owner is transport.exited_by
     assert session_context.owner is session_context.exited_by
     assert transport.owner is session_context.owner

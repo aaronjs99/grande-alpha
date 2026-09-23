@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import itertools
 import json
 import math
@@ -16,7 +17,9 @@ from mcp.client.auth import OAuthClientProvider
 from mcp.client.streamable_http import streamablehttp_client
 from mcp.shared.auth import OAuthClientMetadata
 
+from grande_alpha.agent_models import Instrument
 from grande_alpha.broker.base import Broker, BrokerError
+from grande_alpha.broker.discovery import RobinhoodDiscovery
 from grande_alpha.broker.oauth import CredentialTokenStorage, OAuthCallbackServer
 from grande_alpha.config import MCP_URL
 from grande_alpha.models import (
@@ -202,6 +205,7 @@ class RobinhoodMCPBroker(Broker):
         self.allow_interactive_auth = allow_interactive_auth
         self.storage = CredentialTokenStorage()
         self._tools: dict[str, dict[str, Any]] = {}
+        self._agent_tool_contracts: dict[str, dict[str, Any]] = {}
         self._requests: asyncio.PriorityQueue[tuple[int, int, _ToolRequest | None]] | None = None
         self._request_sequence = itertools.count()
         self._worker: asyncio.Task[None] | None = None
@@ -221,6 +225,28 @@ class RobinhoodMCPBroker(Broker):
         if self.connected:
             raise BrokerError("Disconnect before forgetting stored broker credentials")
         self.storage.clear()
+
+    async def discover_crypto(self) -> list[Instrument]:
+        return await RobinhoodDiscovery(self._call, self._tools).currency_pairs()
+
+    async def get_crypto_quotes(self, instruments: list[Instrument]) -> dict[str, Quote]:
+        return await RobinhoodDiscovery(self._call, self._tools).crypto_quotes(instruments)
+
+    async def discover_equities(self, scan_id: str) -> list[Instrument]:
+        return await RobinhoodDiscovery(self._call, self._tools).scan(scan_id)
+
+    async def get_scans(self) -> list[tuple[str, str]]:
+        return await RobinhoodDiscovery(self._call, self._tools).scans()
+
+    def agent_tool_contracts(self) -> dict:
+        if not self.connected:
+            raise BrokerError("Connect Robinhood before exporting tool contracts")
+        return {
+            "schema_version": 1,
+            "provider": "Robinhood Trading MCP",
+            "notice": "Tool definitions only; no account data, quotes, credentials, or order calls.",
+            "tools": copy.deepcopy(self._agent_tool_contracts),
+        }
 
     async def connect(self) -> None:
         async with self._lifecycle_lock:
@@ -317,6 +343,22 @@ class RobinhoodMCPBroker(Broker):
                     item.name: (item.inputSchema if isinstance(item.inputSchema, dict) else {})
                     for item in listing.tools
                 }
+                agent_tool_names = {
+                    "get_accounts", "get_portfolio", "get_equity_quotes", "get_equity_tradability",
+                    "get_equity_positions", "get_equity_orders", "review_equity_order",
+                    "place_equity_order", "cancel_equity_order", "get_currency_pairs",
+                    "get_crypto_quotes", "get_crypto_positions", "get_crypto_orders",
+                    "preview_crypto_order", "place_crypto_order", "cancel_crypto_order",
+                    "get_scans", "run_scan", "get_scanner_filter_specs",
+                }
+                self._agent_tool_contracts = {
+                    item.name: {
+                        "input_schema": self._tools[item.name],
+                        "output_schema": getattr(item, "outputSchema", None),
+                        "description": getattr(item, "description", None),
+                    }
+                    for item in listing.tools if item.name in agent_tool_names
+                }
                 required = {
                     "get_accounts",
                     "get_portfolio",
@@ -344,6 +386,7 @@ class RobinhoodMCPBroker(Broker):
             self._connected = False
             self._accepting_calls = False
             self._tools.clear()
+            self._agent_tool_contracts.clear()
             self._fail_pending_requests(BrokerError("Robinhood disconnected"))
             if self.allow_interactive_auth:
                 callback.stop()
@@ -400,6 +443,7 @@ class RobinhoodMCPBroker(Broker):
             self._connected = False
             self._accepting_calls = False
             self._tools.clear()
+            self._agent_tool_contracts.clear()
 
     async def disconnect(self) -> None:
         async with self._lifecycle_lock:
@@ -407,6 +451,7 @@ class RobinhoodMCPBroker(Broker):
                 self._connected = False
                 self._accepting_calls = False
                 self._tools.clear()
+                self._agent_tool_contracts.clear()
                 return
             self._accepting_calls = False
             if self._requests is not None and not self._worker.done():

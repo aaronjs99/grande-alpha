@@ -2,6 +2,9 @@
 
 Start with:
 
+- [Stocks and crypto agent workspace](AGENT_WORKSPACE.md) — continuous discovery, optional local AI,
+  activity and account observations, and the explicit remaining multi-market execution work.
+
 1. [Activation checklist](ACTIVATION_CHECKLIST.md), [Quickstart](QUICKSTART.md), and [Windows installation](WINDOWS_INSTALLATION.md) — exactly what the app can check, what the user must decide, and the honest signed/unsigned boundary.
 2. [Safety and compliance](SAFETY_AND_COMPLIANCE.md), [supervised experimental mode](SUPERVISED_EXPERIMENTAL.md), [bounded autonomous authority](AUTONOMOUS_AUTHORITY.md), and [live-pilot activation](LIVE_ACTIVATION.md) — broker, per-order consent, limits, current stop state, leveraged-fund, legal, and tax boundaries.
 3. [Sandbox](SANDBOX.md), [observed-data readiness](DATASET_READINESS.md), and [evidence lab](EVIDENCE_LAB.md) — isolated replay, exact input qualification, and evaluation.

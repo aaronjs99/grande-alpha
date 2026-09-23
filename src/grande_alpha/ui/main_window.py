@@ -42,6 +42,7 @@ from grande_alpha.models import (
 from grande_alpha.privacy import export_diagnostics
 from grande_alpha.strategy import STRATEGY_NAMES
 from grande_alpha.ui.activation_widget import ActivationChecklistWidget
+from grande_alpha.ui.agent_widget import AgentWidget
 from grande_alpha.ui.dialogs import (
     AuthorityControlPanel,
     FundPlanDialog,
@@ -350,6 +351,8 @@ class MainWindow(QMainWindow):
         )
         fund_layout.addWidget(self.fund_table)
         self.tabs.addTab(self.welcome_widget, "Getting Started")
+        self.agent_widget = AgentWidget(self.controller)
+        self.tabs.addTab(self.agent_widget, "Agent · Stocks + Crypto")
         self.activation_widget = ActivationChecklistWidget(
             shadow_only=self.controller.shadow_only_runtime
         )
@@ -1269,6 +1272,7 @@ class MainWindow(QMainWindow):
 
     def _on_snapshot(self, snapshot: TradingSnapshot) -> None:
         self._snapshot = snapshot
+        self.agent_widget.update_account(snapshot)
         self._sync_data_timers()
         if snapshot.account:
             account_type = snapshot.account.account_type.strip().upper() or "UNKNOWN"
@@ -1371,7 +1375,7 @@ class MainWindow(QMainWindow):
         # vertical canvas; broker state is already represented in the checklist and remains one
         # click away on every other tab.
         self.broker_panel.setVisible(
-            broker_enabled and self.tabs.currentWidget() is not self.activation_widget
+            broker_enabled and self.tabs.currentWidget() not in (self.activation_widget, self.agent_widget)
         )
         self.connect_button.setVisible(broker_enabled)
         self.shadow_button.setVisible(broker_enabled)
@@ -1541,6 +1545,7 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event: QCloseEvent) -> None:
         if self._closing_after_cleanup:
+            self.agent_widget.shutdown()
             self.timer.stop()
             self.reconcile_timer.stop()
             event.accept()
@@ -1568,6 +1573,7 @@ class MainWindow(QMainWindow):
             return
         self.timer.stop()
         self.reconcile_timer.stop()
+        self.agent_widget.shutdown()
         event.accept()
 
     async def _shutdown_then_close(self) -> None:

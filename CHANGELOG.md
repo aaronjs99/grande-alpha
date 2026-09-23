@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Added the Stocks + Crypto Agent workspace: bounded continuous equity watchlist/saved-scan
+  discovery, supported USD crypto-pair discovery and quotes, separate market-hours/spread checks,
+  optional local Ollama analysis with validated structured proposals, and account/activity views.
+  It starts only on request and has no order-writing callbacks. Proposals remain distinct from
+  fills; live multi-market routing, reconciliation, shared risk authority, and strategy evidence
+  are not yet validated. Existing ETF grants and evidence gates are unchanged.
 - Live buys now enforce the candidate's consecutive-loss limit using fee-inclusive provider
   sell executions and proportionally allocated entry costs. The Eastern-day peak streak
   survives restart and reauthorization; reaching the cap pauses new buys through that day

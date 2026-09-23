@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 
+from grande_alpha.agent_models import Instrument
 from grande_alpha.models import (
     Account,
     BrokerOrder,
@@ -42,6 +43,21 @@ class BrokerError(RuntimeError):
 
 
 class Broker(ABC):
+    def agent_tool_contracts(self) -> dict:
+        raise BrokerError("This broker does not expose agent tool contracts")
+
+    async def discover_crypto(self) -> list[Instrument]:
+        raise BrokerError("This broker does not expose crypto discovery")
+
+    async def get_crypto_quotes(self, instruments: list[Instrument]) -> dict[str, Quote]:
+        raise BrokerError("This broker does not expose crypto quotes")
+
+    async def discover_equities(self, scan_id: str) -> list[Instrument]:
+        raise BrokerError("This broker does not expose saved equity scans")
+
+    async def get_scans(self) -> list[tuple[str, str]]:
+        raise BrokerError("This broker does not expose saved equity scans")
+
     def clear_credentials(self) -> None:
         """Forget locally stored credentials when the adapter supports persistence."""
         return None

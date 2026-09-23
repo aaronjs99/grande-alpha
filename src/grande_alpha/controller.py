@@ -20,6 +20,8 @@ from grande_alpha.action_lab import (
     live_feasible_action_ids,
     pair_action_for_target,
 )
+from grande_alpha.agent_models import AgentSettings
+from grande_alpha.agent_runtime import AgentRuntime
 from grande_alpha.broker.base import (
     Broker,
     BrokerError,
@@ -168,6 +170,7 @@ class CancelPlan:
 
 class TradingController(QObject):
     snapshot_changed = Signal(object)
+    agent_changed = Signal(object)
     event = Signal(str, str)
     connection_busy = Signal(bool)
 
@@ -231,6 +234,24 @@ class TradingController(QObject):
         self._shadow_session_key: str | None = None
         self._shadow_account_fingerprint: str | None = None
         self._shadow_strategy_fingerprint: str | None = None
+        self.agent = AgentRuntime(
+            equity_quotes=broker.get_quotes,
+            crypto_pairs=broker.discover_crypto,
+            crypto_quotes=broker.get_crypto_quotes,
+            equity_scan=broker.discover_equities,
+            connected=lambda: bool(
+                self.config.broker_connection_enabled
+                and self.snapshot.connected
+                and not self.shadow_only_runtime
+            ),
+            changed=self.agent_changed.emit,
+            log=self.log,
+        )
+
+    def start_agent(self, settings: AgentSettings) -> None:
+        if self.shadow_only_runtime:
+            raise RuntimeError("Scheduled ETF shadow does not start the multi-market agent")
+        self.agent.start(settings)
 
     def set_order_confirmer(self, confirmer: OrderConfirmer | None) -> None:
         """Install the non-persistent UI callback used for each reviewed real-money order."""
@@ -754,6 +775,7 @@ class TradingController(QObject):
             self._emit()
 
     async def disconnect(self) -> None:
+        self.agent.stop("Agent stopped before broker disconnect")
         if self.shadow_only_runtime:
             await self.disconnect_shadow_only("Auto-shadow read-only disconnect")
             return
@@ -921,6 +943,8 @@ class TradingController(QObject):
     def update_config(self, config: AppConfig) -> None:
         """Apply safe runtime settings; a bar-size change starts a fresh warm-up."""
         config.validate_cadence()
+        if not config.broker_connection_enabled:
+            self.agent.stop("Agent stopped because broker access was revoked")
         if self.shadow_only_runtime and config.market_hours != "regular_hours":
             raise ValueError("Auto-shadow v1 cannot switch away from regular market hours")
         config_changed = config != self.config
@@ -2125,6 +2149,7 @@ class TradingController(QObject):
     async def stop_and_cancel(self, reason: str = "STOP + CANCEL pressed") -> bool:
         """Lock order creation without an implicit provider cancellation write."""
 
+        self.agent.stop(reason)
         return await self.execute_confirmed_cancel(None, reason=reason)
 
     @staticmethod
@@ -2305,6 +2330,7 @@ class TradingController(QObject):
     async def prepare_cancel_plan(self) -> CancelPlan:
         """Read an exact GRANDE-owned cancellation scope without moving money."""
 
+        self.agent.stop("Agent stopped by STOP + CANCEL")
         if self.shadow_only_runtime:
             raise RuntimeError("Auto-shadow runtime has no real-order cancellation authority")
         if not self.snapshot.connected or self.snapshot.account is None:
