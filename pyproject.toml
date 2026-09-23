@@ -33,10 +33,10 @@ dependencies = [
 
 [project.urls]
 Homepage = "https://github.com/aaronjs99/grande-alpha"
-Documentation = "https://github.com/aaronjs99/grande-alpha/tree/main/docs"
+Documentation = "https://github.com/aaronjs99/grande-alpha/tree/master/docs"
 Issues = "https://github.com/aaronjs99/grande-alpha/issues"
 Repository = "https://github.com/aaronjs99/grande-alpha.git"
-Changelog = "https://github.com/aaronjs99/grande-alpha/blob/main/CHANGELOG.md"
+Changelog = "https://github.com/aaronjs99/grande-alpha/blob/master/CHANGELOG.md"
 
 [project.optional-dependencies]
 desktop = [
