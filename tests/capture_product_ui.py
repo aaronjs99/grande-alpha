@@ -8,7 +8,7 @@ from pathlib import Path
 from PySide6.QtWidgets import QApplication
 
 from grande_alpha.ui.main_window import STYLESHEET
-from grande_alpha.ui.product_dialog import ProductPlansDialog 
+from grande_alpha.ui.product_dialog import ProductPlansDialog
 
 
 def capture(path: Path) -> None:

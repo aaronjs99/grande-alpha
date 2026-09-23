@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- Reconciliation now rejects position changes that disagree with the broker's cumulative
+  execution quantity before recording a fill or resolving a submission. Partial and cancelled
+  orders remain unresolved on a mismatch, and the controller revokes live authority.
+- Added mock-broker coverage for replay/controller decision cadence and entry sizing under
+  identical synthetic fills, cancelled exits with and without partial fills, and conflicting
+  execution/inventory reports. These tests do not certify provider fill economics, validate
+  a profitable strategy, or unlock autonomous trading.
+
 ## 0.16.0 - 2026-08-19
 
 - Added an explicit free Community plan, a truthful Pro-coming-soon dialog, and a local entitlement

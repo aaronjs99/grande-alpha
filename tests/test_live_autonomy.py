@@ -18,8 +18,10 @@ import grande_alpha.ui.main_window as main_window_module
 from grande_alpha.broker.base import Broker, BrokerError
 from grande_alpha.config import AppConfig
 from grande_alpha.controller import TradingController
+from grande_alpha.historical import HistoricalBundle, ReplayFrame
 from grande_alpha.models import (
     Account,
+    Bar,
     BrokerExecution,
     BrokerOrder,
     LiveGrant,
@@ -33,6 +35,7 @@ from grande_alpha.models import (
     Regime,
     Signal,
 )
+from grande_alpha.sandbox import RuntimeObservationReplayEngine, SandboxConfig
 from grande_alpha.storage import AuditStore
 from grande_alpha.ui.dialogs import OrderConfirmationDialog
 from grande_alpha.ui.main_window import MainWindow
@@ -216,6 +219,7 @@ class DeterministicBroker(Broker):
             side=intent.side,
             quantity=intent.quantity,
             dollar_amount=intent.dollar_amount,
+            created_at=controller_module.utc_now(),
         )
         self.orders = [order, *[item for item in self.orders if item.order_id != order.order_id]]
         return order
@@ -1508,6 +1512,204 @@ async def test_failed_reconcile_invalidates_freshness_before_new_authority(
         controller.authorize_live(grant)
     assert controller.risk.grant is None
     store.close()
+
+
+@pytest.mark.asyncio
+async def test_exact_replay_and_live_controller_agree_on_full_fill_decisions(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Compare decision cadence and sizing, assuming identical synthetic fills.
+
+    The fixture's evidence override isolates execution; it cannot certify a real
+    strategy or show that a provider delivers the modeled price or fill quantity.
+    """
+    candidate = SandboxConfig(
+        initial_cash=100, order_notional=10, slippage_bps=0,
+        base_spread_bps=0, spread_volatility_multiplier=0,
+        no_trade_open_minutes=0, no_trade_close_minutes=0,
+        decision_stride=3, force_flat_at_end=False,
+    )
+    monkeypatch.setattr(controller_module, "load_sandbox_config", lambda: candidate)
+    controller, broker, store, grant = _controller(tmp_path, monkeypatch)
+    frames = []
+    signals = []
+    for index in range(6):
+        at = NOW + timedelta(seconds=index * 5)
+        quotes = _quotes(at)
+        bars = [
+            Bar(symbol, at - timedelta(seconds=5), quote.mid, quote.mid,
+                quote.mid, quote.mid, 1, 0)
+            for symbol, quote in quotes.items()
+        ]
+        frames.append(ReplayFrame(
+            at - timedelta(seconds=5), *bars, at,
+            quotes["QQQ"], quotes["TQQQ"], quotes["SQQQ"], "synthetic-test",
+        ))
+        signals.append(Signal(
+            Regime.BULLISH if index < 3 else Regime.FLAT,
+            1 if index < 3 else 0, "controlled test signal", at,
+        ))
+    replay = RuntimeObservationReplayEngine(candidate).run(
+        HistoricalBundle("synthetic test only", NOW, frames, interval="5s"),
+        signals=signals,
+    )
+    assert [(fill.side, fill.symbol) for fill in replay.fills] == [
+        ("buy", "TQQQS"), ("sell", "TQQQS"),
+    ]
+    controller.authorize_live(grant)
+    controller.start_strategy()
+    observed = []
+    try:
+        for index, (frame, signal) in enumerate(zip(frames, signals, strict=True)):
+            at = frame.causal_timestamp
+            for module in (controller_module, risk_module, storage_module):
+                monkeypatch.setattr(module, "utc_now", lambda at=at: at)
+            broker.quotes = frame.runtime_quotes()
+            controller.snapshot.quotes = broker.quotes
+            controller.snapshot.signal = signal
+            controller.snapshot.last_analysis_at = at
+            controller._analysis_sequence += 1
+            before = len(broker.placed_intents)
+            await controller._evaluate_and_trade()
+            expected = [fill for fill in replay.fills if fill.timestamp == at]
+            assert len(broker.placed_intents) - before == len(expected)
+            if not expected:
+                continue
+            fill = expected[0]
+            intent = broker.placed_intents[-1]
+            assert (intent.side, intent.symbol) == (fill.side, fill.symbol.removesuffix("S"))
+            if intent.side == "buy":
+                assert intent.dollar_amount == pytest.approx(fill.quantity * fill.price)
+                broker.positions = [Position(intent.symbol, fill.quantity, fill.quantity, fill.price)]
+            else:
+                assert intent.quantity == pytest.approx(fill.quantity)
+                broker.positions = []
+            broker.portfolio = Portfolio(
+                replay.equity_curve[index].equity,
+                fill.cash_after, fill.cash_after,
+            )
+            order = broker.orders[0]
+            broker.orders[0] = _observed_fill(
+                order, quantity=fill.quantity, price=fill.price,
+                execution_id=f"synthetic-{intent.side}", timestamp=at,
+            )
+            await controller.reconcile()
+            assert not controller._submission_reconcile_required
+            observed.append((intent.side, intent.symbol, at))
+        assert observed == [
+            (fill.side, fill.symbol.removesuffix("S"), fill.timestamp) for fill in replay.fills
+        ]
+        assert not controller.snapshot.positions
+        assert controller.risk.grant is grant
+    finally:
+        store.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sold_quantity", [0.0, 0.1])
+async def test_cancelled_exit_retries_only_reconciled_remaining_inventory(
+    tmp_path, monkeypatch: pytest.MonkeyPatch, sold_quantity: float
+) -> None:
+    controller, broker, store, grant = _controller(tmp_path, monkeypatch)
+    controller.authorize_live(grant)
+    controller.start_strategy()
+    _seed_holding(store, symbol="TQQQ", quantity=0.4, price=50, order_id="entry")
+    broker.positions = [Position("TQQQ", 0.4, 0.4, 50)]
+    controller.snapshot.positions = list(broker.positions)
+
+    async def tick(seconds: int) -> None:
+        at = NOW + timedelta(seconds=seconds)
+        for module in (controller_module, risk_module, storage_module):
+            monkeypatch.setattr(module, "utc_now", lambda: at)
+        broker.quotes = _quotes(at)
+        controller.snapshot.quotes = broker.quotes
+        controller.snapshot.signal = Signal(Regime.FLAT, 0, "exit to cash", at)
+        controller.snapshot.last_analysis_at = at
+        controller._analysis_sequence += controller.config.trade_every_bars
+        await controller._evaluate_and_trade()
+
+    try:
+        await tick(0)
+        first = broker.orders[0]
+        assert broker.placed_intents[0].quantity == pytest.approx(0.4)
+        if sold_quantity:
+            broker.orders[0] = _observed_fill(
+                first, quantity=sold_quantity, price=49.99,
+                execution_id="partial-exit", state="partially_filled",
+            )
+        remaining = 0.4 - sold_quantity
+        broker.positions = [Position("TQQQ", remaining, remaining, 50)]
+        await controller.reconcile()
+        await tick(15)
+        assert len(broker.place_calls) == 1  # Never duplicate a nonterminal exit.
+        broker.orders[0] = replace(
+            broker.orders[0],
+            state="partially_filled_rest_cancelled" if sold_quantity else "cancelled",
+            cumulative_quantity=sold_quantity,
+        )
+        await controller.reconcile()
+        await controller.reconcile()  # Repeated terminal snapshots are idempotent.
+        assert not controller._submission_reconcile_required
+        await tick(30)
+        assert len(broker.place_calls) == 2
+        retry = broker.placed_intents[-1]
+        assert retry.side == "sell"
+        assert retry.quantity == pytest.approx(remaining)
+        assert retry.ref_id != broker.placed_intents[0].ref_id
+        broker.orders[0] = _observed_fill(
+            broker.orders[0], quantity=remaining, price=49.99,
+            execution_id="remaining-exit", timestamp=NOW + timedelta(seconds=30),
+        )
+        broker.positions = []
+        await controller.reconcile()
+        await tick(45)
+        assert len(broker.place_calls) == 2
+        assert not controller._submission_reconcile_required
+        assert not controller.snapshot.positions
+        assert sum(
+            row["quantity"] for order in broker.orders
+            for row in store.broker_executions(ACCOUNT_NUMBER, order_id=order.order_id)
+        ) == pytest.approx(0.4)
+    finally:
+        store.close()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_exit_with_mismatched_inventory_keeps_submission_unresolved(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    controller, broker, store, grant = _controller(tmp_path, monkeypatch)
+    controller.authorize_live(grant)
+    controller.start_strategy()
+    _seed_holding(store, symbol="TQQQ", quantity=0.4, price=50, order_id="entry")
+    broker.positions = [Position("TQQQ", 0.4, 0.4, 50)]
+    controller.snapshot.positions = list(broker.positions)
+    try:
+        controller.snapshot.signal = Signal(Regime.FLAT, 0, "exit", NOW)
+        controller.snapshot.last_analysis_at = NOW
+        controller._analysis_sequence += controller.config.trade_every_bars
+        await controller._evaluate_and_trade()
+        order = broker.orders[0]
+        broker.orders[0] = _observed_fill(
+            order, quantity=0.1, price=49.99, execution_id="partial-exit",
+            state="partially_filled_rest_cancelled",
+        )
+        # This implies only 0.05 shares sold, conflicting with the 0.1 execution.
+        broker.positions = [Position("TQQQ", 0.35, 0.35, 50)]
+        await controller.reconcile()
+        assert controller.risk.grant is None
+        assert controller._submission_reconcile_required == {
+            broker.placed_intents[0].ref_id: order.order_id,
+        }
+        assert any(
+            "inventory delta differs from provider execution quantity" in receipt["summary"]
+            for receipt in store.recent_receipts(20)
+        )
+        controller._analysis_sequence += controller.config.trade_every_bars
+        await controller._evaluate_and_trade()
+        assert len(broker.place_calls) == 1
+    finally:
+        store.close()
 
 
 @pytest.mark.asyncio

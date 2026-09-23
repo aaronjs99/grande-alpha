@@ -149,3 +149,16 @@ def test_reconciliation_rejects_identity_quantity_and_notional_deviations() -> N
             ),
             [Position("TQQQ", 0.2, 0.2, 60.0)],
         )
+
+
+@pytest.mark.parametrize("state", ["partially_filled", "cancelled", "partially_filled_rest_cancelled"])
+@pytest.mark.parametrize("remaining", [0.25, 0.35, 0.4])
+def test_sell_inventory_delta_must_match_provider_execution_quantity(state, remaining) -> None:
+    tracking = _tracking(side="sell")
+    order = _order(
+        side="sell", state=state, average_price=49.99, fill_quantities=(0.1,),
+    )
+    with pytest.raises(ValueError, match="inventory delta.*execution quantity"):
+        reconcile_execution(tracking, order, [Position("TQQQ", remaining, remaining, 50)])
+    assert tracking.observed_filled_quantity == 0
+    assert tracking.observed_fill_notional == 0

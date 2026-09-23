@@ -153,6 +153,19 @@ def reconcile_execution(
         status = "partial_fill" if cumulative_quantity > tolerance else "pending"
         resolved = False
 
+    # Order executions and inventory are independent broker observations. In
+    # particular, a cancelled order may still have fills: its terminal state
+    # cannot resolve the submission against stale or unrelated inventory changes.
+    # Preserve the filled-order one-refresh allowance above, but never commit an
+    # incremental fill until the two quantities agree.
+    if order.cumulative_quantity is not None and not math.isclose(
+        cumulative_quantity,
+        float(order.cumulative_quantity),
+        rel_tol=0.0,
+        abs_tol=tolerance,
+    ):
+        raise ValueError("Broker inventory delta differs from provider execution quantity")
+
     tracking.observed_filled_quantity = cumulative_quantity
     tracking.observed_fill_notional = cumulative_notional
     if cumulative_quantity > tolerance:
