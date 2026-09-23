@@ -4,11 +4,11 @@ import asyncio
 
 import pytest
 from PySide6.QtWidgets import QApplication, QMessageBox
-from test_live_autonomy import _bind_owned_order, _controller, _order
-from test_live_autonomy import _fixed_live_clock as _fixed_live_clock
 
 from grande_alpha.ui import main_window
 from grande_alpha.ui.main_window import MainWindow
+from test_live_autonomy import _bind_owned_order, _controller, _order
+from test_live_autonomy import _fixed_live_clock as _fixed_live_clock
 
 
 @pytest.fixture(scope="module")

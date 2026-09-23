@@ -71,6 +71,7 @@ grande_alpha = ["assets/*.png"]
 [tool.ruff]
 line-length = 110
 target-version = "py311"
+src = ["scripts", "tests"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]

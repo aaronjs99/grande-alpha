@@ -7,9 +7,9 @@ import asyncio
 import tempfile
 from pathlib import Path
 
-from fake_broker import DisabledBroker
 from PySide6.QtWidgets import QApplication
 
+from fake_broker import DisabledBroker
 from grande_alpha.config import AppConfig
 from grande_alpha.controller import TradingController
 from grande_alpha.models import Account, Portfolio

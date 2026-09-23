@@ -7,8 +7,8 @@ from datetime import timedelta
 from decimal import Decimal
 
 import pytest
-from crypto_fixtures import ACCOUNT, EXECUTION, INTENT, NOW, POSITION, FakeCryptoServer
 
+from crypto_fixtures import ACCOUNT, EXECUTION, INTENT, NOW, POSITION, FakeCryptoServer
 from grande_alpha.agent_execution import AgentExecutor, crypto_ticket, equity_ticket, observe_crypto
 from grande_alpha.agent_ledger import AgentBudget
 from grande_alpha.broker.crypto import CryptoOutcomeUnknown

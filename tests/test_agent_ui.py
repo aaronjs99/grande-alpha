@@ -4,9 +4,9 @@ from dataclasses import replace
 from decimal import Decimal
 
 import pytest
-from fake_broker import DisabledBroker
 from PySide6.QtWidgets import QApplication
 
+from fake_broker import DisabledBroker
 from grande_alpha.agent_ledger import AgentBudget
 from grande_alpha.agent_models import AgentSnapshot
 from grande_alpha.config import AppConfig

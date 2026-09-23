@@ -3,10 +3,10 @@ from __future__ import annotations
 from dataclasses import asdict
 
 import pytest
-from fake_broker import DisabledBroker
 from PySide6.QtCore import QSettings
 from PySide6.QtWidgets import QApplication, QTableWidgetItem
 
+from fake_broker import DisabledBroker
 from grande_alpha.config import AppConfig
 from grande_alpha.controller import TradingController
 from grande_alpha.storage import AuditStore

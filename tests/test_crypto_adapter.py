@@ -6,8 +6,8 @@ from datetime import timedelta
 from decimal import Decimal
 
 import pytest
-from crypto_fixtures import ACCOUNT, EXECUTION, INTENT, ORDER, ORDER_ID, PAIR_ID, FakeCryptoServer
 
+from crypto_fixtures import ACCOUNT, EXECUTION, INTENT, ORDER, ORDER_ID, PAIR_ID, FakeCryptoServer
 from grande_alpha.broker.base import BrokerError
 from grande_alpha.broker.crypto import CryptoOutcomeUnknown, parse_order
 from grande_alpha.broker.discovery import RobinhoodDiscovery
