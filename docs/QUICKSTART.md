@@ -72,6 +72,15 @@ Open **Settings** to enable capabilities one at a time:
 - **Community remote market data** sends symbol/time-range queries to an unsupported external endpoint.
 - **Capital planning ledger** shows an optional local ledger; it never transfers funds.
 
+The capital planning ledger is disabled by default. It calculates an eligible contribution from
+`max(0, realized profit - fees - entered tax reserve) × contribution rate`. Reconcile profit and
+fees with broker records, choose the tax reserve separately, and save the result as a *plan*; the
+app does not determine the correct reserve or move money. Complete any transfer through the
+relevant institutions, then mark the plan confirmed using its independent transaction reference
+and amount-specific confirmation phrase. Do not treat unrealized gains, deposits, borrowed funds,
+or protected liquidity as eligible profit. Existing legacy records are imported only through the
+explicit `config import-legacy` command, never automatically on startup.
+
 **Research, shadow, and live-pilot route** chooses regular, extended, or 24 Hour Market behavior for
 research and shadow without granting authority. Both current real-order pilots are hard-locked to
 Regular market, Market order, GFD, and cash T+1; the session review displays that saved route read-only.

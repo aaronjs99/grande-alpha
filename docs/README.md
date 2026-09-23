@@ -31,7 +31,6 @@ Start with [Quickstart](QUICKSTART.md) for a local research run, or [Windows ins
 - [Dataset readiness](DATASET_READINESS.md) — sources, licensing, provenance, schemas, and holdouts.
 - [Evidence Lab](EVIDENCE_LAB.md) — policy gates, certificates, fingerprints, and expiration.
 - [Production qualification](PRODUCTION_QUALIFICATION.md) — outstanding requirements for the mixed live route.
-- [Daily journal template](DAILY_JOURNAL_TEMPLATE.md) — optional operator record.
 
 ## Engineering and release
 
@@ -40,7 +39,6 @@ Start with [Quickstart](QUICKSTART.md) for a local research run, or [Windows ins
   [crypto broker contract](BROKER_CRYPTO_CONTRACT.md) for provider-specific assumptions.
 - [Roadmap to 1.0.0](ROADMAP_TO_1_0.md) — requirements that remain open.
 - [Release process](RELEASE_PROCESS.md) — versioning, build/sign/publish procedure, and exact-artifact checklist.
-- [Optional research-fund ledger](GRANDE_RESEARCH_FUND.md) — local planning only; it never moves money.
 
 ## Historical records
 
