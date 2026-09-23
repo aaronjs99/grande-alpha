@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from grande_alpha.candidate_execution import next_consecutive_losses
 from grande_alpha.config import data_dir
 from grande_alpha.models import Bar, BrokerOrder, OrderIntent, Quote, Signal, utc_now
 
@@ -37,6 +38,9 @@ class AuditStore:
         self._connection = sqlite3.connect(self.path, check_same_thread=False)
         self._connection.row_factory = sqlite3.Row
         self._initialize()
+        from grande_alpha.agent_ledger import AgentLedger
+
+        self.agent_ledger = AgentLedger(self._connection, self._lock)
 
     def _initialize(self) -> None:
         with self._lock, self._connection:
@@ -1169,6 +1173,55 @@ class AuditStore:
         with self._lock:
             rows = self._connection.execute(query, arguments).fetchall()
         return [dict(row) for row in rows]
+
+    def live_loss_streak(self, account_number: str, et_date: str) -> dict[str, int]:
+        """Rebuild fee-inclusive sell-fill losses from immutable provider executions.
+
+        Match replay's per-realized-fill counting and proportional entry-cost
+        allocation. The session peak latches the entry pause even if a later exit
+        makes a profit. Re-reading the ledger cannot count an execution twice,
+        and restarting or reauthorizing cannot reset today's loss history.
+        """
+        try:
+            requested_date = date.fromisoformat(et_date)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Trading date must use YYYY-MM-DD") from exc
+        eastern = ZoneInfo("America/New_York")
+        inventory: dict[str, tuple[float, float]] = {}
+        consecutive = peak = 0
+        for row in self.broker_executions(account_number):
+            executed_at = _parse_aware_utc(row["executed_at"], field="execution timestamp")
+            execution_date = executed_at.astimezone(eastern).date()
+            if execution_date > requested_date:
+                continue
+            symbol = str(row["symbol"])
+            quantity, price, fees = (float(row[key]) for key in ("quantity", "price", "fees"))
+            if (
+                symbol not in {"TQQQ", "SQQQ"}
+                or not all(math.isfinite(value) for value in (quantity, price, fees))
+                or quantity <= 0 or price <= 0 or fees < 0
+            ):
+                raise ValueError("Invalid provider execution in loss history")
+            held_quantity, entry_cost = inventory.get(symbol, (0.0, 0.0))
+            if row["side"] == "buy":
+                next_quantity = held_quantity + quantity
+                next_cost = entry_cost + quantity * price + fees
+                if not math.isfinite(next_quantity) or not math.isfinite(next_cost):
+                    raise ValueError("Nonfinite entry-cost history")
+                inventory[symbol] = (next_quantity, next_cost)
+                continue
+            if row["side"] != "sell" or held_quantity <= 0 or quantity > held_quantity + 1e-7:
+                raise ValueError("Sell execution lacks matching entry-cost history")
+            cost_share = entry_cost * min(1.0, quantity / held_quantity)
+            realized_pnl = quantity * price - fees - cost_share
+            remaining = max(0.0, held_quantity - quantity)
+            inventory[symbol] = (
+                (remaining, entry_cost - cost_share) if remaining > 1e-8 else (0.0, 0.0)
+            )
+            if execution_date == requested_date:
+                consecutive = next_consecutive_losses(consecutive, realized_pnl)
+                peak = max(peak, consecutive)
+        return {"consecutive_losses": consecutive, "peak_consecutive_losses": peak}
 
     def live_filled_entry_order_ids(
         self,

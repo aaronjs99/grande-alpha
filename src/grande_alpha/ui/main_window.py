@@ -44,6 +44,7 @@ from grande_alpha.privacy import export_diagnostics
 from grande_alpha.strategy import STRATEGY_NAMES
 from grande_alpha.terminology import term_help
 from grande_alpha.ui.activation_widget import ActivationChecklistWidget
+from grande_alpha.ui.agent_widget import AgentWidget
 from grande_alpha.ui.dialogs import (
     AuthorityControlPanel,
     FundPlanDialog,
@@ -60,11 +61,19 @@ from grande_alpha.ui.sandbox_widget import SandboxWidget
 from grande_alpha.ui.settings_dialog import SettingsDialog
 from grande_alpha.ui.table_layout import configure_adjustable_columns, reset_column_widths
 from grande_alpha.ui.task_supervisor import TaskSupervisor
-from grande_alpha.ui.theme import THEME
+from grande_alpha.ui.themes import (
+    appearance_settings,
+    apply_application_theme,
+    current_theme,
+    saved_theme,
+    set_item_foreground,
+    set_widget_style,
+    theme_plot,
+)
 from grande_alpha.ui.welcome_widget import WelcomeWidget
 from grande_alpha.ui.workspace import DisclosureSection, WorkspaceNavigation, WorkspaceTabs
 
-STYLESHEET = THEME  # Compatibility for external preview helpers.
+STOP_PREVIEW_TIMEOUT_SECONDS = 30.0
 
 
 class MetricCard(QFrame):
@@ -97,9 +106,7 @@ class MetricCard(QFrame):
         self._compact = compact
         value_points = 16 if compact else 18
         margins = (9, 4, 9, 5) if compact else (10, 5, 10, 6)
-        self.value.setStyleSheet(
-            f"QLabel#cardValue {{ font-size:{value_points}pt; font-weight:650; }}"
-        )
+        set_widget_style(self.value, f"QLabel#cardValue {{ font-size:{value_points}pt; font-weight:650; }}")
         self.value.ensurePolished()
         self.title.ensurePolished()
         title_height = self.title.fontMetrics().lineSpacing() + 2
@@ -127,23 +134,49 @@ class MainWindow(QMainWindow):
         self._closing_after_cleanup = False
         self._connection_busy = False
         self.tasks = TaskSupervisor(self._on_task_error)
+        self._stop_cancel_busy = False
         self.setWindowTitle(f"GRANDE Alpha {__version__} — Community Preview")
         self.setMinimumSize(720, 560)
         self.resize(1440, 900)
-        QApplication.instance().setStyleSheet(THEME)
+        apply_application_theme(saved_theme())
         self._build_ui()
+        self._apply_theme_widgets()
         if not controller.order_confirmation_available:
             controller.set_order_confirmer(self._confirm_strategy_order)
 
         controller.snapshot_changed.connect(self._on_snapshot)
         controller.event.connect(self._on_event)
         controller.connection_busy.connect(self._on_busy)
+        controller.agent_changed.connect(self._clear_stop_status_on_restart)
         self.timer = QTimer(self)
         self.timer.setInterval(int(config.poll_seconds * 1000))
         self.timer.timeout.connect(self._schedule_quote_refresh)
         self.reconcile_timer = QTimer(self)
         self.reconcile_timer.setInterval(int(config.reconcile_seconds * 1000))
         self.reconcile_timer.timeout.connect(self._schedule_reconcile)
+
+    def _apply_theme_widgets(self) -> None:
+        dark = current_theme() == "dark"
+        self.theme_button.setText("Light mode" if dark else "Dark mode")
+        for control in (self.theme_button, self.theme_action):
+            control.blockSignals(True)
+            control.setChecked(dark)
+            control.blockSignals(False)
+        for chart in (self.chart, self.sandbox_widget.chart, self.sandbox_widget.trade_chart):
+            theme_plot(chart)
+        self.agent_widget.apply_theme()
+
+    def _toggle_theme(self, dark: bool) -> None:
+        theme = "dark" if dark else "light"
+        settings = appearance_settings()
+        settings.setValue("theme", theme)
+        settings.sync()
+        if settings.status() != settings.Status.NoError:
+            self._apply_theme_widgets()
+            QMessageBox.warning(self, "Appearance not saved", "The appearance preference could not be saved on this computer.")
+            return
+        apply_application_theme(theme)
+        self._apply_theme_widgets()
 
     def _build_ui(self) -> None:
         root = QWidget()
@@ -162,7 +195,8 @@ class MainWindow(QMainWindow):
         brand_layout.setContentsMargins(0, 0, 0, 0)
         brand_layout.setSpacing(10)
         self.brand = QLabel("GRANDE ALPHA")
-        font = QFont("Segoe UI", 18)
+        font = QFont(QApplication.font())
+        font.setPointSize(18)
         font.setBold(True)
         self.brand.setFont(font)
         brand_layout.addWidget(self.brand)
@@ -171,10 +205,14 @@ class MainWindow(QMainWindow):
         self.plan_button.setToolTip("View the current free plan and the truthful Pro roadmap")
         self.plan_button.clicked.connect(self._show_plans)
         brand_layout.addWidget(self.plan_button)
+        self.theme_button = QPushButton("Dark mode")
+        self.theme_button.setCheckable(True)
+        self.theme_button.setAccessibleName("Dark mode for the whole application")
+        self.theme_button.setToolTip("Switch the whole app between light and dark; remembered on this computer")
+        self.theme_button.toggled.connect(self._toggle_theme)
+        brand_layout.addWidget(self.theme_button)
         self.mode_badge = QLabel("RESEARCH MODE")
-        self.mode_badge.setStyleSheet(
-            "background:#15324a;color:#8fd3ff;border:1px solid #3478a4;border-radius:7px;padding:7px 10px;font-weight:700"
-        )
+        set_widget_style(self.mode_badge, "background:#15324a;color:#8fd3ff;border:1px solid #3478a4;border-radius:7px;padding:7px 10px;font-weight:700")
         brand_layout.addWidget(self.mode_badge)
         brand_layout.addStretch()
         self.header_actions_widget = QWidget()
@@ -198,6 +236,10 @@ class MainWindow(QMainWindow):
         self.kill_button.setObjectName("danger")
         self.kill_button.clicked.connect(
             lambda: self._start_task("stop-and-cancel", self._stop_and_cancel())
+        )
+        self.kill_button.setToolTip(
+            "Stop automation immediately, then review GRANDE-owned open orders for cancellation. "
+            "Robinhood stays connected; filled positions remain open."
         )
         self.flatten_button = QPushButton("Flatten Position")
         self.flatten_button.setObjectName("flatten")
@@ -230,6 +272,12 @@ class MainWindow(QMainWindow):
         notice_layout.addWidget(self.notice_dismiss)
         outer.addWidget(self.notice_bar)
         self.notice_bar.hide()
+
+        self.stop_status = QLabel()
+        self.stop_status.setWordWrap(True)
+        self.stop_status.setAccessibleName("Stop and cancellation status")
+        self.stop_status.hide()
+        outer.addWidget(self.stop_status)
 
         self.broker_panel = QScrollArea()
         self.broker_panel.setWidgetResizable(True)
@@ -351,6 +399,8 @@ class MainWindow(QMainWindow):
         self.tabs.overview.addTab(self.welcome_widget, "Summary")
         self.tabs.addTab(self.tabs.overview, "Overview")
         self.tabs.addTab(self.broker_panel, "Trading")
+        self.agent_widget = AgentWidget(self.controller)
+        self.tabs.addTab(self.agent_widget, "Agent · Stocks + Crypto")
         self.activation_widget = ActivationChecklistWidget()
         self.activation_widget.run_safe_checks.connect(
             lambda: self._start_task("safe-checks", self._run_safe_activation_checks())
@@ -553,6 +603,10 @@ class MainWindow(QMainWindow):
         self.file_menu.addAction(self.exit_action)
 
         self.view_menu = menu_bar.addMenu("View")
+        self.theme_action = self._action("Dark mode", self._toggle_theme)
+        self.theme_action.setCheckable(True)
+        self.view_menu.addAction(self.theme_action)
+        self.view_menu.addSeparator()
         destinations = (
             ("Overview", self.welcome_widget, "Ctrl+1"),
             ("Trading", self.broker_panel, "Ctrl+2"),
@@ -1100,38 +1154,146 @@ class MainWindow(QMainWindow):
             "to review and explicitly confirm any GRANDE-owned cancellations.",
         )
 
-    async def _stop_and_cancel(self) -> None:
+    def _set_stop_status(self, text: str) -> None:
+        self.stop_status.setText(text)
+        self.stop_status.show()
+
+    def _clear_stop_status_on_restart(self, _agent_snapshot=None) -> None:
+        if not self._stop_cancel_busy and (
+            self._snapshot.strategy_running
+            or self._snapshot.shadow_running
+            or self.controller.agent.snapshot.running
+        ):
+            self.stop_status.hide()
+
+    async def _stop_message(
+        self,
+        title: str,
+        text: str,
+        *,
+        question: bool = False,
+        error: bool = False,
+    ) -> bool:
+        """Keep the asyncio/Qt event loop running while the operator reads a dialog."""
+
+        dialog = QMessageBox(self)
+        dialog.setWindowTitle(title)
+        dialog.setText(text)
+        dialog.setTextFormat(Qt.TextFormat.PlainText)
+        dialog.setIcon(
+            QMessageBox.Icon.Question if question else
+            QMessageBox.Icon.Critical if error else QMessageBox.Icon.Information
+        )
+        dialog.setStandardButtons(
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            if question else QMessageBox.StandardButton.Ok
+        )
+        dialog.setDefaultButton(
+            QMessageBox.StandardButton.No if question else QMessageBox.StandardButton.Ok
+        )
+        finished = asyncio.get_running_loop().create_future()
+
+        def resolve(_result: int) -> None:
+            if not finished.done():
+                clicked = dialog.clickedButton()
+                finished.set_result(
+                    clicked is not None
+                    and dialog.standardButton(clicked) == QMessageBox.StandardButton.Yes
+                )
+
+        dialog.finished.connect(resolve)
+        dialog.open()
         try:
-            plan = await self.controller.prepare_cancel_plan()
-        except Exception as exc:
-            QMessageBox.critical(self, "Cancellation preview failed", str(exc))
+            return await finished
+        finally:
+            dialog.finished.disconnect(resolve)
+            dialog.close()
+            dialog.deleteLater()
+
+    async def _stop_and_cancel(self) -> None:
+        if self._stop_cancel_busy:
             return
-        scope = "\n".join(plan.order_summaries) or "No eligible GRANDE-owned open orders."
-        unrelated = (
-            f"\n\n{len(plan.unrelated_order_ids)} unrelated open order(s) will remain untouched."
-            if plan.unrelated_order_ids
-            else ""
-        )
-        answer = QMessageBox.question(
-            self,
-            "Confirm GRANDE-owned order cancellation",
-            f"Agentic account ••••{plan.account_number[-4:]}\n"
-            f"Cancel exactly {len(plan.order_ids)} GRANDE-owned order(s):\n\n{scope}"
-            f"{unrelated}\n\nFilled positions remain open. Continue?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
-        )
-        if answer != QMessageBox.StandardButton.Yes:
-            await self.controller.stop_and_cancel("STOP requested; cancellation declined")
-            return
-        verified = await self.controller.execute_confirmed_cancel(plan)
-        if not verified:
-            QMessageBox.critical(
-                self,
-                "Cancellation not verified",
-                "New orders are locked, but every prior order could not be verified terminal. "
-                "Check Robinhood immediately and retry STOP + CANCEL.",
+        self._stop_cancel_busy = True
+        self.kill_button.setText("STOPPING…")
+        self.kill_button.setEnabled(False)
+        self.stop_cancel_action.setEnabled(False)
+        self._set_stop_status("Stopping automation and checking Robinhood open orders…")
+        plan = None
+        try:
+            # Only the read-only preview is bounded here. Broker write outcomes must
+            # continue through the controller's terminal verification, never be retried.
+            try:
+                plan = await asyncio.wait_for(
+                    self.controller.prepare_cancel_plan(), timeout=STOP_PREVIEW_TIMEOUT_SECONDS
+                )
+            except TimeoutError:
+                message = (
+                    "Automation stopped; new orders are locked. Robinhood's order check timed out. "
+                    "No cancellation was sent. Check open orders in Robinhood, then retry STOP + CANCEL."
+                )
+                self._set_stop_status(message)
+                await self._stop_message("Order check timed out", message, error=True)
+                return
+            unrelated = (
+                f" {len(plan.unrelated_order_ids)} unrelated open order(s) remain untouched."
+                if plan.unrelated_order_ids else ""
             )
+            if not plan.order_ids:
+                message = (
+                    "Automation stopped; new orders are locked. "
+                    "No GRANDE-owned open orders to cancel."
+                    f"{unrelated} Robinhood stays connected. Filled positions remain open."
+                )
+                self._set_stop_status(message)
+                await self._stop_message("Stopped — no orders to cancel", message)
+                return
+            self._set_stop_status("Automation stopped. Waiting for your cancellation decision.")
+            accepted = await self._stop_message(
+                "Confirm GRANDE-owned order cancellation",
+                f"Agentic account ••••{plan.account_number[-4:]}\n"
+                f"Cancel exactly {len(plan.order_ids)} GRANDE-owned order(s):\n\n"
+                + "\n".join(plan.order_summaries)
+                + f"\n\n{unrelated.strip()}\nFilled positions remain open. Continue?",
+                question=True,
+            )
+            if not accepted:
+                self._set_stop_status(
+                    "Automation stopped; new orders are locked. Cancellation declined; "
+                    "no cancellation was sent. Robinhood stays connected."
+                )
+                return
+            self.kill_button.setText("VERIFYING…")
+            self._set_stop_status("Automation stopped. Cancelling reviewed orders and verifying their final state…")
+            verified = await self.controller.execute_confirmed_cancel(plan)
+            if verified:
+                message = (
+                    f"Automation stopped. All {len(plan.order_ids)} reviewed order(s) are verified terminal "
+                    "(cancelled, filled, or otherwise closed)."
+                    f"{unrelated} Robinhood stays connected. Filled positions remain open."
+                )
+                self._set_stop_status(message)
+                await self._stop_message("Stop and cancellation check complete", message)
+            else:
+                message = (
+                    "Automation stopped; new orders are locked. Cancellation could not be verified. "
+                    "Check open orders and fills in Robinhood before retrying STOP + CANCEL."
+                )
+                self._set_stop_status(message)
+                await self._stop_message("Cancellation not verified", message, error=True)
+        except Exception as exc:
+            message = (
+                "STOP + CANCEL could not complete. Check open orders and fills in Robinhood. "
+                f"Cancellation is not confirmed.\n\n{exc}"
+            )
+            self._set_stop_status(message)
+            await self._stop_message("Stop and cancellation check failed", message, error=True)
+        finally:
+            if plan is not None:
+                self.controller.discard_cancel_plan(plan)
+            self._stop_cancel_busy = False
+            self.kill_button.setText("STOP + CANCEL")
+            self.kill_button.setEnabled(self._snapshot.connected)
+            self.stop_cancel_action.setEnabled(self._snapshot.connected)
 
     def _toggle_shadow(self) -> None:
         try:
@@ -1305,6 +1467,8 @@ class MainWindow(QMainWindow):
 
     def _on_snapshot(self, snapshot: TradingSnapshot) -> None:
         self._snapshot = snapshot
+        self._clear_stop_status_on_restart()
+        self.agent_widget.update_account(snapshot)
         self._sync_data_timers()
         if snapshot.account:
             account_type = snapshot.account.account_type.strip().upper() or "UNKNOWN"
@@ -1333,9 +1497,7 @@ class MainWindow(QMainWindow):
         if snapshot.live_status == "LIVE" and snapshot.session_expires_at:
             session = f"Until {snapshot.session_expires_at.astimezone().strftime('%I:%M %p')}"
         self.session_card.value.setText(session)
-        self.session_card.value.setStyleSheet(
-            "color:#00e507" if snapshot.live_status == "LIVE" else "color:#8fa4b8"
-        )
+        set_widget_style(self.session_card.value, "color:#00e507" if snapshot.live_status == "LIVE" else "color:#8fa4b8")
         self.authority_controls.set_authority_state(
             snapshot.live_status,
             self.controller.risk.grant,
@@ -1344,20 +1506,18 @@ class MainWindow(QMainWindow):
         )
         self.signal_card.value.setText(snapshot.signal.regime.value.upper())
         signal_color = {Regime.BULLISH: "#00e507", Regime.BEARISH: "#ff697d", Regime.FLAT: "#f2c14e"}
-        self.signal_card.value.setStyleSheet(f"color:{signal_color[snapshot.signal.regime]}")
+        set_widget_style(self.signal_card.value, f"color:{signal_color[snapshot.signal.regime]}")
         self.pair_action_card.value.setText(snapshot.pair_action_label)
-        self.pair_action_card.value.setStyleSheet(
-            "color:#f2c14e" if snapshot.pair_action_id == 4 else "color:#65b9ff"
-        )
+        set_widget_style(self.pair_action_card.value, "color:#f2c14e" if snapshot.pair_action_id == 4 else "color:#65b9ff")
         self.drawdown_card.value.setText(f"${snapshot.drawdown:,.2f}")
         if snapshot.shadow_running:
             self.shadow_card.value.setText(
                 f"${snapshot.shadow_pnl:+,.2f} • {snapshot.shadow_position or 'cash'}"
             )
-            self.shadow_card.value.setStyleSheet("color:#65b9ff")
+            set_widget_style(self.shadow_card.value, "color:#65b9ff")
         else:
             self.shadow_card.value.setText("OFF")
-            self.shadow_card.value.setStyleSheet("color:#8fa4b8")
+            set_widget_style(self.shadow_card.value, "color:#8fa4b8")
         self.shadow_button.setText("Stop simulation" if snapshot.shadow_running else "Simulate with live data")
         self.connect_button.setText("Disconnect" if snapshot.connected else "Connect Robinhood")
         self._update_visible_tables()
@@ -1437,11 +1597,10 @@ class MainWindow(QMainWindow):
             title, detail = "No trading active", "Simulate an idea or review a bounded trading session. Approval does not guarantee a trade or a profit."
         self.session_state_title.setText(title)
         self.session_state_detail.setText(detail)
-        self.mode_badge.setStyleSheet(
+        set_widget_style(self.mode_badge,
             "background:#4b2516;color:#ffc07a;border:1px solid #9a5328;border-radius:7px;padding:7px 10px;font-weight:700"
             if supervised_available or evidence_ready
-            else "background:#15324a;color:#8fd3ff;border:1px solid #3478a4;border-radius:7px;padding:7px 10px;font-weight:700"
-        )
+            else "background:#15324a;color:#8fd3ff;border:1px solid #3478a4;border-radius:7px;padding:7px 10px;font-weight:700")
         authorize_label = (
             "Review evidence-gated session"
             if evidence_ready
@@ -1455,7 +1614,7 @@ class MainWindow(QMainWindow):
             session_available and live and not self._snapshot.strategy_running and not shadow
         )
         self.shadow_button.setEnabled(connected and (shadow or not live))
-        self.kill_button.setEnabled(connected)
+        self.kill_button.setEnabled(connected and not self._stop_cancel_busy)
         self.flatten_button.setEnabled(bool(self._snapshot.positions))
         self.fund_view_action.setVisible(self.config.personal_ledger_enabled)
         self.broker_connect_action.setEnabled(broker_enabled)
@@ -1468,7 +1627,7 @@ class MainWindow(QMainWindow):
         self.start_strategy_action.setEnabled(
             session_available and live and not self._snapshot.strategy_running and not shadow
         )
-        self.stop_cancel_action.setEnabled(connected)
+        self.stop_cancel_action.setEnabled(connected and not self._stop_cancel_busy)
         self.flatten_action.setEnabled(connected and bool(self._snapshot.positions))
         safe_checks_available = (
             self.controller.risk.grant is None and not self._snapshot.strategy_running
@@ -1521,7 +1680,7 @@ class MainWindow(QMainWindow):
             for column, value in enumerate(values):
                 item = QTableWidgetItem(value)
                 if column == 5 and pnl is not None:
-                    item.setForeground(QColor("#00e507" if pnl >= 0 else "#ff697d"))
+                    set_item_foreground(item, QColor("#00e507" if pnl >= 0 else "#ff697d"))
                 self.positions_table.setItem(row, column, item)
 
     def _update_orders(self, snapshot: TradingSnapshot) -> None:
@@ -1577,17 +1736,18 @@ class MainWindow(QMainWindow):
         for column, value in enumerate((now, severity.upper(), summary)):
             item = QTableWidgetItem(value)
             if severity in {"error", "critical"}:
-                item.setForeground(QColor("#ff697d"))
+                set_item_foreground(item, QColor("#ff697d"))
             elif severity == "warning":
-                item.setForeground(QColor("#f2c14e"))
+                set_item_foreground(item, QColor("#f2c14e"))
             elif severity == "market":
-                item.setForeground(QColor("#65b9ff"))
+                set_item_foreground(item, QColor("#65b9ff"))
             self.activity_table.setItem(0, column, item)
         if self.activity_table.rowCount() > 500:
             self.activity_table.removeRow(500)
 
     def closeEvent(self, event: QCloseEvent) -> None:
         if self._closing_after_cleanup:
+            self.agent_widget.shutdown()
             self.timer.stop()
             self.reconcile_timer.stop()
             event.accept()
@@ -1597,6 +1757,7 @@ class MainWindow(QMainWindow):
             # initial/offline use never creates an orphan asyncio task just to exit.
             self.timer.stop()
             self.reconcile_timer.stop()
+            self.agent_widget.shutdown()
             self.controller.stop_for_exit()
             self._closing_after_cleanup = True
             event.accept()

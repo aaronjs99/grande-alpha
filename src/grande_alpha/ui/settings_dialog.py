@@ -31,6 +31,7 @@ from grande_alpha.execution import (
 )
 from grande_alpha.strategy import STRATEGY_NAMES
 from grande_alpha.ui.glossary import add_explained_row, apply_help, help_hint
+from grande_alpha.ui.themes import set_widget_style
 
 LIVE_PHRASE = "ENABLE LIVE ORDERS"
 
@@ -106,7 +107,7 @@ class SettingsDialog(QDialog):
 
         self.account_scope_status = QLabel("APP VIEW SCOPE  •  ACTIVE AGENTIC ACCOUNT")
         self.account_scope_status.setObjectName("settingsStatus")
-        self.account_scope_status.setStyleSheet("background:#142b3d;color:#8fd3ff;border:1px solid #315b78;")
+        set_widget_style(self.account_scope_status, "background:#142b3d;color:#8fd3ff;border:1px solid #315b78;")
         permissions_layout.addWidget(self.account_scope_status)
 
         self.live = QCheckBox("Make supervised real-order ticket controls available")
@@ -125,11 +126,9 @@ class SettingsDialog(QDialog):
             else "AUTONOMOUS EVIDENCE  •  LOCKED"
         )
         self.evidence_status.setObjectName("settingsStatus")
-        self.evidence_status.setStyleSheet(
-            "background:#17301f;color:#80e899;border:1px solid #376d45;"
+        set_widget_style(self.evidence_status, "background:#17301f;color:#80e899;border:1px solid #376d45;"
             if live_evidence_ready
-            else "background:#2b2315;color:#ffd27a;border:1px solid #6f5727;"
-        )
+            else "background:#2b2315;color:#ffd27a;border:1px solid #6f5727;")
         apply_help(
             self.evidence_status,
             "Autonomous evidence gate",
@@ -445,11 +444,9 @@ class SettingsDialog(QDialog):
             if evidence_ready
             else "AUTONOMOUS EVIDENCE  •  LOCKED"
         )
-        self.evidence_status.setStyleSheet(
-            "background:#17301f;color:#80e899;border:1px solid #376d45;"
+        set_widget_style(self.evidence_status, "background:#17301f;color:#80e899;border:1px solid #376d45;"
             if evidence_ready
-            else "background:#2b2315;color:#ffd27a;border:1px solid #6f5727;"
-        )
+            else "background:#2b2315;color:#ffd27a;border:1px solid #6f5727;")
         self.live_phrase.setVisible(enabling_live)
         candidate = self.updated_config()
         supervised_route = (
@@ -463,11 +460,9 @@ class SettingsDialog(QDialog):
             if supervised_route
             else "SUPERVISED PER-ORDER  •  ROUTE LOCKED"
         )
-        self.supervised_status.setStyleSheet(
-            "background:#17301f;color:#80e899;border:1px solid #376d45;"
+        set_widget_style(self.supervised_status, "background:#17301f;color:#80e899;border:1px solid #376d45;"
             if supervised_route
-            else "background:#2b2315;color:#ffd27a;border:1px solid #6f5727;"
-        )
+            else "background:#2b2315;color:#ffd27a;border:1px solid #6f5727;")
         valid = True
         message = ""
         if self.live.isChecked() and not self.broker.isChecked():

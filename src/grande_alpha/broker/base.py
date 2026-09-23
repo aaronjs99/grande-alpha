@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 
+from grande_alpha.agent_models import Instrument
+from grande_alpha.crypto_models import CryptoOrder, CryptoOrderIntent, CryptoPosition, CryptoReview
 from grande_alpha.models import (
     Account,
     BrokerOrder,
@@ -42,6 +44,36 @@ class BrokerError(RuntimeError):
 
 
 class Broker(ABC):
+    def agent_tool_contracts(self) -> dict:
+        raise BrokerError("This broker does not expose agent tool contracts")
+
+    async def discover_crypto(self) -> list[Instrument]:
+        raise BrokerError("This broker does not expose crypto discovery")
+
+    async def get_crypto_quotes(self, instruments: list[Instrument], *, rhs_account_number: str = "") -> dict[str, Quote]:
+        raise BrokerError("This broker does not expose crypto quotes")
+
+    async def discover_equities(self, scan_id: str) -> list[Instrument]:
+        raise BrokerError("This broker does not expose saved equity scans")
+
+    async def get_scans(self) -> list[tuple[str, str]]:
+        raise BrokerError("This broker does not expose saved equity scans")
+
+    async def get_crypto_positions(self, account_number: str) -> list[CryptoPosition]:
+        raise BrokerError("This broker does not expose crypto positions")
+
+    async def get_crypto_orders(self, account_number: str, *, order_id: str = "") -> list[CryptoOrder]:
+        raise BrokerError("This broker does not expose crypto orders")
+
+    async def review_crypto_order(self, account_number: str, intent: CryptoOrderIntent) -> CryptoReview:
+        raise BrokerError("This broker blocks crypto order preview")
+
+    async def place_crypto_order(self, review: CryptoReview) -> CryptoOrder:
+        raise BrokerError("This broker blocks crypto order placement")
+
+    async def cancel_crypto_order(self, account_number: str, order_id: str) -> bool:
+        raise BrokerError("This broker blocks crypto cancellation")
+
     def clear_credentials(self) -> None:
         """Forget locally stored credentials when the adapter supports persistence."""
         return None

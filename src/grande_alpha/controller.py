@@ -18,6 +18,10 @@ from grande_alpha.action_lab import (
     live_feasible_action_ids,
     pair_action_for_target,
 )
+from grande_alpha.agent_execution import AgentExecutor
+from grande_alpha.agent_ledger import AgentBudget
+from grande_alpha.agent_models import AgentSettings
+from grande_alpha.agent_runtime import AgentRuntime
 from grande_alpha.broker.base import (
     Broker,
     BrokerError,
@@ -125,6 +129,8 @@ class TradingSnapshot:
     pair_action_label: str = "(0,0)"
     last_analysis_at: datetime | None = None
     last_trade_decision_at: datetime | None = None
+    agent_budget: dict | None = None
+    agent_recovery_status: str = "No managed stock/crypto orders recorded"
 
 
 @dataclass(frozen=True)
@@ -183,9 +189,13 @@ class TradingController:
         self.snapshot_changed: EventHook[TradingSnapshot] = EventHook()
         self.event: EventHook[tuple[str, str]] = EventHook()
         self.connection_busy: EventHook[bool] = EventHook()
+        self.agent_changed: EventHook[object] = EventHook()
         self.broker = broker
         self.config = config
         self.store = store
+        # Default-deny authorizer: budgets and recovered journal entries do not
+        # inherit the original ETF grant or create new live authority.
+        self.agent_executor = AgentExecutor(broker, store.agent_ledger)
         self.risk = RiskEngine(config.no_trade_open_minutes, config.no_trade_close_minutes)
         self._standing = None
         self.strategy = build_strategy(_runtime_strategy_config(config))
@@ -228,6 +238,68 @@ class TradingController:
         self._shadow_session_key: str | None = None
         self._shadow_account_fingerprint: str | None = None
         self._shadow_strategy_fingerprint: str | None = None
+        self.agent = AgentRuntime(
+            equity_quotes=broker.get_quotes,
+            crypto_pairs=broker.discover_crypto,
+            crypto_quotes=self._agent_crypto_quotes,
+            equity_scan=broker.discover_equities,
+            connected=lambda: bool(
+                self.config.broker_connection_enabled
+                and self.snapshot.connected
+            ),
+            changed=self.agent_changed.emit,
+            log=self.log,
+            crypto_account_type=lambda: self.snapshot.account.brokerage_account_type if self.snapshot.account else "",
+        )
+
+    def start_agent(self, settings: AgentSettings) -> None:
+        self.agent.start(settings)
+
+    async def _agent_crypto_quotes(self, instruments):
+        account = self.snapshot.account
+        if not account or not account.rhs_account_number or not account.rhc_account_number:
+            raise BrokerError("The selected Agentic account has no verified linked crypto account")
+        return await self.broker.get_crypto_quotes(instruments, rhs_account_number=account.rhs_account_number)
+
+    def save_agent_budget(self, budget: AgentBudget) -> None:
+        if not self.snapshot.connected or self.snapshot.account is None:
+            raise RuntimeError("Connect the selected Agentic account before saving its budget")
+        account = self.snapshot.account.account_number
+        self.store.agent_ledger.save_budget(account, budget)
+        self.snapshot.agent_budget = self.agent_executor.status_payload(account)
+        self.log("Stock/crypto cash limits saved; no trading authority granted", category="agent_budget")
+        self.snapshot_changed.emit(self.snapshot)
+
+    async def _recover_agent_execution(self) -> None:
+        if self.snapshot.account is None:
+            return
+        account = self.snapshot.account.account_number
+        try:
+            status = self.store.agent_ledger.status(account)
+            recorded = self.store.agent_ledger.records(account)
+            needs_recovery = status.block_reason not in ("", "Trading budget is not configured", "Cumulative realized loss budget reached")
+            if status.pending_orders or status.has_inventory or (recorded and needs_recovery):
+                await self.agent_executor.recover(account)
+                status = self.store.agent_ledger.status(account)
+                self.snapshot.agent_recovery_status = (
+                    f"{status.unresolved_orders} order outcome(s) unresolved; no retries"
+                    if status.unresolved_orders else "Managed orders and inventory reconciled"
+                )
+            else:
+                self.snapshot.agent_recovery_status = "No pending managed stock/crypto orders"
+        except Exception as exc:
+            message = f"Recovery blocked: {exc}"
+            if message != self.snapshot.agent_recovery_status:
+                self.log(message, "error", "agent_recovery")
+            self.snapshot.agent_recovery_status = message
+        self.snapshot.agent_budget = self.agent_executor.status_payload(account)
+
+    def _assert_agent_route_clear(self) -> None:
+        if self.snapshot.account is None:
+            return
+        status = self.store.agent_ledger.status(self.snapshot.account.account_number)
+        if status.pending_orders or status.has_inventory or status.block_reason not in ("", "Trading budget is not configured"):
+            raise RuntimeError("Managed stock/crypto commitments or recovery blocks must be resolved before using the separate ETF route")
 
     def set_order_confirmer(self, confirmer: OrderConfirmer | None) -> None:
         """Install the non-persistent UI callback used for each reviewed real-money order."""
@@ -708,6 +780,7 @@ class TradingController:
 
     def stop_for_exit(self) -> None:
         """Revoke local execution without asserting any broker order was canceled."""
+        self.agent.stop("Application exiting")
         self._revoke_live_automation("Application exiting; broker orders are not canceled")
         self.log(
             "Local execution stopped for exit. Broker order status may be unknown; "
@@ -716,6 +789,7 @@ class TradingController:
         )
 
     async def disconnect(self) -> None:
+        self.agent.stop("Agent stopped before broker disconnect")
         self._revoke_live_automation("Disconnected by user")
         if not self.snapshot.connected or self.snapshot.account is None:
             await self.broker.disconnect()
@@ -757,6 +831,8 @@ class TradingController:
     def update_config(self, config: AppConfig) -> None:
         """Apply safe runtime settings; a bar-size change starts a fresh warm-up."""
         config.validate_cadence()
+        if not config.broker_connection_enabled:
+            self.agent.stop("Agent stopped because broker access was revoked")
         config_changed = config != self.config
         bar_changed = config.bar_seconds != self.config.bar_seconds
         trade_cadence_changed = config.trade_every_bars != self.config.trade_every_bars
@@ -963,6 +1039,7 @@ class TradingController:
                 ):
                     self.store.validate_execution_inventory(account_number, positions)
                 self._validate_reconciled_live_state()
+                await self._recover_agent_execution()
                 if (
                     self.risk.session_status() == "LOSS LIMIT"
                     and not self._leveraged_positions()
@@ -1271,6 +1348,7 @@ class TradingController:
             raise RuntimeError("The selected broker account is not an active Agentic account")
         if grant.account_number != self.snapshot.account.account_number:
             raise RuntimeError("Grant account does not match the connected Agentic account")
+        self._assert_agent_route_clear()
         if self.snapshot.account.account_type.lower() == "cash" and self.config.settlement_model != "cash_t1":
             raise RuntimeError("Cash-account authority requires the T+1 settlement evidence model")
         if self.snapshot.portfolio.total_value <= 0 or self.snapshot.portfolio.buying_power <= 0:
@@ -1973,6 +2051,22 @@ class TradingController:
 
         return await self.execute_confirmed_cancel(None, reason=reason)
 
+    def _stop_for_cancel(self, reason: str) -> None:
+        """Halt locally before waiting for broker truth or writing any receipts."""
+
+        self.snapshot.strategy_running = False
+        self.snapshot.session_expires_at = None
+        self._authority_mode = None
+        self.risk.revoke(reason)
+        try:
+            try:
+                self.agent.stop(reason)
+            finally:
+                self.stop_shadow(reason)
+            self._persist_risk_receipts()
+        finally:
+            self._emit()
+
     @staticmethod
     def _cancel_order_target(
         order: BrokerOrder, durable_binding: dict[str, Any]
@@ -2151,6 +2245,7 @@ class TradingController:
     async def prepare_cancel_plan(self) -> CancelPlan:
         """Read an exact GRANDE-owned cancellation scope without moving money."""
 
+        await self.stop_and_cancel("STOP requested; preparing cancellation review")
         if not self.snapshot.connected or self.snapshot.account is None:
             raise RuntimeError("Connect the Agentic account before preparing cancellation")
         account_number = self.snapshot.account.account_number
@@ -2167,17 +2262,18 @@ class TradingController:
         self._cancel_plans[plan.token] = plan
         return plan
 
+    def discard_cancel_plan(self, plan: CancelPlan) -> None:
+        """Release a completed or declined review without any broker action."""
+
+        self._cancel_plans.pop(plan.token, None)
+
     async def execute_confirmed_cancel(
         self,
         plan: CancelPlan | None,
         *,
         reason: str = "STOP + CANCEL confirmed",
     ) -> bool:
-        self.stop_shadow(reason)
-        self.snapshot.strategy_running = False
-        self.snapshot.session_expires_at = None
-        self.risk.revoke(reason)
-        self._persist_risk_receipts()
+        self._stop_for_cancel(reason)
         if plan is None:
             self.log(
                 f"{reason}; new orders locked; broker cancellation requires explicit confirmation",
@@ -2943,6 +3039,26 @@ class TradingController:
             return None
         return request
 
+    def _live_loss_entry_block_reason(self) -> str:
+        """Block new exposure after today's loss streak, while allowing exits."""
+        if self.snapshot.account is None:
+            return "Cannot establish consecutive losses without a bound account"
+        try:
+            contract = self.runtime_execution_contract()
+            streak = self.store.live_loss_streak(
+                self.snapshot.account.account_number,
+                utc_now().astimezone(EASTERN).date().isoformat(),
+            )
+        except (ValueError, TypeError, OverflowError) as exc:
+            return f"Cannot establish consecutive losses from execution history: {exc}"
+        if streak["peak_consecutive_losses"] >= contract.max_consecutive_losses:
+            return (
+                "Consecutive loss pause: no new buys for this Eastern trading day "
+                f"(limit {contract.max_consecutive_losses}; "
+                f"observed streak {streak['peak_consecutive_losses']})"
+            )
+        return ""
+
     async def _submit_serialized(
         self,
         intent: OrderIntent,
@@ -2956,6 +3072,11 @@ class TradingController:
         if liquidation_only and intent.side != "sell":
             raise RuntimeError("Liquidation-only authority cannot create exposure")
         if not self._live_automation_current(allow_loss_liquidation=liquidation_only):
+            return None
+        if intent.side == "buy":
+            self._assert_agent_route_clear()
+        if intent.side == "buy" and (reason := self._live_loss_entry_block_reason()):
+            self.log(f"Order blocked: {reason}", "warning", "risk", intent.as_dict())
             return None
         exit_position = None
         if intent.side == "sell":
@@ -3131,6 +3252,14 @@ class TradingController:
             return None
         refreshed_exit_position = None
         if intent.side == "buy":
+            # Confirmation and provider reads yield control. Rebuild the streak
+            # from the refreshed execution ledger before crossing placement.
+            if reason := self._live_loss_entry_block_reason():
+                self.risk.release_authorization(intent.ref_id, reason)
+                self._persist_risk_receipts()
+                self.store.update_intent(intent.ref_id, None, "consecutive_loss_blocked")
+                self.log(f"Order blocked after review: {reason}", "warning", "risk", intent.as_dict())
+                return None
             if self._leveraged_positions():
                 self._revoke_live_automation(
                     "Leveraged inventory appeared after review; exposure-increasing placement blocked"
@@ -3221,6 +3350,8 @@ class TradingController:
         if grant is None:
             self.store.update_intent(intent.ref_id, None, "blocked_authority_revoked")
             return None
+        if intent.side == "buy":
+            self._assert_agent_route_clear()
         self.store.mark_intent_submitting(
             intent.ref_id,
             account_number=self.snapshot.account.account_number,

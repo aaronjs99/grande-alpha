@@ -7,6 +7,9 @@ $PythonExe = Get-GrandeAlphaPython $ProjectRoot
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 & $PythonExe -m compileall -q src
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+$env:QT_QPA_PLATFORM = 'offscreen'
+& $PythonExe -m pytest -q
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 & $PythonExe -m build --wheel --outdir (Join-Path $ProjectRoot 'artifacts\wheel-check')
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 Write-Host 'Verification passed.' -ForegroundColor Green

@@ -41,6 +41,7 @@ it will not mean that any strategy is profitable.
 | Automatic startup or Windows-scheduled execution | Not included |
 | Community plan | Free and local; no account, checkout, or entitlement server |
 | Pro plan | Roadmap only; no paid activation exists |
+| Stocks and crypto Agent Desk | Research proposals and local observations only; no automatic multi-market orders |
 
 See the [product contract](docs/PRODUCT_CONTRACT.md), [roadmap to 1.0.0](docs/ROADMAP_TO_1_0.md),
 [versioning policy](docs/VERSIONING.md), and [changelog](CHANGELOG.md).
@@ -104,6 +105,15 @@ grande-alpha-cli --help
 ```
 
 Install the desktop workspace explicitly with `py -3.11 -m pip install -e ".[desktop]"`.
+
+The Agent Desk supports watchlist and saved-scan research, supported crypto-pair observations,
+optional local analysis, and an activity view. Its cash-limit plan and recovery status do not grant
+trading authority. See the [Agent workspace](docs/AGENT_WORKSPACE.md) and
+[execution journal](docs/AGENT_EXECUTION_JOURNAL.md) for scope and remaining work.
+
+Use the top-bar appearance toggle or **View → Dark mode** to switch the app-wide theme. **STOP +
+CANCEL** stops local automation before checking broker orders; cancellation of exact GRANDE-owned
+orders still requires confirmation. Filled positions and unrelated orders remain untouched.
 
 ## First research run
 

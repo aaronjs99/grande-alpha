@@ -26,6 +26,10 @@ research/audit records. Start with the path that matches what you are trying to 
 - [CLI reference](CLI.md) — commands, output formats, and the live-boundary limitations.
 - [Getting to autonomy](GETTING_TO_AUTONOMY.md) — exact remaining work and one operator-input checklist.
 - [Agent workflow](AGENT_WORKFLOW.md) — bounded research roles and their separation from execution.
+- [Stocks and crypto Agent workspace](AGENT_WORKSPACE.md) — discovery, optional local analysis,
+  observations, and the current multi-market execution boundary.
+- [Agent execution journal](AGENT_EXECUTION_JOURNAL.md) and [crypto broker contract](BROKER_CRYPTO_CONTRACT.md)
+  — durable accounting and provider compatibility assumptions.
 - [Community and Pro plans](PRODUCT_PLANS.md) — current free plan and the non-binding Pro roadmap.
 
 ## Safety and live-readiness boundaries

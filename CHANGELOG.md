@@ -5,12 +5,12 @@
 - Revoked local authority and closed a partial Robinhood connection after account-read failure;
   allowed a local-only detach when the MCP transport had already dropped. Neither path cancels
   orders or certifies broker cleanup.
-- Documented a provider-neutral research-agent workflow. No AI provider, cloud bot, scheduler, or
-  model-controlled broker execution was added.
+- Documented a provider-neutral research-agent workflow. Optional local Ollama analysis is separate
+  from execution; no cloud bot, scheduler, or model-controlled broker execution was added.
 
-- Removed the repository's automated test and UI-capture harness at the maintainer's request.
-  The last full run before removal passed 653 tests and 31 subtests; future changes no longer have
-  that regression coverage. Source linting, compilation, and wheel construction remain in CI.
+- Removed the previous automated test and UI-capture harness at the maintainer's request. Antonio's
+  integration restores focused multi-market and UI regression tests, but the former full suite has
+  not been restored; passing the new tests is not live-broker qualification.
 
 - Added isolated stock-capable ticket serialization, bounded multi-day scope validation,
   portfolio-wide risk preflight and immutable equity intent/fill accounting. Old ETF permissions
@@ -51,6 +51,21 @@
   Piped approval is rejected; failures revoke local authority without implying cancellation or liquidation.
 - Prior offline headless/live lifecycle and policy checks were not real-money validation. No unattended
   authorization, cloud deployment, LLM trading stage, or live PEAD strategy is claimed by these changes.
+
+- Added the Stocks + Crypto Agent workspace for bounded equity and USD crypto discovery,
+  provider observations, optional local Ollama proposals, and account/activity views. It has
+  no order-writing callback or model-controlled broker execution path.
+- Added an account-scoped, default-deny stock/crypto execution journal with atomic cash
+  reservations, one-use order references, cancellation records, and read-only restart recovery.
+  Uncertain submissions are never retried automatically; these primitives are not wired to
+  the Agent proposals or a live multi-market authority.
+- Hardened live reconciliation against broker execution/inventory mismatches and enforced
+  a fee-inclusive consecutive-loss limit before and after order review.
+- Reworked the Agent dashboard for light/dark themes and smaller windows. STOP + CANCEL now
+  stops local automation before broker checks and shows non-blocking progress; broker
+  cancellation still needs exact confirmation and terminal verification.
+- Restored focused regression tests for Agent discovery, execution accounting, broker
+  compatibility, stop behavior, and desktop layout. These do not qualify live trading.
 
 ## 0.17.0 - 2026-08-31
 

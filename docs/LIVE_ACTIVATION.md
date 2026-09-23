@@ -90,6 +90,20 @@ Any failed preflight leaves the relevant real-order path locked.
 
 ## Daily budgets survive restart
 
+The candidate's consecutive-loss limit also applies to real-order sessions. Like replay,
+it counts each realized losing sell fill, including partial fills, rather than waiting for
+an entire position to close. Live results use immutable provider execution IDs, actual
+prices and fees, and proportional allocation of the recorded entry cost. Repeated broker
+snapshots do not add another loss. The count spans TQQQ and SQQQ in the same Agentic account.
+
+A non-losing fill resets the current streak, but reaching the configured limit latches a
+pause on new buys for the rest of that Eastern trading day. Restart, reconnect, and a new
+grant do not erase the history. Exits remain available subject to the existing order checks;
+the pause itself does not sell or cancel anything. A new Eastern trading day starts a new
+streak. Missing or inconsistent entry-cost history blocks new buys. The controller checks
+again after confirmation and the final broker refresh. This does not certify that modeled
+fills and actual provider fills have identical economics or unlock autonomous trading.
+
 The gross daily-notional cap counts placement invocations for buys **and** sells. The order-count cap
 also counts every placement invocation. Before each grant is armed, GRANDE Alpha restores that
 same-ET-day usage from append-only receipts; revoking, restarting, or granting a narrower later

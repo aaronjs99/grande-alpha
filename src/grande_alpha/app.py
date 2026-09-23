@@ -32,6 +32,7 @@ def main() -> int:
 
         from grande_alpha.ui.main_window import MainWindow
         from grande_alpha.ui.onboarding import OnboardingWizard
+        from grande_alpha.ui.themes import apply_application_theme, saved_theme
     except ModuleNotFoundError as exc:
         missing_module = exc.name or ""
         if missing_module in {"pyqtgraph", "qasync"} or missing_module.startswith("PySide6"):
@@ -62,6 +63,7 @@ def main() -> int:
     app.setApplicationVersion(__version__)
     app.setOrganizationName("GRANDE Alpha")
     app.setOrganizationDomain("local.grandealpha")
+    apply_application_theme(saved_theme())
     icon_resource = files("grande_alpha.assets").joinpath("app-icon.png")
     with as_file(icon_resource) as icon_path:
         app.setWindowIcon(QIcon(str(icon_path)))

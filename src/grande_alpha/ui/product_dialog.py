@@ -22,6 +22,7 @@ from grande_alpha.product import (
     configured_upgrade_url,
     current_entitlement,
 )
+from grande_alpha.ui.themes import set_widget_style
 
 
 class _PlanCard(QFrame):
@@ -34,19 +35,17 @@ class _PlanCard(QFrame):
         layout.setSpacing(8)
 
         name = QLabel(plan.name)
-        name.setStyleSheet("font-size:17pt;font-weight:700")
+        set_widget_style(name, "font-size:17pt;font-weight:700")
         layout.addWidget(name)
         price = QLabel(plan.price_label)
-        price.setStyleSheet("font-size:14pt;font-weight:650;color:#8fd3ff")
+        set_widget_style(price, "font-size:14pt;font-weight:650;color:#8fd3ff")
         layout.addWidget(price)
         status = QLabel("CURRENT PLAN" if current else plan.availability_label.upper())
-        status.setStyleSheet(
-            "background:#123827;color:#6de98a;border:1px solid #2b7650;"
+        set_widget_style(status, "background:#123827;color:#6de98a;border:1px solid #2b7650;"
             "border-radius:6px;padding:5px 8px;font-weight:700"
             if current
             else "background:#2b2315;color:#ffd27a;border:1px solid #6f5727;"
-            "border-radius:6px;padding:5px 8px;font-weight:700"
-        )
+            "border-radius:6px;padding:5px 8px;font-weight:700")
         layout.addWidget(status)
 
         for feature in plan.features:

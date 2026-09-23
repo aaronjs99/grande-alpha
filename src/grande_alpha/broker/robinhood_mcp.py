@@ -19,9 +19,13 @@ from mcp.client.auth import OAuthClientProvider
 from mcp.client.streamable_http import streamablehttp_client
 from mcp.shared.auth import OAuthClientMetadata
 
+from grande_alpha.agent_models import Instrument
 from grande_alpha.broker.base import Broker, BrokerError
+from grande_alpha.broker.crypto import RobinhoodCrypto
+from grande_alpha.broker.discovery import RobinhoodDiscovery
 from grande_alpha.broker.oauth import CredentialTokenStorage, OAuthCallbackServer
 from grande_alpha.config import MCP_URL
+from grande_alpha.crypto_models import CryptoOrder, CryptoOrderIntent, CryptoPosition, CryptoReview
 from grande_alpha.models import (
     Account,
     BrokerExecution,
@@ -84,11 +88,17 @@ def _tool_contract(item: object) -> tuple[str, dict[str, Any]]:
     return name, metadata
 
 TOOL_PRIORITIES = {
+    "cancel_crypto_order": 0,
+    "place_crypto_order": 1,
+    "preview_crypto_order": 2,
     "cancel_equity_order": 0,
     "place_equity_order": 1,
     "review_equity_order": 2,
 }
 TOOL_TIMEOUT_SECONDS = {
+    "cancel_crypto_order": 10.0,
+    "place_crypto_order": 20.0,
+    "preview_crypto_order": 15.0,
     "cancel_equity_order": 10.0,
     "place_equity_order": 20.0,
     "review_equity_order": 15.0,
@@ -241,12 +251,16 @@ class RobinhoodMCPBroker(Broker):
         self.storage = CredentialTokenStorage()
         self._tools: dict[str, dict[str, Any]] = {}
         self._tool_contracts: dict[str, dict[str, Any]] = {}
+        self._agent_tool_contracts: dict[str, dict[str, Any]] = {}
         self._requests: asyncio.PriorityQueue[tuple[int, int, _ToolRequest | None]] | None = None
         self._request_sequence = itertools.count()
         self._worker: asyncio.Task[None] | None = None
         self._connected = False
         self._accepting_calls = False
         self._lifecycle_lock = asyncio.Lock()
+        self._crypto = RobinhoodCrypto(
+            lambda name, args: self._call(name, args), lambda: self._tools, lambda: self.get_accounts(),
+        )
 
     @property
     def connected(self) -> bool:
@@ -274,6 +288,45 @@ class RobinhoodMCPBroker(Broker):
         if self.connected:
             raise BrokerError("Disconnect before forgetting stored broker credentials")
         self.storage.clear()
+
+    async def discover_crypto(self) -> list[Instrument]:
+        return await RobinhoodDiscovery(self._call, self._tools).currency_pairs()
+
+    async def get_crypto_quotes(self, instruments: list[Instrument], *, rhs_account_number: str = "") -> dict[str, Quote]:
+        return await RobinhoodDiscovery(self._call, self._tools).crypto_quotes(
+            instruments, rhs_account_number=rhs_account_number,
+        )
+
+    async def discover_equities(self, scan_id: str) -> list[Instrument]:
+        return await RobinhoodDiscovery(self._call, self._tools).scan(scan_id)
+
+    async def get_scans(self) -> list[tuple[str, str]]:
+        return await RobinhoodDiscovery(self._call, self._tools).scans()
+
+    async def get_crypto_positions(self, account_number: str) -> list[CryptoPosition]:
+        return await self._crypto.positions(account_number)
+
+    async def get_crypto_orders(self, account_number: str, *, order_id: str = "") -> list[CryptoOrder]:
+        return await self._crypto.orders(account_number, order_id=order_id)
+
+    async def review_crypto_order(self, account_number: str, intent: CryptoOrderIntent) -> CryptoReview:
+        return await self._crypto.preview(account_number, intent)
+
+    async def place_crypto_order(self, review: CryptoReview) -> CryptoOrder:
+        return await self._crypto.place(review)
+
+    async def cancel_crypto_order(self, account_number: str, order_id: str) -> bool:
+        return await self._crypto.cancel(account_number, order_id)
+
+    def agent_tool_contracts(self) -> dict:
+        if not self.connected:
+            raise BrokerError("Connect Robinhood before exporting tool contracts")
+        return {
+            "schema_version": 1,
+            "provider": "Robinhood Trading MCP",
+            "notice": "Tool definitions only; no account data, quotes, credentials, or order calls.",
+            "tools": copy.deepcopy(self._agent_tool_contracts),
+        }
 
     async def connect(self) -> None:
         async with self._lifecycle_lock:
@@ -372,6 +425,22 @@ class RobinhoodMCPBroker(Broker):
                     name, metadata = _tool_contract(item)
                     self._tools[name] = metadata["inputSchema"]
                     self._tool_contracts[name] = metadata
+                agent_tool_names = {
+                    "get_accounts", "get_portfolio", "get_equity_quotes", "get_equity_tradability",
+                    "get_equity_positions", "get_equity_orders", "review_equity_order",
+                    "place_equity_order", "cancel_equity_order", "get_currency_pairs",
+                    "get_crypto_quotes", "get_crypto_positions", "get_crypto_orders",
+                    "preview_crypto_order", "place_crypto_order", "cancel_crypto_order",
+                    "get_scans", "run_scan", "get_scanner_filter_specs",
+                }
+                self._agent_tool_contracts = {
+                    item.name: {
+                        "input_schema": self._tools[item.name],
+                        "output_schema": getattr(item, "outputSchema", None),
+                        "description": getattr(item, "description", None),
+                    }
+                    for item in listing.tools if item.name in agent_tool_names
+                }
                 required = {
                     "get_accounts",
                     "get_portfolio",
@@ -399,7 +468,10 @@ class RobinhoodMCPBroker(Broker):
             self._connected = False
             self._accepting_calls = False
             self._tools.clear()
+            self._tool_contracts.clear()
+            self._agent_tool_contracts.clear()
             self._fail_pending_requests(BrokerError("Robinhood disconnected"))
+            self._crypto.invalidate_reviews()
             if self.allow_interactive_auth:
                 callback.stop()
 
@@ -455,13 +527,18 @@ class RobinhoodMCPBroker(Broker):
             self._connected = False
             self._accepting_calls = False
             self._tools.clear()
+            self._tool_contracts.clear()
+            self._agent_tool_contracts.clear()
 
     async def disconnect(self) -> None:
         async with self._lifecycle_lock:
+            self._crypto.invalidate_reviews()
             if self._worker is None:
                 self._connected = False
                 self._accepting_calls = False
                 self._tools.clear()
+                self._tool_contracts.clear()
+                self._agent_tool_contracts.clear()
                 return
             self._accepting_calls = False
             if self._requests is not None and not self._worker.done():
@@ -516,6 +593,10 @@ class RobinhoodMCPBroker(Broker):
             account_number = _required_text(
                 row.get("account_number"), field="account number"
             )
+            inactive = any(
+                _required_bool(row[key], field=key)
+                for key in ("deactivated", "permanently_deactivated") if key in row
+            )
             accounts.append(
                 Account(
                     account_number=account_number,
@@ -524,7 +605,19 @@ class RobinhoodMCPBroker(Broker):
                     agentic_allowed=_required_bool(
                         row.get("agentic_allowed"), field="agentic_allowed"
                     ),
-                    state=str(row.get("state", "")),
+                    state="inactive" if inactive else str(row.get("state", "")),
+                    rhs_account_number=(
+                        _required_text(row["rhs_account_number"], field="RHS account number")
+                        if row.get("rhs_account_number") not in (None, "") else ""
+                    ),
+                    rhc_account_number=(
+                        _required_text(row["rhc_account_number"], field="linked crypto account number")
+                        if row.get("rhc_account_number") not in (None, "") else ""
+                    ),
+                    brokerage_account_type=(
+                        _required_text(row["brokerage_account_type"], field="brokerage account type")
+                        if row.get("brokerage_account_type") not in (None, "") else ""
+                    ),
                 )
             )
         return accounts
@@ -532,11 +625,22 @@ class RobinhoodMCPBroker(Broker):
     async def get_portfolio(self, account_number: str) -> Portfolio:
         data = await self._call("get_portfolio", {"account_number": account_number})
         bp = data.get("buying_power") or {}
+        crypto_bp = data.get("crypto_buying_power")
+        if crypto_bp is not None and not isinstance(crypto_bp, dict):
+            raise BrokerError("Crypto buying power must be an object when available")
         return Portfolio(
             total_value=_number(data.get("total_value")),
             buying_power=_number(bp.get("buying_power")),
             cash=_number(data.get("cash")),
             currency=str(data.get("currency") or bp.get("display_currency") or "USD"),
+            crypto_buying_power=(
+                _required_number(crypto_bp.get("buying_power"), field="crypto buying power")
+                if crypto_bp is not None else None
+            ),
+            crypto_value=(
+                _required_number(data["crypto_value"], field="crypto holdings value")
+                if data.get("crypto_value") is not None else None
+            ),
         )
 
     async def get_quotes(self, symbols: list[str]) -> dict[str, Quote]:
