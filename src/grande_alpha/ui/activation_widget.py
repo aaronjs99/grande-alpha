@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
 from grande_alpha.activation_guidance import activation_summary, decorate_readiness
 from grande_alpha.external_guidance import ExternalGuidanceLink, external_guidance_links
 from grande_alpha.ui.table_layout import configure_adjustable_columns
+from grande_alpha.ui.themes import set_item_foreground, set_widget_style
 
 
 class _ResponsiveScrollArea(QScrollArea):
@@ -80,7 +81,7 @@ class ActivationChecklistWidget(QWidget):
         self.title_layout = QVBoxLayout(self.title_widget)
         self.title_layout.setContentsMargins(0, 0, 0, 0)
         self.title = QLabel("Activation checklist")
-        self.title.setStyleSheet("font-size:17pt;font-weight:700")
+        set_widget_style(self.title, "font-size:17pt;font-weight:700")
         self.title_layout.addWidget(self.title)
         self.summary = QLabel("Waiting for the first readiness check.")
         self.summary.setWordWrap(True)
@@ -259,23 +260,19 @@ class ActivationChecklistWidget(QWidget):
                 item = QTableWidgetItem(value)
                 item.setToolTip(tooltip)
                 if column == 1:
-                    item.setForeground(
-                        QColor(
+                    set_item_foreground(item, QColor(
                             "#ffca7a"
                             if row["owner"] in {"YOU", "APP + YOU", "EXTERNAL REVIEW"}
                             else "#65b9ff"
-                        )
-                    )
+                        ))
                 elif column == 2:
-                    item.setForeground(
-                        QColor(
+                    set_item_foreground(item, QColor(
                             "#00e507"
                             if value == "PASS"
                             else "#f2c14e"
                             if value == "USER ACTION"
                             else "#ff697d"
-                        )
-                    )
+                        ))
                 self.table.setItem(row_index, column, item)
             if row["gate"] == previous_gate:
                 selected_row = row_index

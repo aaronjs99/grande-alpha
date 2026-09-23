@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
 
 from grande_alpha.config import AppConfig
 from grande_alpha.strategy import STRATEGY_NAMES
+from grande_alpha.ui.themes import set_widget_style
 
 
 class _ResponsiveScrollArea(QScrollArea):
@@ -51,7 +52,7 @@ class WelcomeWidget(QWidget):
         self.scroll.setWidget(self.content)
         layout = QVBoxLayout(self.content)
         title = QLabel("Know exactly what remains")
-        title.setStyleSheet("font-size:22pt;font-weight:700")
+        set_widget_style(title, "font-size:22pt;font-weight:700")
         layout.addWidget(title)
         self.mode = QLabel()
         self.mode.setWordWrap(True)
@@ -115,7 +116,7 @@ class WelcomeWidget(QWidget):
             "Nasdaq, or Yahoo · No telemetry · No investment advice"
         )
         self.disclosure.setWordWrap(True)
-        self.disclosure.setStyleSheet("color:#8fa4b8;padding:10px")
+        set_widget_style(self.disclosure, "color:#8fa4b8;padding:10px")
         layout.addWidget(self.disclosure)
         for label in (
             self.mode,

@@ -36,6 +36,7 @@ from PySide6.QtWidgets import (
 from grande_alpha.agent_ledger import AgentBudget
 from grande_alpha.agent_models import AgentSettings, AgentSnapshot, parse_symbols
 from grande_alpha.ui.table_layout import configure_adjustable_columns
+from grande_alpha.ui.themes import color, set_item_foreground, theme_css
 
 
 def label(text: str) -> QLabel:
@@ -57,11 +58,11 @@ class AgentAvatar(QWidget):
     def paintEvent(self, event) -> None:
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.setPen(QPen(QColor("#e7ebee"), 1))
-        painter.setBrush(QColor("#ffffff"))
+        painter.setPen(QPen(QColor(color("#e7ebee", base="light")), 1))
+        painter.setBrush(QColor(color("#ffffff", base="light")))
         painter.drawEllipse(QRectF(3, 3, 50, 50))
         painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QColor("#25323a"))
+        painter.setBrush(QColor(color("#25323a", base="light")))
         painter.drawRoundedRect(QRectF(19, 18, 5, 14), 2.5, 2.5)
         painter.drawRoundedRect(QRectF(31, 18, 5, 14), 2.5, 2.5)
         painter.setPen(QPen(self.accent, 2.5))
@@ -90,10 +91,10 @@ QPushButton:hover, QPushButton:checked { background: #e9f5f0; border-color: #87c
 QPushButton:disabled { background: #f0f2f4; color: #929da4; border-color: #e2e7eb; }
 QPushButton#primary { background: #159d71; border-color: #159d71; color: white; }
 QPushButton#primary:disabled { background: #deebe5; color: #78938a; border-color: #deebe5; }
-QGroupBox { background: white; border: 1px solid #dce3e7; border-radius: 7px; margin-top: 16px; padding: 16px; font-weight: 600; }
+QGroupBox { background: #ffffff; border: 1px solid #dce3e7; border-radius: 7px; margin-top: 16px; padding: 16px; font-weight: 600; }
 QGroupBox::title { subcontrol-origin: margin; left: 14px; color: #526771; }
 QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox { background: #f8fafb; color: #27343e; border: 1px solid #d4dfe4; border-radius: 4px; padding: 7px; min-height: 20px; }
-QTableWidget { background: white; alternate-background-color: #f8fafb; color: #43535f; border: none; gridline-color: #edf0f2; selection-background-color: #e0f2eb; selection-color: #17242c; font-family: 'Menlo', 'Consolas', monospace; font-size: 9pt; }
+QTableWidget { background: #ffffff; alternate-background-color: #f8fafb; color: #43535f; border: none; gridline-color: #edf0f2; selection-background-color: #e0f2eb; selection-color: #17242c; font-family: 'Menlo', 'Consolas', monospace; font-size: 9pt; }
 QTableWidget::item { padding: 8px 5px; border-bottom: 1px solid #f0f3f5; }
 QHeaderView::section { background: #f8fafb; color: #657782; border: none; padding: 9px 5px; font-size: 8pt; }
 QScrollBar:vertical { background: #edf1f3; width: 8px; margin: 0; }
@@ -119,7 +120,7 @@ class AgentWidget(QScrollArea):
         self._balances: deque[float] = deque(maxlen=500)
         self._scan_task: asyncio.Task | None = None
         self.setWidgetResizable(True)
-        self.setStyleSheet(DASHBOARD_STYLE)
+        self.setStyleSheet(theme_css(DASHBOARD_STYLE, base="light"))
         content = QWidget()
         content.setObjectName("agentCanvas")
         layout = QVBoxLayout(content)
@@ -369,6 +370,21 @@ class AgentWidget(QScrollArea):
         controller.agent_changed.connect(self.update_agent)
         self.update_agent(controller.agent.snapshot)
 
+    def apply_theme(self) -> None:
+        self.setStyleSheet(theme_css(DASHBOARD_STYLE, base="light"))
+        self.chart.setBackground(color("#ffffff", base="light"))
+        for name in ("left", "bottom"):
+            axis = self.chart.getAxis(name)
+            axis.setPen(pg.mkPen(color("#e6ecef", base="light")))
+            axis.setTextPen(pg.mkPen(color("#657782", base="light")))
+        accent = QColor(color("#1ca97a", base="light"))
+        self.curve.setPen(pg.mkPen(accent, width=2))
+        self.curve.setSymbolBrush(accent)
+        accent.setAlpha(22)
+        self.curve.setBrush(pg.mkBrush(accent))
+        for avatar in self.findChildren(AgentAvatar):
+            avatar.update()
+
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
         if not hasattr(self, "metrics"):
@@ -505,7 +521,7 @@ class AgentWidget(QScrollArea):
             self._balance_times.append(timestamp.timestamp())
             self._balances.append(portfolio.total_value)
             self.curve.setFillLevel(min(self._balances) - max(0.01, (max(self._balances) - min(self._balances)) * 0.1))
-            self.curve.setData(list(self._balance_times), list(self._balances), symbol="o" if len(self._balances) == 1 else None, symbolSize=5, symbolBrush="#1ca97a")
+            self.curve.setData(list(self._balance_times), list(self._balances), symbol="o" if len(self._balances) == 1 else None, symbolSize=5, symbolBrush=color("#1ca97a", base="light"))
         if not self._connected:
             if self._scan_task is not None:
                 self._scan_task.cancel()
@@ -566,9 +582,7 @@ class AgentWidget(QScrollArea):
                 item = QTableWidgetItem(value)
                 item.setToolTip(value)
                 if column == 3:
-                    item.setForeground(
-                        QColor({"buy": "#16845e", "exit": "#b74b63", "hold": "#788b97"}[decision.action])
-                    )
+                    set_item_foreground(item, {"buy": "#16845e", "exit": "#b74b63", "hold": "#788b97"}[decision.action], base="light")
                 self.table.setItem(row, column, item)
         if snapshot.cycle < self._last_cycle:
             self._last_cycle = 0
@@ -591,7 +605,7 @@ class AgentWidget(QScrollArea):
                     item = QTableWidgetItem(value)
                     item.setToolTip(value)
                     if column == 2:
-                        item.setForeground(QColor("#a77924" if summary.startswith("[RISK]") else "#16845e" if summary.startswith("[IDEA]") else "#566e7c"))
+                        set_item_foreground(item, "#a77924" if summary.startswith("[RISK]") else "#16845e" if summary.startswith("[IDEA]") else "#566e7c", base="light")
                     self.activity.setItem(0, column, item)
                 if self.activity.rowCount() > 200:
                     self.activity.removeRow(200)

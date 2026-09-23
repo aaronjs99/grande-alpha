@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Added an application-wide light/dark toggle in the top bar and View menu, remembered
+  across restarts. Both themes cover the Agent dashboard, other tabs, dialogs, tables,
+  status colors, and charts. Appearance is stored separately from trading configuration.
+  The application uses the platform font instead of requiring Windows' Segoe UI.
 - Redesigned the Agent workspace as a light Agent Desk dashboard with large metric cards,
   an account-history chart, tagged research activity, and six colored module avatars.
   The layout adapts to narrower windows and retains existing analysis/settings controls.

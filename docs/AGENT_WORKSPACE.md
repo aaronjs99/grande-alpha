@@ -9,6 +9,14 @@ The existing ETF execution engine and its evidence/authority checks remain separ
 
 ## Agent Desk interface
 
+Use **Dark mode** in the top bar to switch the whole app to dark; the button then reads
+**Light mode** to switch back. **View → Dark mode** offers the same toggle with a checkmark
+for the current dark setting. Your selection is remembered locally across restarts, separately
+from trading settings. Light is the default when no appearance preference has been saved.
+Switching does not reset charts, restart analysis, or change broker permissions or live authority.
+
+![Dark mode with synthetic verification data](images/agent-workspace-dark.png)
+
 The Agent tab uses a light dashboard inspired by the supplied reference: four large account
 and research metrics, a green account-history chart beside a tagged activity feed, a shared
 status strip, and six colored avatar cards. The cards represent Scout, Analyst, Risk,

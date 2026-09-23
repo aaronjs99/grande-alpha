@@ -19,14 +19,17 @@ from grande_alpha.controller import TradingController, TradingSnapshot
 from grande_alpha.models import Account, Portfolio, Quote
 from grande_alpha.storage import AuditStore
 from grande_alpha.ui.main_window import MainWindow
+from grande_alpha.ui.themes import apply_application_theme
 
 
-def capture(path: Path, width: int = 1366, height: int = 900, *, budget: bool = False) -> None:
+def capture(path: Path, width: int = 1366, height: int = 900, *, budget: bool = False, theme: str = "light") -> None:
     app = QApplication.instance() or QApplication([])
     with tempfile.TemporaryDirectory() as directory:
         store = AuditStore(Path(directory) / "synthetic.db")
         controller = TradingController(DisabledBroker(), AppConfig(broker_connection_enabled=True), store)
         window = MainWindow(controller, controller.config)
+        apply_application_theme(theme)
+        window._apply_theme_widgets()
         window.resize(width, height)
         window.setWindowTitle("GRANDE Alpha · Synthetic UI verification · No real account data")
         widget = window.agent_widget
@@ -100,5 +103,6 @@ if __name__ == "__main__":
     parser.add_argument("--width", type=int, default=1600)
     parser.add_argument("--height", type=int, default=1200)
     parser.add_argument("--budget", action="store_true")
+    parser.add_argument("--theme", choices=("light", "dark"), default="light")
     args = parser.parse_args()
-    capture(args.output, args.width, args.height, budget=args.budget)
+    capture(args.output, args.width, args.height, budget=args.budget, theme=args.theme)

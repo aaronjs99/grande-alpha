@@ -7,14 +7,14 @@ from pathlib import Path
 
 from PySide6.QtWidgets import QApplication
 
-from grande_alpha.ui.main_window import STYLESHEET
 from grande_alpha.ui.product_dialog import ProductPlansDialog
+from grande_alpha.ui.themes import apply_application_theme
 
 
 def capture(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     app = QApplication.instance() or QApplication([])
-    app.setStyleSheet(STYLESHEET)
+    apply_application_theme("dark")
     dialog = ProductPlansDialog(upgrade_url="")
     dialog.resize(900, 680)
     dialog.show()

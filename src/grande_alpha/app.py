@@ -25,6 +25,7 @@ from grande_alpha.controller import TradingController, TradingSnapshot
 from grande_alpha.storage import AuditStore
 from grande_alpha.ui.main_window import MainWindow
 from grande_alpha.ui.onboarding import OnboardingWizard
+from grande_alpha.ui.themes import apply_application_theme, saved_theme
 from grande_alpha.windows_shortcut import WINDOWS_APP_USER_MODEL_ID
 
 AUTO_SHADOW_HEARTBEAT_INTERVAL_MS = 60_000
@@ -173,6 +174,7 @@ def main() -> int:
     app.setApplicationVersion(__version__)
     app.setOrganizationName("GRANDE Alpha")
     app.setOrganizationDomain("local.grandealpha")
+    apply_application_theme(saved_theme())
     icon_resource = files("grande_alpha.assets").joinpath("app-icon.png")
     with as_file(icon_resource) as icon_path:
         app.setWindowIcon(QIcon(str(icon_path)))

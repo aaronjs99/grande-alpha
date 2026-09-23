@@ -59,44 +59,17 @@ from grande_alpha.ui.product_dialog import ProductPlansDialog
 from grande_alpha.ui.sandbox_widget import SandboxWidget
 from grande_alpha.ui.settings_dialog import SettingsDialog
 from grande_alpha.ui.table_layout import configure_adjustable_columns, reset_column_widths
+from grande_alpha.ui.themes import STYLESHEET as STYLESHEET
+from grande_alpha.ui.themes import (
+    appearance_settings,
+    apply_application_theme,
+    current_theme,
+    saved_theme,
+    set_item_foreground,
+    set_widget_style,
+    theme_plot,
+)
 from grande_alpha.ui.welcome_widget import WelcomeWidget
-
-STYLESHEET = """
-QWidget { background: #0b1118; color: #e9f0f6; font-family: 'Segoe UI'; font-size: 10pt; }
-QMainWindow { background: #081018; }
-QMenuBar { background: #0a141d; border-bottom: 1px solid #223142; padding: 2px 5px; }
-QMenuBar::item { background: transparent; padding: 6px 10px; border-radius: 4px; }
-QMenuBar::item:selected { background: #1b2b3b; color: #8fd3ff; }
-QMenu { background: #101a24; border: 1px solid #304357; padding: 5px; }
-QMenu::item { padding: 7px 34px 7px 24px; border-radius: 4px; }
-QMenu::item:selected { background: #1f3446; color: #ffffff; }
-QMenu::item:disabled { color: #5d7182; }
-QMenu::separator { height: 1px; background: #2c3c4b; margin: 5px 8px; }
-QFrame#card { background: #111a24; border: 1px solid #223142; border-radius: 10px; }
-QLabel#cardTitle { color: #8fa4b8; font-size: 9pt; }
-QLabel#cardValue { font-size: 18pt; font-weight: 650; }
-QLabel#dialogTitle { font-size: 17pt; font-weight: 650; }
-QPushButton { background: #182634; border: 1px solid #2c4155; border-radius: 7px; padding: 8px 13px; }
-QPushButton:hover { background: #213447; }
-QPushButton:disabled { color: #596b7a; background: #121b24; }
-QPushButton#primary { background: #00c805; border-color: #00c805; color: #021004; font-weight: 700; }
-QPushButton#danger { background: #c62d42; border-color: #ec5266; color: white; font-weight: 700; }
-QPushButton#flatten { background: #7f3d18; border-color: #c66a2e; color: white; }
-QTableWidget { background: #0e1720; alternate-background-color: #101c27; border: 1px solid #223142; gridline-color: #223142; }
-QTableWidget::item:selected { background: #244663; color: #ffffff; }
-QHeaderView::section { background: #14202b; color: #a9bac8; padding: 6px; border: 0; border-right: 1px solid #223142; }
-QTabWidget::pane { border: 1px solid #223142; }
-QTabBar::tab { background: #111a24; padding: 9px 16px; }
-QTabBar::tab:selected { background: #1b2b3b; color: #00e507; }
-QLineEdit, QSpinBox, QDoubleSpinBox { background: #0e1720; border: 1px solid #2c4155; border-radius: 5px; padding: 6px; }
-QCheckBox { spacing: 8px; }
-QGroupBox { border: 1px solid #2b3b4b; border-radius: 9px; margin-top: 13px; padding-top: 12px; font-weight: 650; }
-QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 7px; color: #d7e5f0; }
-QLabel#settingsDescription { color: #91a6b8; font-size: 9pt; }
-QLabel#settingsStatus { border-radius: 6px; padding: 6px 9px; font-size: 9pt; font-weight: 700; }
-QLabel#validationWarning { color: #ffd27a; background: #2b2315; border: 1px solid #6f5727; border-radius: 6px; padding: 8px; }
-QToolTip { background: #243648; color: white; border: 1px solid #45617a; }
-"""
 
 
 class MetricCard(QFrame):
@@ -129,9 +102,7 @@ class MetricCard(QFrame):
         self._compact = compact
         value_points = 16 if compact else 18
         margins = (9, 4, 9, 5) if compact else (10, 5, 10, 6)
-        self.value.setStyleSheet(
-            f"QLabel#cardValue {{ font-size:{value_points}pt; font-weight:650; }}"
-        )
+        set_widget_style(self.value, f"QLabel#cardValue {{ font-size:{value_points}pt; font-weight:650; }}")
         self.value.ensurePolished()
         self.title.ensurePolished()
         title_height = self.title.fontMetrics().lineSpacing() + 2
@@ -167,8 +138,9 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(f"GRANDE Alpha {__version__} — Community Preview")
         self.setMinimumSize(820, 620)
         self.resize(1440, 900)
-        QApplication.instance().setStyleSheet(STYLESHEET)
+        apply_application_theme(saved_theme())
         self._build_ui()
+        self._apply_theme_widgets()
         if not controller.order_confirmation_available:
             controller.set_order_confirmer(self._confirm_strategy_order)
 
@@ -188,6 +160,29 @@ class MainWindow(QMainWindow):
             self.auto_shadow_close_timer.start()
             QTimer.singleShot(0, lambda: asyncio.create_task(self._auto_start_shadow()))
 
+    def _apply_theme_widgets(self) -> None:
+        dark = current_theme() == "dark"
+        self.theme_button.setText("Light mode" if dark else "Dark mode")
+        for control in (self.theme_button, self.theme_action):
+            control.blockSignals(True)
+            control.setChecked(dark)
+            control.blockSignals(False)
+        for chart in (self.chart, self.sandbox_widget.chart, self.sandbox_widget.trade_chart):
+            theme_plot(chart)
+        self.agent_widget.apply_theme()
+
+    def _toggle_theme(self, dark: bool) -> None:
+        theme = "dark" if dark else "light"
+        settings = appearance_settings()
+        settings.setValue("theme", theme)
+        settings.sync()
+        if settings.status() != settings.Status.NoError:
+            self._apply_theme_widgets()
+            QMessageBox.warning(self, "Appearance not saved", "The appearance preference could not be saved on this computer.")
+            return
+        apply_application_theme(theme)
+        self._apply_theme_widgets()
+
     def _build_ui(self) -> None:
         root = QWidget()
         outer = QVBoxLayout(root)
@@ -205,7 +200,8 @@ class MainWindow(QMainWindow):
         brand_layout.setContentsMargins(0, 0, 0, 0)
         brand_layout.setSpacing(10)
         self.brand = QLabel("GRANDE ALPHA")
-        font = QFont("Segoe UI", 18)
+        font = QFont(QApplication.font())
+        font.setPointSize(18)
         font.setBold(True)
         self.brand.setFont(font)
         brand_layout.addWidget(self.brand)
@@ -214,10 +210,14 @@ class MainWindow(QMainWindow):
         self.plan_button.setToolTip("View the current free plan and the truthful Pro roadmap")
         self.plan_button.clicked.connect(self._show_plans)
         brand_layout.addWidget(self.plan_button)
+        self.theme_button = QPushButton("Dark mode")
+        self.theme_button.setCheckable(True)
+        self.theme_button.setAccessibleName("Dark mode for the whole application")
+        self.theme_button.setToolTip("Switch the whole app between light and dark; remembered on this computer")
+        self.theme_button.toggled.connect(self._toggle_theme)
+        brand_layout.addWidget(self.theme_button)
         self.mode_badge = QLabel("RESEARCH MODE")
-        self.mode_badge.setStyleSheet(
-            "background:#15324a;color:#8fd3ff;border:1px solid #3478a4;border-radius:7px;padding:7px 10px;font-weight:700"
-        )
+        set_widget_style(self.mode_badge, "background:#15324a;color:#8fd3ff;border:1px solid #3478a4;border-radius:7px;padding:7px 10px;font-weight:700")
         brand_layout.addWidget(self.mode_badge)
         brand_layout.addStretch()
         self.header_actions_widget = QWidget()
@@ -527,6 +527,10 @@ class MainWindow(QMainWindow):
         self.file_menu.addAction(self.exit_action)
 
         self.view_menu = menu_bar.addMenu("View")
+        self.theme_action = self._action("Dark mode", self._toggle_theme)
+        self.theme_action.setCheckable(True)
+        self.view_menu.addAction(self.theme_action)
+        self.view_menu.addSeparator()
         destinations = (
             ("Getting Started", self.welcome_widget, "Ctrl+1"),
             ("Live Readiness", self.activation_widget, None),
@@ -1300,9 +1304,7 @@ class MainWindow(QMainWindow):
         if session == "LIVE" and snapshot.session_expires_at:
             session = f"LIVE to {snapshot.session_expires_at.astimezone().strftime('%I:%M %p')}"
         self.session_card.value.setText(session)
-        self.session_card.value.setStyleSheet(
-            "color:#00e507" if snapshot.live_status == "LIVE" else "color:#8fa4b8"
-        )
+        set_widget_style(self.session_card.value, "color:#00e507" if snapshot.live_status == "LIVE" else "color:#8fa4b8")
         self.authority_controls.set_authority_state(
             snapshot.live_status,
             self.controller.risk.grant,
@@ -1311,20 +1313,18 @@ class MainWindow(QMainWindow):
         )
         self.signal_card.value.setText(snapshot.signal.regime.value.upper())
         signal_color = {Regime.BULLISH: "#00e507", Regime.BEARISH: "#ff697d", Regime.FLAT: "#f2c14e"}
-        self.signal_card.value.setStyleSheet(f"color:{signal_color[snapshot.signal.regime]}")
+        set_widget_style(self.signal_card.value, f"color:{signal_color[snapshot.signal.regime]}")
         self.pair_action_card.value.setText(snapshot.pair_action_label)
-        self.pair_action_card.value.setStyleSheet(
-            "color:#f2c14e" if snapshot.pair_action_id == 4 else "color:#65b9ff"
-        )
+        set_widget_style(self.pair_action_card.value, "color:#f2c14e" if snapshot.pair_action_id == 4 else "color:#65b9ff")
         self.drawdown_card.value.setText(f"${snapshot.drawdown:,.2f}")
         if snapshot.shadow_running:
             self.shadow_card.value.setText(
                 f"${snapshot.shadow_pnl:+,.2f} • {snapshot.shadow_position or 'cash'}"
             )
-            self.shadow_card.value.setStyleSheet("color:#65b9ff")
+            set_widget_style(self.shadow_card.value, "color:#65b9ff")
         else:
             self.shadow_card.value.setText("OFF")
-            self.shadow_card.value.setStyleSheet("color:#8fa4b8")
+            set_widget_style(self.shadow_card.value, "color:#8fa4b8")
         self.shadow_button.setText("Stop Live Shadow" if snapshot.shadow_running else "Start Live Shadow")
         self.connect_button.setText("Disconnect" if snapshot.connected else "Connect Robinhood")
         self._update_quotes(snapshot)
@@ -1395,11 +1395,9 @@ class MainWindow(QMainWindow):
             if live_enabled
             else ("BROKER SHADOW ENABLED" if broker_enabled else "RESEARCH MODE")
         )
-        self.mode_badge.setStyleSheet(
-            "background:#4b2516;color:#ffc07a;border:1px solid #9a5328;border-radius:7px;padding:7px 10px;font-weight:700"
+        set_widget_style(self.mode_badge, "background:#4b2516;color:#ffc07a;border:1px solid #9a5328;border-radius:7px;padding:7px 10px;font-weight:700"
             if supervised_available or evidence_ready
-            else "background:#15324a;color:#8fd3ff;border:1px solid #3478a4;border-radius:7px;padding:7px 10px;font-weight:700"
-        )
+            else "background:#15324a;color:#8fd3ff;border:1px solid #3478a4;border-radius:7px;padding:7px 10px;font-weight:700")
         authorize_label = (
             "Authorize && Start Evidence-Gated Session"
             if evidence_ready
@@ -1479,7 +1477,7 @@ class MainWindow(QMainWindow):
             for column, value in enumerate(values):
                 item = QTableWidgetItem(value)
                 if column == 5 and pnl is not None:
-                    item.setForeground(QColor("#00e507" if pnl >= 0 else "#ff697d"))
+                    set_item_foreground(item, QColor("#00e507" if pnl >= 0 else "#ff697d"))
                 self.positions_table.setItem(row, column, item)
 
     def _update_orders(self, snapshot: TradingSnapshot) -> None:
@@ -1534,11 +1532,11 @@ class MainWindow(QMainWindow):
         for column, value in enumerate((now, severity.upper(), summary)):
             item = QTableWidgetItem(value)
             if severity in {"error", "critical"}:
-                item.setForeground(QColor("#ff697d"))
+                set_item_foreground(item, QColor("#ff697d"))
             elif severity == "warning":
-                item.setForeground(QColor("#f2c14e"))
+                set_item_foreground(item, QColor("#f2c14e"))
             elif severity == "market":
-                item.setForeground(QColor("#65b9ff"))
+                set_item_foreground(item, QColor("#65b9ff"))
             self.activity_table.setItem(0, column, item)
         if self.activity_table.rowCount() > 500:
             self.activity_table.removeRow(500)

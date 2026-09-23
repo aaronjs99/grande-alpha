@@ -69,6 +69,7 @@ from grande_alpha.ui.glossary import (
     help_hint,
 )
 from grande_alpha.ui.table_layout import configure_adjustable_columns, reset_column_widths
+from grande_alpha.ui.themes import set_item_foreground, set_widget_style
 
 SETTLEMENT_MODEL_LABELS = {
     "cash_t1": "Cash account (sale proceeds available next session)",
@@ -168,10 +169,8 @@ class SandboxWidget(QWidget):
             "no broker object and cannot submit, review, cancel, or modify a Robinhood order."
         )
         banner.setWordWrap(True)
-        banner.setStyleSheet(
-            "background:#15324a;color:#8fd3ff;border:1px solid #3478a4;border-radius:7px;"
-            "padding:9px;font-weight:650"
-        )
+        set_widget_style(banner, "background:#15324a;color:#8fd3ff;border:1px solid #3478a4;border-radius:7px;"
+            "padding:9px;font-weight:650")
         outer.addWidget(banner)
         outer.addWidget(help_hint())
         splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -427,7 +426,7 @@ class SandboxWidget(QWidget):
             card_layout = QVBoxLayout(card)
             card_layout.setContentsMargins(7, 8, 7, 6)
             label = QLabel("—")
-            label.setStyleSheet("font-size:12pt;font-weight:650")
+            set_widget_style(label, "font-size:12pt;font-weight:650")
             card_layout.addWidget(label)
             self.metric_cards.append(card)
             self.metric_labels[key] = label
@@ -574,7 +573,7 @@ class SandboxWidget(QWidget):
         self.gates_table = self._table(["Gate", "Status", "Observed", "Requirement"])
         self.gates_table.itemSelectionChanged.connect(self._inspect_gate)
         self.promotion_label = QLabel("PROMOTION: SHADOW_ONLY until every evidence gate passes.")
-        self.promotion_label.setStyleSheet("font-size:14pt;font-weight:700;color:#f2c14e")
+        set_widget_style(self.promotion_label, "font-size:14pt;font-weight:700;color:#f2c14e")
         apply_help(
             self.promotion_label,
             "Promotion status",
@@ -1221,9 +1220,7 @@ class SandboxWidget(QWidget):
                 "select any row for the reason and next step."
             )
         self.promotion_label.setText(promotion_text)
-        self.promotion_label.setStyleSheet(
-            "font-size:14pt;font-weight:700;color:" + ("#00e507" if report.passed else "#f2c14e")
-        )
+        set_widget_style(self.promotion_label, "font-size:14pt;font-weight:700;color:" + ("#00e507" if report.passed else "#f2c14e"))
         self.evidence_overview.setText(promotion_overview(report.gates))
         first_failure = next((gate for gate in report.gates if not gate.passed), None)
         self.gate_inspector.setPlainText(
@@ -1412,7 +1409,7 @@ class SandboxWidget(QWidget):
         for column, value in enumerate(values):
             item = QTableWidgetItem(value)
             if color and (column == 0 or "+" in value or "PASS" in value or "FAIL" in value):
-                item.setForeground(color)
+                set_item_foreground(item, color)
             table.setItem(row, column, item)
 
     def _seek_replay(self, index: int) -> None:

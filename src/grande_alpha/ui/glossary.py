@@ -18,6 +18,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from grande_alpha.ui.themes import set_widget_style
+
 TERM_HELP: dict[str, str] = {
     "Account value": "The broker-reported total value of the selected Agentic account.",
     "Account reconciliation": (
@@ -221,12 +223,10 @@ class ExplainedLabel(QLabel):
         self.setAccessibleDescription(explanation)
         self.setCursor(Qt.CursorShape.WhatsThisCursor)
         compact_style = "color:#8fa4b8;font-size:9pt;" if compact else ""
-        self.setStyleSheet(
-            "QLabel {"
+        set_widget_style(self, "QLabel {"
             f"{compact_style}border:0;border-bottom:1px dashed #6688a3;padding-bottom:1px;"
             "}"
-            "QLabel:hover {color:#8fd3ff;border-bottom-color:#8fd3ff;}"
-        )
+            "QLabel:hover {color:#8fd3ff;border-bottom-color:#8fd3ff;}")
 
     def mousePressEvent(self, event: QMouseEvent) -> None:  # noqa: N802 - Qt API
         if event.button() == Qt.MouseButton.LeftButton:
