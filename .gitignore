@@ -1,14 +1,29 @@
+# Local Python environments and caches
 .venv/
+venv/
 __pycache__/
 *.py[cod]
 .pytest_cache/
 .ruff_cache/
-build/
-dist/
-*.spec
+.mypy_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Python and Windows packaging output
 *.egg-info/
-data/
+*.dist-info/
+*.egg
+/build/
+/dist/
+/artifacts/
+/release/
+*.spec
+
+# Local runtime data and logs
+/data/
+.env
+.env.*
+!.env.example
 *.log
-artifacts/
-release/
 *.live-policy.json

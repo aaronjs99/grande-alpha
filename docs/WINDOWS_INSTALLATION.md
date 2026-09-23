@@ -21,6 +21,9 @@ The scripts use `python.exe` on `PATH` and install source dependencies into that
 they do not create a local virtual environment. To choose a different Python 3.11 or 3.12 executable,
 set `GRANDE_ALPHA_PYTHON` to its absolute path before running setup. An existing `.venv` is untouched.
 Release packaging still uses disposable isolated build environments to verify the distributable.
+Setuptools may create `grande_alpha.egg-info` during setup or verification. The launcher removes that
+standard generated metadata after those commands finish; an unexpected file in the folder prevents
+automatic cleanup. Build outputs, caches, local data, and virtual environments remain untracked.
 
 Normal startup does not discover or merge data from a legacy application directory. If an existing
 configuration needs a schema upgrade, run `grande-alpha-cli config upgrade`; it keeps a timestamped

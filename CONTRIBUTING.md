@@ -23,6 +23,9 @@ cd grande-alpha
 .\grande.ps1 verify
 ```
 
+Use these wrappers for local source work: they remove generated `grande_alpha.egg-info` metadata
+after installation and package verification. Direct setuptools commands may leave it behind.
+
 Run the source application only when interactive UI testing is necessary:
 
 ```powershell
