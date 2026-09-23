@@ -690,7 +690,16 @@ class TradingController:
             )
             await self.refresh(evaluate=False)
         except Exception as exc:
-            self.snapshot.connected = False
+            self._revoke_live_automation("Broker connection failed; local authority revoked")
+            self.snapshot = TradingSnapshot()
+            try:
+                await self.broker.disconnect()
+            except Exception as cleanup_exc:
+                self.log(
+                    f"Broker transport cleanup failed after connection error: {cleanup_exc}",
+                    "warning",
+                    "connection",
+                )
             self.log(f"Connection failed: {exc}", "error", "connection")
             raise
         finally:
@@ -710,6 +719,20 @@ class TradingController:
         self._revoke_live_automation("Disconnected by user")
         if not self.snapshot.connected or self.snapshot.account is None:
             await self.broker.disconnect()
+            self.snapshot = TradingSnapshot()
+            self._emit()
+            return
+        if getattr(self.broker, "connected", None) is False:
+            self.log(
+                "Broker transport was already unavailable. Local execution is stopped; "
+                "order status is unverified and must be checked in Robinhood.",
+                "warning",
+                "connection",
+            )
+            try:
+                await self.broker.disconnect()
+            except Exception as exc:
+                self.log(f"Disconnected transport cleanup failed: {exc}", "warning", "connection")
             self.snapshot = TradingSnapshot()
             self._emit()
             return

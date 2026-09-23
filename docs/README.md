@@ -25,6 +25,7 @@ research/audit records. Start with the path that matches what you are trying to 
 - [Troubleshooting](TROUBLESHOOTING.md) — common research, OAuth, quote, order, and shutdown failures.
 - [CLI reference](CLI.md) — commands, output formats, and the live-boundary limitations.
 - [Getting to autonomy](GETTING_TO_AUTONOMY.md) — exact remaining work and one operator-input checklist.
+- [Agent workflow](AGENT_WORKFLOW.md) — bounded research roles and their separation from execution.
 - [Community and Pro plans](PRODUCT_PLANS.md) — current free plan and the non-binding Pro roadmap.
 
 ## Safety and live-readiness boundaries

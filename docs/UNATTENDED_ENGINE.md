@@ -1,6 +1,6 @@
 # Bounded unattended engine
 
-Status: source implementation with offline simulated-broker tests. Not activated, deployed,
+Status: source implementation with historical offline simulated-broker checks. Not activated, deployed,
 strategy-qualified, or verified with real orders. An awake Windows PC can host this foreground
 runner; no cloud subscription, GUI, scheduled task, auto-start, or sleep-setting change is required.
 
@@ -78,8 +78,9 @@ state fails closed. Keep the audit and execution databases intact.
 
 The runner never resumes itself after a crash. There is no installed scheduler. Delivery of alerts,
 native-host outage testing, and provider-observed partial/fill/cancellation recovery qualification
-remain separate work. Offline tests inject fabricated evidence readiness solely to exercise engine
-mechanics; production evidence gates are unchanged.
+remain separate work. Historical offline checks injected fabricated evidence readiness solely to
+exercise engine mechanics; the automated suite has since been removed. Production evidence gates
+are unchanged, and fresh regression coverage is needed before qualification.
 See [mixed production qualification](PRODUCTION_QUALIFICATION.md) for the newer stock/ETF path.
 The execution change advances the evidence policy to version 15; older evidence cannot silently
 qualify this new order path.

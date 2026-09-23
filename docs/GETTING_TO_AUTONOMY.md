@@ -16,7 +16,7 @@ a universal prerequisite for the existing deterministic strategy.
 | Runtime | Mixed stock/ETF execution core, foreground runner, multi-day grants, exact-scope crash recovery, duplicate-process exclusion, durable idempotency, closed-session waiting | Always-on deployment and provider-observed qualification |
 | User control | Explicit limits, finite standing sessions or exact-ticket approvals, durable local stop | Remote alerts and provider-observed emergency recovery; cancellation remains attended |
 | Earnings strategy | Causal PEAD screen, mixed allocator, raw provider capture, historical replay and append-only forward recorder | Licensed observations and a passing exact-candidate certificate |
-| AI | No AI decision stage claims | Selected provider, constrained advisory interface, independent risk enforcement and evaluation |
+| AI | No AI decision stage claims; [bounded research-agent design](AGENT_WORKFLOW.md) is documented | Selected provider, constrained advisory interface, independent risk enforcement and evaluation |
 | Hosting | No GUI needed for CLI; no scheduler; local persistent inbox and terminal alerts | Secret storage, resource budgets, restart/outage qualification; GUI/toast alerts not implemented |
 
 The CLI is an operating interface, not the broker protocol. Robinhood's
@@ -84,12 +84,13 @@ and qualification. Keep unsupported settings visibly unavailable instead of acce
 
 ## Work that remains engineering responsibility
 
-Daily loss recovery now persists observed account-value peaks and a same-day stop latch. Offline
-tests cover process restart, re-arming, recovered balances, stricter limits, missing history, failed
-persistence, and trading-day rollover. These fabricated-account tests do not establish broker-side
-recovery or qualify unattended operation.
+Daily loss recovery now persists observed account-value peaks and a same-day stop latch. Historical
+offline checks covered process restart, re-arming, recovered balances, stricter limits, missing
+history, failed persistence, and trading-day rollover. The automated suite was removed from the
+repository and must be rebuilt for future regression and qualification work; prior fabricated-account
+checks do not establish broker-side recovery or qualify unattended operation.
 The [standing engine](UNATTENDED_ENGINE.md) now has an explicit placement-delegation path, pinned
-provider metadata, local stop monitoring, and no-retry recovery tests. These are implementation
+provider metadata, local stop monitoring, and no-retry recovery logic. These are implementation
 results, not a claim that all deployment or strategy qualification work is complete.
 
 Getting the inputs above does not itself make the system ready. Engineering still owns the AI

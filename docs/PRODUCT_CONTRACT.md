@@ -37,8 +37,9 @@ Every supported distribution must preserve these invariants:
 
 1. **Fail closed.** Missing, stale, ambiguous, unsupported, or mismatched account, quote, order,
    evidence, session, or provider state blocks new order activity.
-2. **No restored authority.** Money-moving authority is bounded, held in memory, expires, and is not
-   restored after restart.
+2. **No silent authority.** Money-moving authority is finite and exact. The supervised path does not
+   restore a grant after restart; the separate mixed standing runner may recover only a sole active,
+   unexpired, unchanged durable authorization after exact account and process-lease checks.
 3. **Exact scope.** Authority binds the account, symbols, strategy fingerprint, route, expiry, and
    numeric risk ceilings shown to the operator.
 4. **Separate consent.** Supervised placement requires a fresh, transaction-specific confirmation

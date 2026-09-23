@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Revoked local authority and closed a partial Robinhood connection after account-read failure;
+  allowed a local-only detach when the MCP transport had already dropped. Neither path cancels
+  orders or certifies broker cleanup.
+- Documented a provider-neutral research-agent workflow. No AI provider, cloud bot, scheduler, or
+  model-controlled broker execution was added.
+
 - Removed the repository's automated test and UI-capture harness at the maintainer's request.
   The last full run before removal passed 653 tests and 31 subtests; future changes no longer have
   that regression coverage. Source linting, compilation, and wheel construction remain in CI.

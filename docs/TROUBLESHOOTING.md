@@ -79,16 +79,22 @@ Canceling an order does not reverse an already completed fill.
 4. Type the displayed sell phrase.
 5. Verify the resulting state and final position in Robinhood.
 
-## Disconnect, Settings, credential forgetting, or Exit refuses
+## Disconnect cannot verify order cleanup
 
-These controls intentionally do not cancel an order. They lock new local activity and refuse while a
-GRANDE-owned nonterminal or unresolved order remains.
+When the broker is reachable, **Disconnect** requires a fresh account/order read and refuses while a
+GRANDE-owned open or unresolved order remains. It never cancels an order. Use **STOP + CANCEL** to
+preview the exact owned scope, confirm only the intended cancellations, and verify terminal states.
+Manual and unrelated orders remain yours to manage in Robinhood.
 
-1. Keep GRANDE Alpha connected and inspect the warning and Robinhood order view.
-2. Select **STOP + CANCEL** and review the exact owned-order count and details.
-3. Confirm only if that precise scope should be cancelled. An already-pending cancellation will be
-   disclosed and verified without a duplicate request; manual/unrelated orders are untouched.
-4. Wait for every targeted order to be observed terminal, then retry the original action.
+If the MCP transport has already dropped, **Disconnect** now stops local execution and detaches the
+unavailable transport without claiming broker cleanup. Check orders and positions directly in
+Robinhood before reconnecting or authorizing again. A failed account read during connection also
+revokes local authority and closes that partial transport so a retry starts a new session.
+
+**Exit** is separate: it stops local execution and closes the window after confirmation even when
+broker cleanup cannot be verified. It does not cancel orders or sell positions. Durable unresolved
+records remain for reconciliation on the next launch. An older installed build may still show the
+previous blocking exit dialog until it is replaced with a build containing this source change.
 
 ## App was closed or crashed with a position
 

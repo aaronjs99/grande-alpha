@@ -45,7 +45,9 @@ but its only cancellation path consumes a short-lived, exact preview of GRANDE-o
 Agentic orders after explicit user confirmation. The preview is bound to the selected account and
 order set; manual/unrelated orders are excluded, and pending-cancel orders are verification-only.
 Revoke, Settings, Disconnect, credential forgetting, Exit, and internal fault paths cannot call the
-broker cancellation operation and must refuse when owned open or unresolved state remains.
+broker cancellation operation. A reachable broker connection blocks verified Disconnect while owned
+open or unresolved state remains. Exit and a local detach after transport loss stop local execution
+without claiming broker cleanup; durable records remain for later reconciliation.
 
 The sandbox and live-shadow executor share a pure decision policy with live automation. The policy
 returns a target and reason; three separate execution boundaries consume that decision. Historical
