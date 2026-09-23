@@ -9,8 +9,8 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 
-from PySide6.QtWidgets import QApplication
 from fake_broker import DisabledBroker
+from PySide6.QtWidgets import QApplication
 
 from grande_alpha.agent_ledger import AgentBudget
 from grande_alpha.agent_models import AgentDecision, AgentSnapshot, AssetClass, Instrument

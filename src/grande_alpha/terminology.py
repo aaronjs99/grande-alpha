@@ -102,7 +102,7 @@ TERM_HELP: dict[str, str] = {
     "Rejection probability": "Chance that a virtual sandbox order is modeled as rejected.",
     "Research strategy": "The signal hypothesis evaluated by the sandbox; it is not a recommendation or guaranteed edge.",
     "Selected runtime policy": (
-        "The signal policy used by normal and scheduled live-shadow runtime. CASH / hold is the fail-safe "
+        "The signal policy used by live shadow. CASH / hold is the fail-safe "
         "default and requests no leveraged position."
     ),
     "Risk budget": "Maximum percentage of sandbox equity risked using entry-to-stop distance.",

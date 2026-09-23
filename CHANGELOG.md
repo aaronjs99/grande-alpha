@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Consolidated desktop and CLI terminology, removed an unused desktop stylesheet, and corrected
+  obsolete scheduled-shadow wording. Verification now lints tests and builds wheels from a fresh
+  source distribution so stale files in a developer checkout cannot enter the package.
+- Updated GitHub's checkout and Python setup actions to their current Node 24 releases.
+
 - Revoked local authority and closed a partial Robinhood connection after account-read failure;
   allowed a local-only detach when the MCP transport had already dropped. Neither path cancels
   orders or certifies broker cleanup.
