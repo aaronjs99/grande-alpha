@@ -67,6 +67,8 @@ TOOL_TIMEOUT_SECONDS = {
     "review_equity_order": 15.0,
 }
 DEFAULT_TOOL_TIMEOUT_SECONDS = 10.0
+DISCONNECT_GRACE_SECONDS = 3.0
+DISCONNECT_CANCEL_SECONDS = 2.0
 MAX_LIST_PAGES = 100
 
 
@@ -281,7 +283,7 @@ class RobinhoodMCPBroker(Broker):
             if self.connected:
                 return
             if self._worker is not None:
-                await self._finish_worker()
+                await self._stop_worker()
 
             loop = asyncio.get_running_loop()
             ready: asyncio.Future[None] = loop.create_future()
@@ -296,7 +298,7 @@ class RobinhoodMCPBroker(Broker):
                 if self._worker is not None and not self._worker.done():
                     self._worker.cancel()
                 try:
-                    await self._finish_worker()
+                    await self._stop_worker()
                 except BaseException:
                     # Preserve the readiness error. AnyIO may wrap the same leaf
                     # failure in a TaskGroup exception while the transport unwinds.
@@ -449,6 +451,13 @@ class RobinhoodMCPBroker(Broker):
             else:
                 if not request.future.done():
                     request.future.set_result(result)
+            finally:
+                # The active request has already left the queue. A cancelled owner
+                # must release that caller too, or reconciliation holds its lock forever.
+                if not request.future.done():
+                    request.future.set_exception(BrokerError(
+                        f"Robinhood {request.name} was interrupted; the remote outcome is unknown"
+                    ))
 
     def _fail_pending_requests(self, exc: Exception) -> None:
         if self._requests is None:
@@ -463,16 +472,36 @@ class RobinhoodMCPBroker(Broker):
 
     async def _finish_worker(self) -> None:
         worker = self._worker
+        if worker is not None and not worker.done():
+            raise BrokerError("Previous Robinhood transport is still closing; retry disconnect shortly")
         self._worker = None
         try:
-            if worker is not None:
-                await worker
+            if worker is not None and not worker.cancelled():
+                worker.result()
         finally:
             self._requests = None
             self._connected = False
             self._accepting_calls = False
             self._tools.clear()
             self._agent_tool_contracts.clear()
+
+    async def _stop_worker(self) -> None:
+        """Bound teardown while the original task still owns every MCP context."""
+
+        self._accepting_calls = False
+        self._fail_pending_requests(BrokerError("Robinhood disconnected; queued request was not sent"))
+        worker = self._worker
+        if worker is not None and not worker.done():
+            if self._requests is not None:
+                self._requests.put_nowait((-100, next(self._request_sequence), None))
+            done, _ = await asyncio.wait({worker}, timeout=DISCONNECT_GRACE_SECONDS)
+            if not done:
+                worker.cancel()
+                done, _ = await asyncio.wait({worker}, timeout=DISCONNECT_CANCEL_SECONDS)
+            if not done:
+                # Keep its identity so reconnect cannot create a second owner.
+                raise BrokerError("Robinhood transport is still closing; local broker requests are disabled")
+        await self._finish_worker()
 
     async def disconnect(self) -> None:
         async with self._lifecycle_lock:
@@ -483,10 +512,7 @@ class RobinhoodMCPBroker(Broker):
                 self._tools.clear()
                 self._agent_tool_contracts.clear()
                 return
-            self._accepting_calls = False
-            if self._requests is not None and not self._worker.done():
-                await self._requests.put((-100, next(self._request_sequence), None))
-            await self._finish_worker()
+            await self._stop_worker()
 
     async def _call(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         if not self.connected or not self._accepting_calls or self._requests is None:

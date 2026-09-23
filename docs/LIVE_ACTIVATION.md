@@ -40,8 +40,8 @@ If a check reports that the credential was revoked, do not repeatedly retry it.
 1. Revoke local authority so no new request can be authorized. If GRANDE Alpha reports an owned open
    or unresolved order, use **STOP + CANCEL**, inspect its exact preview, explicitly confirm the
    intended cancellations, and wait for terminal verification.
-2. Disconnect only after cleanup is clear. Disconnect refuses rather than silently cancelling an
-   owned open or unresolved order.
+2. Disconnect after cleanup is clear, or explicitly confirm leaving without verified cleanup and
+   manage the outstanding orders directly in Robinhood. Disconnect never cancels an order.
 3. Select **Broker → Forget Stored OAuth Credentials…** and confirm removal. Credential forgetting
    is available only from the clean disconnected state; it does not cancel an order or revoke a
    connection inside Robinhood.
@@ -130,8 +130,10 @@ duplicate real order.
 
 ## Stop, cancel, terminal verification, and exit
 
-**STOP + CANCEL** first locks new local requests and performs a read-only refresh. It then presents a
-blocking confirmation with the exact count and details of nonterminal Agentic-account orders linked
+**STOP + CANCEL** first locks new local requests. If the local journals have no recorded order
+activity, it reports no GRANDE-owned orders without waiting for another broker read. Otherwise it
+performs a read-only refresh and presents a non-blocking dialog with the exact count and details
+of nonterminal Agentic-account orders linked
 to GRANDE Alpha's durable order intents. Unrelated or manually placed orders are outside this scope
 and remain untouched. An order already reported as pending cancellation is disclosed and monitored
 for a terminal state, but GRANDE Alpha does not submit a duplicate cancellation request for it.
@@ -144,16 +146,17 @@ A cancellation request is not proof of cancellation: it can race a fill, fail re
 pending.
 
 **Revoke authority**, disabling a capability in **Settings**, **Disconnect**, credential forgetting,
-and **Exit** never substitute for that order-specific confirmation. They lock new local activity and
-refuse to complete while a GRANDE-owned open or unresolved order remains, directing the user to the
-explicit **STOP + CANCEL** flow. Internal quote, reconciliation, and risk faults follow the same
-no-implicit-cancellation boundary.
+and **Exit** never substitute for that order-specific confirmation. They lock new local activity
+without silently cancelling orders. Internal quote, reconciliation, and risk faults follow the
+same no-implicit-cancellation boundary.
 
 If any targeted order is missing, nonterminal, or cannot be refreshed, cleanup is unresolved. GRANDE
-Alpha remains connected and refuses Disconnect, permission disablement, credential forgetting, and
-Exit. Check Robinhood directly, repeat the explicit **STOP + CANCEL** preview if appropriate, and
-continue only after terminal verification passes. Filled positions are not automatically liquidated
-and remain the user's responsibility.
+Alpha reports that uncertainty. Disconnect and Exit offer a default-No confirmation to leave
+without verified cleanup; choosing Yes closes the transport while retaining durable order records.
+No cancellation or liquidation is implied. Broker requests and local automation stop; open orders
+may still fill in Robinhood. Reconnection must reconcile the retained records before new authority.
+If transport shutdown itself cannot be confirmed, Exit requires a further explicit decision.
+Check Robinhood directly or repeat the exact **STOP + CANCEL** review as appropriate.
 
 ## Calendar, emergency closure, and halt limits
 

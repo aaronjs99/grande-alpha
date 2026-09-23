@@ -12,9 +12,9 @@ your Robinhood connection.
 1. Complete login only on a Robinhood domain.
 2. Allow the browser to return to `http://localhost:37654/callback`.
 3. Ensure another GRANDE Alpha process is not running.
-4. If Robinhood reports an expired authorization, first lock local authority. Disconnect/reconnect
-   only from a clean state; if GRANDE-owned open or unresolved state remains, use the exact
-   **STOP + CANCEL** preview and confirmation before disconnecting.
+4. If Robinhood reports an expired authorization, first lock local authority. Use the exact
+   **STOP + CANCEL** preview to review owned orders, or explicitly disconnect without verified
+   cleanup and manage open orders in Robinhood. Disconnect never cancels orders.
 5. Check `%LOCALAPPDATA%\GRANDEAlpha\grande_alpha.log`.
 
 The OAuth wait expires after five minutes. Tokens and registered-client information are stored in
@@ -79,16 +79,22 @@ Canceling an order does not reverse an already completed fill.
 4. Type the displayed sell phrase.
 5. Verify the resulting state and final position in Robinhood.
 
-## Disconnect, Settings, credential forgetting, or Exit refuses
+## STOP, Disconnect, or Exit appears stuck
 
-These controls intentionally do not cancel an order. They lock new local activity and refuse while a
-GRANDE-owned nonterminal or unresolved order remains.
+The app stops local automation before waiting for account checks. A connection with no recorded
+GRANDE order activity needs no further broker read to stop or disconnect. For prior orders, the
+STOP preview times out after 30 seconds and disconnect cleanup after 15 seconds. Transport teardown
+has its own bounded wait. Status messages and dialogs remain responsive throughout.
 
-1. Keep GRANDE Alpha connected and inspect the warning and Robinhood order view.
-2. Select **STOP + CANCEL** and review the exact owned-order count and details.
-3. Confirm only if that precise scope should be cancelled. An already-pending cancellation will be
-   disclosed and verified without a duplicate request; manual/unrelated orders are untouched.
-4. Wait for every targeted order to be observed terminal, then retry the original action.
+If cleanup is unverified, Disconnect and Exit offer a **No** default. Choose **Yes** only when you
+want to leave and manage orders directly in Robinhood. The app retains unresolved order records;
+disconnecting or exiting does not cancel orders, sell positions, or mark cleanup successful.
+If you decline, the app stays connected so you can review the exact **STOP + CANCEL** scope.
+
+If an older installed process will not close, stop that app using the operating system's force-quit
+control before pulling and launching the updated code. On macOS use Apple menu → Force Quit and
+select the GRANDE Alpha window's application (it may be named Python). Existing broker orders and
+positions remain in Robinhood. Updating files does not update an already-running Python process.
 
 ## App was closed or crashed with a position
 

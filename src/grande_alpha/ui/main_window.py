@@ -134,7 +134,11 @@ class MainWindow(QMainWindow):
         self._chart_prices: deque[float] = deque(maxlen=1800)
         self._closing_after_cleanup = False
         self._connection_busy = False
+        self._connection_task: asyncio.Task | None = None
+        self._close_requested = False
+        self._close_task: asyncio.Task | None = None
         self._stop_cancel_busy = False
+        self._stop_task: asyncio.Task | None = None
         self._auto_shadow_starting = False
         self._auto_shadow_retry_seconds = 15
         self._auto_shadow_retry_remaining = 0
@@ -951,16 +955,58 @@ class MainWindow(QMainWindow):
         )
 
     async def _connect(self) -> None:
+        if self._connection_task is not None or self._close_requested:
+            return
+        self._connection_task = asyncio.current_task()
+        self._on_busy(True)
         try:
             if self._snapshot.connected:
-                await self.controller.disconnect()
+                self._set_stop_status("Stopping automation and disconnecting Robinhood…")
+                await self._disconnect_for_user()
             else:
                 await self.controller.connect()
         except Exception as exc:
-            QMessageBox.critical(self, "Robinhood connection", str(exc))
+            await self._stop_message("Robinhood connection", str(exc), error=True)
+        finally:
+            self._connection_task = None
+            self._on_busy(False)
+
+    async def _disconnect_for_user(self, *, exiting: bool = False) -> bool:
+        try:
+            await self.controller.disconnect()
+        except Exception as exc:
+            verb = "Exit" if exiting else "Disconnect"
+            self._set_stop_status("Automation stopped. Broker order cleanup is unverified.")
+            accepted = await self._stop_message(
+                f"{verb} without verified order cleanup?",
+                f"{exc}\n\nLocal automation is stopped. Open orders may still fill in Robinhood. "
+                "This action will not cancel orders or sell positions. Order records are kept for "
+                f"reconciliation on your next connection.\n\n{verb} anyway and manage orders in Robinhood?",
+                question=True,
+            )
+            if not accepted:
+                return False
+            try:
+                await self.controller.disconnect_without_order_cleanup(unverified=True)
+            except Exception as transport_exc:
+                self._set_stop_status("Automation stopped. Robinhood transport shutdown is unverified.")
+                if exiting:
+                    return await self._stop_message(
+                        "Exit while the connection is closing?",
+                        f"{transport_exc}\n\nLocal automation is stopped and order records are retained. "
+                        "Exit GRANDE Alpha now and check open orders and fills directly in Robinhood?",
+                        question=True,
+                    )
+                await self._stop_message("Disconnect did not finish", str(transport_exc), error=True)
+                return False
+        self._set_stop_status(
+            "Robinhood disconnected. Local automation is stopped. "
+            "Disconnect did not cancel orders or close positions."
+        )
+        return True
 
     async def _auto_start_shadow(self) -> None:
-        if self._auto_shadow_starting or self.controller.snapshot.shadow_running:
+        if self._close_requested or self._auto_shadow_starting or self.controller.snapshot.shadow_running:
             return
         if not self.controller.auto_shadow_start_allowed():
             self.status.setText("AUTO SHADOW IDLE • Waiting for the next regular session")
@@ -982,7 +1028,7 @@ class MainWindow(QMainWindow):
             self._sync_data_timers()
 
     def _check_auto_shadow_close(self) -> None:
-        if not self.auto_shadow:
+        if not self.auto_shadow or self._close_requested:
             return
         if (
             self.controller.snapshot.shadow_running
@@ -1155,6 +1201,8 @@ class MainWindow(QMainWindow):
         if self._stop_cancel_busy:
             return
         self._stop_cancel_busy = True
+        self._stop_task = asyncio.current_task()
+        self._sync_data_timers()
         self.kill_button.setText("STOPPING…")
         self.kill_button.setEnabled(False)
         self.stop_cancel_action.setEnabled(False)
@@ -1238,9 +1286,12 @@ class MainWindow(QMainWindow):
             if plan is not None:
                 self.controller.discard_cancel_plan(plan)
             self._stop_cancel_busy = False
+            self._stop_task = None
+            self._sync_data_timers()
             self.kill_button.setText("STOP + CANCEL")
             self.kill_button.setEnabled(self._snapshot.connected)
             self.stop_cancel_action.setEnabled(self._snapshot.connected)
+            self._set_controls()
 
     def _toggle_shadow(self) -> None:
         try:
@@ -1358,10 +1409,11 @@ class MainWindow(QMainWindow):
         self._sync_data_timers()
         self.connect_button.setEnabled(not busy)
         self.connect_button.setText(
-            "Connecting in browser…"
+            ("Disconnecting…" if self._snapshot.connected else "Connecting in browser…")
             if busy
             else ("Disconnect" if self._snapshot.connected else "Connect Robinhood")
         )
+        self._set_controls()
 
     def _sync_data_timers(self) -> None:
         """Run broker timers only after connection/startup has fully settled.
@@ -1376,6 +1428,9 @@ class MainWindow(QMainWindow):
         should_run = (
             self._snapshot.connected
             and not self._connection_busy
+            and self._connection_task is None
+            and not self._close_requested
+            and not self._stop_cancel_busy
             and not self._auto_shadow_starting
         )
         for timer in (self.timer, self.reconcile_timer):
@@ -1564,6 +1619,21 @@ class MainWindow(QMainWindow):
             if safe_checks_available
             else "Unavailable while a live grant or strategy is active. Revoke authority and stop first."
         )
+        busy = self._connection_busy or self._connection_task is not None or self._close_requested or self._stop_cancel_busy
+        self.connect_button.setEnabled(not busy and not self._stop_cancel_busy)
+        self.broker_connect_action.setEnabled(broker_enabled and not busy and not self._stop_cancel_busy)
+        self.settings_button.setEnabled(not busy)
+        self.settings_action.setEnabled(not busy)
+        if busy:
+            for control in (
+                self.authorize_button, self.authorize_action, self.start_button,
+                self.start_strategy_action, self.shadow_button, self.shadow_action,
+                self.flatten_button, self.flatten_action, self.kill_button, self.stop_cancel_action,
+                self.refresh_action, self.settings_button, self.settings_action,
+                self.forget_credentials_action, self.activation_widget.safe_checks_button,
+            ):
+                control.setEnabled(False)
+        self.agent_widget.setEnabled(not busy and not self._stop_cancel_busy)
         self._apply_responsive_layout(self.width(), self.height(), force=True)
 
     def _update_quotes(self, snapshot: TradingSnapshot) -> None:
@@ -1675,43 +1745,41 @@ class MainWindow(QMainWindow):
             self.agent_widget.shutdown()
             self.timer.stop()
             self.reconcile_timer.stop()
+            self.auto_shadow_close_timer.stop()
             event.accept()
             return
-        if self.controller.shadow_only_runtime and self._snapshot.connected:
+        if self._close_requested:
             event.ignore()
-            asyncio.create_task(self._shutdown_then_close())
             return
-        if self._snapshot.connected:
-            answer = QMessageBox.question(
-                self,
-                "Exit GRANDE Alpha",
-                "Exit locks new orders but does not cancel broker orders. GRANDE Alpha will "
-                "refuse to disconnect while any GRANDE-owned order or unresolved submission "
-                "remains; use STOP + CANCEL first to preview and explicitly confirm that exact "
-                "scope. Unrelated orders and filled positions remain untouched. Continue?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.No,
-            )
-            if answer != QMessageBox.StandardButton.Yes:
-                event.ignore()
-                return
+        if self._snapshot.connected or self._connection_task is not None:
             event.ignore()
-            asyncio.create_task(self._shutdown_then_close())
+            self._close_requested = True
+            self._sync_data_timers()
+            self._set_controls()
+            self._close_task = asyncio.create_task(self._shutdown_then_close())
             return
         self.timer.stop()
         self.reconcile_timer.stop()
+        self.auto_shadow_close_timer.stop()
         self.agent_widget.shutdown()
         event.accept()
 
     async def _shutdown_then_close(self) -> None:
         try:
-            await self.controller.disconnect()
+            if self._stop_task is not None:
+                self._stop_task.cancel()
+                await asyncio.gather(self._stop_task, return_exceptions=True)
+            if self._connection_task is not None:
+                self._connection_task.cancel()
+                await asyncio.gather(self._connection_task, return_exceptions=True)
+            self._set_stop_status("Stopping automation and closing the Robinhood connection…")
+            if await self._disconnect_for_user(exiting=True):
+                self._closing_after_cleanup = True
+                self.close()
         except Exception as exc:
-            QMessageBox.critical(
-                self,
-                "Exit blocked — broker cleanup is not verified",
-                f"{exc}\n\nGRANDE Alpha will remain open. Check Robinhood, then retry STOP + CANCEL.",
-            )
-            return
-        self._closing_after_cleanup = True
-        self.close()
+            await self._stop_message("Exit did not finish", str(exc), error=True)
+        finally:
+            self._close_requested = False
+            if not self._closing_after_cleanup:
+                self._sync_data_timers()
+                self._set_controls()

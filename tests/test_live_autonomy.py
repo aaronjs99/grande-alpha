@@ -9,7 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 from PySide6.QtGui import QCloseEvent
-from PySide6.QtWidgets import QApplication, QMessageBox
+from PySide6.QtWidgets import QApplication
 
 import grande_alpha.controller as controller_module
 import grande_alpha.risk as risk_module
@@ -2876,7 +2876,7 @@ async def test_live_window_keeps_pause_resume_revoke_and_stop_controls_visible(
 
 
 @pytest.mark.asyncio
-async def test_window_close_stays_blocked_when_broker_cleanup_is_unverified(
+async def test_window_close_stays_open_when_unverified_disconnect_is_declined(
     tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     app = _qt_app()
@@ -2890,7 +2890,7 @@ async def test_window_close_stays_blocked_when_broker_cleanup_is_unverified(
     window.show()
     app.processEvents()
     captured_tasks = []
-    critical_messages: list[tuple[str, str]] = []
+    questions: list[tuple[str, str]] = []
 
     async def unverified_disconnect() -> None:
         raise BrokerError("terminal broker cleanup remains unverified")
@@ -2900,16 +2900,12 @@ async def test_window_close_stays_blocked_when_broker_cleanup_is_unverified(
         return SimpleNamespace()
 
     monkeypatch.setattr(controller, "disconnect", unverified_disconnect)
-    monkeypatch.setattr(
-        main_window_module.QMessageBox,
-        "question",
-        lambda *_args, **_kwargs: QMessageBox.StandardButton.Yes,
-    )
-    monkeypatch.setattr(
-        main_window_module.QMessageBox,
-        "critical",
-        lambda _parent, title, text: critical_messages.append((title, text)),
-    )
+
+    async def decline(title, text, **_kwargs):
+        questions.append((title, text))
+        return False
+
+    monkeypatch.setattr(window, "_stop_message", decline)
     monkeypatch.setattr(
         main_window_module,
         "asyncio",
@@ -2924,9 +2920,10 @@ async def test_window_close_stays_blocked_when_broker_cleanup_is_unverified(
 
     assert not window._closing_after_cleanup
     assert not window.isHidden()
-    assert critical_messages
-    assert critical_messages[0][0] == "Exit blocked — broker cleanup is not verified"
-    assert "retry STOP + CANCEL" in critical_messages[0][1]
+    assert questions
+    assert questions[0][0] == "Exit without verified order cleanup?"
+    assert "Open orders may still fill" in questions[0][1]
+    assert not window._close_requested
 
     window._closing_after_cleanup = True
     window.close()

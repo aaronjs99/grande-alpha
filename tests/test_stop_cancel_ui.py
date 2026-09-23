@@ -43,6 +43,7 @@ async def test_prepare_stops_before_waiting_for_existing_reconciliation(tmp_path
     controller, broker, store, grant = _controller(tmp_path, monkeypatch)
     controller.authorize_live(grant)
     controller.snapshot.strategy_running = True
+    broker.orders = [_bind_owned_order(store, _order("owned"))]
     await controller._reconcile_lock.acquire()
     task = asyncio.create_task(controller.prepare_cancel_plan())
     try:
@@ -109,7 +110,8 @@ async def test_button_reports_no_orders_and_keeps_robinhood_connected(setup):
 
 @pytest.mark.asyncio
 async def test_busy_progress_survives_snapshot_and_duplicate_clicks(setup, monkeypatch):
-    window, controller, broker, _, grant, messages = setup
+    window, controller, broker, store, grant, messages = setup
+    broker.orders = [_bind_owned_order(store, _order("owned"))]
     controller.authorize_live(grant)
     controller.snapshot.strategy_running = True
     entered, release = asyncio.Event(), asyncio.Event()
@@ -144,7 +146,8 @@ async def test_busy_progress_survives_snapshot_and_duplicate_clicks(setup, monke
 @pytest.mark.asyncio
 @pytest.mark.parametrize("failure", [RuntimeError("Broker unavailable"), TimeoutError()])
 async def test_preview_failure_is_visible_and_leaves_automation_stopped(setup, monkeypatch, failure):
-    window, controller, broker, _, grant, messages = setup
+    window, controller, broker, store, grant, messages = setup
+    broker.orders = [_bind_owned_order(store, _order("owned"))]
     controller.authorize_live(grant)
     controller.snapshot.strategy_running = True
 
@@ -163,7 +166,8 @@ async def test_preview_failure_is_visible_and_leaves_automation_stopped(setup, m
 
 @pytest.mark.asyncio
 async def test_slow_preview_times_out_without_a_broker_write(setup, monkeypatch):
-    window, controller, broker, _, _, messages = setup
+    window, controller, broker, store, _, messages = setup
+    broker.orders = [_bind_owned_order(store, _order("owned"))]
     read_cancelled = asyncio.Event()
 
     async def slow_accounts():

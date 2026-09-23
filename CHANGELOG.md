@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Fixed a cancelled Robinhood session leaving its active request unresolved and blocking
+  reconciliation, STOP, disconnect, and exit. Teardown now drains queued requests, waits
+  for a bounded interval, and cancels the original transport owner when needed.
+- STOP and disconnect no longer wait for fresh broker reads when GRANDE has no recorded
+  order activity. Disconnect/exit use non-blocking dialogs and pause polling; users can
+  explicitly leave without verified order cleanup while preserving durable records and
+  sending no cancellation. Failed connections clean up transport and account state.
+  Added tests that reproduce transport stalls and exercise the real Qt/qasync event loop.
 - Fixed STOP + CANCEL to revoke local trading authority and stop the Agent and live
   shadow before waiting for broker checks. The UI now shows progress and completion,
   handles empty order lists and errors explicitly, prevents overlapping clicks, and
