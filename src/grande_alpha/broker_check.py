@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from grande_alpha.broker import RobinhoodMCPBroker
-from grande_alpha.broker.base import Broker, BrokerError, ShadowOnlyBroker, order_is_terminal
+from grande_alpha.broker.base import Broker, BrokerError, ReadOnlyBroker, order_is_terminal
 from grande_alpha.models import Quote, utc_now
 
 REQUIRED_QUOTE_SYMBOLS = ("QQQ", "TQQQ", "SQQQ")
@@ -99,7 +99,7 @@ async def check_broker(
         or reference_time.utcoffset() is None
     ):
         raise ValueError("Readiness reference time must be timezone-aware")
-    read_broker = ShadowOnlyBroker(broker)
+    read_broker = ReadOnlyBroker(broker)
     await read_broker.connect()
     try:
         accounts = await read_broker.get_accounts()

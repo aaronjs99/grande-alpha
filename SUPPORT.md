@@ -1,23 +1,38 @@
 # Support
 
-This community preview is provided without guaranteed support or uptime.
+GRANDE Alpha is a community preview provided without guaranteed support or uptime.
 
-Before reporting a problem:
+## Where to ask
 
-1. Reproduce it in research mode if possible.
-2. Run `.\verify.ps1` from a source checkout.
-3. Export **File → Export redacted diagnostics** and inspect the JSON yourself.
-4. Remove all personal, financial, legal-status, tax, credential, account, position, and order
-   information. Redaction is the reporter's responsibility; free-form text may still contain details
-   the diagnostic exporter cannot recognize.
+| Question | Destination |
+|---|---|
+| Reproducible app bug | [Bug report](https://github.com/aaronjs99/grande-alpha/issues/new?template=bug_report.yml) |
+| Product or documentation idea | [Feature request](https://github.com/aaronjs99/grande-alpha/issues/new?template=feature_request.yml) |
+| Security vulnerability | [Private security advisory](https://github.com/aaronjs99/grande-alpha/security/advisories/new) |
+| Broker account, authentication, execution, settlement, or outage | The broker's official support |
+| Financial, legal, tax, employment, residency, or eligibility question | An appropriately qualified professional |
 
-Open a community support request in the
-[public issue tracker](https://github.com/aaronjs99/grande-alpha/issues). Search existing issues first
-and include only the minimum redacted detail needed to reproduce the problem. GitHub requires reporters
-to sign in before creating an issue; reading the public issue list does not require an account. Never post OAuth tokens,
-credentials, account identifiers, balances, positions, order identifiers, broker receipts, or an
-unreviewed diagnostic export in a public issue. Public issues and response times are not guaranteed.
+Search [existing issues](https://github.com/aaronjs99/grande-alpha/issues) before opening a new one.
 
-Broker account, authentication, order execution, settlement, or provider outage questions belong
-with the broker. Legal, tax, employment, residency, account-eligibility, and financial questions
-belong with appropriately qualified professionals.
+## Before reporting a bug
+
+1. Reproduce the issue in research mode if possible.
+2. Run `./verify.ps1` from a source checkout.
+3. Note the GRANDE Alpha version, Windows version, Python version, and exact safe reproduction steps.
+4. If useful, export **File → Export redacted diagnostics** and inspect the JSON yourself.
+5. Remove all personal, financial, legal-status, tax, credential, account, position, order, and
+   licensed-data information.
+
+Redaction remains the reporter's responsibility. Free-form text can contain details the diagnostic
+exporter cannot recognize.
+
+## Never post publicly
+
+- passwords, OAuth tokens, credentials, or callback URLs containing secrets;
+- account identifiers, balances, positions, order identifiers, or broker receipts;
+- tax, employment, residency, immigration, or legal-status information;
+- proprietary or licensed market data; or
+- an unreviewed diagnostic export or screenshot.
+
+Provide the minimum redacted information needed to reproduce the software problem. GitHub requires
+an account to create an issue; reading public issues does not require one.

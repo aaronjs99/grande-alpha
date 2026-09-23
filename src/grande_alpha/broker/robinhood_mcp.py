@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import copy
+import hashlib
 import itertools
 import json
 import math
 import webbrowser
+from collections.abc import Mapping
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -44,6 +47,41 @@ def _exception_details(exc: BaseException) -> str:
                 messages.append(detail)
         return "; ".join(messages)
     return str(exc).strip()
+
+
+def _tool_contract(item: object) -> tuple[str, dict[str, Any]]:
+    """Normalize MCP tool metadata from the provider model or a protocol-compatible object.
+
+    The MCP client returns Pydantic models today, but the broker boundary only requires a tool
+    name and input schema. Accepting mapping-like metadata also keeps contract inspection usable
+    with compatible client implementations and deterministic integration fakes.
+    """
+    if isinstance(item, Mapping):
+        name = item.get("name")
+        schema = item.get("inputSchema")
+        metadata = dict(item)
+    else:
+        name = getattr(item, "name", None)
+        schema = getattr(item, "inputSchema", None)
+        dump = getattr(item, "model_dump", None)
+        if callable(dump):
+            metadata = dump(mode="json", exclude_none=True)
+        else:
+            try:
+                attributes = vars(item)
+            except TypeError:
+                attributes = {}
+            metadata = {
+                key: value
+                for key, value in attributes.items()
+                if not key.startswith("_") and value is not None
+            }
+    if not isinstance(name, str) or not name:
+        raise BrokerError("Robinhood MCP returned a tool without a valid name")
+    normalized_schema = schema if isinstance(schema, dict) else {}
+    metadata["name"] = name
+    metadata["inputSchema"] = normalized_schema
+    return name, metadata
 
 TOOL_PRIORITIES = {
     "cancel_equity_order": 0,
@@ -202,6 +240,7 @@ class RobinhoodMCPBroker(Broker):
         self.allow_interactive_auth = allow_interactive_auth
         self.storage = CredentialTokenStorage()
         self._tools: dict[str, dict[str, Any]] = {}
+        self._tool_contracts: dict[str, dict[str, Any]] = {}
         self._requests: asyncio.PriorityQueue[tuple[int, int, _ToolRequest | None]] | None = None
         self._request_sequence = itertools.count()
         self._worker: asyncio.Task[None] | None = None
@@ -216,6 +255,20 @@ class RobinhoodMCPBroker(Broker):
     @property
     def tools(self) -> set[str]:
         return set(self._tools)
+
+    def tool_contract_snapshot(self) -> dict[str, Any]:
+        """Provider-supplied metadata, never an authorization or account-data snapshot."""
+        if not self.connected:
+            raise BrokerError("Connect before inspecting the current MCP tool contract")
+        contracts = [copy.deepcopy(self._tool_contracts[name]) for name in sorted(self._tool_contracts)]
+        canonical = json.dumps(contracts, sort_keys=True, separators=(",", ":"), allow_nan=False)
+        return {
+            "server_url": self.server_url,
+            "observed_at": datetime.now(UTC).isoformat(),
+            "sha256": hashlib.sha256(canonical.encode("utf-8")).hexdigest(),
+            "tools": contracts,
+            "authority_granted": False,
+        }
 
     def clear_credentials(self) -> None:
         if self.connected:
@@ -268,14 +321,14 @@ class RobinhoodMCPBroker(Broker):
         async def redirect_handler(url: str) -> None:
             if not self.allow_interactive_auth:
                 raise BrokerError(
-                    "Auto-shadow requires cached OAuth credentials; interactive browser consent is blocked"
+                    "This non-interactive connection requires cached OAuth credentials"
                 )
             await asyncio.to_thread(webbrowser.open, url, 2)
 
         async def callback_handler() -> tuple[str, str | None]:
             if not self.allow_interactive_auth:
                 raise BrokerError(
-                    "Auto-shadow requires cached OAuth credentials; OAuth callback is blocked"
+                    "This non-interactive connection cannot receive a new OAuth callback"
                 )
             return await asyncio.to_thread(callback.wait, 300.0)
 
@@ -313,10 +366,12 @@ class RobinhoodMCPBroker(Broker):
                 session = await stack.enter_async_context(ClientSession(read_stream, write_stream))
                 await session.initialize()
                 listing = await session.list_tools()
-                self._tools = {
-                    item.name: (item.inputSchema if isinstance(item.inputSchema, dict) else {})
-                    for item in listing.tools
-                }
+                self._tools = {}
+                self._tool_contracts = {}
+                for item in listing.tools:
+                    name, metadata = _tool_contract(item)
+                    self._tools[name] = metadata["inputSchema"]
+                    self._tool_contracts[name] = metadata
                 required = {
                     "get_accounts",
                     "get_portfolio",

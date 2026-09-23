@@ -4,33 +4,51 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "grande-alpha"
-version = "0.16.0"
+dynamic = ["version"]
 description = "Local-first leveraged-ETF strategy research and consent-gated execution workstation"
 readme = "README.md"
 license = "Apache-2.0"
 authors = [{name = "GRANDE Alpha contributors"}]
 requires-python = ">=3.11,<3.13"
+keywords = ["algorithmic-trading", "backtesting", "desktop", "research", "risk-management"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Win32 (MS Windows)",
+  "Intended Audience :: Financial and Insurance Industry",
+  "Operating System :: Microsoft :: Windows",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Office/Business :: Financial :: Investment",
+]
 dependencies = [
   "httpx>=0.28,<1",
   "keyring>=25.6,<26",
   "mcp>=1.29,<2",
   "numpy>=2.1,<3",
   "platformdirs>=4.3,<5",
-  "pyqtgraph>=0.13.7,<0.15",
-  "PySide6>=6.8,<7",
   "pywin32>=311,<313; sys_platform == 'win32'",
-  "qasync>=0.27,<1",
   "tzdata>=2026.1",
 ]
 
+[project.urls]
+Homepage = "https://github.com/aaronjs99/grande-alpha"
+Documentation = "https://github.com/aaronjs99/grande-alpha/tree/main/docs"
+Issues = "https://github.com/aaronjs99/grande-alpha/issues"
+Repository = "https://github.com/aaronjs99/grande-alpha.git"
+Changelog = "https://github.com/aaronjs99/grande-alpha/blob/main/CHANGELOG.md"
+
 [project.optional-dependencies]
+desktop = [
+  "pyqtgraph>=0.13.7,<0.15",
+  "PySide6>=6.8,<7",
+  "qasync>=0.27,<1",
+]
 dev = [
   "build>=1.3,<2",
   "cyclonedx-bom>=7.1,<8",
   "pip-audit>=2.9,<3",
   "pyinstaller>=6.13,<7",
-  "pytest>=9.0.3,<10",
-  "pytest-asyncio>=1.4,<2",
   "ruff>=0.11,<1",
 ]
 
@@ -41,12 +59,11 @@ grande-alpha-cli = "grande_alpha.cli:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.dynamic]
+version = {attr = "grande_alpha._version.__version__"}
+
 [tool.setuptools.package-data]
 grande_alpha = ["assets/*.png"]
-
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-asyncio_mode = "auto"
 
 [tool.ruff]
 line-length = 110

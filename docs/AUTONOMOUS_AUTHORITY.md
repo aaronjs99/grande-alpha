@@ -93,7 +93,7 @@ The live-pilot controller:
 6. preserve all existing evidence, settlement, broker-review, cancellation, and default-disabled gates.
 
 The UI exposes one explicit **Authorize & Start Live Session** action per bounded same-ET-day grant.
-No grant is restored and the scheduled task remains shadow-only. A missing account/fingerprint
+No grant is restored after restart, and no scheduler is installed. A missing account/fingerprint
 context rejects the order. The authority model, risk engine, and UI components themselves perform no
 broker write; only the separately gated controller can cross the broker review/placement boundary.
 

@@ -1,34 +1,82 @@
 # GRANDE Alpha
 
-GRANDE Alpha is a local-first Windows desktop workstation for researching leveraged-ETF strategies. It starts in research mode, provides deterministic and historical replay for synthetic `TQQQS`/`SQQQS` instruments, and keeps broker access and real-order controls behind separate, revocable permissions.
+[![CI](https://github.com/aaronjs99/grande-alpha/actions/workflows/ci.yml/badge.svg)](https://github.com/aaronjs99/grande-alpha/actions/workflows/ci.yml)
+[![Python 3.11–3.12](https://img.shields.io/badge/python-3.11–3.12-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![Platform: Windows](https://img.shields.io/badge/platform-Windows-0078D4?logo=windows)](docs/WINDOWS_INSTALLATION.md)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
-> Community plan: the current local product costs $0 and is functional without an account, payment,
-> checkout, or entitlement server. Pro is a clearly labeled coming-soon direction for convenience and
-> scale; no paid activation exists in this release. This software is experimental, provides no
-> investment advice, and cannot promise profit. Leveraged and inverse ETFs seek daily objectives;
-> results over longer periods can differ materially. You can lose the entire amount traded.
+**A local-first Windows workstation for leveraged-ETF strategy research, evidence review, and
+consent-gated execution experiments.**
 
-GRANDE Alpha is independent software. It is not affiliated with, endorsed by, or sponsored by Robinhood Markets, Inc., ProShares, Nasdaq, or any broker, exchange, or fund sponsor.
+![GRANDE Alpha desktop workspace](docs/images/audit/responsive-after-02-main-1366x768.png)
 
-Open **Help → Plans & Upgrade** to see the active Community plan and the truthful Pro roadmap. Safety,
-evidence, provenance, privacy, and transaction-consent controls are never plan-gated. See
-[Community and Pro plans](docs/PRODUCT_PLANS.md).
+GRANDE Alpha combines deterministic replay, historical evaluation, live shadow observation, an
+Evidence Lab, and auditable broker controls in one desktop application. Research works without a
+broker account. Every external connection and real-order capability is a separate, revocable opt-in.
 
-## Public-safety defaults
+> [!WARNING]
+> GRANDE Alpha is experimental software, not investment advice. The included strategies are
+> engineering baselines, not demonstrated profitable systems. Leveraged and inverse ETFs pursue
+> daily objectives and can lose substantial value. You can lose the entire amount traded.
 
-- First launch opens a disclosure-led onboarding flow; research mode is the default.
-- Broker access, remote community market data, the optional capital planning ledger, and real-order controls are independent opt-ins.
-- Broker OAuth credentials are stored through the operating-system credential vault, never in project files.
-- The attended **supervised experimental** path uses an explicit settings phrase, a separately confirmed bounded session, hard $10/order, $50 gross-day, and $40 exposure ceilings, and a fresh exact confirmation for every broker-reviewed order. It is not autonomous and does not claim an evidence certificate. The separate autonomous path requires a current passing Evidence Lab certificate for the exact strategy and runtime contract. Every application launch starts locked; neither path guarantees profit.
-- **STOP + CANCEL** first locks new local requests and shows an exact, blocking preview of the nonterminal Agentic-account orders owned by GRANDE Alpha's durable intent ledger. It sends cancellation requests only after explicit confirmation, never includes unrelated or manually placed orders, and discloses already-pending cancellations for terminal verification without submitting them twice. Revoke, Settings disable, Disconnect, credential forgetting, and Exit do not silently cancel: they lock or refuse while GRANDE-owned open or unresolved order state remains. A confirmed cancellation can still fail during a network or provider failure and never liquidates a filled position.
-- A redacted diagnostic export is available for support. The application sends no first-party telemetry.
-- Normal and scheduled runtime default to the deterministic **CASH / hold** champion: flat signal,
-  `(0,0)` pair action, and no TQQQ/SQQQ entry. Other runtime policies require a deliberate settings
-  selection and remain subject to the same shadow/evidence locks; none is claimed profitable.
+GRANDE Alpha is independent software. It is not affiliated with or endorsed by Robinhood Markets,
+ProShares, Nasdaq, any broker, exchange, or fund sponsor.
 
-## Start here
+## Product maturity
 
-On Windows, the immediately usable path is the signed-Python source launcher:
+GRANDE Alpha follows semantic versioning. The `0.x` line is a community preview: core workflows are
+implemented and tested, but compatibility, distribution, provider approval, and operational-support
+gates remain open. Version `1.0.0` will mean that every published 1.0 release criterion is satisfied;
+it will not mean that any strategy is profitable.
+
+| Product area | 0.x product contract |
+|---|---|
+| Local research and replay | Available |
+| Evidence Lab and audit receipts | Available |
+| Live shadow observation | Available; submits no orders |
+| Supervised real-order experiment | Integrated source path; attended, hard-capped, and confirmed per order |
+| Autonomous directional trading | Fail-closed unless the exact deployment satisfies every evidence and runtime gate |
+| Bounded unattended runner | [Explicit standing sessions](docs/UNATTENDED_ENGINE.md); evidence-gated, offline-tested, not live-qualified |
+| Mixed PEAD plus leveraged-ETF engine | Implemented behind [production qualification](docs/PRODUCTION_QUALIFICATION.md); not activated or evidence-qualified |
+| Automatic startup or Windows-scheduled execution | Not included |
+| Community plan | Free and local; no account, checkout, or entitlement server |
+| Pro plan | Roadmap only; no paid activation exists |
+
+See the [product contract](docs/PRODUCT_CONTRACT.md), [roadmap to 1.0.0](docs/ROADMAP_TO_1_0.md),
+[versioning policy](docs/VERSIONING.md), and [changelog](CHANGELOG.md).
+
+> [!IMPORTANT]
+> Source integration is not permission to distribute a broker-connected product. Public Robinhood
+> connectivity remains blocked pending written provider approval for the intended product, users,
+> order flow, branding, data handling, and distribution model. Individual operators are also
+> responsible for account eligibility and applicable legal, tax, and financial requirements.
+
+## Why GRANDE Alpha
+
+- **Research without broker access.** Run deterministic scenarios or permitted CSV data entirely
+  locally.
+- **Evidence before authority.** Provenance, cost stress, chronological holdouts, fingerprinting,
+  and runtime-parity checks fail closed.
+- **Realistic replay.** Model spread, latency, partial fills, rejection, volume constraints, and
+  cash-T+1 settlement.
+- **Live shadow mode.** Observe current quotes and produce fictional fills without an order path.
+- **Explicit consent.** Supervised experiments require a bounded session and a fresh confirmation
+  for every exact broker-reviewed ticket.
+- **Auditable controls.** Append-only receipts, idempotency references, reconciliation, and scoped
+  stop/cancel previews make state visible.
+- **Local-first privacy.** No first-party telemetry, advertising, or cloud-sync service.
+- **Responsive desktop UI.** Tested at portrait, constrained landscape, standard desktop, and wide
+  desktop sizes.
+
+## Install from source
+
+Requirements:
+
+- Windows 10 or 11 (64-bit)
+- Python 3.11 or 3.12
+- PowerShell 5.1 or newer
+
+From PowerShell in the repository directory:
 
 ```powershell
 .\setup.ps1
@@ -37,58 +85,123 @@ On Windows, the immediately usable path is the signed-Python source launcher:
 .\run.ps1
 ```
 
-Before a market session, double-click **Morning Check** or run `Morning Check.cmd`. It bypasses
-machine-wide PowerShell execution-policy changes, verifies the app and taskbar identity, exercises
-only Robinhood read methods, and prints the current evidence lock. A green morning check means the
-source app and live shadow are operational; it never means the strategy is profitable or authorized
-to submit orders.
+The app starts in research mode. Broker access and real-order controls remain disabled until enabled
+separately in **Settings**.
 
-An optional, explicit [scheduled-shadow setup](docs/SCHEDULED_SHADOW.md) can launch `--auto-shadow`
-at a zone-derived weekday time between 7:00 and 9:20 AM ET in supported continental-U.S. Windows
-time zones. Local installation adds only the setup shortcut; it never enables
-the task silently.
+For installation details, unsigned-build limitations, and credential recovery, read the
+[Windows installation guide](docs/WINDOWS_INSTALLATION.md). Public binary distribution remains
+blocked until the exact release artifact is code-signed and passes the
+[release checklist](docs/PUBLIC_RELEASE_CHECKLIST.md).
 
-`build.ps1` writes an **unsigned release candidate** to `dist\GRANDEAlpha`; Windows Smart App Control or enterprise Code Integrity may block it until it is Authenticode-signed with a trusted publisher identity. See the [Activation checklist](docs/ACTIVATION_CHECKLIST.md), [Quickstart](docs/QUICKSTART.md), [Windows installation](docs/WINDOWS_INSTALLATION.md), [Safety](docs/SAFETY_AND_COMPLIANCE.md), [Privacy](PRIVACY.md), and the complete [documentation index](docs/README.md).
+### Command line without the desktop
 
-Source bundles place their managed Python environment at `%LOCALAPPDATA%\GRANDEAlpha\runtime` to
-avoid PySide6 installation failures caused by deeply nested Windows extraction paths. An existing
-developer checkout `.venv` remains preferred.
+The command-line companion has no Qt dependency. For research or automation that does not open the
+desktop workspace, install the core package and run `grande-alpha-cli`:
 
-The local installer assigns a stable Windows application identity to both shortcuts so a taskbar pin
-keeps the GRANDE Alpha logo instead of adopting the Python or PowerShell host icon. The readiness
-doctor reports a mismatch and directs the user to reinstall the shortcuts.
+```powershell
+py -3.11 -m pip install -e .
+grande-alpha-cli --help
+```
 
-## What it is—and is not
+Install the desktop workspace explicitly with `py -3.11 -m pip install -e ".[desktop]"`.
 
-This is not exchange-colocated high-frequency trading. It is a desktop research and consent-gated automation client with a retail low-latency profile: batched quotes target 1-second polling, account truth reconciles every 5 seconds, signals use completed 5-second analysis bars, and the default pair-action decision occurs every 3 bars (15 seconds). Those live 5-second bars are constructed locally from observed quote midpoints; the current remote-history path provides 1-minute bars at its finest interval. A native 1-minute replay and a locally derived 5-second live stream are different datasets and different strategy fingerprints, not interchangeable evidence. Slow provider calls are coalesced instead of queued. Observation speed does not increase the separately bounded live order rate. The runtime champion is CASH / hold; deliberate research policies observe QQQ-derived signals and express each TQQQ/SQQQ/cash transition in the exact nine-action `(T,S)` command vocabulary. The included policies are engineering baselines, not demonstrated edges. See [Low-latency execution](docs/LOW_LATENCY_EXECUTION.md).
+## First research run
 
-The sandbox models costs, spread, latency, partial fills, volume limits, rejections, `cash_t1` settlement, and purged walk-forward evaluation. Under `cash_t1`, modeled sale proceeds move to unsettled cash, remain part of equity, cannot fund another entry, and return to settled cash only when the next market session is observed. The broker's reported buying power remains authoritative. The sandbox includes a finite, documented research library: EMA momentum, multi-horizon trend, a paper-faithful first-half-hour momentum rule, an older rest-of-day closing hypothesis, opening-range breakout, and a conservative agreement ensemble. The separate nine-action lab represents every `(T,S)` command pair where each leg is sell `-1`, hold `0`, or buy `+1`, trains an auditable offline policy, and evaluates it on a later chronological holdout. It also shows fixed and volatility-managed daily exposure benchmarks. These are hypotheses, not guaranteed edges. Evidence results are recorded locally with a unique candidate-trial ledger and Deflated Sharpe gate. Evidence-policy version 13 requires manifest-bound observed-data provenance and exact runtime-observation replay under the two-sided bid/ask book-clock v2 contract, reserves one later chronological holdout before development work, fingerprints every material execution/sizing setting, stress-tests every spread component, rejects bypassed forced closes, and blocks non-cash promotion until replay and runtime share the certified execution contract. Storage independently rechecks the canonical gates, dataset/provenance binding, 3x-cost metrics, finite positive risk envelope, and one-promotion rule. A failed final holdout remains consumed; it cannot be rerun into a pass. Only a result that passes every current gate can unlock the separate live-review workflow for the same strategy fingerprint, bar interval, and tested risk envelope; Action Lab results cannot unlock trading. A certificate expires when either its promotion or final market observation exceeds 30 days and still does not predict future returns or itself authorize an order. Any runtime-settings change revokes an armed grant, and the exact certificate is rechecked before each automatic decision, broker review, and placement call.
+1. Launch GRANDE Alpha and review the first-run disclosures.
+2. Leave every optional external capability disabled.
+3. Open **Research**.
+4. Run the deterministic scenario or import data you are permitted to use.
+5. Inspect the assumptions, execution events, provenance, trades, and failed evidence gates.
+6. Treat every result as model evidence—not a prediction of future returns.
 
-All desktop tables have manually adjustable columns and contextual sizing controls. The
-[`grande-alpha-cli`](docs/CLI.md) companion exposes the same sandbox engine, Evidence Lab gate table,
-saved runs, receipts, and glossary with wrapping output and JSON mode. It intentionally has no command
-that bypasses the desktop application's bounded live-session consent workflow.
+See the [quickstart](docs/QUICKSTART.md) for broker-safe checks, desktop navigation, and the CLI.
 
-## Broker integration
+## Safety model
 
-The optional adapter uses Robinhood's official Trading MCP endpoint and browser OAuth. Robinhood states that a connected third-party agent can read data across Robinhood accounts, while trading is restricted to the dedicated Agentic account. The provider consent is broader than the app's read-only diagnostic: that diagnostic never invokes order review, placement, cancellation, or watchlist tools, but the granted OAuth scope can include those capabilities. Review the current provider disclosures before opting in: <https://robinhood.com/us/en/support/articles/agentic-trading-overview/>.
+Research, broker reads, supervised orders, and autonomous authority are separate layers:
 
-Scheduled shadow uses one continuously supervised read-only process. It waits outside regular equity
-sessions, retries transient provider read failures with bounded backoff during an eligible session,
-restarts a failed foreground child with bounded backoff, and records liveness plus non-identifying
-runtime health in a local heartbeat. A clean app exit remains an off switch.
-Continuous process uptime does not mean 24/7 TQQQ/SQQQ trading and cannot grant live-order authority.
+```text
+Local research ──► optional broker reads ──► live shadow (no orders)
+                              │
+                              ├──► supervised session + confirmation for every ticket
+                              │
+                              └──► evidence certificate + runtime parity + bounded authority
+                                   (available only when every exact gate passes)
+```
 
-## Project status
+Important boundaries:
 
-Version `0.16.0` adds a responsive desktop layout, durable same-session virtual-shadow recovery, event-loop heartbeat and bounded scheduled-shadow restart, a fully causal runtime-trace Evidence Lab path, and a separate supervised experimental order flow capped at $10 per order with fresh confirmation for every broker preview. Autonomous live authority remains fail-closed: the runtime-parity assessment is not certified, the local trace is not evidence-ready, and no strategy is claimed profitable. The scheduled path remains broker-write-blocked read-only shadow. See the [supervised experimental boundary](docs/SUPERVISED_EXPERIMENTAL.md), [responsive UI audit](docs/RESPONSIVE_UI_AUDIT_2026-08-19.md), [Evidence Lab](docs/EVIDENCE_LAB.md), [scheduled shadow](docs/SCHEDULED_SHADOW.md), and the [public release checklist](docs/PUBLIC_RELEASE_CHECKLIST.md).
+- Every launch starts without money-moving authority.
+- Enabling a capability does not create a live session or place an order.
+- **Stop / cancel…** locks new local requests, previews only GRANDE-owned nonterminal orders, and
+  requires confirmation before sending cancellation requests.
+- Cancellation is best effort and does not reverse a fill or liquidate a position.
+- Broker and venue state remain authoritative.
 
-## Contributing and support
+Read [Safety and compliance](docs/SAFETY_AND_COMPLIANCE.md),
+[supervised experimental mode](docs/SUPERVISED_EXPERIMENTAL.md), and
+[bounded autonomous authority](docs/AUTONOMOUS_AUTHORITY.md) before enabling real-order controls.
 
-- [Contributing](CONTRIBUTING.md)
-- [Security policy](SECURITY.md)
-- [Support](SUPPORT.md)
-- [Code of conduct](CODE_OF_CONDUCT.md)
+## Command-line companion
+
+The CLI exposes research, evidence, receipts, and headless operation. `engine run` is read-only
+shadow; `engine run-live` is an **attended** real-order session with explicit limits and per-ticket
+terminal approval. The legacy `run-unattended` path is bounded and evidence-gated but not
+provider-qualified. The mixed engine now has an explicit `run-autonomous` foreground entry point,
+but remains closed until its exact production certificate, authorization, current-data source and
+real-world provider checks pass. See the [production qualification guide](docs/PRODUCTION_QUALIFICATION.md).
+
+```powershell
+.\cli.ps1 --help
+.\cli.ps1 status
+.\cli.ps1 evidence show --width 150
+.\cli.ps1 plans --json
+```
+
+See the [CLI reference](docs/CLI.md).
+
+## Documentation
+
+| Goal | Start here |
+|---|---|
+| Install and run locally | [Quickstart](docs/QUICKSTART.md) · [Windows installation](docs/WINDOWS_INSTALLATION.md) |
+| Understand current readiness | [Activation checklist](docs/ACTIVATION_CHECKLIST.md) · [Live activation](docs/LIVE_ACTIVATION.md) |
+| Research a strategy | [Sandbox](docs/SANDBOX.md) · [Data readiness](docs/DATASET_READINESS.md) · [Evidence Lab](docs/EVIDENCE_LAB.md) |
+| Understand execution controls | [Architecture](docs/SYSTEM_ARCHITECTURE.md) · [Trading sessions](docs/TRADING_SESSIONS.md) |
+| Understand the product boundary | [Product contract](docs/PRODUCT_CONTRACT.md) · [Roadmap to 1.0.0](docs/ROADMAP_TO_1_0.md) |
+| Build or publish a release | [Versioning](docs/VERSIONING.md) · [Release process](docs/RELEASE_PROCESS.md) |
+| Troubleshoot | [Troubleshooting](docs/TROUBLESHOOTING.md) · [Support](SUPPORT.md) |
+| Browse everything | [Documentation index](docs/README.md) |
+
+## Community and Pro
+
+The complete local product is currently available on the **Community** plan for `$0`, without a
+GRANDE Alpha account, payment method, or license server. Pro is a coming-soon product direction for
+convenience, organization, scale, and optional services. Safety, evidence, provenance, privacy,
+stop, and consent controls will not be paywalled. See [Community and Pro plans](docs/PRODUCT_PLANS.md).
+
+## Development
+
+The executable Python package is kept in
+[`src/grande_alpha/`](src/grande_alpha/). Its internal `broker`, `ui`, and
+`assets` modules separate external adapters, presentation, and packaged
+resources from the domain services. The repository-root PowerShell files are
+only Windows entry points.
+
+```powershell
+.\setup.ps1
+.\verify.ps1
+```
+
+The source check does not connect to a broker or place an order. Before opening a pull request,
+read [Contributing](CONTRIBUTING.md).
+
+## Project links
+
+- [Documentation](docs/README.md)
 - [Changelog](CHANGELOG.md)
-
-Licensed under the [Apache License 2.0](LICENSE).
+- [Support](SUPPORT.md)
+- [Security policy](SECURITY.md)
+- [Privacy](PRIVACY.md)
+- [Code of conduct](CODE_OF_CONDUCT.md)
+- [Apache License 2.0](LICENSE)

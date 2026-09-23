@@ -1,21 +1,73 @@
-# Contributing
+# Contributing to GRANDE Alpha
 
-Contributions are welcome through the public
-[GitHub issue tracker](https://github.com/aaronjs99/grande-alpha/issues) and pull requests. Search
-existing issues before opening a new one, and use the support and security channels for their
-respective scopes.
+Thank you for helping improve GRANDE Alpha. Contributions are welcome through
+[issues](https://github.com/aaronjs99/grande-alpha/issues) and pull requests.
 
-## Development
+## Before you begin
 
-Use Python 3.11 or newer on Windows:
+- Search existing issues and pull requests before starting duplicate work.
+- Use a public issue for reproducible bugs and product proposals.
+- Use the [private security process](SECURITY.md) for vulnerabilities.
+- Never post credentials, OAuth material, account identifiers, balances, positions, order details,
+  broker receipts, tax records, licensed market data, or unreviewed diagnostics.
+- Keep research mode fully usable without a broker.
+
+## Development setup
+
+GRANDE Alpha supports 64-bit Windows with Python 3.11 or 3.12.
 
 ```powershell
+git clone https://github.com/aaronjs99/grande-alpha.git
+cd grande-alpha
 .\setup.ps1
 .\verify.ps1
 ```
 
-Keep research mode usable without a broker. New external connections must be disclosed, disabled by default, separately revocable, and covered by tests. No test may place a real order. Do not commit credentials, account data, tax records, local databases, diagnostics, or licensed market data.
+Run the source application only when interactive UI testing is necessary:
 
-Pull requests should include the user-visible risk change, tests, documentation, and screenshots for UI changes. `ruff`, `pytest`, compilation, packaging, and the source/packaged smoke checks must pass.
+```powershell
+.\run.ps1
+```
 
-Unless explicitly marked otherwise, a contribution intentionally submitted for inclusion is licensed under Apache-2.0, consistent with the project license.
+## Engineering expectations
+
+- Preserve the separation between research, broker reads, shadow observation, supervised orders,
+  and autonomous authority.
+- Default every new external connection or sensitive capability to disabled and make it separately
+  revocable.
+- Fail closed when account, quote, order, evidence, session, or provider state is missing or unknown.
+- Never add an example or screenshot that connects to a live broker or places an order.
+- Update user-facing documentation and the changelog when behavior or risk changes.
+- Keep generated files, local databases, credentials, diagnostics, licensed data, and build artifacts
+  out of Git.
+
+## Verify your change
+
+The standard check runs linting, bytecode compilation, and a wheel build:
+
+```powershell
+.\verify.ps1
+```
+
+For UI changes, also exercise the supported portrait and landscape layouts and attach only redacted
+screenshots. For packaging changes, run `build.ps1` and treat the result as an unsigned candidate.
+
+## Pull requests
+
+Keep each pull request focused. Explain:
+
+1. the user problem and proposed behavior;
+2. any change to safety, privacy, evidence, or broker authority;
+3. the checks and manual review performed; and
+4. documentation or migration effects.
+
+The pull-request template contains the required checklist. A passing CI run proves only that the
+repository checks completed; it does not establish trading profitability, broker approval, legal
+suitability, or release readiness.
+
+Changes intended for the stable product should identify which
+[1.0.0 roadmap gate](docs/ROADMAP_TO_1_0.md) they advance and must preserve the
+[product contract](docs/PRODUCT_CONTRACT.md).
+
+Unless explicitly stated otherwise, contributions intentionally submitted for inclusion are
+licensed under the repository's [Apache License 2.0](LICENSE).

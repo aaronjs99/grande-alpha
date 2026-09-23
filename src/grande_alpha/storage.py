@@ -33,6 +33,7 @@ class AuditStore:
         self.path = path or (data_dir() / "grande_alpha.db")
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
+        self.notification_sink = None
         self._connection = sqlite3.connect(self.path, check_same_thread=False)
         self._connection.row_factory = sqlite3.Row
         self._initialize()
@@ -42,6 +43,7 @@ class AuditStore:
             self._connection.executescript(
                 """
                 PRAGMA journal_mode=WAL;
+                PRAGMA synchronous=FULL;
                 PRAGMA foreign_keys=ON;
                 CREATE TABLE IF NOT EXISTS quotes (
                     id INTEGER PRIMARY KEY,
@@ -93,6 +95,28 @@ class AuditStore:
                     severity TEXT NOT NULL,
                     summary TEXT NOT NULL,
                     payload_json TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS device_notifications (
+                    id INTEGER PRIMARY KEY,
+                    receipt_id INTEGER NOT NULL UNIQUE REFERENCES receipts(id),
+                    created_at TEXT NOT NULL,
+                    severity TEXT NOT NULL,
+                    summary TEXT NOT NULL,
+                    acknowledged_at TEXT
+                );
+                CREATE TABLE IF NOT EXISTS standing_sessions (
+                    authority_id TEXT PRIMARY KEY,
+                    scope_digest TEXT NOT NULL,
+                    stopped INTEGER NOT NULL DEFAULT 0 CHECK(stopped IN (0,1))
+                );
+                CREATE TABLE IF NOT EXISTS live_daily_risk (
+                    account_number TEXT NOT NULL,
+                    et_date TEXT NOT NULL,
+                    peak_value REAL NOT NULL CHECK(peak_value >= 0),
+                    last_value REAL NOT NULL CHECK(last_value >= 0),
+                    loss_limit REAL NOT NULL CHECK(loss_limit > 0),
+                    loss_latched INTEGER NOT NULL CHECK(loss_latched IN (0,1)),
+                    PRIMARY KEY(account_number, et_date)
                 );
                 CREATE TABLE IF NOT EXISTS shadow_checkpoints (
                     id INTEGER PRIMARY KEY,
@@ -438,10 +462,40 @@ class AuditStore:
 
     def receipt(self, category: str, summary: str, payload: Any = None, severity: str = "info") -> None:
         with self._lock, self._connection:
-            self._connection.execute(
+            cursor = self._connection.execute(
                 "INSERT INTO receipts(created_at,category,severity,summary,payload_json) VALUES(?,?,?,?,?)",
                 (utc_now().isoformat(), category, severity, summary, json.dumps(payload or {}, default=str)),
             )
+            if severity in {"warning", "error", "critical"}:
+                self._connection.execute(
+                    "INSERT INTO device_notifications(receipt_id,created_at,severity,summary) VALUES(?,?,?,?)",
+                    (cursor.lastrowid, utc_now().isoformat(), severity, summary),
+                )
+        if severity in {"warning", "error", "critical"} and self.notification_sink is not None:
+            # Persist first. A display failure cannot erase an alert or its audit receipt.
+            self.notification_sink({"severity": severity, "summary": summary})
+
+    def device_notifications(self, *, after_id: int = 0, limit: int = 100, unread_only: bool = False) -> list[dict]:
+        if type(after_id) is not int or after_id < 0 or type(limit) is not int or not 1 <= limit <= 1000:
+            raise ValueError("Notification cursor and limit are invalid")
+        with self._lock:
+            rows = self._connection.execute(
+                "SELECT id,created_at,severity,summary,acknowledged_at FROM device_notifications WHERE id>?"
+                + (" AND acknowledged_at IS NULL" if unread_only else "") + " ORDER BY id LIMIT ?",
+                (after_id, limit),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def acknowledge_notification(self, notification_id: int) -> None:
+        if type(notification_id) is not int or notification_id <= 0:
+            raise ValueError("Notification id must be a positive integer")
+        with self._lock, self._connection:
+            row = self._connection.execute(
+                "UPDATE device_notifications SET acknowledged_at=COALESCE(acknowledged_at,?) WHERE id=?",
+                (utc_now().isoformat(), notification_id),
+            )
+            if row.rowcount != 1:
+                raise ValueError("Notification not found")
 
     @staticmethod
     def _decode_shadow_checkpoint(row: sqlite3.Row) -> dict[str, Any]:
@@ -565,6 +619,49 @@ class AuditStore:
                 raise ValueError("Shadow checkpoint chain is incomplete or out of order")
             previous_digest = str(checkpoint["digest"])
         return checkpoints
+
+    def register_standing(self, authority_id: str, scope_digest: str) -> None:
+        with self._lock, self._connection:
+            self._connection.execute(
+                "INSERT INTO standing_sessions(authority_id,scope_digest) VALUES(?,?)",
+                (authority_id, scope_digest),
+            )
+
+    def standing_active(self, authority_id: str, scope_digest: str) -> bool:
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT stopped,scope_digest FROM standing_sessions WHERE authority_id=?",
+                (authority_id,),
+            ).fetchone()
+        return row is not None and row["stopped"] == 0 and row["scope_digest"] == scope_digest
+
+    def active_standing_for_scope(self, scope_digest: str) -> str | None:
+        """Return the sole live authority for an exact scope.
+
+        Recovery must never guess between grants. Multiple active rows therefore
+        fail closed instead of silently selecting the newest one.
+        """
+        if not isinstance(scope_digest, str) or not scope_digest.strip():
+            raise ValueError("Scope digest must be nonempty")
+        with self._lock:
+            rows = self._connection.execute(
+                "SELECT authority_id FROM standing_sessions "
+                "WHERE stopped=0 AND scope_digest=? ORDER BY authority_id",
+                (scope_digest.strip(),),
+            ).fetchall()
+        if len(rows) > 1:
+            raise RuntimeError("Multiple active standing authorities exist for the exact scope")
+        return None if not rows else str(rows[0]["authority_id"])
+
+    def stop_standing(self, authority_id: str | None = None) -> int:
+        """Durable local revocation; deliberately no broker calls and no reset operation."""
+        with self._lock, self._connection:
+            cursor = self._connection.execute(
+                "UPDATE standing_sessions SET stopped=1 WHERE stopped=0"
+                + (" AND authority_id=?" if authority_id is not None else ""),
+                (authority_id,) if authority_id is not None else (),
+            )
+            return cursor.rowcount
 
     def record_intent(self, intent: OrderIntent) -> None:
         with self._lock, self._connection:
@@ -1209,6 +1306,61 @@ class AuditStore:
             if not order_id or not self.broker_executions(account_number, order_id=order_id):
                 gaps.append(str(row["ref_id"]))
         return gaps
+
+    def record_daily_risk(
+        self, account_number: str, et_date: str, value: float, loss_limit: float,
+        *, require_existing: bool = False, carry_previous_observation: bool = False,
+    ) -> dict[str, float | bool]:
+        """Persist an observed account/day high-water mark and irreversible daily stop.
+
+        A new grant cannot raise the day's strictest limit or erase a prior breach.
+        This tracks observed account value, not guaranteed realized P/L or unseen prices.
+        """
+        if not isinstance(account_number, str) or not account_number.strip():
+            raise ValueError("Daily risk requires an account")
+        if date.fromisoformat(et_date).isoformat() != et_date:
+            raise ValueError("Daily risk requires an exact ISO date")
+        for number, positive in ((value, False), (loss_limit, True)):
+            if (isinstance(number, bool) or not isinstance(number, (int, float))
+                    or not math.isfinite(number) or number < 0 or (positive and number == 0)):
+                raise ValueError("Daily risk values must be finite and nonnegative; the limit must be positive")
+        with self._lock, self._connection:
+            row = self._connection.execute(
+                "SELECT * FROM live_daily_risk WHERE account_number=? AND et_date=?",
+                (account_number, et_date),
+            ).fetchone()
+            if row is None and require_existing:
+                raise ValueError("Daily loss history is missing; new authority cannot reset prior daily risk")
+            peak, limit, latched = float(value), float(loss_limit), False
+            if row is None and carry_previous_observation:
+                previous = self._connection.execute(
+                    "SELECT last_value FROM live_daily_risk WHERE account_number=? AND et_date<? ORDER BY et_date DESC LIMIT 1",
+                    (account_number, et_date),
+                ).fetchone()
+                if previous is not None:
+                    prior = previous["last_value"]
+                    if not isinstance(prior, (int, float)) or not math.isfinite(prior) or prior < 0:
+                        raise ValueError("Previous risk observation is invalid")
+                    peak = max(peak, prior)
+            if row is not None:
+                numbers = (row["peak_value"], row["last_value"], row["loss_limit"])
+                if (any(not isinstance(n, (int, float)) or not math.isfinite(n) or n < 0 for n in numbers)
+                        or row["loss_limit"] <= 0 or row["peak_value"] < row["last_value"]
+                        or row["loss_latched"] not in (0, 1)):
+                    raise ValueError("Stored daily loss history is invalid")
+                peak = max(peak, row["peak_value"])
+                limit = min(limit, row["loss_limit"])
+                latched = bool(row["loss_latched"])
+            latched = latched or peak - value >= limit
+            self._connection.execute(
+                """INSERT INTO live_daily_risk VALUES(?,?,?,?,?,?)
+                ON CONFLICT(account_number,et_date) DO UPDATE SET
+                peak_value=excluded.peak_value,last_value=excluded.last_value,
+                loss_limit=excluded.loss_limit,loss_latched=excluded.loss_latched""",
+                (account_number, et_date, peak, value, limit, int(latched)),
+            )
+        return {"peak_value": peak, "last_value": float(value), "loss_limit": limit,
+                "loss_latched": latched}
 
     def live_daily_usage(self, account_number: str, et_date: str) -> dict[str, float | int | str]:
         """Restore placement-attempt usage and receipt-chain state for an ET trading date."""

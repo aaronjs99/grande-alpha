@@ -86,7 +86,8 @@ class OnboardingWizard(QWizard):
         privacy = _AcknowledgementPage(
             "Local data and network boundaries",
             "GRANDE Alpha has no telemetry service. Configuration, receipts, imported datasets, and OAuth "
-            "material stay on this PC. OAuth material is stored through Windows Credential Manager. When an "
+            "material remain on the Windows device running the application. OAuth material is stored through "
+            "Windows Credential Manager. When an "
             "optional integration is used, data is sent directly to that provider under its terms. Diagnostic "
             "exports are created only when you request one and should be reviewed before sharing.",
             "I understand what remains local and when data leaves this computer.",

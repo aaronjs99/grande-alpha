@@ -52,7 +52,11 @@ The decision sees the current close only. Reward uses the subsequent close, so o
 included and future opens are not leaked into the decision. Every holdout command, inventory
 transition, reward, and resulting equity value is displayed and recorded locally.
 
-## Frozen full-history result
+## Historical reference result
+
+> [!NOTE]
+> The result below is a dated research record, not bundled product readiness or expected performance
+> for another dataset, installation, or time period.
 
 The 2026-08-09 run used 4,147 aligned daily observations from 2010-02-11 through 2026-08-07,
 dataset hash prefix `da00f6f963bb1cbc`, 2,882 training transitions, and 1,244 untouched holdout

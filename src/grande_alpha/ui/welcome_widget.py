@@ -50,8 +50,9 @@ class WelcomeWidget(QWidget):
         self.content.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         self.scroll.setWidget(self.content)
         layout = QVBoxLayout(self.content)
-        title = QLabel("Know exactly what remains")
-        title.setStyleSheet("font-size:22pt;font-weight:700")
+        title = QLabel("A clear view. A deliberate next step.")
+        title.setWordWrap(True)
+        title.setStyleSheet("font-size:24pt;font-weight:600;padding-top:12px")
         layout.addWidget(title)
         self.mode = QLabel()
         self.mode.setWordWrap(True)
@@ -61,50 +62,45 @@ class WelcomeWidget(QWidget):
         self.cards_layout = cards
         cards.setHorizontalSpacing(10)
         cards.setVerticalSpacing(10)
-        activation = QGroupBox("1 · Follow the activation checklist")
+        activation = QGroupBox("01  /  Review readiness")
         activation_layout = QVBoxLayout(activation)
         activation_text = QLabel(
-            "See every blocking condition, who owns it, and the exact next action. Safe read-only checks "
-            "can be rerun by the app; money decisions and external approvals stay with you."
+            "See what is ready, what is missing, and the next step. Checking readiness never places an order."
         )
         activation_text.setWordWrap(True)
         activation_layout.addWidget(activation_text)
-        self.activation_button = QPushButton("Open activation checklist")
+        self.activation_button = QPushButton("Review readiness")
         self.activation_button.setObjectName("primary")
         self.activation_button.clicked.connect(self.open_activation)
         activation_layout.addWidget(self.activation_button)
 
-        research = QGroupBox("2 · Establish evidence")
+        research = QGroupBox("02  /  Test an idea")
         research_layout = QVBoxLayout(research)
         research_text = QLabel(
-            "Run deterministic scenarios or import lawful QQQ/TQQQ/SQQQ history. Inspect timing, costs, "
-            "parameter sensitivity, random controls, and walk-forward folds."
+            "Explore scenarios and historical data. Compare returns, costs, and risk before considering a live session."
         )
         research_text.setWordWrap(True)
         research_layout.addWidget(research_text)
-        self.sandbox_button = QPushButton("Open research sandbox")
+        self.sandbox_button = QPushButton("Explore research")
         self.sandbox_button.clicked.connect(self.open_sandbox)
         research_layout.addWidget(self.sandbox_button)
 
-        permissions = QGroupBox("3 · Add only what you need")
+        permissions = QGroupBox("03  /  Set your boundaries")
         permissions_layout = QVBoxLayout(permissions)
         permissions_text = QLabel(
-            "Broker access, community market data, the capital planning ledger, and real orders are independent "
-            "permissions. Every one starts off and remains immediately revocable."
+            "Choose your connections and permissions. Broker access and real-order capability are separate and off by default."
         )
         permissions_text.setWordWrap(True)
         permissions_layout.addWidget(permissions_text)
-        self.settings_button = QPushButton("Review capabilities")
+        self.settings_button = QPushButton("Open settings")
         self.settings_button.clicked.connect(self.open_settings)
         permissions_layout.addWidget(self.settings_button)
         self.cards = (activation, research, permissions)
         layout.addLayout(cards)
 
         self.monitor_text = QLabel(
-            "Scheduled auto-shadow is structurally read-only: it can collect observations and virtual fills, "
-            "but it cannot authorize, review, place, or cancel an order. Normal GRANDE Alpha separately offers "
-            "attended supervised review after shared account, route, and capability checks; autonomous review "
-            "still requires every evidence and runtime condition."
+            "You stay in control. Shadow sessions place no orders. Live sessions require explicit limits and review. "
+            "Unattended real-money trading is not ready in this release."
         )
         self.monitor_text.setObjectName("validationWarning")
         self.monitor_text.setWordWrap(True)
@@ -142,6 +138,8 @@ class WelcomeWidget(QWidget):
         self._card_columns = columns
         for card in self.cards:
             self.cards_layout.removeWidget(card)
+        for column in range(3):
+            self.cards_layout.setColumnStretch(column, 0)
         for index, card in enumerate(self.cards):
             self.cards_layout.addWidget(card, index // columns, index % columns)
             card.setMinimumHeight(112 if columns == 3 else 84)
@@ -167,6 +165,6 @@ class WelcomeWidget(QWidget):
         suffix = ", ".join(enabled) if enabled else "no optional capabilities"
         champion = STRATEGY_NAMES.get(config.strategy_name, config.strategy_name)
         self.mode.setText(
-            f"RUNTIME CHAMPION · {champion}. RESEARCH MODE · {suffix}. "
-            "Local sandbox and CSV import remain available; no strategy is guaranteed profitable."
+            f"Your workspace for research and bounded trading sessions. Active strategy: {champion}. "
+            f"Enabled: {suffix}. No strategy is guaranteed profitable."
         )

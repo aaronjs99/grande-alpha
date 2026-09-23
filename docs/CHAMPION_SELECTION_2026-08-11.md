@@ -1,8 +1,11 @@
 # Runtime champion selection — 2026-08-11
 
+> [!NOTE]
+> This is a dated decision record. GRANDE Alpha 0.17.0 no longer includes a scheduled executor.
+
 ## Decision
 
-The current normal and scheduled runtime champion is **CASH / hold**. It emits a flat signal,
+At the time of this evaluation, the normal and scheduled runtime champion was **CASH / hold**. It emits a flat signal,
 requests the `(0,0)` pair action when no position is held, and creates no TQQQ or SQQQ entry.
 
 This is not a claim that cash makes trading profit. It is the highest-returning admissible choice in

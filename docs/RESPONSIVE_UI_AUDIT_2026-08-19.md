@@ -142,12 +142,9 @@ and disclosure while keeping the exact order phrase and safe-default Decline act
   technology and DPI testing.
 - No claim of full WCAG conformance is made.
 
-## Automated checks
+## Historical checks
 
-`tests/test_responsive_ui.py` verifies all four required viewports: 900 by 1200, 1366 by 768, 1920 by
-1080, and 1024 by 700. It checks exact honored size, responsive KPI and market orientation, visible-action
-containment and non-overlap, adjustable splitters, portrait/landscape Sandbox behavior, constrained
-Settings controls, the 1024 by 700 one-order confirmation, the 620 by 520 supervised-session dialog, metric
-value containment, and reachability of every Getting Started action through its vertical scroll area.
-The same suite verifies escaped clickable resource links, complete tall-screen checklist visibility, and
-intentional checklist scrolling in the constrained 1024-by-700 layout.
+The captures above were made with an isolated broker stub at four viewports: 900 by 1200,
+1366 by 768, 1920 by 1080, and 1024 by 700. The original automated layout suite has been
+removed from the repository. These dated captures are historical evidence, not an assertion that
+the current build passes those layouts.

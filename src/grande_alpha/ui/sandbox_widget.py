@@ -69,6 +69,8 @@ from grande_alpha.ui.glossary import (
     help_hint,
 )
 from grande_alpha.ui.table_layout import configure_adjustable_columns, reset_column_widths
+from grande_alpha.ui.task_supervisor import TaskSupervisor
+from grande_alpha.ui.workspace import DisclosureSection
 
 SETTLEMENT_MODEL_LABELS = {
     "cash_t1": "Cash account (sale proceeds available next session)",
@@ -140,9 +142,17 @@ PRESETS = {
 class SandboxWidget(QWidget):
     """Historical virtual research surface. It deliberately receives no Broker."""
 
-    def __init__(self, store: AuditStore, allow_remote_data: bool = False, parent=None) -> None:
+    def __init__(
+        self,
+        store: AuditStore,
+        allow_remote_data: bool = False,
+        parent=None,
+        *,
+        task_supervisor: TaskSupervisor | None = None,
+    ) -> None:
         super().__init__(parent)
         self.store = store
+        self.tasks = task_supervisor or TaskSupervisor(lambda _name, exc: self._error(exc))
         self.allow_remote_data = allow_remote_data
         self._remote_acknowledged = False
         self.bundle: HistoricalBundle | None = None
@@ -299,7 +309,8 @@ class SandboxWidget(QWidget):
         self.market_hours.currentIndexChanged.connect(self._route_changed)
         self.order_type.currentIndexChanged.connect(self._route_changed)
         self.time_in_force.currentIndexChanged.connect(self._route_changed)
-        layout.addWidget(execution)
+        self.execution_section = DisclosureSection("Execution assumptions", execution)
+        layout.addWidget(self.execution_section)
 
         signal = QGroupBox("Signal policy")
         signal_form = QFormLayout(signal)
@@ -339,7 +350,8 @@ class SandboxWidget(QWidget):
             ("Ensemble votes", self.ensemble_votes),
         ):
             add_explained_row(signal_form, title, widget)
-        layout.addWidget(signal)
+        self.signal_section = DisclosureSection("Signal parameters", signal)
+        layout.addWidget(self.signal_section)
 
         risk = QGroupBox("Exits and risk budget")
         risk_form = QFormLayout(risk)
@@ -372,21 +384,28 @@ class SandboxWidget(QWidget):
             ("End handling", self.force_flat),
         ):
             add_explained_row(risk_form, title, widget)
-        layout.addWidget(risk)
+        self.risk_section = DisclosureSection("Exits and risk limits", risk)
+        layout.addWidget(self.risk_section)
 
         buttons = QGridLayout()
         self.run_button = QPushButton("Run sandbox")
         self.run_button.setObjectName("primary")
-        self.run_button.clicked.connect(lambda: asyncio.create_task(self._run()))
+        self.run_button.clicked.connect(lambda: self.tasks.start("sandbox-run", self._run()))
         self.compare_button = QPushButton("Compare presets")
-        self.compare_button.clicked.connect(lambda: asyncio.create_task(self._compare()))
+        self.compare_button.clicked.connect(
+            lambda: self.tasks.start("sandbox-compare", self._compare())
+        )
         self.evidence_button = QPushButton("Run full evidence lab")
         self.evidence_button.setToolTip(
             "Run sensitivity, cost stress, random-entry, significance, and chronological walk-forward gates."
         )
-        self.evidence_button.clicked.connect(lambda: asyncio.create_task(self._evidence()))
+        self.evidence_button.clicked.connect(
+            lambda: self.tasks.start("evidence-lab", self._evidence())
+        )
         self.action_lab_button = QPushButton("Train 9-action lab")
-        self.action_lab_button.clicked.connect(lambda: asyncio.create_task(self._action_lab()))
+        self.action_lab_button.clicked.connect(
+            lambda: self.tasks.start("action-lab", self._action_lab())
+        )
         self.export_button = QPushButton("Export fills CSV")
         self.export_button.clicked.connect(self._export)
         buttons.addWidget(self.run_button, 0, 0)
@@ -394,10 +413,17 @@ class SandboxWidget(QWidget):
         buttons.addWidget(self.evidence_button, 1, 0)
         buttons.addWidget(self.export_button, 1, 1)
         buttons.addWidget(self.action_lab_button, 2, 0, 1, 2)
-        layout.addLayout(buttons)
         layout.addStretch()
         config_scroll.setWidget(panel)
-        splitter.addWidget(config_scroll)
+        self.config_panel = QWidget()
+        config_layout = QVBoxLayout(self.config_panel)
+        config_layout.setContentsMargins(0, 0, 0, 0)
+        config_layout.addWidget(config_scroll, 1)
+        config_layout.addLayout(buttons)
+        splitter.addWidget(self.config_panel)
+        for combo in panel.findChildren(QComboBox):
+            combo.setMinimumContentsLength(12)
+            combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
 
         results = QWidget()
         results_layout = QVBoxLayout(results)
@@ -432,6 +458,17 @@ class SandboxWidget(QWidget):
             self.metric_cards.append(card)
             self.metric_labels[key] = label
         results_layout.addLayout(metrics)
+        self.summary_cards = self.metric_cards[:4]
+        detail_metrics = QWidget()
+        detail_layout = QGridLayout(detail_metrics)
+        for index, card in enumerate(self.metric_cards[4:]):
+            detail_layout.addWidget(card, index // 3, index % 3)
+        metric_scroll = QScrollArea()
+        metric_scroll.setWidgetResizable(True)
+        metric_scroll.setWidget(detail_metrics)
+        metric_scroll.setMaximumHeight(220)
+        self.metrics_section = DisclosureSection("Detailed statistics", metric_scroll)
+        results_layout.addWidget(self.metrics_section)
 
         self.tabs = QTabWidget()
         replay = QWidget()
@@ -658,6 +695,8 @@ class SandboxWidget(QWidget):
     def _reflow_metrics(layout: QGridLayout, cards: list[QGroupBox], columns: int) -> None:
         for card in cards:
             layout.removeWidget(card)
+        for column in range(len(cards)):
+            layout.setColumnStretch(column, 0)
         for index, card in enumerate(cards):
             layout.addWidget(card, index // columns, index % columns)
         for column in range(columns):
@@ -675,7 +714,7 @@ class SandboxWidget(QWidget):
         result_width = (
             available_width if portrait else max(420, int(available_width * 0.64))
         )
-        metric_columns = 6 if result_width >= 780 else 4 if result_width >= 560 else 3
+        metric_columns = 4 if result_width >= 560 else 2
         fill_orientation = (
             Qt.Orientation.Vertical if result_width < 760 else Qt.Orientation.Horizontal
         )
@@ -703,12 +742,8 @@ class SandboxWidget(QWidget):
         self.fill_splitter.setSizes(
             [420, 190] if fill_orientation == Qt.Orientation.Horizontal else [180, 130]
         )
-        self._reflow_metrics(self.metrics_layout, self.metric_cards, metric_columns)
-        wrap_policy = (
-            QFormLayout.RowWrapPolicy.WrapLongRows
-            if portrait or width < 900
-            else QFormLayout.RowWrapPolicy.DontWrapRows
-        )
+        self._reflow_metrics(self.metrics_layout, self.summary_cards, metric_columns)
+        wrap_policy = QFormLayout.RowWrapPolicy.WrapAllRows
         for form in self.findChildren(QFormLayout):
             form.setRowWrapPolicy(wrap_policy)
             form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)

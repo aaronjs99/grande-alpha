@@ -1,27 +1,22 @@
 # Activation checklist: what the app can do and what you must do
 
-GRANDE Alpha now presents this same checklist in **Live Readiness** and in the terminal with:
+GRANDE Alpha presents this same checklist in **Live Readiness** and in the terminal with:
 
 ```powershell
 & ".\GRANDE Alpha CLI.cmd" activation --width 150
 ```
 
 The checklist is fail-closed. It explains a lock; it does not offer a bypass. The activation assistant
-cannot grant, schedule, review, place, or cancel orders. Shared account, route, and capability checks can
+cannot grant, review, place, or cancel orders. Shared account, route, and capability checks can
 expose the attended supervised review; a fully passing checklist is required only for evidence-gated
 autonomous review. Neither route predicts or guarantees profit.
 
-## First: identify which process you opened
+## First: identify the operating mode
 
-- **Scheduled auto-shadow** is structurally read-only. Its broker facade blocks order review,
-  placement, and cancellation. It cannot turn itself into live trading, even if every other item later
-  passes.
+- **Live shadow** records observations and virtual fills without placing orders.
 - **Normal GRANDE Alpha** has an attended supervised experimental path with fresh confirmation for
   every exact reviewed order and a separate autonomous path that remains locked until exact evidence
   and runtime conditions pass. It still starts without a saved money-moving grant.
-
-If the title or checklist says `AUTO-SHADOW PROCESS — STRUCTURALLY READ-ONLY`, let it collect virtual
-observations or close it. Do not look for a live checkbox in that process.
 
 ## Exact procedure
 
@@ -73,7 +68,7 @@ change, the exact candidate must be reevaluated from unchanged source data and a
 
 ### 5. Accumulate forward shadow evidence — app records it; elapsed markets supply it
 
-Use **Start Live Shadow** or the scheduled shadow task. The app records live observations and virtual
+Use **Start Live Shadow**. The app records live observations and virtual
 fills without sending orders. Keep the strategy fingerprint unchanged during the monitored period and
 review after-cost performance, drawdown, data gaps, and every receipt.
 
@@ -124,13 +119,7 @@ the first request.
 
 ### 7. Run the read-only broker preflight — app checks; you complete consent and verify
 
-Run:
-
-```powershell
-.\Morning Check.cmd
-```
-
-Then in normal GRANDE Alpha:
+In GRANDE Alpha:
 
 1. Enable **Connect Robinhood broker data** in **Settings & Permissions** and save.
 2. Click **Connect Robinhood** and complete Robinhood's browser consent yourself.

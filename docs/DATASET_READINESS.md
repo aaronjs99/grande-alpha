@@ -174,12 +174,12 @@ does not create an Evidence Lab selection.
 8. Passing the final holdout still requires every other current gate and monitored forward shadow.
    It permits a separate live review only; it never guarantees profit or starts trading.
 
-## Inspect this installation
+## Inspect a deployment
 
-Data counts, gaps, recency, trial history, and holdout state belong to each local installation and
-change as observations are collected. Public documentation therefore does not ship one developer's
-machine-local readiness snapshot as a product claim. Run the query-only `data audit`,
-`data runtime-trace audit`, and `activation` commands to inspect the current installation.
+Data counts, gaps, recency, trial history, and holdout state belong to each deployment and change as
+observations are collected. A distribution must never ship one operator's readiness snapshot as a
+product-wide claim. Run the query-only `data audit`, `data runtime-trace audit`, and `activation`
+commands to inspect the active deployment.
 
 An input that passes data readiness can still fail certificate promotion. Autonomous promotion also
 requires every current runtime-parity check and every Evidence Lab gate to pass independently;

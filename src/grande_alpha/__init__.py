@@ -1,3 +1,5 @@
-"""GRANDE Alpha desktop trading application."""
+"""GRANDE Alpha research and consent-gated execution application."""
 
-__version__ = "0.16.0"
+from ._version import __version__
+
+__all__ = ["__version__"]

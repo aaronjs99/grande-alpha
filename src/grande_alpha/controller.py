@@ -11,8 +11,6 @@ from datetime import datetime, timedelta
 from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal
 from typing import Any
 
-from PySide6.QtCore import QObject, Signal
-
 from grande_alpha.action_lab import (
     ALL_PAIR_ACTIONS,
     PairAction,
@@ -23,7 +21,7 @@ from grande_alpha.action_lab import (
 from grande_alpha.broker.base import (
     Broker,
     BrokerError,
-    ShadowOnlyBroker,
+    ReadOnlyBroker,
     normalized_order_state,
     order_is_terminal,
 )
@@ -38,6 +36,7 @@ from grande_alpha.candidate_execution import (
     size_entry,
 )
 from grande_alpha.config import AppConfig
+from grande_alpha.events import EventHook
 from grande_alpha.evidence import strategy_fingerprint
 from grande_alpha.execution import ExecutionProfile, execution_profile
 from grande_alpha.live_reconciliation import (
@@ -67,7 +66,6 @@ from grande_alpha.policy import (
     PolicyConfig,
     PolicyPosition,
     market_session_allowed,
-    session_bounds,
     session_key,
 )
 from grande_alpha.risk import RiskEngine
@@ -83,6 +81,12 @@ SUPERVISED_MAX_ORDER_NOTIONAL = 10.0
 SUPERVISED_MAX_DAILY_NOTIONAL = 50.0
 SUPERVISED_MAX_TOTAL_EXPOSURE = 40.0
 OrderConfirmer = Callable[[OrderConfirmationRequest], Awaitable[OrderConfirmationDecision]]
+
+
+class ShadowRecoveryRequired(RuntimeError):
+    def __init__(self, run_id: str, reason: str):
+        self.run_id = run_id
+        super().__init__(f"The previous simulation cannot resume: {reason}")
 
 
 def _runtime_strategy_config(config: AppConfig) -> StrategyConfig:
@@ -166,31 +170,24 @@ class CancelPlan:
         return tuple(target.summary for target in self.targets)
 
 
-class TradingController(QObject):
-    snapshot_changed = Signal(object)
-    event = Signal(str, str)
-    connection_busy = Signal(bool)
-
+class TradingController:
     def __init__(
         self,
         broker: Broker,
         config: AppConfig,
         store: AuditStore,
         *,
-        shadow_only_runtime: bool = False,
-        auto_shadow_sleep: Callable[[float], Awaitable[None]] | None = None,
         order_confirmer: OrderConfirmer | None = None,
     ) -> None:
-        super().__init__()
         config.validate_cadence()
-        if shadow_only_runtime and config.market_hours != "regular_hours":
-            raise ValueError("Auto-shadow v1 supports regular market hours only")
+        self.snapshot_changed: EventHook[TradingSnapshot] = EventHook()
+        self.event: EventHook[tuple[str, str]] = EventHook()
+        self.connection_busy: EventHook[bool] = EventHook()
         self.broker = broker
         self.config = config
         self.store = store
-        self.shadow_only_runtime = shadow_only_runtime
-        self._auto_shadow_sleep = auto_shadow_sleep or asyncio.sleep
         self.risk = RiskEngine(config.no_trade_open_minutes, config.no_trade_close_minutes)
+        self._standing = None
         self.strategy = build_strategy(_runtime_strategy_config(config))
         self.bar_builder = BarBuilder("QQQ", config.bar_seconds)
         self.policy = DecisionPolicy(
@@ -231,7 +228,6 @@ class TradingController(QObject):
         self._shadow_session_key: str | None = None
         self._shadow_account_fingerprint: str | None = None
         self._shadow_strategy_fingerprint: str | None = None
-        self._auto_shadow_daily_close_completed = False
 
     def set_order_confirmer(self, confirmer: OrderConfirmer | None) -> None:
         """Install the non-persistent UI callback used for each reviewed real-money order."""
@@ -257,14 +253,6 @@ class TradingController(QObject):
             raise RuntimeError(
                 f"Safe read-only refresh is in progress; wait before attempting to {action}"
             )
-        if self.shadow_only_runtime:
-            self.log(
-                f"BLOCKED: auto-shadow runtime cannot {action}; no broker write was attempted",
-                "critical",
-                "shadow_only_boundary",
-                {"action": action, "broker_write_attempted": False},
-            )
-            raise RuntimeError(f"Auto-shadow runtime is read-only and cannot {action}")
 
     def _rotate_quote_stream(self) -> None:
         """Start a new durable identity for one causal signal-pipeline segment."""
@@ -321,6 +309,28 @@ class TradingController(QObject):
         active = config or self.config
         candidate = self._runtime_candidate_config(active)
         return strategy_fingerprint(candidate, f"{active.bar_seconds}s", execution=grant)
+
+    def _update_risk_portfolio(self, portfolio: Portfolio) -> None:
+        """Commit the daily stop before any subsequent placement may use fresh balances."""
+        grant = self.risk.grant
+        if grant is None:
+            self.risk.update_portfolio(portfolio)
+            return
+        if utc_now().astimezone(EASTERN).date() != grant.starts_at.astimezone(EASTERN).date():
+            self._revoke_live_automation("Trading day changed; fresh authority is required")
+            self.risk.update_portfolio(portfolio)
+            return
+        try:
+            state = self.store.record_daily_risk(
+                grant.account_number, grant.starts_at.astimezone(EASTERN).date().isoformat(),
+                portfolio.total_value, grant.max_daily_loss, require_existing=True,
+            )
+        except Exception:
+            self._revoke_live_automation("Daily loss state could not be persisted; authority revoked")
+            raise
+        self.risk.update_portfolio(portfolio)
+        self.risk.session_peak_value = float(state["peak_value"])
+        self.risk.loss_latched = self.risk.loss_latched or bool(state["loss_latched"])
 
     def _persist_risk_receipts(self) -> None:
         for receipt in self.risk.drain_receipts():
@@ -609,73 +619,6 @@ class TradingController(QObject):
             )
         return quotes
 
-    def _validated_shadow_quotes(
-        self,
-        quotes: dict[str, Quote],
-        reference: datetime | None = None,
-    ) -> dict[str, Quote]:
-        return self._validated_execution_quotes(quotes, reference, context="Auto-shadow")
-
-    def auto_shadow_start_allowed(self, reference: datetime | None = None) -> bool:
-        if not self.shadow_only_runtime or self.config.market_hours != "regular_hours":
-            return False
-        observed = reference or utc_now()
-        opened, closed = session_bounds(observed, "regular_hours")
-        # A long-running supervisor may recover during an active session after
-        # a transient read outage. A closed or holiday session has equal bounds.
-        return opened < closed and observed < closed
-
-    def auto_shadow_market_open(self, reference: datetime | None = None) -> datetime:
-        observed = reference or utc_now()
-        opened, _closed = session_bounds(observed, "regular_hours")
-        return opened
-
-    def auto_shadow_session_complete(self, reference: datetime | None = None) -> bool:
-        if not self.shadow_only_runtime:
-            return False
-        observed = reference or utc_now()
-        _opened, closed = session_bounds(observed, "regular_hours")
-        return observed.astimezone(EASTERN).weekday() < 5 and observed >= closed
-
-    def _validate_auto_shadow_config(self) -> None:
-        if not self.config.broker_connection_enabled:
-            raise RuntimeError("Broker read capability is disabled")
-        if self.config.live_trading_enabled is not False:
-            raise RuntimeError("Real-order capability must be disabled for auto-shadow")
-        if self.config.market_hours != "regular_hours":
-            raise RuntimeError("Auto-shadow v1 supports regular market hours only")
-
-    async def _refresh_auto_shadow_account_state(self) -> None:
-        if not self.snapshot.connected or self.snapshot.account is None:
-            raise BrokerError("Auto-shadow could not resolve the exact Agentic account")
-        account_number = self.snapshot.account.account_number
-        portfolio = await self.broker.get_portfolio(account_number)
-        portfolio.validate()
-        positions = await self.broker.get_positions(account_number)
-        orders = await self.broker.get_orders(account_number)
-        self._validate_account_truth(portfolio, positions, orders)
-        for position in positions:
-            if position.symbol.strip().upper() in {"TQQQ", "SQQQ"} and not all(
-                math.isfinite(float(value)) for value in (position.quantity, position.sellable_quantity)
-            ):
-                raise BrokerError(f"Auto-shadow received invalid real position data for {position.symbol}")
-        real_positions = [
-            position
-            for position in positions
-            if position.symbol.strip().upper() in {"TQQQ", "SQQQ"}
-            and abs(position.quantity) > 1e-12
-        ]
-        open_orders = [order for order in orders if not order_is_terminal(order)]
-        if real_positions:
-            symbols = ", ".join(position.symbol for position in real_positions)
-            raise BrokerError(f"Auto-shadow preflight found real leveraged position(s): {symbols}")
-        if open_orders:
-            raise BrokerError(f"Auto-shadow preflight found {len(open_orders)} open Agentic order(s)")
-        self.snapshot.portfolio = portfolio
-        self.snapshot.positions = positions
-        self.snapshot.orders = orders
-        self.risk.update_portfolio(portfolio)
-
     def _emit(self) -> None:
         self.snapshot.live_status = self.risk.session_status()
         self.snapshot.drawdown = self.risk.drawdown
@@ -754,10 +697,16 @@ class TradingController(QObject):
             self.connection_busy.emit(False)
             self._emit()
 
+    def stop_for_exit(self) -> None:
+        """Revoke local execution without asserting any broker order was canceled."""
+        self._revoke_live_automation("Application exiting; broker orders are not canceled")
+        self.log(
+            "Local execution stopped for exit. Broker order status may be unknown; "
+            "check Robinhood directly. Durable order records are retained for reconciliation.",
+            "warning", "shutdown", {"broker_write_attempted": False},
+        )
+
     async def disconnect(self) -> None:
-        if self.shadow_only_runtime:
-            await self.disconnect_shadow_only("Auto-shadow read-only disconnect")
-            return
         self._revoke_live_automation("Disconnected by user")
         if not self.snapshot.connected or self.snapshot.account is None:
             await self.broker.disconnect()
@@ -782,156 +731,9 @@ class TradingController(QObject):
         self.snapshot = TradingSnapshot()
         self._emit()
 
-    async def disconnect_shadow_only(
-        self,
-        reason: str = "Auto-shadow read-only disconnect",
-        *,
-        flatten_virtual: bool = False,
-    ) -> None:
-        """Disconnect without reviewing, placing, or cancelling any broker order."""
-
-        daily_close = bool(flatten_virtual and self.auto_shadow_session_complete())
-        self.stop_shadow(reason, flatten_virtual=flatten_virtual)
-        # A quote timer can already be awaiting the provider when the regular-session
-        # close stops the virtual run. Keep this marker through the off-session idle
-        # period so only that request's deterministic disconnect result is ignored.
-        # The next eligible start clears it before making any provider reads.
-        if daily_close:
-            self._auto_shadow_daily_close_completed = True
-        self.snapshot.strategy_running = False
-        self.snapshot.session_expires_at = None
-        self.risk.disarm()
-        try:
-            await self.broker.disconnect()
-        finally:
-            self.snapshot = TradingSnapshot()
-            self.log(
-                f"{reason}; broker writes remained BLOCKED",
-                "warning",
-                "shadow_only_boundary",
-                {"broker_write_attempted": False},
-            )
-            self._emit()
-
-    async def auto_start_shadow(self) -> bool:
-        """Connect and start a fresh, read-only live-shadow run."""
-
-        self._auto_shadow_daily_close_completed = False
-        if not self.shadow_only_runtime:
-            raise RuntimeError("Auto-shadow startup requires the shadow-only runtime boundary")
-        self.risk.disarm()
-        self.snapshot.strategy_running = False
-        self.snapshot.session_expires_at = None
-        try:
-            self._validate_auto_shadow_config()
-            if not self.auto_shadow_start_allowed():
-                raise RuntimeError(
-                    "Auto-shadow is idle because no regular equity session is currently eligible"
-                )
-            # A continuously supervised process can survive from one market day to the
-            # next. Reset before connect(), because connect performs an exact quote read;
-            # otherwise that first batch would reuse yesterday's signal-pipeline stream.
-            # Keeping the reset coupled to the stream rotation also makes every recorded
-            # stream boundary mean the same thing to runtime replay. The clean-start reset
-            # immediately before start_shadow() still separates preflight observations
-            # from the active execution stream.
-            self._reset_signal_pipeline("Auto-shadow preflight stream; warming up")
-            await self.connect()
-            await self._refresh_auto_shadow_account_state()
-            opened = self.auto_shadow_market_open()
-            _opened, closed = session_bounds(utc_now(), "regular_hours")
-            # Preserve the five-minute opening window on initial launch. For a
-            # same-session recovery, allow five minutes from the retry attempt,
-            # capped by the market close.
-            deadline = min(closed, max(opened, utc_now()) + timedelta(minutes=5))
-            self.log(
-                "AUTO SHADOW WAITING — regular open 9:30 AM ET; writes blocked",
-                "warning",
-                "shadow_only_boundary",
-                {"broker_write_attempted": False, "market_open": opened.isoformat()},
-            )
-            while utc_now() < opened:
-                remaining = max(0.0, (opened - utc_now()).total_seconds())
-                await self._auto_shadow_sleep(min(30.0, remaining))
-
-            self._validate_auto_shadow_config()
-            await self._refresh_auto_shadow_account_state()
-            quotes: dict[str, Quote] | None = None
-            last_quote_error: Exception | None = None
-            while utc_now() < deadline:
-                try:
-                    candidate = await self.broker.get_quotes(["QQQ", "TQQQ", "SQQQ"])
-                    quotes = self._validated_shadow_quotes(candidate)
-                    break
-                except Exception as exc:
-                    last_quote_error = exc
-                    self.log(
-                        f"AUTO SHADOW WAITING for fresh exact venue quotes: {exc}",
-                        "warning",
-                        "shadow_only_boundary",
-                        {"broker_write_attempted": False},
-                    )
-                    remaining = max(0.0, (deadline - utc_now()).total_seconds())
-                    await self._auto_shadow_sleep(min(self.config.poll_seconds, remaining))
-            if quotes is None:
-                raise BrokerError(
-                    "Fresh exact venue quotes were unavailable by 9:35 AM ET"
-                    + (f": {last_quote_error}" if last_quote_error else "")
-                )
-            self.snapshot.quotes = quotes
-            self.snapshot.last_refresh = utc_now()
-            age_limit = float(self.config.default_max_quote_age_seconds)
-            self.store.record_quote_batch(
-                quotes,
-                stream_id=self._quote_stream_id,
-                validation_profile="exact_execution_quotes",
-                validation_version=EXACT_QUOTE_VALIDATOR_VERSION,
-                max_age_seconds=age_limit,
-                max_skew_seconds=min(5.0, age_limit),
-            )
-            self._validate_auto_shadow_config()
-            self._reset_signal_pipeline("Auto-shadow clean start; warming up")
-            self.start_shadow()
-            self.log(
-                "AUTO SHADOW ACTIVE — read-only broker data and virtual fills; live writes BLOCKED",
-                "warning",
-                "shadow_only_boundary",
-                {
-                    "account_last4": self.snapshot.account.account_number[-4:],
-                    "market_hours": self.config.market_hours,
-                    "broker_write_attempted": False,
-                },
-            )
-            self._emit()
-            return True
-        except Exception as exc:
-            self.stop_shadow("AUTO SHADOW BLOCKED")
-            self.snapshot.strategy_running = False
-            self.snapshot.session_expires_at = None
-            self.risk.disarm()
-            self.log(
-                f"AUTO SHADOW BLOCKED: {exc}",
-                "critical",
-                "shadow_only_boundary",
-                {"error": str(exc), "broker_write_attempted": False},
-            )
-            try:
-                await self.broker.disconnect()
-            except Exception as disconnect_exc:
-                self.log(
-                    f"AUTO SHADOW BLOCKED: read-only disconnect failed: {disconnect_exc}",
-                    "error",
-                    "shadow_only_boundary",
-                )
-            self.snapshot = TradingSnapshot()
-            self._emit()
-            return False
-
     def update_config(self, config: AppConfig) -> None:
         """Apply safe runtime settings; a bar-size change starts a fresh warm-up."""
         config.validate_cadence()
-        if self.shadow_only_runtime and config.market_hours != "regular_hours":
-            raise ValueError("Auto-shadow v1 cannot switch away from regular market hours")
         config_changed = config != self.config
         bar_changed = config.bar_seconds != self.config.bar_seconds
         trade_cadence_changed = config.trade_every_bars != self.config.trade_every_bars
@@ -1010,7 +812,7 @@ class TradingController(QObject):
 
         async with self._safe_read_only_refresh_lock:
             account_number = self.snapshot.account.account_number
-            read_only = ShadowOnlyBroker(self.broker)
+            read_only = ReadOnlyBroker(self.broker)
 
             def require_inactive() -> None:
                 if self.risk.grant is not None or self.snapshot.strategy_running:
@@ -1040,15 +842,7 @@ class TradingController(QObject):
                 require_inactive()
                 orders = await read_only.get_orders(account_number)
                 require_inactive()
-                quotes = await read_only.get_quotes(["QQQ", "TQQQ", "SQQQ"])
-                require_inactive()
-
                 self._validate_account_truth(portfolio, positions, orders)
-                quotes = self._validated_execution_quotes(
-                    quotes,
-                    max_age_seconds=self.config.default_max_quote_age_seconds,
-                    context="Safe readiness inspection",
-                )
                 require_inactive()
 
                 # A safe check is also the restart/crash reconciliation boundary.
@@ -1071,9 +865,28 @@ class TradingController(QObject):
                 self.snapshot.portfolio = portfolio
                 self.snapshot.positions = positions
                 self.snapshot.orders = orders
-                self.snapshot.quotes = quotes
                 self.snapshot.last_reconcile_at = now
                 self.snapshot.last_refresh = now
+                # Market-data readiness is independent of account reconciliation.
+                # A closed market or failed quote source cannot erase valid account
+                # truth, and a successful account read cannot make quotes executable.
+                self.snapshot.quotes = {}
+                try:
+                    quotes = await read_only.get_quotes(["QQQ", "TQQQ", "SQQQ"])
+                    require_inactive()
+                    self.snapshot.quotes = quotes
+                    self._validated_execution_quotes(
+                        quotes,
+                        max_age_seconds=self.config.default_max_quote_age_seconds,
+                        context="Execution readiness",
+                    )
+                except Exception as quote_error:
+                    require_inactive()
+                    self.log(
+                        f"Account checks complete; execution quotes unavailable or stale: {quote_error}",
+                        "warning", "read_only_check",
+                        {"broker_write_attempted": False, "execution_quotes_ready": False},
+                    )
                 self.log(
                     "Safe read-only activation checks completed; broker write methods remained blocked",
                     category="read_only_check",
@@ -1094,7 +907,7 @@ class TradingController(QObject):
             finally:
                 self._emit()
 
-    async def reconcile(self) -> None:
+    async def reconcile(self, *, strict: bool = False) -> None:
         """Refresh slower account truth without coupling it to the quote clock."""
         if not self.snapshot.connected or self.snapshot.account is None:
             return
@@ -1105,63 +918,39 @@ class TradingController(QObject):
                 # Keep these sequential. The MCP adapter intentionally serializes tool calls;
                 # enqueueing all three at once would starve a pending fast quote read behind
                 # the entire reconciliation batch.
-                if self.shadow_only_runtime:
-                    await self._refresh_auto_shadow_account_state()
-                    self.snapshot.last_reconcile_at = utc_now()
-                else:
-                    account_number = self.snapshot.account.account_number
-                    portfolio = await self.broker.get_portfolio(account_number)
-                    positions = await self.broker.get_positions(account_number)
-                    orders = await self.broker.get_orders(account_number)
-                    self._validate_account_truth(portfolio, positions, orders)
-                    self._persist_execution_truth(account_number, orders)
-                    if (
-                        self.risk.grant is not None or self.snapshot.strategy_running
-                    ) and self._execution_provenance_gaps:
-                        raise BrokerError(
-                            "Scoped filled order lacks exact provider execution provenance"
-                        )
-                    self.snapshot.portfolio = portfolio
-                    self.snapshot.positions = positions
-                    self.snapshot.orders = orders
-                    self.snapshot.last_reconcile_at = utc_now()
-                    self.risk.update_portfolio(portfolio)
-                    self._reconcile_submission_tracking(orders, positions)
-                    if (
-                        (self.risk.grant is not None or self.snapshot.strategy_running)
-                        and not self._submission_reconcile_required
-                    ):
-                        self.store.validate_execution_inventory(account_number, positions)
-                    self._validate_reconciled_live_state()
-                    if (
-                        self.risk.session_status() == "LOSS LIMIT"
-                        and not self._leveraged_positions()
-                        and not self._submission_reconcile_required
-                    ):
-                        self._revoke_live_automation(
-                            "Daily-loss liquidation is confirmed flat; session authority revoked"
-                        )
+                account_number = self.snapshot.account.account_number
+                portfolio = await self.broker.get_portfolio(account_number)
+                positions = await self.broker.get_positions(account_number)
+                orders = await self.broker.get_orders(account_number)
+                self._validate_account_truth(portfolio, positions, orders)
+                self._persist_execution_truth(account_number, orders)
+                if (
+                    self.risk.grant is not None or self.snapshot.strategy_running
+                ) and self._execution_provenance_gaps:
+                    raise BrokerError("Scoped filled order lacks exact provider execution provenance")
+                self.snapshot.portfolio = portfolio
+                self.snapshot.positions = positions
+                self.snapshot.orders = orders
+                self.snapshot.last_reconcile_at = utc_now()
+                self._update_risk_portfolio(portfolio)
+                self._reconcile_submission_tracking(orders, positions)
+                if (
+                    (self.risk.grant is not None or self.snapshot.strategy_running)
+                    and not self._submission_reconcile_required
+                ):
+                    self.store.validate_execution_inventory(account_number, positions)
+                self._validate_reconciled_live_state()
+                if (
+                    self.risk.session_status() == "LOSS LIMIT"
+                    and not self._leveraged_positions()
+                    and not self._submission_reconcile_required
+                ):
+                    self._revoke_live_automation(
+                        "Daily-loss liquidation is confirmed flat; session authority revoked"
+                    )
             except Exception as exc:
                 self.snapshot.last_reconcile_at = None
                 self.log(f"Account reconciliation failed: {exc}", "error", "broker")
-                if self.shadow_only_runtime and self.snapshot.shadow_running:
-                    self.stop_shadow(f"AUTO SHADOW BLOCKED: account truth/invariant failure: {exc}")
-                    self.log(
-                        "AUTO SHADOW BLOCKED: account truth/invariant check failed; "
-                        "virtual execution stopped",
-                        "critical",
-                        "shadow_only_boundary",
-                        {"error": str(exc), "broker_write_attempted": False},
-                    )
-                    try:
-                        await self.broker.disconnect()
-                    except Exception as disconnect_exc:
-                        self.log(
-                            f"AUTO SHADOW BLOCKED: read-only disconnect failed: {disconnect_exc}",
-                            "error",
-                            "shadow_only_boundary",
-                        )
-                    self.snapshot = TradingSnapshot()
                 if self.snapshot.strategy_running or self.risk.grant is not None:
                     self._revoke_live_automation(
                         "Account reconciliation failed; authority revoked and open orders require cancellation"
@@ -1171,6 +960,8 @@ class TradingController(QObject):
                         "critical",
                         "risk",
                     )
+                if strict:
+                    raise
             finally:
                 self._emit()
 
@@ -1202,7 +993,7 @@ class TradingController(QObject):
                     self.snapshot.portfolio = portfolio
                     self.snapshot.positions = positions
                     self.snapshot.orders = orders
-                    self.risk.update_portfolio(portfolio)
+                    self._update_risk_portfolio(portfolio)
                     self._reconcile_submission_tracking(orders, positions)
                     if not self._submission_reconcile_required:
                         self.store.validate_execution_inventory(account_number, positions)
@@ -1235,7 +1026,7 @@ class TradingController(QObject):
                     self.snapshot.last_refresh = None
                     raise
 
-    async def refresh_quotes(self, evaluate: bool = True) -> None:
+    async def refresh_quotes(self, evaluate: bool = True, *, strict: bool = False) -> None:
         """Read one batched quote snapshot; overlapping timer ticks are coalesced."""
         if not self.snapshot.connected or self.snapshot.account is None:
             return
@@ -1247,12 +1038,7 @@ class TradingController(QObject):
                 validation_profile = "passive_unvalidated"
                 validation_version = 0
                 validated_age_limit: float | None = None
-                if self.shadow_only_runtime:
-                    quotes = self._validated_shadow_quotes(quotes)
-                    validation_profile = "exact_execution_quotes"
-                    validation_version = EXACT_QUOTE_VALIDATOR_VERSION
-                    validated_age_limit = float(self.config.default_max_quote_age_seconds)
-                elif self.risk.grant is not None or self.snapshot.strategy_running:
+                if self.risk.grant is not None or self.snapshot.strategy_running:
                     max_age = (
                         self.risk.grant.max_quote_age_seconds
                         if self.risk.grant is not None
@@ -1335,34 +1121,7 @@ class TradingController(QObject):
             if evaluate and self.snapshot.strategy_running:
                 await self._evaluate_and_trade()
         except Exception as exc:
-            expected_close_disconnect = bool(
-                self.shadow_only_runtime
-                and self._auto_shadow_daily_close_completed
-                and not self.snapshot.shadow_running
-                and self.auto_shadow_session_complete()
-                and isinstance(exc, BrokerError)
-                and str(exc).strip() == "Robinhood disconnected"
-            )
-            if expected_close_disconnect:
-                return
             self.log(f"Quote refresh failed: {exc}", "error", "broker")
-            if self.shadow_only_runtime and self.snapshot.shadow_running:
-                self.stop_shadow(f"AUTO SHADOW BLOCKED: quote/data failure: {exc}")
-                self.log(
-                    "AUTO SHADOW BLOCKED: fresh exact quotes unavailable; virtual execution stopped",
-                    "critical",
-                    "shadow_only_boundary",
-                    {"error": str(exc), "broker_write_attempted": False},
-                )
-                try:
-                    await self.broker.disconnect()
-                except Exception as disconnect_exc:
-                    self.log(
-                        f"AUTO SHADOW BLOCKED: read-only disconnect failed: {disconnect_exc}",
-                        "error",
-                        "shadow_only_boundary",
-                    )
-                self.snapshot = TradingSnapshot()
             if self.snapshot.strategy_running or self.risk.grant is not None:
                 self._revoke_live_automation(
                     "Fresh exact live quotes failed; authority revoked and open orders require cancellation"
@@ -1372,13 +1131,15 @@ class TradingController(QObject):
                     "critical",
                     "risk",
                 )
+            if strict:
+                raise
         finally:
             self._emit()
 
     def _validate_supervised_experimental_scope(self, grant: LiveGrant) -> None:
         if self._order_confirmer is None:
             raise RuntimeError(
-                "Supervised experimental authority requires the desktop per-order confirmation UI"
+                "Supervised experimental authority requires an interactive per-order confirmation handler"
             )
         if grant.max_order_notional > SUPERVISED_MAX_ORDER_NOTIONAL:
             raise RuntimeError(
@@ -1410,6 +1171,23 @@ class TradingController(QObject):
 
         self._authorize_live(grant, authority_mode=AUTHORITY_MODE_EVIDENCE)
 
+    def authorize_standing(self, grant: LiveGrant, terms: dict) -> None:
+        """Evidence-gated delegation explicitly distinct from attended ticket approval."""
+        from grande_alpha.standing import StandingAuthority, validate_contract, validate_terms
+
+        validate_terms(terms)
+        validate_contract(self.broker)
+        self.authorize_live(grant)
+        try:
+            self._standing = StandingAuthority(grant, self.store, self.broker)
+            self.store.receipt("standing_authority", "Explicit unattended session authorized", {
+                "scope": grant.scope_payload(), "terms": terms,
+                "per_order_confirmation_required": False,
+            })
+        except BaseException:
+            self._revoke_live_automation("Standing authority setup failed")
+            raise
+
     def authorize_supervised_experimental(self, grant: LiveGrant) -> None:
         """Authorize a small attended session whose every order needs fresh consent."""
 
@@ -1419,6 +1197,8 @@ class TradingController(QObject):
         )
 
     def _authorize_live(self, grant: LiveGrant, *, authority_mode: str) -> None:
+        if self._standing is not None:
+            self._revoke_live_automation("Replacing standing authority requires a fresh session")
         self._require_order_runtime("authorize live trading")
         if authority_mode not in {
             AUTHORITY_MODE_EVIDENCE,
@@ -1451,16 +1231,8 @@ class TradingController(QObject):
                 "Bounded live execution is restricted to regular hours, market orders, GFD, cash T+1 settlement, "
                 "and zero-bar modeled latency; other routes remain research/shadow only"
             )
-        if not market_session_allowed(
-            utc_now(),
-            self.config.no_trade_open_minutes,
-            self.config.no_trade_close_minutes,
-            grant.market_hours,
-        ):
-            raise RuntimeError(
-                "Authorize and start a bounded live session only inside the regular-session "
-                "entry window; premarket, close-blackout, holidays, and closed sessions stay locked"
-            )
+        # Approval is independent of the execution window. Start and every
+        # submitted order still enforce market hours and fresh venue quotes.
         if authority_mode == AUTHORITY_MODE_EVIDENCE and not self.live_evidence_ready(grant):
             raise RuntimeError(
                 "Real-order authority requires a current passing evidence certificate for this exact strategy. "
@@ -1512,11 +1284,6 @@ class TradingController(QObject):
             raise RuntimeError(
                 f"Durable execution history does not reconcile to broker inventory: {exc}"
             ) from exc
-        self._validated_execution_quotes(
-            self.snapshot.quotes,
-            max_age_seconds=grant.max_quote_age_seconds,
-            context="Live-session preflight",
-        )
         pilot_contract.validate()
         usage = self.store.live_daily_usage(
             grant.account_number,
@@ -1541,12 +1308,19 @@ class TradingController(QObject):
         )
         self._confirmed_entry_order_ids.clear()
         self.policy = self._policy_for_session(grant.market_hours)
+        daily_risk = self.store.record_daily_risk(
+            grant.account_number, session_date, self.snapshot.portfolio.total_value,
+            grant.max_daily_loss, require_existing=int(usage["submitted_orders"]) > 0,
+        )
+        if daily_risk["loss_latched"]:
+            raise RuntimeError("Daily loss limit was reached; new authority is locked for this trading day")
         self.risk.arm(
             grant,
             self.snapshot.portfolio,
             initial_daily_notional=float(usage["daily_notional"]),
             initial_trades=int(usage["submitted_orders"]),
             previous_receipt_digest=str(usage["last_receipt_digest"]),
+            initial_peak_value=float(daily_risk["peak_value"]),
         )
         self._authority_mode = authority_mode
         self._persist_risk_receipts()
@@ -1604,12 +1378,21 @@ class TradingController(QObject):
         self.snapshot.session_expires_at = None
         self.risk.disarm(reason)
         self._authority_mode = None
+        if self._standing is not None:
+            standing, self._standing = self._standing, None
+            standing.revoke()
         self._persist_risk_receipts()
         if had_authority:
             self.log(reason, "critical", "authority")
         self._emit()
 
     def _live_automation_current(self, *, allow_loss_liquidation: bool = False) -> bool:
+        if self._standing is not None:
+            try:
+                self._standing.check(self.risk.grant, self.broker)
+            except Exception:
+                self._revoke_live_automation("Standing authorization revoked or provider contract changed")
+                return False
         status = self.risk.session_status()
         if status == "LOSS LIMIT" and not allow_loss_liquidation:
             return False
@@ -1831,8 +1614,19 @@ class TradingController(QObject):
     def active_execution_profile(self) -> ExecutionProfile:
         return self.risk.grant.execution if self.risk.grant is not None else execution_profile(self.config)
 
+    def entry_window_open(self) -> bool:
+        """Whether execution may start now; approval itself has no hours gate."""
+        grant = self.risk.grant
+        return market_session_allowed(
+            utc_now(), self.config.no_trade_open_minutes,
+            self.config.no_trade_close_minutes,
+            grant.market_hours if grant is not None else self.config.market_hours,
+        )
+
     def start_strategy(self) -> None:
         self._require_order_runtime("start live trading")
+        if self._standing is not None:
+            self._standing.check(self.risk.grant, self.broker)
         if not self.config.live_trading_enabled:
             raise RuntimeError("Real-order controls are disabled in Settings")
         if self._authority_mode == AUTHORITY_MODE_EVIDENCE and not self.live_evidence_ready(
@@ -1913,6 +1707,8 @@ class TradingController(QObject):
         self._emit()
 
     def resume_live_authority(self, reason: str = "Resumed by user") -> None:
+        if self._standing is not None:
+            self._standing.check(self.risk.grant, self.broker)
         if self._submission_reconcile_required or self._uncertain_submission_refs:
             raise RuntimeError("Cannot resume while an order outcome is unresolved")
         grant = self.risk.grant
@@ -1966,7 +1762,7 @@ class TradingController(QObject):
         self._shadow_checkpoint_digest = str(checkpoint["digest"])
         return checkpoint
 
-    def start_shadow(self) -> None:
+    def start_shadow(self, *, separate_run_from: str | None = None) -> None:
         if not self.config.broker_connection_enabled:
             raise RuntimeError("Broker connections are disabled in Settings")
         if not self.snapshot.connected or self.snapshot.account is None:
@@ -2007,6 +1803,19 @@ class TradingController(QObject):
             )
             raise RuntimeError("Shadow recovery blocked by an invalid durable checkpoint chain") from exc
 
+        if separate_run_from is not None:
+            if latest is None or latest["run_id"] != separate_run_from:
+                raise RuntimeError("Shadow history changed; review the recovery choice again")
+            self.log(
+                "User started a separate simulation. Prior run is interrupted, not completed; "
+                "its entire virtual ledger remains unchanged and must not be pooled with this run.",
+                "warning", "shadow_recovery",
+                {"prior_run_id": separate_run_from, "outcome": "interrupted",
+                 "broker_write_attempted": False},
+            )
+            latest = None
+            inactive_continuity_required = False
+
         if inactive_continuity_required:
             prior_state = latest["state"]
             compatibility = {
@@ -2034,10 +1843,7 @@ class TradingController(QObject):
                     "broker_write_attempted": False,
                 },
             )
-            raise RuntimeError(
-                "Prior stopped same-session shadow run retains unresolved virtual state; "
-                "refusing to reset its virtual ledger"
-            )
+            raise ShadowRecoveryRequired(latest["run_id"], "stopped run retains unresolved virtual state")
 
         recovered = False
         if latest is not None and bool(latest["state"].get("active")):
@@ -2062,9 +1868,7 @@ class TradingController(QObject):
                         "broker_write_attempted": False,
                     },
                 )
-                raise RuntimeError(
-                    "Prior active shadow run is incompatible; refusing to reset its virtual ledger"
-                ) from exc
+                raise ShadowRecoveryRequired(latest["run_id"], str(exc)) from exc
             self._shadow_checkpoint_sequence = int(latest["sequence"])
             self._shadow_checkpoint_digest = str(latest["digest"])
             recovered = True
@@ -2117,51 +1921,13 @@ class TradingController(QObject):
         )
         self._emit()
 
-    def stop_shadow(
-        self,
-        reason: str = "Live shadow stopped by user",
-        *,
-        flatten_virtual: bool = False,
-        timestamp: datetime | None = None,
-    ) -> None:
+    def stop_shadow(self, reason: str = "Live shadow stopped by user") -> None:
         if self._shadow is None:
             return
-        if not self._shadow.state.active and not flatten_virtual:
+        if not self._shadow.state.active:
             return
-        starting_position = self._shadow.state.position
-        state = self._shadow.stop(
-            self.snapshot.quotes,
-            flatten_at=(timestamp or utc_now()) if flatten_virtual else None,
-            flatten_reason="AUTO SHADOW DAILY FLAT at regular-session close",
-        )
+        state = self._shadow.stop(self.snapshot.quotes)
         checkpoint = self._persist_shadow_checkpoint("stopped")
-        if flatten_virtual:
-            if starting_position is None:
-                self.log(
-                    "AUTO SHADOW DAILY FLAT — virtual ledger was already flat at session close",
-                    "warning",
-                    "shadow_authority",
-                    {"run_id": state.run_id, "ending_position": None},
-                )
-            elif state.position is None:
-                self.log(
-                    f"AUTO SHADOW DAILY FLAT — virtually sold {starting_position.symbol} at session close",
-                    "warning",
-                    "shadow_authority",
-                    {
-                        "run_id": state.run_id,
-                        "ending_position": None,
-                        "flatten_fill": state.fills[-1].as_dict(),
-                    },
-                )
-            else:
-                self.log(
-                    f"AUTO SHADOW DAILY FLAT UNRESOLVED — no usable virtual exit quote for "
-                    f"{state.position.symbol}",
-                    "critical",
-                    "shadow_authority",
-                    {"run_id": state.run_id, "ending_position": state.position.symbol},
-                )
         self.log(
             f"{reason}; virtual equity ${state.equity:,.2f}; P/L ${state.pnl:+,.2f}",
             "warning",
@@ -2362,8 +2128,6 @@ class TradingController(QObject):
     async def prepare_cancel_plan(self) -> CancelPlan:
         """Read an exact GRANDE-owned cancellation scope without moving money."""
 
-        if self.shadow_only_runtime:
-            raise RuntimeError("Auto-shadow runtime has no real-order cancellation authority")
         if not self.snapshot.connected or self.snapshot.account is None:
             raise RuntimeError("Connect the Agentic account before preparing cancellation")
         account_number = self.snapshot.account.account_number
@@ -2386,19 +2150,6 @@ class TradingController(QObject):
         *,
         reason: str = "STOP + CANCEL confirmed",
     ) -> bool:
-        if self.shadow_only_runtime:
-            self.stop_shadow(f"{reason}; cancellation BLOCKED by auto-shadow runtime")
-            self.snapshot.strategy_running = False
-            self.snapshot.session_expires_at = None
-            self.risk.disarm()
-            self.log(
-                f"BLOCKED: {reason} cannot cancel orders in auto-shadow runtime",
-                "critical",
-                "shadow_only_boundary",
-                {"broker_write_attempted": False, "cancelled": []},
-            )
-            self._emit()
-            return True
         self.stop_shadow(reason)
         self.snapshot.strategy_running = False
         self.snapshot.session_expires_at = None
@@ -3256,48 +3007,53 @@ class TradingController(QObject):
             if not self._live_automation_current(allow_loss_liquidation=liquidation_only):
                 return None
         self.store.record_intent(intent)
-        try:
-            review = await self.broker.review_order(self.snapshot.account.account_number, intent)
-        except Exception as exc:
-            self.risk.release_authorization(intent.ref_id, "Broker review failed before placement")
-            self._persist_risk_receipts()
-            self.store.update_intent(intent.ref_id, None, "review_failed")
-            self._revoke_live_automation("Broker review failed; automatic trading was locked")
-            self.log(f"Robinhood review failed before placement: {exc}", "critical", "order_review")
-            return None
-        if review.market_data_disclosure:
-            self.event.emit("market", review.market_data_disclosure)
-        self.store.receipt(
-            "order_review",
-            f"Reviewed {intent.side} {intent.symbol}",
-            {
-                "intent": intent.as_dict(),
-                "market_data_disclosure": review.market_data_disclosure,
-                "checks": review.checks,
-            },
-        )
-        if review.checks:
-            self.risk.release_authorization(intent.ref_id, "Broker review blocked placement")
-            self._persist_risk_receipts()
-            self.store.update_intent(intent.ref_id, None, "blocked_by_review")
-            self.snapshot.strategy_running = False
-            self.risk.disarm("Robinhood review blocked placement")
-            self._authority_mode = None
-            self._persist_risk_receipts()
-            self.log(
-                f"Robinhood review alert blocked {intent.side} {intent.symbol}: {review.checks}",
-                "critical",
+        if self._standing is not None:
+            confirmation = self._standing.permit(intent, self.risk.grant, self.broker)
+            review = None
+            standing_reference_price = quote.ask if intent.side == "buy" else quote.bid
+        else:
+            try:
+                review = await self.broker.review_order(self.snapshot.account.account_number, intent)
+            except Exception as exc:
+                self.risk.release_authorization(intent.ref_id, "Broker review failed before placement")
+                self._persist_risk_receipts()
+                self.store.update_intent(intent.ref_id, None, "review_failed")
+                self._revoke_live_automation("Broker review failed; automatic trading was locked")
+                self.log(f"Robinhood review failed before placement: {exc}", "critical", "order_review")
+                return None
+            if review.market_data_disclosure:
+                self.event.emit("market", review.market_data_disclosure)
+            self.store.receipt(
                 "order_review",
+                f"Reviewed {intent.side} {intent.symbol}",
+                {
+                    "intent": intent.as_dict(),
+                    "market_data_disclosure": review.market_data_disclosure,
+                    "checks": review.checks,
+                },
             )
-            return None
-        if not self._live_automation_current(allow_loss_liquidation=liquidation_only):
-            self.store.update_intent(intent.ref_id, None, "blocked_evidence_revoked")
-            return None
-        confirmation = await self._confirm_reviewed_order(
-            intent,
-            review,
-            liquidation_only=liquidation_only,
-        )
+            if review.checks:
+                self.risk.release_authorization(intent.ref_id, "Broker review blocked placement")
+                self._persist_risk_receipts()
+                self.store.update_intent(intent.ref_id, None, "blocked_by_review")
+                self.snapshot.strategy_running = False
+                self.risk.disarm("Robinhood review blocked placement")
+                self._authority_mode = None
+                self._persist_risk_receipts()
+                self.log(
+                    f"Robinhood review alert blocked {intent.side} {intent.symbol}: {review.checks}",
+                    "critical",
+                    "order_review",
+                )
+                return None
+            if not self._live_automation_current(allow_loss_liquidation=liquidation_only):
+                self.store.update_intent(intent.ref_id, None, "blocked_evidence_revoked")
+                return None
+            confirmation = await self._confirm_reviewed_order(
+                intent,
+                review,
+                liquidation_only=liquidation_only,
+            )
         if confirmation is None:
             return None
         if not self._live_automation_current(allow_loss_liquidation=liquidation_only):
@@ -3378,7 +3134,7 @@ class TradingController(QObject):
             self._revoke_live_automation("Exact account or quote truth disappeared after review")
             self.store.update_intent(intent.ref_id, None, "truth_missing_after_review")
             return None
-        reviewed_price = review.estimated_execution_price
+        reviewed_price = review.estimated_execution_price if review is not None else standing_reference_price
         current_price = refreshed_quote.ask if intent.side == "buy" else refreshed_quote.bid
         price_drift_bps = abs(current_price - reviewed_price) / reviewed_price * 10_000.0
         if price_drift_bps > MAX_REVIEW_PRICE_DRIFT_BPS:
@@ -3449,14 +3205,17 @@ class TradingController(QObject):
             strategy_fingerprint=grant.strategy_fingerprint,
             authorized_notional=authorized_notional,
         )
+        if not self._live_automation_current(allow_loss_liquidation=liquidation_only):
+            # Conservatively retain the durable submitting intent for reconciliation.
+            return None
         # Count the irreversible placement invocation before crossing the broker boundary.
         # Any timeout/transport loss is conservatively treated as possibly accepted and is
         # never retried with a new reference.
         self.risk.record_submission(intent)
         self._persist_risk_receipts()
         self.store.receipt(
-            "order_confirmation_consumed",
-            f"Consumed one-use confirmation for {intent.side} {intent.symbol}",
+            "standing_ticket_consumed" if review is None else "order_confirmation_consumed",
+            f"Consumed {'standing ticket' if review is None else 'one-use confirmation'} for {intent.side} {intent.symbol}",
             {
                 "preview_id": confirmation.preview_id,
                 "ref_id": intent.ref_id,

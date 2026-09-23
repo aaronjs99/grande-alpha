@@ -2,7 +2,7 @@
 
 ## Runtime champion: CASH / hold
 
-Normal and scheduled runtime default to the deterministic **CASH / hold** strategy. It always emits
+The desktop runtime defaults to the deterministic **CASH / hold** strategy. It always emits
 a flat regime, maps to the pair action `(0,0)` when no position is held, and requests no TQQQ or
 SQQQ entry. This is the current evidence-backed fail-safe choice: the available intraday benchmark
 did not demonstrate positive after-cost out-of-sample performance. Cash is not a profit guarantee;

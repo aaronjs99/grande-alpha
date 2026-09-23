@@ -16,7 +16,14 @@ from platformdirs import user_data_path
 from grande_alpha import __version__
 from grande_alpha.activation_guidance import decorate_readiness
 from grande_alpha.candidate_execution import contract_from_app_and_sandbox, runtime_parity_assessment
-from grande_alpha.config import APP_NAME, load_config
+from grande_alpha.config import (
+    APP_NAME,
+    config_path,
+    data_dir,
+    load_config,
+    migrate_legacy_data,
+    upgrade_config,
+)
 from grande_alpha.data_readiness import (
     DatasetReadinessReport,
     audit_cache_directory,
@@ -51,7 +58,7 @@ from grande_alpha.research_service import run_evidence_lab
 from grande_alpha.sandbox import SandboxConfig, SandboxReplayEngine, load_sandbox_config
 from grande_alpha.storage import AuditStore
 from grande_alpha.strategy import STRATEGY_NAMES
-from grande_alpha.ui.glossary import TERM_HELP
+from grande_alpha.terminology import TERM_HELP
 
 CLI_WIDTHS: dict[str, int] = {
     "Gate": 22,
@@ -502,7 +509,7 @@ def command_status(args: argparse.Namespace) -> int:
         )
         rows = [
             ["Version", __version__, "Installed GRANDE Alpha Python package"],
-            ["Mode", "RESEARCH / LOCKED", "This CLI never grants standing live-order authority"],
+            ["Mode", "OFFLINE STATUS", "This command grants no authority; run-live requires explicit terminal approvals"],
             ["Broker-data permission", "ENABLED" if config.broker_connection_enabled else "DISABLED", "Local setting only; no broker call was made"],
             [
                 "Real-order setting",
@@ -607,11 +614,6 @@ def command_activation(args: argparse.Namespace) -> int:
             )
         raw_rows = [
             {
-                "gate": "Scheduled auto-shadow",
-                "status": "READ-ONLY",
-                "observed": "Order review/place/cancel are structurally blocked",
-            },
-            {
                 "gate": "Broker capability",
                 "status": "PASS" if config.broker_connection_enabled else "BLOCKED",
                 "observed": "Enabled" if config.broker_connection_enabled else "Disabled",
@@ -669,7 +671,7 @@ def command_activation(args: argparse.Namespace) -> int:
         if args.json:
             _json(
                 {
-                    "authority": "This command cannot grant, schedule, review, place, or cancel orders.",
+                    "authority": "This command cannot grant, review, place, or cancel orders.",
                     "current_evidence_policy": EVIDENCE_POLICY_VERSION,
                     "current_strategy_fingerprint": current_fingerprint,
                     "latest_receipt_uses_current_policy": latest_receipt_uses_current_policy,
@@ -686,10 +688,7 @@ def command_activation(args: argparse.Namespace) -> int:
             return 0
 
         print("GRANDE Alpha activation assistant (local inspection only)")
-        print(
-            "This command cannot grant, schedule, review, place, or cancel orders. Scheduled auto-shadow "
-            "is structurally read-only."
-        )
+        print("This command cannot grant, review, place, or cancel orders.")
         print()
         print(
             format_table(
@@ -724,7 +723,7 @@ def command_activation(args: argparse.Namespace) -> int:
                     args.width,
                 )
             )
-        print("\nNext command: .\\Morning Check.cmd (read-only), then use Live Readiness in the normal GUI.")
+        print("\nNext step: open Live Readiness in the desktop application and run safe checks.")
         return 0
     finally:
         store.close()
@@ -1308,16 +1307,328 @@ def _source_options(
     parser.add_argument("--note", default="", help="Audit note saved with the research receipt")
 
 
+def command_engine_readiness(args: argparse.Namespace) -> int:
+    """Offline inventory: local evidence is not broker verification or live authority."""
+    from grande_alpha.live_cli import load_policy
+    from grande_alpha.readiness import missing_requirements, recorded_preferences
+
+    workflow = getattr(args, "workflow", "current")
+    setup_path = getattr(args, "setup", None)
+    preferences = recorded_preferences(Path(setup_path) if setup_path else None)
+    config = load_config()
+    candidate = _current_runtime_candidate(config)
+    contract = contract_from_app_and_sandbox(config, candidate)
+    fingerprint = _current_runtime_fingerprint(config)
+    policy_path = getattr(args, "policy", None)
+    policy_issues = ["Complete the remaining account, asset, route, expiry and order-limit policy; recorded planning amounts alone are not a live grant"]
+    if policy_path:
+        _mode, grant = load_policy(Path(policy_path))
+        policy_issues = []
+        if grant.strategy_fingerprint != fingerprint:
+            policy_issues.append("Policy fingerprint does not match the current strategy")
+        for field in ("market_hours", "order_type", "time_in_force", "limit_offset_bps"):
+            if getattr(grant, field) != getattr(config, field):
+                policy_issues.append(f"Policy {field} does not match current configuration")
+        capital = preferences["trading_capital_usd"]
+        loss = preferences["daily_loss_threshold_usd"]
+        if capital is not None and grant.max_total_exposure > capital:
+            policy_issues.append("Policy exposure exceeds recorded trading capital")
+        if loss is not None and grant.max_daily_loss > loss:
+            policy_issues.append("Policy loss threshold exceeds the recorded loss threshold")
+    store = AuditStore()
+    try:
+        evidence = store.current_live_evidence(fingerprint)
+    finally:
+        store.close()
+    parity = runtime_parity_assessment(contract).as_dict()
+    missing, optional = missing_requirements(
+        workflow=workflow,
+        evidence_present=evidence is not None,
+        parity=parity,
+        preferences=preferences,
+        policy_issues=policy_issues,
+    )
+    report = {
+        "workflow": workflow,
+        "unattended_live_ready": False,
+        "authority_granted": False,
+        "broker_contacted": False,
+        "strategy_fingerprint": fingerprint,
+        "current_strategy_name": config.strategy_name,
+        "exact_local_evidence_present": evidence is not None,
+        "recorded_preferences": preferences,
+        "requested_limits_checked": policy_path is not None and not policy_issues,
+        "policy_issues": policy_issues,
+        "runtime_parity": parity,
+        "implemented": [
+            "headless_shadow",
+            "attended_live_cli",
+            "explicit_session_policy",
+            "mcp_contract_inspection",
+            "research_only_pead_screen",
+        ],
+        "missing": missing,
+        "optional_enhancements": optional,
+    }
+    print(json.dumps(report, indent=2, allow_nan=False))
+    return 0
+
+
+def command_config_show(args: argparse.Namespace) -> int:
+    """Print validated settings without creating, upgrading, or changing them."""
+    path = Path(args.path) if args.path else None
+    config = load_config(path)
+    resolved_path = path or config_path()
+    payload = {"path": str(resolved_path), "settings": asdict(config)}
+    if args.json:
+        print(json.dumps(payload, indent=2, sort_keys=True))
+        return 0
+    rows = [[name, value] for name, value in payload["settings"].items()]
+    print(format_table(["Setting", "Value"], rows, args.width))
+    print(f"Path: {payload['path']}")
+    return 0
+
+
+def command_config_upgrade(args: argparse.Namespace) -> int:
+    """Back up and upgrade an explicitly selected configuration file."""
+    path = Path(args.path) if args.path else None
+    backup = upgrade_config(path)
+    target = path or config_path()
+    payload = {"path": str(target), "backup": str(backup) if backup else None, "upgraded": backup is not None}
+    if args.json:
+        print(json.dumps(payload, indent=2, sort_keys=True))
+    elif backup:
+        print(f"Upgraded {target}; backup retained at {backup}")
+    else:
+        print(f"No saved configuration exists at {target}; defaults were not written.")
+    return 0
+
+
+def command_config_import_legacy(args: argparse.Namespace) -> int:
+    """Copy selected legacy data without automatic discovery or source deletion."""
+    source = Path(args.source)
+    destination = Path(args.destination) if args.destination else data_dir()
+    copied = migrate_legacy_data(source, destination)
+    payload = {
+        "source": str(source),
+        "destination": str(destination),
+        "copied": [str(path) for path in copied],
+        "source_preserved": True,
+    }
+    if args.json:
+        print(json.dumps(payload, indent=2, sort_keys=True))
+    elif copied:
+        print(f"Copied {len(copied)} legacy files to {destination}; source files remain unchanged.")
+    else:
+        print("No eligible legacy files were copied; existing destination files were left unchanged.")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
+    from grande_alpha.authorization import command_authorization_check, command_authorization_template
+    from grande_alpha.autonomous_cli import (
+        command_autonomous_readiness,
+        command_candidate_template,
+        command_run_autonomous,
+    )
+    from grande_alpha.device_notifications import command_notifications
+    from grande_alpha.earnings import command_screen, command_template
+    from grande_alpha.earnings_feed import (
+        command_fetch,
+        command_key_delete,
+        command_key_set,
+        command_key_status,
+        command_normalize_fact,
+        command_record_fact,
+        command_verify_event,
+    )
+    from grande_alpha.headless import command_engine_inspect, command_engine_run
+    from grande_alpha.live_cli import (
+        command_live,
+        command_policy_check,
+        command_policy_template,
+        command_standing_template,
+        command_stop,
+    )
+    from grande_alpha.mixed_portfolio import command_plan
+    from grande_alpha.mixed_portfolio import command_template as mixed_template
+    from grande_alpha.portfolio_replay import command_replay as command_portfolio_replay
+    from grande_alpha.qualification import command_qualification_check
+    from grande_alpha.qualification_evidence import (
+        command_forward_append,
+        command_forward_report,
+        command_replay_report,
+    )
+
     parser = argparse.ArgumentParser(
         prog="grande-alpha-cli",
         description=(
-            "Local GRANDE Alpha research, evidence, receipt, and glossary companion. "
-            "It has no command that bypasses GUI live-session consent."
+            "GRANDE Alpha research and headless runtime. "
+            "Live sessions require explicit limits and attended or standing authorization."
         ),
     )
     parser.add_argument("--version", action="version", version=f"GRANDE Alpha {__version__}")
     commands = parser.add_subparsers(dest="command", required=True)
+    config = commands.add_parser("config", help="Inspect or explicitly upgrade local configuration")
+    config_commands = config.add_subparsers(dest="config_command", required=True)
+    config_show = config_commands.add_parser("show", help="Read validated settings without writing files")
+    config_show.add_argument("--path", type=Path, help="Configuration file to inspect")
+    config_show.add_argument("--json", action="store_true")
+    config_show.add_argument("--width", type=int)
+    config_show.set_defaults(func=command_config_show)
+    config_upgrade = config_commands.add_parser("upgrade", help="Back up and upgrade one existing configuration")
+    config_upgrade.add_argument("--path", type=Path, help="Configuration file to upgrade")
+    config_upgrade.add_argument("--json", action="store_true")
+    config_upgrade.set_defaults(func=command_config_upgrade)
+    config_import_legacy = config_commands.add_parser(
+        "import-legacy", help="Explicitly copy recoverable legacy data without deleting its source"
+    )
+    config_import_legacy.add_argument("--source", type=Path, required=True, help="Legacy data directory")
+    config_import_legacy.add_argument("--destination", type=Path, help="Target data directory")
+    config_import_legacy.add_argument("--json", action="store_true")
+    config_import_legacy.set_defaults(func=command_config_import_legacy)
+    portfolio = commands.add_parser("portfolio", help="Broker-isolated mixed-allocation research")
+    portfolio_commands = portfolio.add_subparsers(dest="portfolio_command", required=True)
+    portfolio_template = portfolio_commands.add_parser("template", help="Mixed-portfolio research input template")
+    portfolio_template.set_defaults(func=mixed_template)
+    portfolio_plan = portfolio_commands.add_parser("plan", help="Compute research targets; never orders")
+    portfolio_plan.add_argument("--input", required=True)
+    portfolio_plan.set_defaults(func=command_plan)
+    portfolio_replay = portfolio_commands.add_parser("replay", help="Causal multi-day paper accounting; no broker orders")
+    portfolio_replay.add_argument("--input", required=True)
+    portfolio_replay.set_defaults(func=command_portfolio_replay)
+    replay_report = portfolio_commands.add_parser("replay-report", help="Compact cost-inclusive evidence report")
+    replay_report.add_argument("--input", required=True)
+    replay_report.set_defaults(func=command_replay_report)
+    forward_append = portfolio_commands.add_parser("forward-append", help="Append a near-real-time paper frame")
+    forward_append.add_argument("--database", required=True)
+    forward_append.add_argument("--input", required=True)
+    forward_append.set_defaults(func=command_forward_append)
+    forward_report = portfolio_commands.add_parser("forward-report", help="Replay append-only forward frames")
+    forward_report.add_argument("--database", required=True)
+    forward_report.add_argument("--settings", required=True)
+    forward_report.set_defaults(func=command_forward_report)
+    notifications = commands.add_parser("notifications", help="On-device persistent notification inbox; no email")
+    notifications.add_argument("--after", type=int, default=0)
+    notifications.add_argument("--limit", type=int, default=100)
+    notifications.add_argument("--unread", action="store_true")
+    notifications.add_argument("--ack", type=int, help="Acknowledge one notification; never resumes trading")
+    notifications.set_defaults(func=command_notifications)
+
+    earnings = commands.add_parser("earnings", help="Research-only point-in-time earnings screening; no orders")
+    earnings_commands = earnings.add_subparsers(dest="earnings_command", required=True)
+    earnings_template = earnings_commands.add_parser("template", help="Print the unfilled earnings research schema")
+    earnings_template.set_defaults(func=command_template)
+    earnings_screen = earnings_commands.add_parser("screen", help="Screen supplied events; not a backtest or trading signal")
+    earnings_screen.add_argument("--input", required=True)
+    earnings_screen.set_defaults(func=command_screen)
+    earnings_fetch = earnings_commands.add_parser("fetch", help="Capture one raw Alpha Vantage earnings response")
+    earnings_fetch.add_argument("--database", required=True)
+    earnings_fetch.add_argument("--symbol", required=True)
+    earnings_fetch.add_argument("--dataset", choices=("EARNINGS", "EARNINGS_ESTIMATES"), required=True)
+    earnings_fetch.set_defaults(func=command_fetch)
+    earnings_key_set = earnings_commands.add_parser("key-set", help="Store the API key with a hidden prompt")
+    earnings_key_set.set_defaults(func=command_key_set)
+    earnings_key_status = earnings_commands.add_parser("key-status", help="Report key presence without printing it")
+    earnings_key_status.set_defaults(func=command_key_status)
+    earnings_key_delete = earnings_commands.add_parser("key-delete", help="Remove the stored API key")
+    earnings_key_delete.set_defaults(func=command_key_delete)
+    earnings_fact = earnings_commands.add_parser("record-fact", help="Bind one normalized fact to a raw response")
+    earnings_fact.add_argument("--database", required=True)
+    earnings_fact.add_argument("--input", required=True)
+    earnings_fact.set_defaults(func=command_record_fact)
+    earnings_normalize = earnings_commands.add_parser(
+        "normalize", help="Extract one exact quarterly EPS fact from a stored raw response"
+    )
+    earnings_normalize.add_argument("--database", required=True)
+    earnings_normalize.add_argument("--source-sha", required=True)
+    earnings_normalize.add_argument("--kind", choices=("actual", "consensus"), required=True)
+    earnings_normalize.add_argument("--period", required=True, help="Exact fiscal ending date from the provider")
+    earnings_normalize.add_argument("--basis", required=True, help="Explicit accounting/estimate basis label")
+    earnings_normalize.add_argument("--currency", required=True)
+    earnings_normalize.set_defaults(func=command_normalize_fact)
+    earnings_verify = earnings_commands.add_parser("verify-event", help="Verify an event against stored provider facts")
+    earnings_verify.add_argument("--database", required=True)
+    earnings_verify.add_argument("--input", required=True)
+    earnings_verify.set_defaults(func=command_verify_event)
+
+    engine = commands.add_parser("engine", help="Explicit headless foreground operation")
+    engine_commands = engine.add_subparsers(dest="engine_command", required=True)
+    readiness = engine_commands.add_parser("readiness", help="Offline JSON inventory of unattended-live blockers")
+    readiness.add_argument("--workflow", choices=("current", "earnings"), default="current")
+    readiness.add_argument("--setup", type=Path, help="Optional planning amounts; never grants authority")
+    readiness.add_argument("--policy", type=Path, help="Validate a complete policy against current configuration offline")
+    readiness.set_defaults(func=command_engine_readiness)
+    qualification = engine_commands.add_parser("qualification-check", help="Validate an exact-candidate certificate")
+    qualification.add_argument("--certificate", required=True)
+    qualification.add_argument("--candidate-digest", required=True)
+    qualification.set_defaults(func=command_qualification_check)
+    candidate_template = engine_commands.add_parser(
+        "autonomous-template", help="Print the exact mixed live-candidate schema; grants nothing"
+    )
+    candidate_template.set_defaults(func=command_candidate_template)
+    autonomous_readiness = engine_commands.add_parser(
+        "autonomous-readiness", help="Validate mixed live artifacts offline; no broker contact"
+    )
+    for option in ("candidate", "qualification", "authorization", "earnings-database"):
+        autonomous_readiness.add_argument(f"--{option}", required=True)
+    autonomous_readiness.add_argument("--source")
+    autonomous_readiness.set_defaults(func=command_autonomous_readiness)
+    autonomous_run = engine_commands.add_parser(
+        "run-autonomous", help="Qualified mixed live engine; foreground and session-aware"
+    )
+    for option in ("candidate", "qualification", "authorization", "earnings-database", "source"):
+        autonomous_run.add_argument(f"--{option}", required=True)
+    autonomous_run.add_argument("--connect", action="store_true")
+    autonomous_run.add_argument("--authenticate", action="store_true")
+    autonomous_run.add_argument("--poll-seconds", type=float, default=5.0)
+    autonomous_run.set_defaults(func=command_run_autonomous)
+    authorization_template = engine_commands.add_parser(
+        "authorization-template", help="Print a blank seven-day-or-shorter mixed-engine permit"
+    )
+    authorization_template.set_defaults(func=command_authorization_template)
+    authorization_check = engine_commands.add_parser(
+        "authorization-check", help="Validate an exact account-bound permit; submits no order"
+    )
+    authorization_check.add_argument("--permit", required=True)
+    authorization_check.add_argument("--account", required=True)
+    authorization_check.add_argument("--scope-digest", required=True)
+    authorization_check.set_defaults(func=command_authorization_check)
+    policy_template = engine_commands.add_parser("policy-template", help="Print an unarmed live-policy template")
+    policy_template.set_defaults(func=command_policy_template)
+    policy_check = engine_commands.add_parser("policy-check", help="Validate explicit limits offline; grants no authority")
+    policy_check.add_argument("--policy", required=True)
+    policy_check.add_argument("--unattended", action="store_true", help="Validate explicit standing terms too")
+    policy_check.set_defaults(func=command_policy_check)
+    live_run = engine_commands.add_parser("run-live", help="Bounded ATTENDED live session; per-order approval required")
+    live_run.add_argument("--policy", required=True, help="Explicit account, strategy, limits, and duration JSON")
+    live_run.add_argument("--connect", action="store_true")
+    live_run.add_argument("--authenticate", action="store_true")
+    live_run.set_defaults(func=command_live)
+    standing_template = engine_commands.add_parser("standing-template", help="Unarmed standing-policy skeleton")
+    standing_template.set_defaults(func=command_standing_template)
+    unattended_run = engine_commands.add_parser("run-unattended", help="Evidence-gated bounded standing session; explicit terminal activation")
+    unattended_run.add_argument("--policy", required=True)
+    unattended_run.add_argument("--connect", action="store_true")
+    unattended_run.add_argument("--authenticate", action="store_true")
+    unattended_run.set_defaults(func=command_live, unattended=True)
+    stop_run = engine_commands.add_parser("stop", help="Revoke all local standing sessions; no cancellation or liquidation")
+    stop_run.set_defaults(func=command_stop)
+    engine_inspect = engine_commands.add_parser(
+        "inspect-broker", help="Inspect exact MCP tool schemas and descriptions; no orders or account reads"
+    )
+    engine_inspect.add_argument("--connect", action="store_true")
+    engine_inspect.add_argument("--authenticate", action="store_true")
+    engine_inspect.add_argument("--tool", action="append", help="Include full metadata for this tool; repeatable")
+    engine_inspect.add_argument("--full", action="store_true", help="Include all metadata (potentially very large)")
+    engine_inspect.set_defaults(func=command_engine_inspect)
+    engine_run = engine_commands.add_parser("run", help="Run autonomous shadow; never real orders")
+    engine_run.add_argument("--mode", choices=["shadow"], default="shadow")
+    engine_run.add_argument("--connect", action="store_true", help="Authorize read-only broker access")
+    engine_run.add_argument("--authenticate", action="store_true", help="Allow interactive OAuth login")
+    engine_run.add_argument("--duration", type=float, default=0,
+                            help="Seconds after connection; 0 runs until Ctrl+C")
+    engine_run.set_defaults(func=command_engine_run)
 
     status = commands.add_parser("status", help="Show local permissions and evidence state")
     _output_options(status)
@@ -1439,7 +1750,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         return int(args.func(args))
     except KeyboardInterrupt:
-        print("Interrupted; no broker order was submitted.", file=sys.stderr)
+        print("Interrupted. Check Robinhood for existing orders and positions; interruption is not cancellation.",
+              file=sys.stderr)
         return 130
     except Exception as exc:
         print(f"ERROR: {exc}", file=sys.stderr)

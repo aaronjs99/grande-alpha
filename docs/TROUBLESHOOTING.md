@@ -110,4 +110,5 @@ From PowerShell in the project directory:
 .\build.ps1
 ```
 
-The verified executable is `dist\GRANDEAlpha\GRANDEAlpha.exe`.
+The local unsigned candidate is `dist\GRANDEAlpha\GRANDEAlpha.exe`. A successful build does not make
+that executable a trusted public release; see [Windows installation and signing](WINDOWS_INSTALLATION.md).

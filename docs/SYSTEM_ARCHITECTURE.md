@@ -1,24 +1,17 @@
 # GRANDE Alpha system architecture
 
-GRANDE Alpha is a sibling project in the GRANDE family. It borrows GRANDE's gated-autonomy and
-evidence patterns, but it is not part of the robot runtime and does not imply marine or field
-readiness.
+GRANDE Alpha uses explicit trust boundaries: strategies propose, risk controls authorize, broker
+adapters communicate, storage records, and the UI obtains consent. Research components cannot reach
+the broker write boundary.
 
-```text
-GRANDE project family
-├── GRANDE Marine       robotics, sensing, navigation, and field validation
-├── GRANDE Research     experiments, papers, and evidence governance
-└── GRANDE Alpha        trading research workstation and optional capital ledger
-```
+## Core control pattern
 
-## Reused design pattern
-
-| GRANDE concept | GRANDE Alpha implementation |
+| Control concept | GRANDE Alpha implementation |
 |---|---|
-| Planner proposes an action | Deterministic strategy proposes a trade intent |
+| Strategy proposes an action | Deterministic strategy produces a trade intent |
 | Independent runtime bounds | Risk engine independently approves or rejects the intent |
 | Freshness and lifecycle gates | Quote age, spread, market-time, and session-state checks |
-| Actuator boundary | Official Robinhood Trading MCP review and order submission |
+| External-effect boundary | Broker adapter review and order submission |
 | Emergency stop | Pause/revoke only block local authority; `STOP + CANCEL` previews exact GRANDE-owned orders and requires confirmation before cancellation |
 | Evidence trail | Frozen hash-chained authority receipts plus SQLite decision/broker receipts |
 | Candidate versus approved runtime | `LOCKED`, `LIVE`, `EXPIRED`, and review-blocked states |
@@ -30,16 +23,15 @@ GRANDE project family
 
 ## Hard separation
 
-- No ROS dependency, shared process, database, credential, or runtime authority.
 - No money the operator does not own or is not authorized to allocate may enter the brokerage
   account or the capital planning ledger.
-- No nonpublic sponsor, procurement, or research information may become a trading signal.
-- Trading profit is not evidence that a robotics algorithm works.
-- A simulation, backtest, or successful trade is not evidence of marine field readiness.
-
-The permitted connection is organizational and evidentiary: GRANDE Alpha uses the same style of
-bounded authority, explicit confirmation, stop control, and auditable receipts. Its optional capital
-planning feature records intended and externally confirmed contributions without moving money.
+- No private, proprietary, unlawfully obtained, or materially nonpublic information may become a
+  trading signal.
+- Research, broker reads, live shadow, supervised placement, and autonomous authority are separate
+  capability layers.
+- Simulation, backtest, evidence, and live performance claims remain explicitly distinguished.
+- The optional capital-planning feature records intended and externally confirmed contributions; it
+  never transfers money.
 
 Real-order capability and real-money authority are different layers. Configuration may remember that
 session controls are available, but never stores a money-moving grant. The immutable grant binds the

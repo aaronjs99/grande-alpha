@@ -12,7 +12,7 @@ if (-not (Test-Path -LiteralPath $PythonExe)) {
 & $PythonExe -m pip install --upgrade pip setuptools
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 & $PythonExe -m pip uninstall -y momentum-trader
-& $PythonExe -m pip install -e "${ProjectRoot}[dev]"
+& $PythonExe -m pip install -e "${ProjectRoot}[desktop,dev]"
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 Write-Host 'Setup complete.' -ForegroundColor Green
 Write-Host "Runtime: $RuntimeRoot" -ForegroundColor Green

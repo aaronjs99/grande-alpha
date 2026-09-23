@@ -218,9 +218,9 @@ class LiveGrantDialog(QDialog):
             QDialogButtonBox.StandardButton.Cancel | QDialogButtonBox.StandardButton.Ok
         )
         self.buttons.button(QDialogButtonBox.StandardButton.Ok).setText(
-            "Authorize and start evidence-gated session"
+            "Authorize bounded evidence-gated session"
             if evidence_gated
-            else "Authorize and start supervised session"
+            else "Authorize bounded supervised session"
         )
         self.buttons.button(QDialogButtonBox.StandardButton.Ok).setEnabled(False)
         self.buttons.accepted.connect(self.accept)

@@ -2,14 +2,13 @@
 
 For the complete owner-by-owner procedure, start with the
 [Activation checklist](ACTIVATION_CHECKLIST.md). The same current-state assistant is available in
-**Live Readiness** and in the terminal:
+**Readiness** and in the terminal:
 
 ```powershell
 & ".\GRANDE Alpha CLI.cmd" activation --width 150
 ```
 
-It never connects to a broker or grants order authority. Scheduled auto-shadow remains structurally
-read-only and cannot turn itself into live trading.
+It never connects to a broker or grants order authority.
 
 ## Source application (works without a GRANDE Alpha signing certificate)
 
@@ -28,12 +27,10 @@ running app, and `doctor.ps1` verifies it. If a generic Python or PowerShell ite
 installation, unpin that stale item once, launch **GRANDE Alpha** from the installed shortcut, and
 pin the branded GRANDE Alpha button.
 
-## Morning check
+## Safe broker check
 
-Double-click **Morning Check.cmd** before opening the app. It launches a read-only check using a
-process-scoped PowerShell bypass, so it works even when local `.ps1` files are blocked by the
-machine's normal execution policy. It verifies the source runtime, taskbar identity, stored OAuth
-path, Robinhood read path, and local evidence state. It never reviews, places, or cancels an order.
+Open **Readiness** and select **Run safe checks**. It verifies the Robinhood read path and local
+evidence state without reviewing, placing, or cancelling an order.
 
 The broker readiness step runs through a facade that structurally blocks review, placement, and
 cancellation methods. It passes only when the provider returns exactly one active Agentic account,
@@ -52,8 +49,8 @@ exact broker-reviewed order.
 
 1. Start with `.\run.ps1` or `Start GRANDE Alpha.cmd`.
 2. Read the first-run disclosures and leave every optional capability off.
-3. Open **Live Readiness** to see each condition's owner and exact next action.
-4. Open **Research Sandbox**.
+3. Open **Readiness** to see each condition's owner and exact next action.
+4. Open **Research**.
 5. Use the deterministic scenario or import CSV data you are permitted to use.
 6. Run a baseline replay, cost stress, parameter sensitivity, random-entry control, and walk-forward evaluation.
 7. Inspect trades, execution events, data source, hash, assumptions, and failed gates.
@@ -66,7 +63,7 @@ as permission to review risk—not as evidence that the next trade will be profi
 
 ## Optional capabilities
 
-Open **Settings & Permissions** to enable capabilities one at a time:
+Open **Settings** to enable capabilities one at a time:
 
 - **Broker connection** allows provider-exposed read data and OAuth storage.
 - **Supervised real-order tickets** are a second permission. They require the exact settings phrase,
@@ -84,13 +81,21 @@ Extended and overnight settings cannot be unlocked for live placement by evidenc
 Read [Trading sessions and order routes](TRADING_SESSIONS.md) before changing the default.
 
 Removing broker or real-order permission first locks new local activity. If a GRANDE-owned open or
-unresolved order exists, Save refuses and directs the user to the explicit **STOP + CANCEL** preview;
+unresolved order exists, Save refuses and directs the user to the explicit **Stop / cancel…** preview;
 permission changes never cancel an order implicitly. Stored OAuth credentials can be forgotten only
 after a clean disconnect and never trigger cancellation as a side effect.
 
 ## Desktop navigation
 
-The always-visible menu bar keeps infrequent controls out of the trading header:
+Five primary destinations organize the workspace: **Overview**, **Session**, **Research**, **Readiness**,
+and **Records**. Navigation moves above the workspace in narrow windows. Positions, orders, activity,
+and the optional capital ledger live inside Records. Session details scroll independently; the global
+stop/cancel control stays in the header while connected.
+
+In Research, execution assumptions, signal parameters, risk settings, and detailed statistics expand
+on demand. Run/export controls stay below the scrolling configuration form.
+
+Select **Tools** in the header to reveal advanced menus. Keyboard shortcuts work with the menus hidden:
 
 - **File** exports redacted diagnostics, opens Settings & Permissions, or exits.
 - **View** switches workspaces with `Ctrl+1` through `Ctrl+5`, resets the layout, or uses `F11` full screen.
@@ -99,7 +104,7 @@ The always-visible menu bar keeps infrequent controls out of the trading header:
   or unresolved order state still needs explicit handling; it never cancels an order.
 - **Research** opens each sandbox result surface directly.
 - **Safety** exposes the supervised per-order path, the separate evidence-gated autonomous path, and
-  the order-specific stop/cancel and flatten controls. **STOP + CANCEL** shows the exact GRANDE-owned
+  the order-specific stop/cancel and flatten controls. **Stop / cancel…** shows the exact GRANDE-owned
   nonterminal-order count and scope before a required confirmation; manual and unrelated orders are
   untouched.
 - **Help** explains quick start, account scope, privacy, safety locks, version ownership, and opens the
@@ -117,11 +122,8 @@ For the matching terminal research and inspection surface, see the [command-line
 .\cli.ps1 evidence show --width 150
 ```
 
-To authenticate and validate the complete provider read path without invoking any write method:
-
-```powershell
-.\Morning Check.cmd
-```
+To authenticate and validate the complete provider read path without invoking any write method,
+open **Readiness** and select **Run safe checks**.
 
 This may open Robinhood in your browser. It reads account discovery, one portfolio response,
 QQQ/TQQQ/SQQQ quotes, positions, and orders, then disconnects. It does not review, place, or cancel

@@ -42,6 +42,7 @@ class RiskEngine:
         self.session_peak_value: float | None = None
         self.last_portfolio_value: float | None = None
         self.session_date: str | None = None
+        self.loss_latched = False
 
     def arm(
         self,
@@ -51,9 +52,15 @@ class RiskEngine:
         initial_daily_notional: float = 0.0,
         initial_trades: int = 0,
         previous_receipt_digest: str = "",
+        initial_peak_value: float | None = None,
     ) -> None:
         grant.validate()
         portfolio.validate()
+        if initial_peak_value is not None and (
+            isinstance(initial_peak_value, bool) or not isinstance(initial_peak_value, (int, float))
+            or not math.isfinite(initial_peak_value) or initial_peak_value < portfolio.total_value
+        ):
+            raise ValueError("Restored daily peak must be finite and at least the current account value")
         if isinstance(initial_daily_notional, bool) or not isinstance(initial_daily_notional, (int, float)):
             raise ValueError("Initial daily notional must be numeric")
         restored_notional = float(initial_daily_notional)
@@ -79,8 +86,9 @@ class RiskEngine:
         self.seen_ref_ids.clear()
         self.authorized_notionals.clear()
         self.session_start_value = portfolio.total_value
-        self.session_peak_value = portfolio.total_value
+        self.session_peak_value = initial_peak_value if initial_peak_value is not None else portfolio.total_value
         self.last_portfolio_value = portfolio.total_value
+        self.loss_latched = self.drawdown >= grant.max_daily_loss
         self.session_date = grant.starts_at.astimezone(EASTERN).date().isoformat()
         self._last_receipt_digest = previous_receipt_digest
         self._emit("authority_granted", "Bounded session authority created", grant.starts_at)
@@ -154,6 +162,8 @@ class RiskEngine:
         portfolio.validate()
         self.last_portfolio_value = portfolio.total_value
         self.session_peak_value = max(self.session_peak_value or 0.0, portfolio.total_value)
+        if self.grant is not None and self.drawdown >= self.grant.max_daily_loss:
+            self.loss_latched = True
 
     @property
     def drawdown(self) -> float:
@@ -172,7 +182,7 @@ class RiskEngine:
             return "EXPIRED"
         if self.paused:
             return "PAUSED"
-        if self.drawdown >= self.grant.max_daily_loss:
+        if self.loss_latched or self.drawdown >= self.grant.max_daily_loss:
             return "LOSS LIMIT"
         return "LIVE"
 
@@ -271,7 +281,7 @@ class RiskEngine:
                     return self._decision(
                         False, "Sell limit exceeds the authorized quote offset", reference, intent
                     )
-        if self.drawdown >= grant.max_daily_loss and intent.side != "sell":
+        if (self.loss_latched or self.drawdown >= grant.max_daily_loss) and intent.side != "sell":
             return self._decision(False, "Daily loss limit reached; entries locked", reference, intent)
         if self.trades_today >= grant.max_trades:
             return self._decision(False, "Trade-count limit reached", reference, intent)

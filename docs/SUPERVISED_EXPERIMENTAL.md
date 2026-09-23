@@ -48,9 +48,8 @@ separate audit receipts.
 
 ## What remains locked
 
-The Windows scheduled task remains read-only shadow only. It cannot authorize a supervised session,
-answer a confirmation, review/place/cancel an order, or run supervised mode unattended. The original
-`authorize_live` evidence-gated path remains unchanged and continues to require an exact current
+GRANDE Alpha installs no scheduler and cannot run supervised mode unattended. The original
+`authorize_live` evidence-gated path remains separate and continues to require an exact current
 evidence certificate and every runtime-parity gate. Supervised experiments are not evidence that an
 autonomous strategy is safe, profitable, or suitable for a particular person, account, or
 jurisdiction. Obtain individualized legal, tax, employment, residency, and account-eligibility

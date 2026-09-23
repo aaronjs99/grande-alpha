@@ -1,28 +1,30 @@
 # Live-pilot activation and external gates
 
-The current live-pilot paths are integrated, but the **autonomous strategy path is not currently
-eligible for directional trading**. Integration means the safety workflow exists and is testable; it
-does not mean a strategy has positive evidence, legal clearance, provider approval for distribution,
-or a profit expectation.
+GRANDE Alpha implements separate supervised and evidence-gated autonomous execution paths. Their
+presence in the product does not make a deployment eligible for directional trading. Eligibility is
+resolved from the exact strategy, evidence, runtime, broker, account, route, consent, and external
+requirements at the time authority is requested.
 
-The current Robinhood order-review tool contract requires the exact reviewed ticket and market
-disclosure to be presented for explicit confirmation before each placement. The desktop now has a
+The supported Robinhood order-review contract requires the exact reviewed ticket and market
+disclosure to be presented for explicit confirmation before each placement. The desktop has a
 separate [supervised experimental mode](SUPERVISED_EXPERIMENTAL.md) that enforces that confirmation
 for every ticket. That attended mode does not convert the strategy to `LIVE_REVIEW_ELIGIBLE` and does
-not unlock autonomous placement. The original autonomous path remains machine-blocked by its
-evidence and runtime-parity requirements.
+not unlock autonomous placement. The autonomous path remains fail-closed behind its evidence and
+runtime-parity requirements.
 
-## Current release state
+## Deployment eligibility
 
-- the installed runtime defaults to deterministic **CASH / hold**, which requests no TQQQ or SQQQ
-  position;
-- `RUNTIME_SIZING_PARITY_CERTIFIED` is `false`, so a non-cash candidate cannot obtain a valid
-  directional live certificate;
-- this release bundles no user-specific certificate or proof of a positive deployable result; each
-  operator must run the read-only broker preflight and evaluate evidence for their exact installation.
+- Every installation defaults to deterministic **CASH / hold**, which requests no TQQQ or SQQQ
+  position.
+- A release may mark an execution or sizing contract uncertified. An uncertified contract cannot
+  obtain autonomous directional authority.
+- Distributions do not bundle an operator-specific certificate or proof of a positive deployable
+  result. Each deployment must establish its own lawful data provenance, evidence, runtime parity,
+  broker state, and external eligibility.
 
-Therefore, do not represent the app or any strategy as profitable, recommended, or autonomous-live
-ready. The evidence-gated autonomous runtime decision remains CASH or shadow-only research. An
+Do not represent GRANDE Alpha or any included strategy as profitable, recommended, or universally
+ready for autonomous trading. Until every exact gate passes, the evidence-gated runtime remains CASH
+or shadow-only research. An
 autonomous directional candidate must first pass the development gates, the one-use final holdout,
 sizing parity, and a monitored forward-shadow period with positive after-cost evidence. Passing those
 gates would permit a separate autonomous review; it would not guarantee future profit. The supervised
@@ -33,7 +35,7 @@ Activation evidence must use policy v13, runtime-observation schema v2, quote-ba
 and exact quote validator v2. Policy-v12 receipts and validator-v1 traces predate durable bid/ask
 book clocks and are intentionally stale; they cannot unlock live review.
 
-## If the local OAuth session is revoked
+## If broker authorization is revoked
 
 If a check reports that the credential was revoked, do not repeatedly retry it.
 
@@ -67,8 +69,8 @@ limits. The grant and typed phrase are never persisted. Restart, expiry, revocat
 or fingerprint change returns the app to `LOCKED` and requires a new explicit authorize-and-start.
 Pause/resume may continue the same still-valid grant but cannot extend or alter it.
 
-There is **no automatic live schedule**. The optional Windows scheduled task starts read-only live
-shadow only and cannot authorize, review, place, or cancel orders.
+There is **no automatic live schedule**. Live shadow and either real-order path can be started only
+from the running desktop application; GRANDE Alpha installs no Windows scheduled task.
 
 Before either bounded authority is created—and again before live strategy start—the app requires:
 
