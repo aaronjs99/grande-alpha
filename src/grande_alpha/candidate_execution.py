@@ -591,10 +591,10 @@ def runtime_parity_assessment(
             False,
             "No provider order placement",
             "No provider order placement",
-            "Current Robinhood review contract requires the exact reviewed ticket and disclosure "
-            "to be presented for explicit confirmation before placement",
-            "Implement per-order confirmation or obtain written provider confirmation that the "
-            "exact bounded session-authority flow satisfies the current order contract",
+            "Explicit placement review bypass is implemented against a pinned discovery contract; "
+            "cancellation still requires confirmation and provider-observed qualification is missing",
+            "Qualify the bounded standing-session workflow with the provider; automatic cancellation "
+            "is not supported by the observed contract",
         ),
     )
     return RuntimeParityAssessment(

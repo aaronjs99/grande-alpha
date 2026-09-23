@@ -1,5 +1,75 @@
 # Changelog
 
+## Unreleased
+
+- Revoked local authority and closed a partial Robinhood connection after account-read failure;
+  allowed a local-only detach when the MCP transport had already dropped. Neither path cancels
+  orders or certifies broker cleanup.
+- Documented a provider-neutral research-agent workflow. No AI provider, cloud bot, scheduler, or
+  model-controlled broker execution was added.
+
+- Removed the repository's automated test and UI-capture harness at the maintainer's request.
+  The last full run before removal passed 653 tests and 31 subtests; future changes no longer have
+  that regression coverage. Source linting, compilation, and wheel construction remain in CI.
+
+- Added isolated stock-capable ticket serialization, bounded multi-day scope validation,
+  portfolio-wide risk preflight and immutable equity intent/fill accounting. Old ETF permissions
+  are unchanged. These primitives are not yet integrated into live strategy dispatch.
+
+- Added multi-day mixed-portfolio paper replay: later-quote execution, modeled spread/slippage/fees,
+  separate settled/unsettled cash, overnight holding provenance, gap-aware daily-loss stops and
+  explicit residual holdings. Synthetic tests do not qualify historical performance or live equities.
+
+- Added broker-isolated mixed earnings-stock/TQQQ/SQQQ target allocation with dynamic sleeve weights,
+  cash reserves, concentration/gross-exposure caps, causal input checks and multi-day holding reviews.
+  These are research targets, not qualified individual-stock or multi-day live execution.
+- Added a persistent on-device warning/error inbox, acknowledgement and live-terminal notices.
+  No email transport, OS toast, GUI notification window or recurring task was installed.
+
+- Added explicit evidence-gated standing sessions with a pinned Robinhood discovery contract,
+  a separate review-bypass consent policy, automatic bounded tickets, and durable local stop control.
+  Unknown submissions never retry; restart cannot restore authority. Cancellation remains attended.
+  Prior offline failure-path checks did not establish real-money qualification or indefinite operation.
+
+- Removed irrelevant universal AI/earnings prerequisites from the current-strategy readiness report,
+  separated optional work from required gates, and added explicit offline setup/policy checks.
+  Recorded budgets no longer appear missing when supplied, but never grant trading authority.
+- Rebuilt native workspace navigation around Overview, Session, Research, Readiness and Records,
+  with a restrained theme, responsive header/sidebar, scrollable session and collapsible research details.
+  Kept run/export controls reachable, deferred hidden-page redraws and preserved explicit trading consent.
+  Historical offline layout captures imply no native DPI, RAM benchmark or trading qualification.
+- Added research-only, point-in-time PEAD screening with explicit thresholds, chronology validation,
+  unverified-provenance labels and canonical input fingerprints; no backtest or stock execution is implied.
+- Added an offline unattended-readiness inventory and consolidated operator/engineering handoff.
+- Refreshed account truth after session approval while still read-only, and hardened JSON policy/research
+  parsing against duplicate keys, nonfinite constants and oversized UTF-8 inputs.
+
+- Added foreground headless shadow operation and full MCP metadata inspection, including provider
+  descriptions and a contract fingerprint. Neither command grants broker write authority.
+- Added explicit live-policy validation and an attended real-order CLI using the existing controller,
+  risk limits, session expiry, receipts, instance lock, and fresh exact-ticket terminal approvals.
+  Piped approval is rejected; failures revoke local authority without implying cancellation or liquidation.
+- Prior offline headless/live lifecycle and policy checks were not real-money validation. No unattended
+  authorization, cloud deployment, LLM trading stage, or live PEAD strategy is claimed by these changes.
+
+## 0.17.0 - 2026-08-31
+
+- Removed the Windows scheduled executor, auto-shadow launch mode, heartbeat/lifecycle machinery,
+  morning-check launcher, installer shortcuts, and their dedicated tests and runbooks. Manual live
+  shadow and safe read-only broker checks remain inside the normal desktop application.
+- Added centralized ownership, duplicate suppression, exception reporting, cancellation, and orderly
+  shutdown for GUI-created asynchronous tasks.
+- Changed exact runtime-trace ingestion to stream synchronized quote batches from SQLite instead of
+  materializing the complete raw batch and quote tables in memory before replay construction.
+- Reorganized the public README and documentation index around user goals, corrected stale scheduler
+  references, added local-link and current-doc consistency tests, and added GitHub issue and pull-request
+  templates with explicit privacy and broker-safety boundaries.
+- Reframed repository documentation as a deployment-independent product contract, added semantic
+  versioning, release-process, and measurable 1.0.0 roadmap documents, removed internal project-family
+  coupling from the architecture, and moved dated data/results out of current product claims.
+- Preserved the autonomous live-order evidence and runtime-parity locks; this release does not claim
+  that the remaining provider and execution-lifecycle blockers have been resolved.
+
 ## 0.16.0 - 2026-08-19
 
 - Added an explicit free Community plan, a truthful Pro-coming-soon dialog, and a local entitlement

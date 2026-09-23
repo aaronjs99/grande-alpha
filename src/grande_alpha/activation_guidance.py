@@ -22,16 +22,6 @@ _DEFAULT = ActivationGuidance(
 
 
 ACTIVATION_GUIDANCE: dict[str, ActivationGuidance] = {
-    "Scheduled auto-shadow": ActivationGuidance(
-        owner="APP GATE",
-        destination="inspect",
-        next_action=(
-            "Use scheduled auto-shadow only for observations and virtual fills. It cannot become live; "
-            "launch normal GRANDE Alpha for attended supervised review after its shared checks, or for "
-            "autonomous review only after every evidence and runtime gate passes."
-        ),
-        explanation="The scheduled process is wrapped in a broker facade that blocks every order method.",
-    ),
     "Broker capability": ActivationGuidance(
         owner="YOU",
         destination="settings",
@@ -153,8 +143,8 @@ ACTIVATION_GUIDANCE: dict[str, ActivationGuidance] = {
         owner="APP + YOU",
         destination="connect",
         next_action=(
-            "Run Morning Check, then open normal GRANDE Alpha, connect with browser consent, and use Run "
-            "safe checks during regular hours. Verify the Agentic account and Robinhood views yourself."
+            "Open GRANDE Alpha, connect with browser consent, and use Run safe checks during regular "
+            "hours. Verify the Agentic account and Robinhood views yourself."
         ),
         explanation="The app automates read-only validation; you verify provider consent and broker truth.",
     ),
@@ -196,17 +186,12 @@ def decorate_readiness(rows: Iterable[Mapping[str, Any]]) -> list[dict[str, str]
     return decorated
 
 
-def activation_summary(rows: Iterable[Mapping[str, Any]], *, shadow_only: bool = False) -> str:
+def activation_summary(rows: Iterable[Mapping[str, Any]]) -> str:
     values = list(rows)
     passed = sum(str(row.get("status", "")) == "PASS" for row in values)
     blocked = len(values) - passed
-    mode = (
-        "This scheduled auto-shadow process is structurally read-only and has no live-order path. "
-        if shadow_only
-        else "Scheduled auto-shadow is structurally read-only and cannot become a live session. "
-    )
     return (
-        f"{passed}/{len(values)} platform conditions currently pass; {blocked} are blocked. {mode}"
+        f"{passed}/{len(values)} platform conditions currently pass; {blocked} are blocked. "
         "Normal GRANDE Alpha may separately offer an attended, hard-capped supervised session when its "
         "account, route, and capability checks pass; every order still requires fresh confirmation. "
         "Runtime parity and evidence govern only evidence-gated autonomous eligibility. Neither path "

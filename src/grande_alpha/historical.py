@@ -931,219 +931,170 @@ def _load_runtime_quote_trace(
                 ),
             ).fetchone()["n"]
         )
-        batch_rows = connection.execute(
-            """SELECT rowid AS batch_sequence,batch_id,stream_id,observed_at,
-            schema_version,symbol_count,validation_profile,validation_version,
-            max_age_seconds,max_skew_seconds FROM quote_batches
-            WHERE validation_profile='exact_execution_quotes' AND schema_version=?
-              AND validation_version=?
-              AND max_age_seconds IS NOT NULL AND max_skew_seconds IS NOT NULL
-            """
-            + range_sql
-            + " ORDER BY rowid",
-            (
-                QUOTE_BATCH_SCHEMA_VERSION,
-                EXACT_QUOTE_VALIDATOR_VERSION,
-                *range_parameters,
-            ),
-        ).fetchall()
-        rows = connection.execute(
-            """SELECT id,observed_at,symbol,bid,ask,last,venue_timestamp,
-            bid_timestamp,ask_timestamp,batch_id,batch_position
-            FROM quotes WHERE batch_id IN (
-                SELECT batch_id FROM quote_batches
+        exact_batch_count = int(
+            connection.execute(
+                """SELECT COUNT(*) AS n FROM quote_batches b
                 WHERE validation_profile='exact_execution_quotes' AND schema_version=?
-                   AND validation_version=?
-                   AND max_age_seconds IS NOT NULL AND max_skew_seconds IS NOT NULL
-            """
-            + range_sql
-            + """
-            ) AND batch_position IS NOT NULL
-            ORDER BY batch_id,batch_position""",
-            (
-                QUOTE_BATCH_SCHEMA_VERSION,
-                EXACT_QUOTE_VALIDATOR_VERSION,
-                *range_parameters,
-            ),
-        ).fetchall()
+                  AND validation_version=? AND max_age_seconds IS NOT NULL
+                  AND max_skew_seconds IS NOT NULL"""
+                + range_sql.replace("observed_at", "b.observed_at"),
+                (QUOTE_BATCH_SCHEMA_VERSION, EXACT_QUOTE_VALIDATOR_VERSION, *range_parameters),
+            ).fetchone()["n"]
+        )
+        cursor = connection.execute(
+            """SELECT b.rowid AS batch_sequence,b.batch_id,b.stream_id,
+            b.observed_at AS batch_observed_at,b.schema_version,b.symbol_count,
+            b.validation_profile,b.validation_version,b.max_age_seconds,b.max_skew_seconds,
+            q.id,q.observed_at,q.symbol,q.bid,q.ask,q.last,q.venue_timestamp,
+            q.bid_timestamp,q.ask_timestamp,q.batch_position
+            FROM quote_batches b JOIN quotes q ON q.batch_id=b.batch_id
+            WHERE b.validation_profile='exact_execution_quotes' AND b.schema_version=?
+              AND b.validation_version=? AND b.max_age_seconds IS NOT NULL
+              AND b.max_skew_seconds IS NOT NULL AND q.batch_position IS NOT NULL"""
+            + range_sql.replace("observed_at", "b.observed_at")
+            + " ORDER BY b.rowid,q.batch_position",
+            (QUOTE_BATCH_SCHEMA_VERSION, EXACT_QUOTE_VALIDATOR_VERSION, *range_parameters),
+        )
+
+        trace_digest = hashlib.sha256()
+        frames: list[ReplayFrame] = []
+        sessions_by_stream: dict[str, set[str]] = {}
+        builder = BarBuilder("QQQ", bar_seconds)
+        active_stream: str | None = None
+        last_qqq_timestamp: datetime | None = None
+        previous_eligible: tuple[str, str, datetime] | None = None
+        source_resolution_seconds: float | None = None
+        validator_envelope: tuple[float, float] | None = None
+        current_batch_id: str | None = None
+        chunk: list[sqlite3.Row] = []
+        processed_batches = 0
+        quote_row_count = 0
+
+        def point_bar(symbol: str, quote: Quote, start_at: datetime) -> Bar:
+            price = quote.mid
+            return Bar(symbol, start_at, price, price, price, price, 1, 0.0)
+
+        def process_chunk(batch_rows: list[sqlite3.Row]) -> None:
+            nonlocal active_stream, builder, last_qqq_timestamp, previous_eligible
+            nonlocal source_resolution_seconds, validator_envelope, processed_batches
+            if len(batch_rows) != len(RUNTIME_REQUIRED_SYMBOLS):
+                raise ValueError("Runtime quote batch is interrupted or incomplete")
+            record = batch_rows[0]
+            batch_id = str(record["batch_id"])
+            batch_sequence = int(record["batch_sequence"])
+            stream_id = str(record["stream_id"]).strip()
+            schema_version = int(record["schema_version"])
+            symbol_count = int(record["symbol_count"])
+            validation_profile = str(record["validation_profile"])
+            validation_version = int(record["validation_version"])
+            envelope = (float(record["max_age_seconds"]), float(record["max_skew_seconds"]))
+            if validator_envelope is None:
+                validator_envelope = envelope
+            elif validator_envelope != envelope:
+                raise ValueError("Exact runtime trace must use one validator age/skew envelope")
+            max_age, max_skew = envelope
+            if not 0 < max_age <= 8.0 or not 0 < max_skew <= min(5.0, max_age):
+                raise ValueError("Exact runtime trace validator envelope is unsupported")
+            if not stream_id:
+                raise ValueError("Runtime quote batch lacks a bound signal-pipeline stream ID")
+            if (
+                schema_version != QUOTE_BATCH_SCHEMA_VERSION
+                or validation_profile != "exact_execution_quotes"
+                or validation_version != EXACT_QUOTE_VALIDATOR_VERSION
+                or symbol_count != len(RUNTIME_REQUIRED_SYMBOLS)
+            ):
+                raise ValueError("Runtime quote batch has an unsupported or inconsistent schema")
+            if [int(row["batch_position"]) for row in batch_rows] != [0, 1, 2]:
+                raise ValueError("Runtime quote batch positions must be exactly 0, 1, and 2")
+            batch_observed_at = _aware_trace_timestamp(record["batch_observed_at"], "batch observed_at")
+            observed_times: list[datetime] = []
+            quotes: dict[str, Quote] = {}
+            for row in batch_rows:
+                observed_at = _aware_trace_timestamp(row["observed_at"], "observed_at")
+                if observed_at != batch_observed_at:
+                    raise ValueError("Runtime quote child does not match its atomic batch timestamp")
+                venue_timestamp = _aware_trace_timestamp(row["venue_timestamp"], "venue_timestamp")
+                bid_timestamp = _aware_trace_timestamp(row["bid_timestamp"], "bid_timestamp")
+                ask_timestamp = _aware_trace_timestamp(row["ask_timestamp"], "ask_timestamp")
+                symbol = str(row["symbol"]).upper()
+                quote = Quote(symbol, float(row["bid"]), float(row["ask"]), float(row["last"]), venue_timestamp, bid_timestamp, ask_timestamp)
+                quote.validate()
+                if symbol in quotes:
+                    raise ValueError("Runtime quote batch contains a duplicate symbol")
+                quotes[symbol] = quote
+                observed_times.append(observed_at)
+                trace_digest.update(
+                    f"{batch_sequence}|{stream_id}|{batch_id}|{schema_version}|{symbol_count}|"
+                    f"{validation_profile}|{validation_version}|{max_age:.6f}|{max_skew:.6f}|"
+                    f"{row['batch_position']}|{row['id']}|{observed_at.isoformat()}|{symbol}|"
+                    f"{quote.bid:.8f}|{quote.ask:.8f}|{quote.last:.8f}|{venue_timestamp.isoformat()}|"
+                    f"{bid_timestamp.isoformat()}|{ask_timestamp.isoformat()}\n".encode()
+                )
+            if tuple(sorted(quotes)) != tuple(sorted(RUNTIME_REQUIRED_SYMBOLS)):
+                raise ValueError("Runtime quote batch must contain exactly QQQ, TQQQ, and SQQQ")
+            if (max(observed_times) - min(observed_times)).total_seconds() > 2.0:
+                raise ValueError("Runtime quote rows are not one synchronized recorder batch")
+            book_times = [timestamp for quote in quotes.values() for timestamp in (quote.bid_timestamp, quote.ask_timestamp) if timestamp is not None]
+            ages = [(batch_observed_at - timestamp).total_seconds() for timestamp in book_times]
+            if any(age < -2.0 or age > max_age for age in ages):
+                raise ValueError("Runtime quote batch violates its bound validator age envelope")
+            if (max(book_times) - min(book_times)).total_seconds() > max_skew:
+                raise ValueError("Runtime quote batch violates its bound validator skew envelope")
+            processed_batches += 1
+            if not all(
+                market_session_allowed(timestamp, 0, 0, market_hours)
+                for quote in quotes.values()
+                for timestamp in (quote.bid_timestamp, quote.ask_timestamp)
+            ):
+                return
+            qqq_observed_at = quotes["QQQ"].latest_book_timestamp
+            if qqq_observed_at is None:
+                raise ValueError("Runtime QQQ quote lacks exact book observation time")
+            current_session = session_key(qqq_observed_at, market_hours)
+            sessions_by_stream.setdefault(stream_id, set()).add(current_session)
+            if previous_eligible is not None:
+                previous_stream, previous_session, previous_time = previous_eligible
+                if stream_id == previous_stream and current_session == previous_session and qqq_observed_at > previous_time:
+                    delta_seconds = (qqq_observed_at - previous_time).total_seconds()
+                    source_resolution_seconds = max(source_resolution_seconds or 0.0, delta_seconds)
+            previous_eligible = (stream_id, current_session, qqq_observed_at)
+            if active_stream != stream_id:
+                builder = BarBuilder("QQQ", bar_seconds)
+                active_stream = stream_id
+                last_qqq_timestamp = None
+            if last_qqq_timestamp is not None and qqq_observed_at <= last_qqq_timestamp:
+                return
+            last_qqq_timestamp = qqq_observed_at
+            completed = builder.update(replace(quotes["QQQ"], timestamp=qqq_observed_at))
+            if completed is None:
+                return
+            causal_timestamp = max(quotes[symbol].latest_book_timestamp for symbol in RUNTIME_REQUIRED_SYMBOLS)
+            if causal_timestamp <= completed.start:
+                raise ValueError("Runtime causal quote must be later than its completed analysis bar")
+            frames.append(ReplayFrame(completed.start, completed, point_bar("TQQQ", quotes["TQQQ"], completed.start), point_bar("SQQQ", quotes["SQQQ"], completed.start), causal_timestamp, quotes["QQQ"], quotes["TQQQ"], quotes["SQQQ"], stream_id))
+
+        for row in cursor:
+            quote_row_count += 1
+            row_batch_id = str(row["batch_id"])
+            if current_batch_id is not None and row_batch_id != current_batch_id:
+                process_chunk(chunk)
+                chunk = []
+            current_batch_id = row_batch_id
+            chunk.append(row)
+        if chunk:
+            process_chunk(chunk)
+        if exact_batch_count < 2 or quote_row_count < 6:
+            raise ValueError("Runtime quote trace needs at least two synchronized quote batches")
+        if processed_batches != exact_batch_count:
+            raise ValueError("Runtime quote rows reference a missing or childless provider batch")
+        if any(len(sessions) > 1 for sessions in sessions_by_stream.values()):
+            raise ValueError("Runtime quote stream spans multiple sessions without a signal-pipeline reset")
+        if validator_envelope is None:
+            raise ValueError("Runtime quote trace has no validator envelope")
+        validator_max_age_seconds, validator_max_skew_seconds = validator_envelope
+        source_resolution_seconds = source_resolution_seconds or float(bar_seconds)
     finally:
         connection.close()
-    if len(batch_rows) < 2 or len(rows) < 6:
-        raise ValueError("Runtime quote trace needs at least two synchronized quote batches")
-
-    trace_digest = hashlib.sha256()
-    batches: list[dict[str, Quote]] = []
-    rows_by_batch: dict[str, list[sqlite3.Row]] = {}
-    for row in rows:
-        rows_by_batch.setdefault(str(row["batch_id"]), []).append(row)
-    known_batch_ids = {str(row["batch_id"]) for row in batch_rows}
-    if set(rows_by_batch) != known_batch_ids:
-        raise ValueError("Runtime quote rows reference a missing or childless provider batch")
-    envelopes = {
-        (float(row["max_age_seconds"]), float(row["max_skew_seconds"]))
-        for row in batch_rows
-    }
-    if len(envelopes) != 1:
-        raise ValueError("Exact runtime trace must use one validator age/skew envelope")
-    validator_max_age_seconds, validator_max_skew_seconds = next(iter(envelopes))
-    if (
-        not 0 < validator_max_age_seconds <= 8.0
-        or not 0 < validator_max_skew_seconds
-        <= min(5.0, validator_max_age_seconds)
-    ):
-        raise ValueError("Exact runtime trace validator envelope is unsupported")
-    for batch_record in batch_rows:
-        batch_id = str(batch_record["batch_id"])
-        batch_sequence = int(batch_record["batch_sequence"])
-        stream_id = str(batch_record["stream_id"]).strip()
-        schema_version = int(batch_record["schema_version"])
-        symbol_count = int(batch_record["symbol_count"])
-        validation_profile = str(batch_record["validation_profile"])
-        validation_version = int(batch_record["validation_version"])
-        if not stream_id:
-            raise ValueError("Runtime quote batch lacks a bound signal-pipeline stream ID")
-        if (
-            schema_version != QUOTE_BATCH_SCHEMA_VERSION
-            or validation_profile != "exact_execution_quotes"
-            or validation_version != EXACT_QUOTE_VALIDATOR_VERSION
-            or symbol_count != len(RUNTIME_REQUIRED_SYMBOLS)
-        ):
-            raise ValueError("Runtime quote batch has an unsupported or inconsistent schema")
-        batch_observed_at = _aware_trace_timestamp(
-            batch_record["observed_at"], "batch observed_at"
-        )
-        chunk = rows_by_batch[batch_id]
-        if len(chunk) != len(RUNTIME_REQUIRED_SYMBOLS):
-            raise ValueError("Runtime quote batch is interrupted or incomplete")
-        if sorted(int(row["batch_position"]) for row in chunk) != [0, 1, 2]:
-            raise ValueError("Runtime quote batch positions must be exactly 0, 1, and 2")
-        observed_times: list[datetime] = []
-        quotes: dict[str, Quote] = {}
-        for row in sorted(chunk, key=lambda item: int(item["batch_position"])):
-            observed_at = _aware_trace_timestamp(row["observed_at"], "observed_at")
-            if observed_at != batch_observed_at:
-                raise ValueError("Runtime quote child does not match its atomic batch timestamp")
-            venue_timestamp = _aware_trace_timestamp(row["venue_timestamp"], "venue_timestamp")
-            bid_timestamp = _aware_trace_timestamp(row["bid_timestamp"], "bid_timestamp")
-            ask_timestamp = _aware_trace_timestamp(row["ask_timestamp"], "ask_timestamp")
-            symbol = str(row["symbol"]).upper()
-            quote = Quote(
-                symbol,
-                float(row["bid"]),
-                float(row["ask"]),
-                float(row["last"]),
-                venue_timestamp,
-                bid_timestamp,
-                ask_timestamp,
-            )
-            quote.validate()
-            if symbol in quotes:
-                raise ValueError("Runtime quote batch contains a duplicate symbol")
-            quotes[symbol] = quote
-            observed_times.append(observed_at)
-            trace_digest.update(
-                f"{batch_sequence}|{stream_id}|{batch_id}|{schema_version}|{symbol_count}|"
-                f"{validation_profile}|{validation_version}|"
-                f"{validator_max_age_seconds:.6f}|{validator_max_skew_seconds:.6f}|"
-                f"{row['batch_position']}|{row['id']}|"
-                f"{observed_at.isoformat()}|{symbol}|{quote.bid:.8f}|"
-                f"{quote.ask:.8f}|{quote.last:.8f}|{venue_timestamp.isoformat()}|"
-                f"{bid_timestamp.isoformat()}|{ask_timestamp.isoformat()}\n".encode()
-            )
-        if tuple(sorted(quotes)) != tuple(sorted(RUNTIME_REQUIRED_SYMBOLS)):
-            raise ValueError("Runtime quote batch must contain exactly QQQ, TQQQ, and SQQQ")
-        if (max(observed_times) - min(observed_times)).total_seconds() > 2.0:
-            raise ValueError("Runtime quote rows are not one synchronized recorder batch")
-        book_times = [
-            timestamp
-            for quote in quotes.values()
-            for timestamp in (quote.bid_timestamp, quote.ask_timestamp)
-            if timestamp is not None
-        ]
-        ages = [(batch_observed_at - timestamp).total_seconds() for timestamp in book_times]
-        if any(age < -2.0 or age > validator_max_age_seconds for age in ages):
-            raise ValueError("Runtime quote batch violates its bound validator age envelope")
-        if (
-            max(book_times) - min(book_times)
-        ).total_seconds() > validator_max_skew_seconds:
-            raise ValueError("Runtime quote batch violates its bound validator skew envelope")
-        batches.append({"__stream_id__": stream_id, **quotes})
-
-    eligible_batches = [
-        quotes
-        for quotes in batches
-        if all(
-            market_session_allowed(timestamp, 0, 0, market_hours)
-            for symbol, quote in quotes.items()
-            if symbol != "__stream_id__"
-            for timestamp in (quote.bid_timestamp, quote.ask_timestamp)
-        )
-    ]
-    sessions_by_stream: dict[str, set[str]] = {}
-    for quotes in eligible_batches:
-        sessions_by_stream.setdefault(str(quotes["__stream_id__"]), set()).add(
-            session_key(quotes["QQQ"].latest_book_timestamp, market_hours)
-        )
-    if any(len(sessions) > 1 for sessions in sessions_by_stream.values()):
-        raise ValueError(
-            "Runtime quote stream spans multiple sessions without a signal-pipeline reset"
-        )
-    within_session_deltas = [
-        (
-            current["QQQ"].latest_book_timestamp
-            - previous["QQQ"].latest_book_timestamp
-        ).total_seconds()
-        for previous, current in zip(eligible_batches, eligible_batches[1:], strict=False)
-        if session_key(previous["QQQ"].latest_book_timestamp, market_hours)
-        == session_key(current["QQQ"].latest_book_timestamp, market_hours)
-        and current["QQQ"].latest_book_timestamp > previous["QQQ"].latest_book_timestamp
-        and previous["__stream_id__"] == current["__stream_id__"]
-    ]
-    source_resolution_seconds = (
-        max(within_session_deltas) if within_session_deltas else float(bar_seconds)
-    )
-    builder = BarBuilder("QQQ", bar_seconds)
-    frames: list[ReplayFrame] = []
-    active_stream: str | None = None
-    last_qqq_timestamp: datetime | None = None
-    for quotes in eligible_batches:
-        stream_id = str(quotes["__stream_id__"])
-        if active_stream != stream_id:
-            builder = BarBuilder("QQQ", bar_seconds)
-            active_stream = stream_id
-            last_qqq_timestamp = None
-        qqq_observed_at = quotes["QQQ"].latest_book_timestamp
-        if qqq_observed_at is None:
-            raise ValueError("Runtime QQQ quote lacks exact book observation time")
-        if last_qqq_timestamp is not None and qqq_observed_at <= last_qqq_timestamp:
-            continue
-        last_qqq_timestamp = qqq_observed_at
-        completed = builder.update(replace(quotes["QQQ"], timestamp=qqq_observed_at))
-        if completed is None:
-            continue
-        causal_timestamp = max(
-            quotes[symbol].latest_book_timestamp for symbol in RUNTIME_REQUIRED_SYMBOLS
-        )
-        if causal_timestamp <= completed.start:
-            raise ValueError("Runtime causal quote must be later than its completed analysis bar")
-
-        def point_bar(symbol: str, quote: Quote, start: datetime) -> Bar:
-            price = quote.mid
-            return Bar(symbol, start, price, price, price, price, 1, 0.0)
-
-        frames.append(
-            ReplayFrame(
-                completed.start,
-                completed,
-                point_bar("TQQQ", quotes["TQQQ"], completed.start),
-                point_bar("SQQQ", quotes["SQQQ"], completed.start),
-                causal_timestamp,
-                quotes["QQQ"],
-                quotes["TQQQ"],
-                quotes["SQQQ"],
-                stream_id,
-            )
-        )
     if not frames:
         raise ValueError("Runtime quote trace did not complete an analysis bar")
     interval = f"{bar_seconds}s" if bar_seconds != 60 else "1m"
@@ -1154,7 +1105,7 @@ def _load_runtime_quote_trace(
         dataset_hash_value=quality.dataset_hash,
         interval=interval,
         market_hours=market_hours,
-        quote_row_count=len(rows),
+        quote_row_count=quote_row_count,
         excluded_legacy_quote_rows=legacy_count,
         validator_max_age_seconds=validator_max_age_seconds,
         validator_max_skew_seconds=validator_max_skew_seconds,
@@ -1176,7 +1127,7 @@ def _load_runtime_quote_trace(
             market_hours=market_hours,
             provenance=provenance,
         ),
-        len(rows),
+        quote_row_count,
     )
 
 

@@ -20,17 +20,21 @@ at `%LOCALAPPDATA%\GRANDEAlpha\runtime`. Keeping the runtime outside the extract
 the Windows path-length failure caused by deeply nested PySide6 QML files. For isolated automation,
 set `GRANDE_ALPHA_RUNTIME_DIR` to another short absolute directory before running setup.
 
+Normal startup does not discover or merge data from a legacy application directory. If an existing
+configuration needs a schema upgrade, run `grande-alpha-cli config upgrade`; it keeps a timestamped
+backup beside the selected configuration before writing the upgraded copy. If legacy audit records
+need recovery, explicitly name their source directory with
+`grande-alpha-cli config import-legacy --source <directory>`; the operation only copies recognized
+files and preserves the source directory.
+
 `install-local.ps1` creates Desktop and Start Menu shortcuts that launch the source application via
 the trusted system PowerShell and signed Python runtime. The shortcuts point to the current source
-folder, so keep that folder in its installed location. It also creates a Start Menu shortcut for
-the optional scheduled-shadow setup; it does not register or enable a task automatically. See
-[Scheduled weekday live shadow](SCHEDULED_SHADOW.md) for the one-time install, status, definition,
-and removal commands.
+folder, so keep that folder in its installed location. Version 0.17 and later do not install a
+morning-check shortcut or any Windows scheduled task.
 
-The scheduled task is permanently shadow-only. It never authorizes or starts live trading, and live
-authority is never stored in Task Scheduler, configuration, Credential Manager, or the receipt
-database. A future eligible live pilot would still require one interactive **Authorize & Start Live
-Session** action for that bounded same-ET-day grant.
+No background scheduler is installed or supported. Live authority is never stored in Task Scheduler,
+configuration, Credential Manager, or the receipt database. Starting either bounded real-order path
+requires an interactive action in the running desktop application.
 
 ### Current OAuth recovery
 

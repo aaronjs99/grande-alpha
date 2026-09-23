@@ -367,12 +367,15 @@ class OrderIntent:
             return float(self.quantity * self.limit_price)
         return 0.0
 
+    def _validate_symbol(self) -> None:
+        if self.symbol not in {"TQQQ", "SQQQ"}:
+            raise ValueError("Automatic equity orders are restricted to TQQQ and SQQQ")
+
     def validate(self) -> None:
         profile = execution_profile(self)
         if self.side not in {"buy", "sell"}:
             raise ValueError("Order side must be buy or sell")
-        if self.symbol not in {"TQQQ", "SQQQ"}:
-            raise ValueError("Automatic equity orders are restricted to TQQQ and SQQQ")
+        self._validate_symbol()
         has_dollars = self.dollar_amount is not None
         has_quantity = self.quantity is not None
         if has_dollars == has_quantity:

@@ -20,11 +20,11 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPushButton,
+    QScrollArea,
     QSizePolicy,
     QSplitter,
     QTableWidget,
     QTableWidgetItem,
-    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -32,8 +32,9 @@ from PySide6.QtWidgets import (
 from grande_alpha import __version__
 from grande_alpha.activation_guidance import activation_guidance
 from grande_alpha.config import AppConfig, save_config
-from grande_alpha.controller import TradingController, TradingSnapshot
+from grande_alpha.controller import ShadowRecoveryRequired, TradingController, TradingSnapshot
 from grande_alpha.models import (
+    LiveGrant,
     OrderConfirmationDecision,
     OrderConfirmationRequest,
     Regime,
@@ -41,6 +42,7 @@ from grande_alpha.models import (
 )
 from grande_alpha.privacy import export_diagnostics
 from grande_alpha.strategy import STRATEGY_NAMES
+from grande_alpha.terminology import term_help
 from grande_alpha.ui.activation_widget import ActivationChecklistWidget
 from grande_alpha.ui.dialogs import (
     AuthorityControlPanel,
@@ -52,50 +54,17 @@ from grande_alpha.ui.glossary import (
     ExplainedLabel,
     GlossaryDialog,
     apply_table_header_help,
-    term_help,
 )
 from grande_alpha.ui.product_dialog import ProductPlansDialog
 from grande_alpha.ui.sandbox_widget import SandboxWidget
 from grande_alpha.ui.settings_dialog import SettingsDialog
 from grande_alpha.ui.table_layout import configure_adjustable_columns, reset_column_widths
+from grande_alpha.ui.task_supervisor import TaskSupervisor
+from grande_alpha.ui.theme import THEME
 from grande_alpha.ui.welcome_widget import WelcomeWidget
+from grande_alpha.ui.workspace import DisclosureSection, WorkspaceNavigation, WorkspaceTabs
 
-STYLESHEET = """
-QWidget { background: #0b1118; color: #e9f0f6; font-family: 'Segoe UI'; font-size: 10pt; }
-QMainWindow { background: #081018; }
-QMenuBar { background: #0a141d; border-bottom: 1px solid #223142; padding: 2px 5px; }
-QMenuBar::item { background: transparent; padding: 6px 10px; border-radius: 4px; }
-QMenuBar::item:selected { background: #1b2b3b; color: #8fd3ff; }
-QMenu { background: #101a24; border: 1px solid #304357; padding: 5px; }
-QMenu::item { padding: 7px 34px 7px 24px; border-radius: 4px; }
-QMenu::item:selected { background: #1f3446; color: #ffffff; }
-QMenu::item:disabled { color: #5d7182; }
-QMenu::separator { height: 1px; background: #2c3c4b; margin: 5px 8px; }
-QFrame#card { background: #111a24; border: 1px solid #223142; border-radius: 10px; }
-QLabel#cardTitle { color: #8fa4b8; font-size: 9pt; }
-QLabel#cardValue { font-size: 18pt; font-weight: 650; }
-QLabel#dialogTitle { font-size: 17pt; font-weight: 650; }
-QPushButton { background: #182634; border: 1px solid #2c4155; border-radius: 7px; padding: 8px 13px; }
-QPushButton:hover { background: #213447; }
-QPushButton:disabled { color: #596b7a; background: #121b24; }
-QPushButton#primary { background: #00c805; border-color: #00c805; color: #021004; font-weight: 700; }
-QPushButton#danger { background: #c62d42; border-color: #ec5266; color: white; font-weight: 700; }
-QPushButton#flatten { background: #7f3d18; border-color: #c66a2e; color: white; }
-QTableWidget { background: #0e1720; alternate-background-color: #101c27; border: 1px solid #223142; gridline-color: #223142; }
-QTableWidget::item:selected { background: #244663; color: #ffffff; }
-QHeaderView::section { background: #14202b; color: #a9bac8; padding: 6px; border: 0; border-right: 1px solid #223142; }
-QTabWidget::pane { border: 1px solid #223142; }
-QTabBar::tab { background: #111a24; padding: 9px 16px; }
-QTabBar::tab:selected { background: #1b2b3b; color: #00e507; }
-QLineEdit, QSpinBox, QDoubleSpinBox { background: #0e1720; border: 1px solid #2c4155; border-radius: 5px; padding: 6px; }
-QCheckBox { spacing: 8px; }
-QGroupBox { border: 1px solid #2b3b4b; border-radius: 9px; margin-top: 13px; padding-top: 12px; font-weight: 650; }
-QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 7px; color: #d7e5f0; }
-QLabel#settingsDescription { color: #91a6b8; font-size: 9pt; }
-QLabel#settingsStatus { border-radius: 6px; padding: 6px 9px; font-size: 9pt; font-weight: 700; }
-QLabel#validationWarning { color: #ffd27a; background: #2b2315; border: 1px solid #6f5727; border-radius: 6px; padding: 8px; }
-QToolTip { background: #243648; color: white; border: 1px solid #45617a; }
-"""
+STYLESHEET = THEME  # Compatibility for external preview helpers.
 
 
 class MetricCard(QFrame):
@@ -148,25 +117,20 @@ class MainWindow(QMainWindow):
         self,
         controller: TradingController,
         config: AppConfig,
-        *,
-        auto_shadow: bool = False,
     ) -> None:
         super().__init__()
         self.controller = controller
         self.config = config
-        self.auto_shadow = auto_shadow
         self._snapshot = TradingSnapshot()
         self._chart_times: deque[float] = deque(maxlen=1800)
         self._chart_prices: deque[float] = deque(maxlen=1800)
         self._closing_after_cleanup = False
         self._connection_busy = False
-        self._auto_shadow_starting = False
-        self._auto_shadow_retry_seconds = 15
-        self._auto_shadow_retry_remaining = 0
+        self.tasks = TaskSupervisor(self._on_task_error)
         self.setWindowTitle(f"GRANDE Alpha {__version__} — Community Preview")
-        self.setMinimumSize(820, 620)
+        self.setMinimumSize(720, 560)
         self.resize(1440, 900)
-        QApplication.instance().setStyleSheet(STYLESHEET)
+        QApplication.instance().setStyleSheet(THEME)
         self._build_ui()
         if not controller.order_confirmation_available:
             controller.set_order_confirmer(self._confirm_strategy_order)
@@ -180,12 +144,6 @@ class MainWindow(QMainWindow):
         self.reconcile_timer = QTimer(self)
         self.reconcile_timer.setInterval(int(config.reconcile_seconds * 1000))
         self.reconcile_timer.timeout.connect(self._schedule_reconcile)
-        self.auto_shadow_close_timer = QTimer(self)
-        self.auto_shadow_close_timer.setInterval(1_000)
-        self.auto_shadow_close_timer.timeout.connect(self._check_auto_shadow_close)
-        if self.auto_shadow:
-            self.auto_shadow_close_timer.start()
-            QTimer.singleShot(0, lambda: asyncio.create_task(self._auto_start_shadow()))
 
     def _build_ui(self) -> None:
         root = QWidget()
@@ -227,7 +185,7 @@ class MainWindow(QMainWindow):
         self.connect_button = QPushButton("Connect Robinhood")
         self.connect_button.setAccessibleName("Connect or disconnect Robinhood")
         self.connect_button.setToolTip("Connect to the consented Robinhood provider session")
-        self.connect_button.clicked.connect(lambda: asyncio.create_task(self._connect()))
+        self.connect_button.clicked.connect(lambda: self._start_task("connection", self._connect()))
         self.authorize_button = QPushButton("Authorize && Start Session")
         self.authorize_button.setObjectName("primary")
         self.authorize_button.clicked.connect(self._authorize)
@@ -236,23 +194,21 @@ class MainWindow(QMainWindow):
         self.shadow_button = QPushButton("Start Live Shadow")
         self.shadow_button.setToolTip("Run live observations and virtual fills without sending orders")
         self.shadow_button.clicked.connect(self._toggle_shadow)
-        self.kill_button = QPushButton("STOP + CANCEL")
+        self.kill_button = QPushButton("Stop / cancel…")
         self.kill_button.setObjectName("danger")
-        self.kill_button.clicked.connect(lambda: asyncio.create_task(self._stop_and_cancel()))
+        self.kill_button.clicked.connect(
+            lambda: self._start_task("stop-and-cancel", self._stop_and_cancel())
+        )
         self.flatten_button = QPushButton("Flatten Position")
         self.flatten_button.setObjectName("flatten")
-        self.flatten_button.clicked.connect(lambda: asyncio.create_task(self._flatten()))
-        self.settings_button = QPushButton("Settings && Permissions")
+        self.flatten_button.clicked.connect(lambda: self._start_task("flatten", self._flatten()))
+        self.settings_button = QPushButton("Settings")
         self.settings_button.setAccessibleName("Settings and permissions")
         self.settings_button.setToolTip("Review account scope, capabilities, privacy, and cadence")
         self.settings_button.clicked.connect(self._open_settings)
         self.header_actions = (
             self.connect_button,
-            self.authorize_button,
-            self.start_button,
-            self.shadow_button,
             self.kill_button,
-            self.flatten_button,
             self.settings_button,
         )
         for button in self.header_actions:
@@ -261,38 +217,71 @@ class MainWindow(QMainWindow):
         self.header_layout.addWidget(self.header_actions_widget, 0, 1)
         self.header_layout.setColumnStretch(1, 1)
         outer.addWidget(self.header)
+        self.notice_bar = QFrame()
+        self.notice_bar.setObjectName("card")
+        notice_layout = QHBoxLayout(self.notice_bar)
+        self.notice_text = QLabel()
+        self.notice_text.setWordWrap(True)
+        self.notice_text.setTextFormat(Qt.TextFormat.PlainText)
+        self.notice_text.setAccessibleName("Latest operation result")
+        self.notice_dismiss = QPushButton("Dismiss")
+        self.notice_dismiss.clicked.connect(self.notice_bar.hide)
+        notice_layout.addWidget(self.notice_text, 1)
+        notice_layout.addWidget(self.notice_dismiss)
+        outer.addWidget(self.notice_bar)
+        self.notice_bar.hide()
 
-        self.broker_panel = QWidget()
-        broker_layout = QVBoxLayout(self.broker_panel)
+        self.broker_panel = QScrollArea()
+        self.broker_panel.setWidgetResizable(True)
+        self.broker_panel.setFrameShape(QFrame.Shape.NoFrame)
+        self.broker_panel.setAccessibleName("Trading session details")
+        session_content = QWidget()
+        session_content.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.broker_panel.setWidget(session_content)
+        broker_layout = QVBoxLayout(session_content)
         broker_layout.setContentsMargins(0, 0, 0, 0)
+        session_title = QLabel("Trading session")
+        session_title.setObjectName("dialogTitle")
+        broker_layout.addWidget(session_title)
+        session_intro = QLabel("Observe in shadow, or review a bounded live session. No unattended orders are enabled.")
+        session_intro.setWordWrap(True)
+        session_intro.setObjectName("settingsDescription")
+        broker_layout.addWidget(session_intro)
+        self.session_state_title = QLabel("Not connected")
+        self.session_state_title.setObjectName("dialogTitle")
+        self.session_state_title.setWordWrap(True)
+        self.session_state_detail = QLabel("Connect Robinhood to see your account. No trading is active.")
+        self.session_state_detail.setWordWrap(True)
+        self.session_state_detail.setObjectName("settingsDescription")
+        broker_layout.addWidget(self.session_state_title)
+        broker_layout.addWidget(self.session_state_detail)
+        self.session_actions_layout = QGridLayout()
+        self.session_actions = (self.shadow_button, self.authorize_button, self.start_button, self.flatten_button)
+        broker_layout.addLayout(self.session_actions_layout)
         cards = QGridLayout()
         self.cards_layout = cards
         cards.setHorizontalSpacing(8)
         cards.setVerticalSpacing(8)
         self.account_card = MetricCard("Agentic account", "Disconnected")
         self.value_card = MetricCard("Account value", "—")
-        self.buying_power_card = MetricCard("Buying power", "—")
-        self.session_card = MetricCard("Live authority", "LOCKED")
+        self.buying_power_card = MetricCard("Available buying power", "—")
+        self.session_card = MetricCard("Trading permission", "Not approved")
         self.signal_card = MetricCard("QQQ regime", "FLAT")
         self.pair_action_card = MetricCard("Pair action (T,S)", "(0,0)")
-        self.drawdown_card = MetricCard("Session drawdown", "$0.00")
+        self.drawdown_card = MetricCard("Loss from session peak", "$0.00")
         self.shadow_card = MetricCard("Live shadow", "OFF")
         self.metric_cards = (
-            self.account_card,
             self.value_card,
             self.buying_power_card,
             self.session_card,
-            self.signal_card,
-            self.pair_action_card,
             self.drawdown_card,
-            self.shadow_card,
         )
         broker_layout.addLayout(cards)
         self.authority_controls = AuthorityControlPanel()
         self.authority_controls.pause_requested.connect(self._pause_authority)
         self.authority_controls.resume_requested.connect(self._resume_authority)
         self.authority_controls.revoke_requested.connect(
-            lambda: asyncio.create_task(self._revoke_authority())
+            lambda: self._start_task("revoke-authority", self._revoke_authority())
         )
         broker_layout.addWidget(self.authority_controls)
 
@@ -303,10 +292,10 @@ class MainWindow(QMainWindow):
         top.setChildrenCollapsible(False)
         self.chart = pg.PlotWidget(axisItems={"bottom": pg.DateAxisItem()})
         self.chart.setMinimumSize(0, 90)
-        self.chart.setBackground("#0e1720")
+        self.chart.setBackground("#141d27")
         self.chart.showGrid(x=True, y=True, alpha=0.18)
         self.chart.setLabel("left", "QQQ midpoint", units="$")
-        self.chart_curve = self.chart.plot(pen=pg.mkPen("#00d407", width=2))
+        self.chart_curve = self.chart.plot(pen=pg.mkPen("#d2bc8e", width=2))
         top.addWidget(self.chart)
 
         self.quotes_table = self._table(["Symbol", "Bid", "Ask", "Last", "Spread", "Age"])
@@ -316,9 +305,19 @@ class MainWindow(QMainWindow):
         top.setStretchFactor(0, 3)
         top.setStretchFactor(1, 2)
         top.setSizes([850, 500])
-        broker_layout.addWidget(top, 1)
+        technical = QWidget()
+        technical_layout = QVBoxLayout(technical)
+        technical_layout.setContentsMargins(0, 0, 0, 0)
+        detail_cards = QGridLayout()
+        for index, card in enumerate((self.account_card, self.signal_card, self.pair_action_card, self.shadow_card)):
+            detail_cards.addWidget(card, index // 2, index % 2)
+        technical_layout.addLayout(detail_cards)
+        technical_layout.addWidget(top)
+        self.market_details = DisclosureSection("Market data and strategy details", technical)
+        broker_layout.addWidget(self.market_details)
+        broker_layout.addStretch()
 
-        self.tabs = QTabWidget()
+        self.tabs = WorkspaceTabs()
         self.welcome_widget = WelcomeWidget(self.config)
         self.welcome_widget.open_activation.connect(self._open_activation)
         self.welcome_widget.open_sandbox.connect(self._open_sandbox)
@@ -349,40 +348,47 @@ class MainWindow(QMainWindow):
             ["ID", "Period", "Realized", "Fees", "Tax reserve", "Rate", "Eligible", "Status", "Confirmed"]
         )
         fund_layout.addWidget(self.fund_table)
-        self.tabs.addTab(self.welcome_widget, "Getting Started")
-        self.activation_widget = ActivationChecklistWidget(
-            shadow_only=self.controller.shadow_only_runtime
-        )
+        self.tabs.overview.addTab(self.welcome_widget, "Summary")
+        self.tabs.addTab(self.tabs.overview, "Overview")
+        self.tabs.addTab(self.broker_panel, "Trading")
+        self.activation_widget = ActivationChecklistWidget()
         self.activation_widget.run_safe_checks.connect(
-            lambda: asyncio.create_task(self._run_safe_activation_checks())
+            lambda: self._start_task("safe-checks", self._run_safe_activation_checks())
         )
         self.activation_widget.open_next_action.connect(self._open_activation_next_action)
         self.live_readiness_table = self.activation_widget.table
-        self.tabs.addTab(self.activation_widget, "Live Readiness")
         self.sandbox_widget = SandboxWidget(
-            self.controller.store, allow_remote_data=self.config.remote_market_data_enabled
+            self.controller.store,
+            allow_remote_data=self.config.remote_market_data_enabled,
+            task_supervisor=self.tasks,
         )
-        self.tabs.addTab(self.sandbox_widget, "Research Sandbox")
-        self.tabs.addTab(self.positions_table, "Positions")
-        self.tabs.addTab(self.orders_table, "Orders")
-        self.tabs.addTab(self.activity_table, "Receipts")
+        self.tabs.addTab(self.sandbox_widget, "Research")
+        self.tabs.overview.addTab(self.activation_widget, "Readiness checks")
+        self.tabs.add_record(self.positions_table, "Positions")
+        self.tabs.add_record(self.orders_table, "Orders")
+        self.tabs.add_record(self.activity_table, "Activity")
         if self.config.personal_ledger_enabled:
-            self.tabs.addTab(self.fund_widget, "Capital Planning Ledger")
-        self.tabs.currentChanged.connect(lambda _index: self._set_controls())
+            self.tabs.add_record(self.fund_widget, "Capital ledger")
+        self.tabs.addTab(self.tabs.records, "Activity")
+        self.tabs.currentChanged.connect(self._workspace_changed)
+        self.tabs.records.currentChanged.connect(self._workspace_changed)
+        self.tabs.overview.currentChanged.connect(self._workspace_changed)
+        self.market_details.toggle.toggled.connect(self._workspace_changed)
         self.tabs.setUsesScrollButtons(True)
         # Every page advertises a large ideal size, but task pages own their scrolling.
         # Ignoring that aggregate vertical hint lets the workspace splitter honor a
         # constrained landscape window without crushing the broker/quote overview.
         self.tabs.setMinimumHeight(0)
         self.tabs.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Ignored)
-        self.workspace_splitter = QSplitter(Qt.Orientation.Vertical)
+        self.navigation = WorkspaceNavigation(self.tabs)
+        self.workspace_splitter = QSplitter(Qt.Orientation.Horizontal)
         self.workspace_splitter.setObjectName("primaryWorkspaceSplitter")
         self.workspace_splitter.setChildrenCollapsible(False)
-        self.workspace_splitter.addWidget(self.broker_panel)
+        self.workspace_splitter.addWidget(self.navigation)
         self.workspace_splitter.addWidget(self.tabs)
         self.workspace_splitter.setStretchFactor(0, 0)
         self.workspace_splitter.setStretchFactor(1, 1)
-        self.workspace_splitter.setSizes([360, 420])
+        self.workspace_splitter.setSizes([176, 1160])
         outer.addWidget(self.workspace_splitter, 1)
 
         self.status = QLabel(
@@ -392,18 +398,34 @@ class MainWindow(QMainWindow):
         outer.addWidget(self.status)
         self.setCentralWidget(root)
         self._build_menus()
+        self.menu_toggle = QPushButton("Tools")
+        self.menu_toggle.setCheckable(True)
+        self.menu_toggle.setAccessibleName("Show advanced menus")
+        self.menu_toggle.toggled.connect(self.menuBar().setVisible)
+        self.menuBar().hide()
+        self.header_actions = (*self.header_actions, self.menu_toggle)
+        for button in (self.settings_button, self.menu_toggle):
+            button.setParent(self.header_actions_widget)
+            button.show()
+        self.plan_button.hide()
         self._refresh_fund()
         self._set_controls()
+        # Populate the readiness page before it is first selected so navigation
+        # never presents an empty checklist while a broker snapshot is available.
+        self._update_live_readiness()
         self._responsive_mode: tuple[object, ...] | None = None
         self._apply_responsive_layout(self.width(), self.height(), force=True)
 
     @staticmethod
-    def _reflow_grid(layout: QGridLayout, widgets: tuple[QWidget, ...], columns: int) -> None:
+    def _reflow_grid(
+        layout: QGridLayout, widgets: tuple[QWidget, ...], columns: int, *, visible_only: bool = False
+    ) -> None:
         for widget in widgets:
             layout.removeWidget(widget)
         for column in range(len(widgets)):
             layout.setColumnStretch(column, 0)
-        for index, widget in enumerate(widgets):
+        visible = tuple(widget for widget in widgets if not widget.isHidden()) if visible_only else widgets
+        for index, widget in enumerate(visible):
             layout.addWidget(widget, index // columns, index % columns)
         for column in range(max(1, columns)):
             layout.setColumnStretch(column, 1)
@@ -424,11 +446,11 @@ class MainWindow(QMainWindow):
             return
         if width >= 1680:
             action_columns = len(self.header_actions)
-            card_columns = 8
+            card_columns = 4
             header_mode = "inline"
         elif width >= 1280:
             action_columns = 4
-            card_columns = 8
+            card_columns = 4
             header_mode = "inline"
         elif width >= 1000:
             action_columns = 4
@@ -439,11 +461,16 @@ class MainWindow(QMainWindow):
             card_columns = 2
             header_mode = "stacked"
         action_visibility = tuple(not button.isHidden() for button in self.header_actions)
-        mode = (action_columns, card_columns, header_mode, action_visibility)
+        session_visibility = tuple(not button.isHidden() for button in self.session_actions)
+        mode = (action_columns, card_columns, header_mode, action_visibility, session_visibility, width < 1100)
         if force or mode != getattr(self, "_responsive_mode", None):
             self._responsive_mode = mode
             self._reflow_header_actions(action_columns)
             self._reflow_grid(self.cards_layout, self.metric_cards, card_columns)
+            self._reflow_grid(
+                self.session_actions_layout, self.session_actions, 2 if width < 1100 else 4,
+                visible_only=True,
+            )
             self.header_layout.removeWidget(self.brand_row)
             self.header_layout.removeWidget(self.header_actions_widget)
             if header_mode == "inline":
@@ -455,8 +482,16 @@ class MainWindow(QMainWindow):
                 self.header_layout.addWidget(self.brand_row, 0, 0)
                 self.header_layout.addWidget(self.header_actions_widget, 1, 0)
                 self.header_layout.setColumnStretch(0, 1)
+                self.header_layout.setColumnStretch(1, 0)
 
         compact = width < 1200
+        if hasattr(self, "navigation"):
+            compact_navigation = width < 1100
+            self.navigation.set_compact(compact_navigation)
+            wanted = Qt.Orientation.Vertical if compact_navigation else Qt.Orientation.Horizontal
+            if self.workspace_splitter.orientation() != wanted:
+                self.workspace_splitter.setOrientation(wanted)
+                self.workspace_splitter.setSizes([58, 900] if compact_navigation else [176, 1160])
         for card in self.metric_cards:
             card.set_compact(compact)
 
@@ -479,13 +514,6 @@ class MainWindow(QMainWindow):
                 if market_mode == "compact_landscape"
                 else [850, 500]
             )
-            self.workspace_splitter.setSizes(
-                [520, 440]
-                if portrait_market
-                else [320, 200]
-                if market_mode == "compact_landscape"
-                else [300, 480]
-            )
         market_height = (
             230
             if portrait_market
@@ -497,7 +525,7 @@ class MainWindow(QMainWindow):
         self.outer_layout.setContentsMargins(*(10, 9, 10, 9) if compact else (16, 14, 16, 14))
         self.outer_layout.setSpacing(8 if compact else 12)
         if hasattr(self, "sandbox_widget"):
-            self.sandbox_widget.apply_responsive_layout(width, height)
+            self.sandbox_widget.apply_responsive_layout(self.tabs.width(), self.tabs.height())
 
     def resizeEvent(self, event: QResizeEvent) -> None:  # noqa: N802 - Qt API
         super().resizeEvent(event)
@@ -508,6 +536,7 @@ class MainWindow(QMainWindow):
         action.triggered.connect(callback)
         if shortcut:
             action.setShortcut(shortcut)
+            self.addAction(action)  # Shortcuts remain usable while advanced menus are hidden.
         return action
 
     def _build_menus(self) -> None:
@@ -525,12 +554,14 @@ class MainWindow(QMainWindow):
 
         self.view_menu = menu_bar.addMenu("View")
         destinations = (
-            ("Getting Started", self.welcome_widget, "Ctrl+1"),
-            ("Live Readiness", self.activation_widget, None),
-            ("Research Sandbox", self.sandbox_widget, "Ctrl+2"),
-            ("Positions", self.positions_table, "Ctrl+3"),
-            ("Orders", self.orders_table, "Ctrl+4"),
-            ("Receipts", self.activity_table, "Ctrl+5"),
+            ("Overview", self.welcome_widget, "Ctrl+1"),
+            ("Trading", self.broker_panel, "Ctrl+2"),
+            ("Research", self.sandbox_widget, "Ctrl+3"),
+            ("Activity", self.tabs.records, "Ctrl+4"),
+            ("Readiness checks", self.activation_widget, "Ctrl+5"),
+            ("Positions", self.positions_table, None),
+            ("Orders", self.orders_table, None),
+            ("Activity", self.activity_table, None),
         )
         self.view_actions: list[QAction] = []
         for label, widget, shortcut in destinations:
@@ -557,13 +588,13 @@ class MainWindow(QMainWindow):
         self.broker_menu = menu_bar.addMenu("Broker")
         self.broker_connect_action = self._action(
             "Connect Robinhood…",
-            lambda _checked=False: asyncio.create_task(self._connect()),
+            lambda _checked=False: self._start_task("connection", self._connect()),
             "Ctrl+Shift+C",
         )
         self.broker_menu.addAction(self.broker_connect_action)
         self.refresh_action = self._action(
             "Refresh Account && Quotes",
-            lambda _checked=False: asyncio.create_task(self._refresh_broker()),
+            lambda _checked=False: self._start_task("broker-refresh", self._refresh_broker()),
             "F5",
         )
         self.broker_menu.addAction(self.refresh_action)
@@ -599,12 +630,12 @@ class MainWindow(QMainWindow):
         self.safety_menu.addAction(self.start_strategy_action)
         self.stop_cancel_action = self._action(
             "STOP + CANCEL Agentic Orders",
-            lambda _checked=False: asyncio.create_task(self._stop_and_cancel()),
+            lambda _checked=False: self._start_task("stop-and-cancel", self._stop_and_cancel()),
             "Ctrl+Shift+X",
         )
         self.safety_menu.addAction(self.stop_cancel_action)
         self.flatten_action = self._action(
-            "Flatten Position…", lambda _checked=False: asyncio.create_task(self._flatten())
+            "Flatten Position…", lambda _checked=False: self._start_task("flatten", self._flatten())
         )
         self.safety_menu.addAction(self.flatten_action)
         self.safety_menu.addSeparator()
@@ -651,14 +682,33 @@ class MainWindow(QMainWindow):
             self.tabs.setCurrentIndex(index)
 
     def _open_activation(self) -> None:
-        index = self.tabs.indexOf(self.activation_widget)
-        if index >= 0:
-            self.tabs.setCurrentIndex(index)
+        self.tabs.setCurrentWidget(self.activation_widget)
 
     def _show_tab(self, widget: QWidget) -> None:
         index = self.tabs.indexOf(widget)
         if index >= 0:
-            self.tabs.setCurrentIndex(index)
+            self.tabs.setCurrentWidget(widget)
+
+    def _workspace_changed(self, _index: int = 0) -> None:
+        if not hasattr(self, "authorize_action"):
+            return
+        self._set_controls()
+        self._update_visible_tables()
+        if self.tabs.currentWidget() is self.broker_panel and self.market_details.toggle.isChecked():
+            self.chart_curve.setData(list(self._chart_times), list(self._chart_prices))
+
+    def _update_visible_tables(self) -> None:
+        current = self.tabs.currentWidget()
+        if current is self.broker_panel and self.market_details.toggle.isChecked():
+            self._update_quotes(self._snapshot)
+        elif current is self.tabs.overview and self.tabs.overview.currentWidget() is self.activation_widget:
+            self._update_live_readiness()
+        elif current is self.tabs.records:
+            page = self.tabs.records.currentWidget()
+            if page is self.positions_table:
+                self._update_positions(self._snapshot)
+            elif page is self.orders_table:
+                self._update_orders(self._snapshot)
 
     def _show_research_tab(self, index: int) -> None:
         self._open_sandbox()
@@ -671,7 +721,7 @@ class MainWindow(QMainWindow):
         self.full_screen_action.setChecked(False)
         self.resize(1440, 900)
         self.market_splitter.setSizes([850, 500])
-        self.workspace_splitter.setSizes([360, 420])
+        self.workspace_splitter.setSizes([176, 1160])
         self.sandbox_widget.main_splitter.setSizes([480, 920])
         self.sandbox_widget.fill_splitter.setSizes([420, 190])
         self._apply_responsive_layout(1440, 900, force=True)
@@ -713,29 +763,25 @@ class MainWindow(QMainWindow):
                 self._update_live_readiness()
                 self.status.setText(
                     "SAFE CHECKS STOPPED • Broker-data capability is off • Select Broker capability "
-                    "in Live Readiness for the exact consent step"
+                    "in Readiness checks for the exact consent step"
                 )
                 return
             if not self._snapshot.connected:
                 self._update_live_readiness()
                 self.status.setText(
                     "SAFE CHECKS STOPPED • Robinhood is disconnected • Select Exact Agentic account "
-                    "in Live Readiness to connect with browser consent"
+                    "in Readiness checks to connect with browser consent"
                 )
                 return
             await self.controller.safe_read_only_refresh()
             self._update_live_readiness()
             self.status.setText(
-                "SAFE CHECKS COMPLETE • Account, positions, orders, and exact quotes refreshed • "
+                "ACCOUNT CHECKS COMPLETE • See readiness rows for separate quote/execution status • "
                 "No order review, placement, or cancellation method was requested"
             )
         except Exception as exc:
             self._update_live_readiness()
-            QMessageBox.warning(
-                self,
-                "Safe activation checks stopped",
-                f"The read-only refresh stopped without attempting an order operation.\n\n{exc}",
-            )
+            self._show_notice(f"Account check incomplete. No order operation was attempted. {exc}")
         finally:
             button.setText("Run safe checks")
             button.setEnabled(
@@ -755,12 +801,12 @@ class MainWindow(QMainWindow):
             if not self.config.broker_connection_enabled:
                 self._open_settings()
             elif not self._snapshot.connected:
-                asyncio.create_task(self._connect())
+                self._start_task("connection", self._connect())
             else:
-                asyncio.create_task(self._run_safe_activation_checks())
+                self._start_task("safe-checks", self._run_safe_activation_checks())
             return
         if guidance.destination == "refresh":
-            asyncio.create_task(self._run_safe_activation_checks())
+            self._start_task("safe-checks", self._run_safe_activation_checks())
             return
         QMessageBox.information(
             self,
@@ -780,7 +826,7 @@ class MainWindow(QMainWindow):
             QMessageBox.StandardButton.No,
         )
         if answer == QMessageBox.StandardButton.Yes:
-            asyncio.create_task(self._forget_credentials())
+            self._start_task("forget-credentials", self._forget_credentials())
 
     async def _forget_credentials(self) -> None:
         try:
@@ -797,12 +843,12 @@ class MainWindow(QMainWindow):
         QMessageBox.information(
             self,
             "GRANDE Alpha quick start",
-            "1. Open Live Readiness for the current owner and exact next action for every condition.\n"
+            "1. Open Readiness checks for the current owner and exact next action for every condition.\n"
             "2. Click Run safe checks for connected read-only account and quote refreshes.\n"
             "3. Use Research Sandbox to build observed, after-cost evidence and inspect virtual fills.\n"
             "4. Complete every item marked YOU or EXTERNAL REVIEW yourself.\n\n"
-            "Scheduled auto-shadow is structurally read-only and cannot become live trading. "
-            "No strategy is guaranteed profitable. Shared account, route, and capability checks can "
+            "Live shadow is virtual and cannot become live trading. No strategy is guaranteed profitable. "
+            "Shared account, route, and capability checks can "
             "expose attended supervised review; passing every evidence and runtime condition only makes "
             "a separate autonomous authorize-and-start review available.",
         )
@@ -864,8 +910,9 @@ class MainWindow(QMainWindow):
                 "limit_offset_bps": updated.limit_offset_bps,
             },
         )
-        asyncio.create_task(
-            self._apply_permission_revocations(previous, updated, dialog.forget_credentials.isChecked())
+        self._start_task(
+            "permission-revocations",
+            self._apply_permission_revocations(previous, updated, dialog.forget_credentials.isChecked()),
         )
         self._set_controls()
 
@@ -884,11 +931,11 @@ class MainWindow(QMainWindow):
                 QMessageBox.warning(self, "Credentials were not forgotten", str(exc))
 
     def _sync_optional_tabs(self) -> None:
-        index = self.tabs.indexOf(self.fund_widget)
+        index = self.tabs.records.indexOf(self.fund_widget)
         if self.config.personal_ledger_enabled and index < 0:
-            self.tabs.addTab(self.fund_widget, "Capital Planning Ledger")
+            self.tabs.add_record(self.fund_widget, "Capital ledger")
         elif not self.config.personal_ledger_enabled and index >= 0:
-            self.tabs.removeTab(index)
+            self.tabs.records.removeTab(index)
         self.fund_view_action.setVisible(self.config.personal_ledger_enabled)
 
     def _export_diagnostics(self) -> None:
@@ -929,6 +976,21 @@ class MainWindow(QMainWindow):
             "<p>Licensed under Apache-2.0. See README, PRIVACY.md, SECURITY.md, and docs/ for details.</p>",
         )
 
+    def _start_task(self, name: str, awaitable) -> None:
+        self.tasks.start(name, awaitable)
+
+    def _on_task_error(self, name: str, exc: BaseException) -> None:
+        message = f"Background operation '{name}' failed: {exc}"
+        self.controller.log(message, "error", "runtime")
+        self.status.setText(message)
+        if not self.tasks.closing:
+            self._show_notice(message)
+
+    def _show_notice(self, message: str) -> None:
+        """Recoverable operation feedback never steals focus or blocks navigation."""
+        self.notice_text.setText(message)
+        self.notice_bar.show()
+
     async def _connect(self) -> None:
         try:
             if self._snapshot.connected:
@@ -937,56 +999,6 @@ class MainWindow(QMainWindow):
                 await self.controller.connect()
         except Exception as exc:
             QMessageBox.critical(self, "Robinhood connection", str(exc))
-
-    async def _auto_start_shadow(self) -> None:
-        if self._auto_shadow_starting or self.controller.snapshot.shadow_running:
-            return
-        if not self.controller.auto_shadow_start_allowed():
-            self.status.setText("AUTO SHADOW IDLE • Waiting for the next regular session")
-            return
-        self._auto_shadow_starting = True
-        try:
-            started = await self.controller.auto_start_shadow()
-            if started:
-                self._auto_shadow_retry_seconds = 15
-                self._auto_shadow_retry_remaining = 0
-            else:
-                self._auto_shadow_retry_remaining = self._auto_shadow_retry_seconds
-                self._auto_shadow_retry_seconds = min(300, self._auto_shadow_retry_seconds * 2)
-                self.status.setText(
-                    "AUTO SHADOW RETRYING • Read-only reconnect; no broker writes"
-                )
-        finally:
-            self._auto_shadow_starting = False
-            self._sync_data_timers()
-
-    def _check_auto_shadow_close(self) -> None:
-        if not self.auto_shadow:
-            return
-        if (
-            self.controller.snapshot.shadow_running
-            and self.controller.auto_shadow_session_complete()
-        ):
-            asyncio.create_task(self._finish_auto_shadow_session())
-            return
-        if self.controller.snapshot.shadow_running or self._auto_shadow_starting:
-            return
-        if self._auto_shadow_retry_remaining > 0:
-            self._auto_shadow_retry_remaining -= 1
-            return
-        if self.controller.auto_shadow_start_allowed():
-            asyncio.create_task(self._auto_start_shadow())
-
-    async def _finish_auto_shadow_session(self) -> None:
-        try:
-            await self.controller.disconnect_shadow_only(
-                "AUTO SHADOW COMPLETE at regular-session close (4:00 PM ET)",
-                flatten_virtual=True,
-            )
-        finally:
-            self._auto_shadow_retry_seconds = 15
-            self._auto_shadow_retry_remaining = 0
-            self.status.setText("AUTO SHADOW IDLE • Waiting for the next regular session")
 
     def _authorize(self) -> None:
         if not self._snapshot.account or not self._snapshot.portfolio:
@@ -1003,18 +1015,32 @@ class MainWindow(QMainWindow):
         if dialog.exec() == dialog.DialogCode.Accepted:
             try:
                 grant = dialog.grant()
-                if evidence_gated:
-                    if not self.controller.live_evidence_ready(grant):
-                        raise RuntimeError(
-                            "The exact evidence certificate changed while the session was reviewed; "
-                            "nothing was authorized. Reopen the session review."
-                        )
-                    self.controller.authorize_live(grant)
-                else:
-                    self.controller.authorize_supervised_experimental(grant)
-                self.controller.start_strategy()
+                self._start_task("authorize", self._activate_reviewed_grant(grant, evidence_gated))
             except Exception as exc:
-                QMessageBox.critical(self, "Live session did not start", str(exc))
+                QMessageBox.critical(self, "Session not authorized", str(exc))
+
+    async def _activate_reviewed_grant(self, grant: LiveGrant, evidence_gated: bool) -> None:
+        try:
+            # Reviewing limits can outlast the account freshness interval. Refresh
+            # after review without changing any of the approved scope or expiry.
+            await self.controller.safe_read_only_refresh()
+            if evidence_gated:
+                if not self.controller.live_evidence_ready(grant):
+                    raise RuntimeError("Evidence changed during review; reopen the session review.")
+                self.controller.authorize_live(grant)
+            else:
+                self.controller.authorize_supervised_experimental(grant)
+            if self.controller.entry_window_open():
+                self.controller.start_strategy()
+            else:
+                QMessageBox.information(
+                    self, "Session authorized — execution not started",
+                    "Approval recorded. Start during the permitted market window with fresh "
+                    "account data and quotes. The displayed expiry still applies; this does "
+                    "not schedule an automatic start or extend approval to another day.",
+                )
+        except Exception as exc:
+            self._show_notice(f"Session not started. {exc}")
 
     async def _confirm_strategy_order(
         self,
@@ -1051,7 +1077,7 @@ class MainWindow(QMainWindow):
         try:
             self.controller.start_strategy()
         except Exception as exc:
-            QMessageBox.warning(self, "Strategy remains stopped", str(exc))
+            self._show_notice(f"Strategy remains stopped. {exc}")
 
     def _pause_authority(self) -> None:
         try:
@@ -1113,8 +1139,22 @@ class MainWindow(QMainWindow):
                 self.controller.stop_shadow()
             else:
                 self.controller.start_shadow()
+        except ShadowRecoveryRequired as exc:
+            answer = QMessageBox.question(
+                self, "Start a separate simulation?",
+                f"{exc}\n\nKeep the old ledger unchanged and start a separate simulation? "
+                "The previous run will be recorded as interrupted, not completed. "
+                "No real orders will be placed.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if answer == QMessageBox.StandardButton.Yes:
+                try:
+                    self.controller.start_shadow(separate_run_from=exc.run_id)
+                except Exception as recovery_error:
+                    self._show_notice(f"Simulation not started. {recovery_error}")
         except Exception as exc:
-            QMessageBox.warning(self, "Live shadow unchanged", str(exc))
+            self._show_notice(f"Simulation unchanged. {exc}")
 
     def _plan_contribution(self) -> None:
         dialog = FundPlanDialog(self)
@@ -1238,11 +1278,7 @@ class MainWindow(QMainWindow):
         created before there is a stable connected snapshot.
         """
 
-        should_run = (
-            self._snapshot.connected
-            and not self._connection_busy
-            and not self._auto_shadow_starting
-        )
+        should_run = self._snapshot.connected and not self._connection_busy
         for timer in (self.timer, self.reconcile_timer):
             if should_run and not timer.isActive():
                 timer.start()
@@ -1253,19 +1289,19 @@ class MainWindow(QMainWindow):
         """Schedule one quote tick only while qasync owns a running event loop."""
 
         try:
-            loop = asyncio.get_running_loop()
+            asyncio.get_running_loop()
         except RuntimeError:
             return
-        loop.create_task(self.controller.refresh_quotes())
+        self.tasks.start("quote-refresh", self.controller.refresh_quotes())
 
     def _schedule_reconcile(self) -> None:
         """Schedule one account tick only while qasync owns a running event loop."""
 
         try:
-            loop = asyncio.get_running_loop()
+            asyncio.get_running_loop()
         except RuntimeError:
             return
-        loop.create_task(self.controller.reconcile())
+        self.tasks.start("account-reconcile", self.controller.reconcile())
 
     def _on_snapshot(self, snapshot: TradingSnapshot) -> None:
         self._snapshot = snapshot
@@ -1293,8 +1329,9 @@ class MainWindow(QMainWindow):
             self.value_card.value.setText("—")
             self.buying_power_card.value.setText("—")
         session = snapshot.live_status if self.config.live_trading_enabled else "DISABLED"
-        if session == "LIVE" and snapshot.session_expires_at:
-            session = f"LIVE to {snapshot.session_expires_at.astimezone().strftime('%I:%M %p')}"
+        session = {"LOCKED": "Not approved", "DISABLED": "Off", "LIVE": "Approved"}.get(session, session)
+        if snapshot.live_status == "LIVE" and snapshot.session_expires_at:
+            session = f"Until {snapshot.session_expires_at.astimezone().strftime('%I:%M %p')}"
         self.session_card.value.setText(session)
         self.session_card.value.setStyleSheet(
             "color:#00e507" if snapshot.live_status == "LIVE" else "color:#8fa4b8"
@@ -1321,12 +1358,9 @@ class MainWindow(QMainWindow):
         else:
             self.shadow_card.value.setText("OFF")
             self.shadow_card.value.setStyleSheet("color:#8fa4b8")
-        self.shadow_button.setText("Stop Live Shadow" if snapshot.shadow_running else "Start Live Shadow")
+        self.shadow_button.setText("Stop simulation" if snapshot.shadow_running else "Simulate with live data")
         self.connect_button.setText("Disconnect" if snapshot.connected else "Connect Robinhood")
-        self._update_quotes(snapshot)
-        self._update_positions(snapshot)
-        self._update_orders(snapshot)
-        self._update_live_readiness()
+        self._update_visible_tables()
         self._update_chart(snapshot)
         refreshed = (
             snapshot.last_refresh.astimezone().strftime("%I:%M:%S %p") if snapshot.last_refresh else "never"
@@ -1345,6 +1379,13 @@ class MainWindow(QMainWindow):
                 f"Action {snapshot.pair_action_label} every {self.config.trade_seconds}s nominal • "
                 f"Orders {snapshot.trades_today} • Last broker refresh {refreshed} • {snapshot.signal.reason}"
             )
+        self.status.setToolTip(self.status.text())
+        self.status.setAccessibleDescription(self.status.text())
+        self.status.setText(
+            f"{'Connected' if snapshot.connected else 'Disconnected'}  ·  "
+            f"{'Strategy running' if snapshot.strategy_running else 'Strategy stopped'}  ·  "
+            f"{'Shadow running — virtual only' if snapshot.shadow_running else 'Shadow off'}  ·  Updated {refreshed}"
+        )
         self._set_controls()
 
     def _set_controls(self) -> None:
@@ -1354,14 +1395,9 @@ class MainWindow(QMainWindow):
         shadow = self._snapshot.shadow_running
         broker_enabled = self.config.broker_connection_enabled
         live_enabled = self.config.live_trading_enabled
-        evidence_ready = (
-            not self.controller.shadow_only_runtime
-            and live_enabled
-            and self.controller.live_evidence_ready()
-        )
+        evidence_ready = live_enabled and self.controller.live_evidence_ready()
         supervised_available = (
-            not self.controller.shadow_only_runtime
-            and live_enabled
+            live_enabled
             and self.config.market_hours == "regular_hours"
             and self.config.order_type == "market"
             and self.config.time_in_force == "gfd"
@@ -1370,36 +1406,46 @@ class MainWindow(QMainWindow):
         # The checklist is a task-focused workspace. Its rows and exact actions need the full
         # vertical canvas; broker state is already represented in the checklist and remains one
         # click away on every other tab.
-        self.broker_panel.setVisible(
-            broker_enabled and self.tabs.currentWidget() is not self.activation_widget
-        )
         self.connect_button.setVisible(broker_enabled)
         self.shadow_button.setVisible(broker_enabled)
         session_available = evidence_ready or supervised_available
         self.authorize_button.setVisible(session_available)
-        self.start_button.setVisible(session_available)
+        self.start_button.setVisible(session_available and live and not self._snapshot.strategy_running)
         self.kill_button.setVisible(broker_enabled and connected)
-        self.flatten_button.setVisible(broker_enabled and (connected or bool(self._snapshot.positions)))
+        sellable = any(p.symbol in {"TQQQ", "SQQQ"} and p.quantity > 0 for p in self._snapshot.positions)
+        self.flatten_button.setText("Sell holdings…")
+        self.flatten_button.setToolTip("Review selling tracked TQQQ/SQQQ holdings to return to cash.")
+        self.flatten_button.setVisible(broker_enabled and connected and sellable)
+        self.authority_controls.setVisible(self.controller.risk.grant is not None)
         self.mode_badge.setText(
-            "AUTO SHADOW ONLY — WRITES BLOCKED"
-            if self.controller.shadow_only_runtime
-            else "LIVE EVIDENCE READY"
-            if evidence_ready
-            else "SUPERVISED EXPERIMENTAL — CONFIRM EACH ORDER"
-            if supervised_available
-            else "SHADOW ONLY — EVIDENCE REQUIRED"
-            if live_enabled
-            else ("BROKER SHADOW ENABLED" if broker_enabled else "RESEARCH MODE")
+            "TRADING ACTIVE" if self._snapshot.strategy_running
+            else "SIMULATING" if shadow else "CONNECTED" if connected else "OFFLINE"
         )
+        if not connected:
+            title, detail = "Not connected", "Connect Robinhood to see your account. No trading is active."
+        elif shadow:
+            title, detail = "Simulation running", "Uses live market observations and virtual money. No real orders."
+        elif self._snapshot.strategy_running:
+            title, detail = "Strategy running", "Orders remain subject to approved limits, market hours and data checks."
+        elif live and not self.controller.entry_window_open():
+            title, detail = "Approved — market window closed", "Start manually during the permitted window before approval expires. No automatic start is scheduled."
+        elif live:
+            title, detail = "Approved — not started", "Start when account data and quotes are fresh. Stop remains available throughout a session."
+        elif not funded:
+            title, detail = "No buying power available", "You can research and simulate. Real orders require available broker buying power."
+        else:
+            title, detail = "No trading active", "Simulate an idea or review a bounded trading session. Approval does not guarantee a trade or a profit."
+        self.session_state_title.setText(title)
+        self.session_state_detail.setText(detail)
         self.mode_badge.setStyleSheet(
             "background:#4b2516;color:#ffc07a;border:1px solid #9a5328;border-radius:7px;padding:7px 10px;font-weight:700"
             if supervised_available or evidence_ready
             else "background:#15324a;color:#8fd3ff;border:1px solid #3478a4;border-radius:7px;padding:7px 10px;font-weight:700"
         )
         authorize_label = (
-            "Authorize && Start Evidence-Gated Session"
+            "Review evidence-gated session"
             if evidence_ready
-            else "Authorize && Start Supervised Session"
+            else "Review live session"
         )
         self.authorize_button.setText(authorize_label)
         self.authorize_action.setText(authorize_label + "…")
@@ -1433,7 +1479,7 @@ class MainWindow(QMainWindow):
             if safe_checks_available
             else "Unavailable while a live grant or strategy is active. Revoke authority and stop first."
         )
-        self._apply_responsive_layout(self.width(), self.height(), force=True)
+        self._apply_responsive_layout(self.width(), self.height())
 
     def _update_quotes(self, snapshot: TradingSnapshot) -> None:
         symbols = [symbol for symbol in ("QQQ", "TQQQ", "SQQQ") if symbol in snapshot.quotes]
@@ -1502,7 +1548,8 @@ class MainWindow(QMainWindow):
         if quote and (not self._chart_times or quote.timestamp.timestamp() > self._chart_times[-1]):
             self._chart_times.append(quote.timestamp.timestamp())
             self._chart_prices.append(quote.mid)
-            self.chart_curve.setData(list(self._chart_times), list(self._chart_prices))
+            if self.tabs.currentWidget() is self.broker_panel:
+                self.chart_curve.setData(list(self._chart_times), list(self._chart_prices))
 
     def _refresh_fund(self) -> None:
         entries = self.controller.store.research_fund_entries()
@@ -1545,18 +1592,22 @@ class MainWindow(QMainWindow):
             self.reconcile_timer.stop()
             event.accept()
             return
-        if self.controller.shadow_only_runtime and self._snapshot.connected:
-            event.ignore()
-            asyncio.create_task(self._shutdown_then_close())
+        if not self._snapshot.connected:
+            # A disconnected window owns no broker transport. Close synchronously so
+            # initial/offline use never creates an orphan asyncio task just to exit.
+            self.timer.stop()
+            self.reconcile_timer.stop()
+            self.controller.stop_for_exit()
+            self._closing_after_cleanup = True
+            event.accept()
             return
         if self._snapshot.connected:
             answer = QMessageBox.question(
                 self,
                 "Exit GRANDE Alpha",
-                "Exit locks new orders but does not cancel broker orders. GRANDE Alpha will "
-                "refuse to disconnect while any GRANDE-owned order or unresolved submission "
-                "remains; use STOP + CANCEL first to preview and explicitly confirm that exact "
-                "scope. Unrelated orders and filled positions remain untouched. Continue?",
+                "Exit stops this app's automation. It does not cancel broker orders or sell "
+                "holdings. Existing orders may still fill after exit; check Robinhood directly. "
+                "Unresolved order records are kept for the next startup. Exit?",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.No,
             )
@@ -1564,21 +1615,24 @@ class MainWindow(QMainWindow):
                 event.ignore()
                 return
             event.ignore()
-            asyncio.create_task(self._shutdown_then_close())
+            self._start_task("shutdown", self._shutdown_then_close())
             return
-        self.timer.stop()
-        self.reconcile_timer.stop()
-        event.accept()
+        event.ignore()
+        self._start_task("shutdown", self._shutdown_then_close())
 
     async def _shutdown_then_close(self) -> None:
+        self.timer.stop()
+        self.reconcile_timer.stop()
         try:
-            await self.controller.disconnect()
+            self.controller.stop_for_exit()
         except Exception as exc:
-            QMessageBox.critical(
-                self,
-                "Exit blocked — broker cleanup is not verified",
-                f"{exc}\n\nGRANDE Alpha will remain open. Check Robinhood, then retry STOP + CANCEL.",
-            )
-            return
+            # Closing the process still stops local execution if journal I/O fails.
+            self.status.setText(f"Exit journal unavailable: {exc}; check Robinhood directly")
+        await self.tasks.shutdown()
+        try:
+            async with asyncio.timeout(5):
+                await self.controller.broker.disconnect()
+        except Exception:
+            pass  # Transport cleanup cannot trap the user in the application.
         self._closing_after_cleanup = True
         self.close()

@@ -81,8 +81,8 @@ class Broker(ABC):
     async def cancel_order(self, account_number: str, order_id: str) -> bool: ...
 
 
-class ShadowOnlyBroker(Broker):
-    """Read-only broker facade used by unattended auto-shadow runtime."""
+class ReadOnlyBroker(Broker):
+    """Read-only broker facade used by diagnostics and safe readiness checks."""
 
     def __init__(self, wrapped: Broker) -> None:
         self.wrapped = wrapped
@@ -117,10 +117,10 @@ class ShadowOnlyBroker(Broker):
         return await self.wrapped.get_orders(account_number)
 
     async def review_order(self, account_number: str, intent: OrderIntent) -> OrderReview:
-        raise BrokerError("Auto-shadow broker facade blocks order review")
+        raise BrokerError("Read-only broker facade blocks order review")
 
     async def place_order(self, account_number: str, intent: OrderIntent) -> BrokerOrder:
-        raise BrokerError("Auto-shadow broker facade blocks order placement")
+        raise BrokerError("Read-only broker facade blocks order placement")
 
     async def cancel_order(self, account_number: str, order_id: str) -> bool:
-        raise BrokerError("Auto-shadow broker facade blocks order cancellation")
+        raise BrokerError("Read-only broker facade blocks order cancellation")

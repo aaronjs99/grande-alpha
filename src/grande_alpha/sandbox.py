@@ -350,7 +350,7 @@ class RuntimeObservationReplayEngine:
                 shadow.stop(
                     frame.runtime_quotes(),
                     flatten_at=frame.causal_timestamp,
-                    flatten_reason="AUTO SHADOW DAILY FLAT at regular-session close",
+                    flatten_reason="SESSION-END VIRTUAL FLAT at regular-session close",
                 )
             extra_fills = shadow.state.fills[prior_fill_count:]
             fills.extend(extra_fills)
@@ -1290,4 +1290,6 @@ def load_sandbox_config() -> SandboxConfig:
 
 def save_sandbox_config(config: SandboxConfig) -> None:
     config.validate()
-    sandbox_config_path().write_text(json.dumps(asdict(config), indent=2), encoding="utf-8")
+    path = sandbox_config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(asdict(config), indent=2), encoding="utf-8")

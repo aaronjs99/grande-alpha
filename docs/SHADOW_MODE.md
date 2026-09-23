@@ -64,8 +64,8 @@ This example session is **shadow only**. Its purpose is to validate the applicat
 receipts, and virtual ledger under observation. It is not an attempt to earn money or a test of real
 execution.
 
-1. Run **Morning Check.cmd** before the market opens and save its output. Stop if account identity,
-   positions, open orders, evidence lock, or read-only connectivity is unexpected.
+1. Open **Live Readiness**, run safe checks, and stop if account identity, positions, open orders,
+   evidence lock, or read-only connectivity is unexpected.
 2. Keep **Real-order automation** disabled. Do not select **Authorize Live Session**, do not enter a
    live phrase, and do not place a manual companion trade in the same symbols.
 3. Connect read access, record the quote source and timestamps, and start Live Shadow before the

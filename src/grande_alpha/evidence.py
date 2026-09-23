@@ -29,7 +29,7 @@ from grande_alpha.sandbox import (
 from grande_alpha.strategy import StrategyConfig
 
 EASTERN = ZoneInfo("America/New_York")
-EVIDENCE_POLICY_VERSION = 13
+EVIDENCE_POLICY_VERSION = 15
 # This value is derived from the machine-readable mechanics assessment below. It must not
 # become true merely because entry sizing shares a helper: exact observations, fill economics,
 # exit lifecycle, and the provider order-confirmation contract must all align as well.
@@ -93,7 +93,7 @@ FORCED_FLATTEN_REASONS = frozenset(
     {
         "Session-end forced virtual flatten",
         "End of replay forced virtual flatten",
-        "AUTO SHADOW DAILY FLAT at regular-session close",
+        "SESSION-END VIRTUAL FLAT at regular-session close",
     }
 )
 

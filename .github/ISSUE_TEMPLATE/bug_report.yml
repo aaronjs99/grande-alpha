@@ -1,0 +1,68 @@
+name: Bug report
+description: Report a reproducible GRANDE Alpha software problem
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not include credentials, account identifiers, balances, positions, orders, receipts, tax records, licensed data, or unreviewed diagnostics. Security issues belong in a private Security Advisory.
+  - type: input
+    id: version
+    attributes:
+      label: GRANDE Alpha version
+      placeholder: Use Help → About or the package version
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: Windows edition and Python version, without device identifiers.
+      placeholder: Windows 11, Python 3.12
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Installation or launch
+        - Research Sandbox
+        - Evidence Lab
+        - Live shadow
+        - Broker connection
+        - Supervised or autonomous controls
+        - CLI
+        - Documentation
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Reproduction steps
+      description: Prefer research mode. Never reproduce a problem by placing a real order.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: checkboxes
+    id: redaction
+    attributes:
+      label: Safety check
+      options:
+        - label: I removed credentials, financial/account data, order details, licensed data, and other sensitive information.
+          required: true
+        - label: This is not a security vulnerability.
+          required: true

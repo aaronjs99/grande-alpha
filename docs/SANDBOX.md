@@ -11,7 +11,7 @@ apply the generic sandbox's additional next-bar scheduling or modeled spread to 
 For regular-hours replay, premarket, after-hours, holidays, and overnight bridges are excluded.
 Atomic batch IDs prove which quotes came from one accepted provider response; a stream ID proves the
 runtime reset boundary. Legacy unbound rows are excluded and cannot affect frames or their hash.
-A stream spanning sessions is rejected because it cannot represent the scheduled clean-start
+A stream spanning sessions is rejected because it cannot represent the runtime clean-start
 contract. The default history retention is 240 calendar days (legacy default 90 migrates to 240),
 and pruning deletes child quotes and now-empty batch parents together. The quote ledger has no trade volume, so volume is
 zero/unknown and the trace cannot validate volume-dependent capacity. A short trace—even a perfect

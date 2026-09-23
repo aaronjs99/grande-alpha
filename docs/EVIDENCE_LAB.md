@@ -12,7 +12,7 @@ this gate merely by being labeled runtime-equivalent.
 The importer opens the local SQLite trace read-only, content-hashes every atomically recorded v2
 batch, excludes legacy unbound rows, rejects incomplete/interleaved/skewed triples, filters
 observations outside the declared exchange session, and binds each signal-pipeline reset with a
-durable stream ID. One stream may not span sessions: scheduled daily runs must create a new stream,
+durable stream ID. One stream may not span sessions: each application session creates a new stream,
 which is the exact production reset boundary. Quote traces do not contain volume. Derived bars therefore
 record zero volume; no volume-capacity or participation claim can be made from them.
 
@@ -31,7 +31,7 @@ carry `runtime_observation_replay=true`. If any child partition loses an exact q
 run fails; it never falls back to generic OHLCV. Ordinary OHLCV continues through the generic
 sandbox and keeps the marker false, so a label or source-name change cannot pass the schema gate.
 
-Multi-session exact replay follows scheduled auto-shadow lifecycle semantics. Signal state, virtual
+Multi-session exact replay follows the normal live-shadow session lifecycle. Signal state, virtual
 capital, T+1 proceeds, and the seeded execution RNG start clean each session. Per-session P/L is
 then aggregated onto one canonical starting-capital curve for evidence statistics. A production-style
 virtual close is reproduced only when the recorded causal quote reaches the declared session close;

@@ -4,6 +4,7 @@ import json
 import math
 import shutil
 from dataclasses import asdict, dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 
 from platformdirs import user_data_path
@@ -18,6 +19,10 @@ MCP_URL = "https://agent.robinhood.com/mcp/trading"
 ONBOARDING_VERSION = 1
 DISCLOSURE_VERSION = "2026-08"
 CADENCE_VERSION = 6
+
+
+class ConfigUpgradeRequired(RuntimeError):
+    """Raised when a saved configuration needs the explicit upgrade operation."""
 
 
 @dataclass
@@ -128,9 +133,14 @@ def migrate_legacy_data(legacy: Path, destination: Path) -> list[Path]:
 
 
 def data_dir() -> Path:
-    path = user_data_path(APP_NAME, appauthor=False)
+    """Return the application-data location without creating or migrating anything."""
+    return user_data_path(APP_NAME, appauthor=False)
+
+
+def ensure_data_dir() -> Path:
+    """Create the application-data location for an operation that will write to it."""
+    path = data_dir()
     path.mkdir(parents=True, exist_ok=True)
-    migrate_legacy_data(user_data_path(LEGACY_APP_NAME, appauthor=False), path)
     return path
 
 
@@ -138,18 +148,24 @@ def config_path() -> Path:
     return data_dir() / "config.json"
 
 
-def load_config() -> AppConfig:
-    path = config_path()
+def load_config(path: Path | None = None) -> AppConfig:
+    """Read the saved configuration without writing defaults or silently upgrading it."""
+    path = path or config_path()
     if not path.exists():
-        config = AppConfig()
-        save_config(config)
-        return config
-    raw = migrate_config_payload(json.loads(path.read_text(encoding="utf-8")))
-    allowed = AppConfig.__dataclass_fields__.keys()
-    config = AppConfig(**{key: value for key, value in raw.items() if key in allowed})
+        return AppConfig()
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(raw, dict):
+        raise ValueError("Configuration must be a JSON object")
+    if int(raw.get("cadence_version", 0)) < CADENCE_VERSION:
+        raise ConfigUpgradeRequired(
+            "Configuration needs an explicit upgrade; run 'grande-alpha-cli config upgrade' first"
+        )
+    allowed = set(AppConfig.__dataclass_fields__)
+    unknown = set(raw) - allowed
+    if unknown:
+        raise ValueError(f"Unknown configuration settings: {', '.join(sorted(unknown))}")
+    config = AppConfig(**raw)
     config.validate_cadence()
-    if json.loads(path.read_text(encoding="utf-8")) != raw:
-        save_config(config)
     return config
 
 
@@ -182,8 +198,36 @@ def migrate_config_payload(raw: dict) -> dict:
     return upgraded
 
 
-def save_config(config: AppConfig) -> None:
-    path = config_path()
+def save_config(config: AppConfig, path: Path | None = None) -> None:
+    """Atomically persist a validated configuration to an explicitly writable location."""
+    config.validate_cadence()
+    path = path or (ensure_data_dir() / "config.json")
+    path.parent.mkdir(parents=True, exist_ok=True)
     pending = path.with_suffix(".json.pending")
     pending.write_text(json.dumps(asdict(config), indent=2), encoding="utf-8")
     pending.replace(path)
+
+
+def upgrade_config(path: Path | None = None) -> Path | None:
+    """Back up and upgrade one saved configuration; returns its backup or ``None`` for defaults.
+
+    This is deliberately separate from normal reads and startup. It never discovers or copies a
+    legacy application directory; call :func:`migrate_legacy_data` explicitly when that recovery
+    is actually intended.
+    """
+    path = path or config_path()
+    if not path.exists():
+        return None
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(raw, dict):
+        raise ValueError("Configuration must be a JSON object")
+    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    backup = path.with_name(f"{path.stem}.{timestamp}.backup{path.suffix}")
+    shutil.copy2(path, backup)
+    migrated = migrate_config_payload(raw)
+    allowed = set(AppConfig.__dataclass_fields__)
+    unknown = set(migrated) - allowed
+    if unknown:
+        raise ValueError(f"Unknown configuration settings: {', '.join(sorted(unknown))}")
+    save_config(AppConfig(**migrated), path)
+    return backup

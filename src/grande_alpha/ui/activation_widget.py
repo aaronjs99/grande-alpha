@@ -45,12 +45,10 @@ class ActivationChecklistWidget(QWidget):
     def __init__(
         self,
         *,
-        shadow_only: bool = False,
         external_resources: Iterable[ExternalGuidanceLink] | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
-        self.shadow_only = shadow_only
         self._rows: list[dict[str, str]] = []
 
         outer = QVBoxLayout(self)
@@ -103,20 +101,6 @@ class ActivationChecklistWidget(QWidget):
         self.next_button.clicked.connect(self._emit_selected_action)
         actions.addWidget(self.next_button)
         layout.addWidget(self.header)
-
-        self.mode_notice = QLabel()
-        self.mode_notice.setObjectName("validationWarning")
-        self.mode_notice.setWordWrap(True)
-        self.mode_notice.setText(
-            "AUTO-SHADOW PROCESS — STRUCTURALLY READ-ONLY. This process cannot authorize, review, "
-            "place, or cancel an order. Close it and launch normal GRANDE Alpha only after every "
-            "required condition is independently satisfied."
-            if shadow_only
-            else "SCHEDULED AUTO-SHADOW IS STRUCTURALLY READ-ONLY. It can collect observations and "
-            "virtual fills, but it cannot turn itself into live trading or authorize, review, place, "
-            "or cancel an order."
-        )
-        layout.addWidget(self.mode_notice)
 
         ownership = QFrame()
         ownership.setObjectName("card")
@@ -227,7 +211,6 @@ class ActivationChecklistWidget(QWidget):
         )
         wrapped_labels = (
             (self.summary, summary_width),
-            (self.mode_notice, available_width),
             (self.ownership_label, available_width - 24),
             (self.detail, available_width),
             (self.external_resources, available_width),
@@ -280,7 +263,7 @@ class ActivationChecklistWidget(QWidget):
             if row["gate"] == previous_gate:
                 selected_row = row_index
 
-        self.summary.setText(activation_summary(self._rows, shadow_only=self.shadow_only))
+        self.summary.setText(activation_summary(self._rows))
         self._reserve_wrapped_text_height()
         row_height = max(22, self.table.verticalHeader().defaultSectionSize())
         header_height = max(24, self.table.horizontalHeader().sizeHint().height())
