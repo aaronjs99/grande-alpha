@@ -107,12 +107,13 @@ There is no automatic override for that block.
 
 The controller runs recovery on its existing reconciliation cycle when managed journal state
 needs it and exposes recovery failures in the Agent page. Reading recovery state grants no
-trading permission. Scheduled shadow cannot configure the budget or invoke this recovery route.
+trading permission. Shadow observation cannot configure the budget or invoke this recovery route.
 
-The new dispatch coordinator accepts only quantity-based limit routes. The existing equity
-intent contract still restricts symbols to TQQQ/SQQQ; this change does not authorize arbitrary
-stock orders. Crypto preserves its separate pair identity, account IDs, precision, and GTC rules.
-The runtime authorizer defaults to false, including after restart.
+This managed dispatch coordinator accepts only quantity-based limit routes. The older ETF
+`OrderIntent` remains limited to TQQQ/SQQQ; the separately gated mixed runner uses
+`EquityOrderIntent` for stocks. Neither path grants this Agent journal authority to trade.
+Crypto preserves its separate pair identity, account IDs, precision, and GTC rules. The
+Agent runtime authorizer defaults to false, including after restart.
 
 Before connecting AI proposals to live execution, the app still needs a reviewed authority
 contract bound to strategy/model/universe and evidence; UI/session integration for managed exits

@@ -70,7 +70,7 @@ implemented, documented, and verified for the exact release candidate.
 - [ ] Deprecation and migration policy is active.
 - [ ] Backup and forward/rollback compatibility behavior is documented.
 - [ ] Release notes enumerate every public interface and known limitation.
-- [ ] The exact 1.0.0 commit passes the complete [public release checklist](PUBLIC_RELEASE_CHECKLIST.md).
+- [ ] The exact 1.0.0 commit passes the complete [public release checklist](RELEASE_PROCESS.md#public-release-checklist).
 
 ## What 1.0.0 will not mean
 

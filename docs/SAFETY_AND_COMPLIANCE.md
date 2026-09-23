@@ -10,7 +10,7 @@ Saved capability opt-in is not money-moving consent. Every live session starts l
 new typed, exact-scope grant for one account, ticker set, route, strategy fingerprint, Eastern day,
 and numeric risk envelope. The grant exists only in memory and cannot be remembered across restart.
 Active sessions expose separate pause and revoke actions and emit hash-chained action receipts. See
-[Bounded autonomous authority](AUTONOMOUS_AUTHORITY.md) for the enforcement and integration contract.
+[Bounded autonomous authority](UNATTENDED_ENGINE.md) for the enforcement and integration contract.
 The [live-pilot activation guide](LIVE_ACTIVATION.md) records the current CASH/evidence/OAuth stop
 state, regular-hours/GFD-only route, ambiguous-order quarantine, and external release gates.
 
@@ -21,7 +21,7 @@ orders without confirmation when instructed, and that agentic trading can result
 However, the current order-review tool contract separately requires the exact preview and disclosure
 to be presented for explicit confirmation before placement. GRANDE Alpha applies the stricter current
 tool contract: its session grant is not treated as per-order confirmation. The distinct
-[supervised experimental mode](SUPERVISED_EXPERIMENTAL.md) requires a fresh, transaction-bound typed
+[supervised experimental mode](LIVE_ACTIVATION.md) requires a fresh, transaction-bound typed
 decision for every reviewed order; the autonomous path remains evidence/parity blocked. Review the
 provider's current [Agentic Trading overview](https://robinhood.com/us/en/support/articles/agentic-trading-overview/)
 before connecting.

@@ -38,7 +38,7 @@ session controls are available, but never stores a money-moving grant. The immut
 exact account, ticker tuple, route, strategy fingerprint, ET-day expiry, and all risk ceilings. The
 risk engine owns pause/revoke state, gross-notional reservations, and a hash-chained in-memory action
 receipt queue. The controller supplies current binding context, persists receipts append-only, and
-releases abandoned reservations. See [Bounded autonomous authority](AUTONOMOUS_AUTHORITY.md).
+releases abandoned reservations. See [Bounded autonomous authority](UNATTENDED_ENGINE.md).
 
 Cancellation is a separate consent boundary. The controller may lock new local requests at any time,
 but its only cancellation path consumes a short-lived, exact preview of GRANDE-owned nonterminal
@@ -88,3 +88,105 @@ metrics, policy version, and one-promotion limit before exposing live-review eli
 or interrupted reveal cannot be silently reset and optimized away. The seal is audit state and
 content identity, not encryption; promotion still depends on lawful, accurate source data and every
 other Evidence Lab gate.
+
+## Stock execution in the mixed engine
+
+The foreground mixed runner uses `EquityScope`, `EquityOrderIntent`, `assess_ticket`, and
+`EquityLedger` through `MixedExecutionEngine`. This is a code path, not evidence of a
+provider-qualified deployment or a profitable strategy. The old ETF desktop grant is separate
+and cannot authorize a stock order.
+
+The scope binds the exact account, symbols, interval (at most seven days), and risk ceilings.
+Stock intents use exact UUID references and decimal amounts; sells require share quantities.
+Preflight checks account and eligibility truth, every held asset's quote and exposure, cash,
+staleness, unresolved orders, daily usage, loss stop, and inventory-backed sells. The ledger
+records the reference before dispatch, permits one outstanding intent per account, deduplicates
+fills, and quarantines ambiguous placement outcomes. It does not infer an order identity from
+symbol, price, or time similarity.
+
+The CLI wires the scope to an exact candidate digest, qualification certificate, separate user
+permit, earnings verifier, broker-eligibility adapter, and durable process lease. A fresh,
+interactive arming step is required unless recovery finds the same sole active, unexpired grant.
+See [live activation](LIVE_ACTIVATION.md) and
+[production qualification](PRODUCTION_QUALIFICATION.md) for the remaining provider-observed
+and deployment requirements.
+
+## Low-latency execution profile
+
+GRANDE Alpha can run a medium-frequency **research and observation** loop, but Robinhood Agentic
+Trading is a remote MCP request/response interface—not a colocated exchange gateway or a documented
+streaming direct-market-data feed. The GPU does not remove internet, provider, routing, or fill
+latency. Faster order submission also does not create positive expectancy.
+
+### Four independent clocks
+
+| Clock | Default | Configurable | Purpose |
+|---|---:|---:|---|
+| Batched QQQ/TQQQ/SQQQ quote request | 1 s | 0.25-5 s | Observe the freshest provider snapshot available |
+| Completed QQQ analysis bar (`t_analysis`) | 5 s | 1-300 s | Update the causal strategy signal |
+| Pair-action decision (`t_trade`) | 15 s | 2-120 analysis bars | Select one `(T,S)` command using only completed analysis |
+| Portfolio/position/order reconciliation | 5 s | 2-60 s | Refresh broker account truth |
+
+The quote loop is single-flight. If a request takes 1.4 seconds while the target is 0.25 seconds,
+GRANDE Alpha does not queue five stale calls; it coalesces those ticks and starts again after the
+active request completes. Account calls are issued sequentially so they do not pre-queue an entire
+reconciliation batch ahead of a waiting quote request. Thus actual speed is approximately:
+
+```text
+effective quote rate <= 1 / max(configured interval, observed provider round-trip time)
+analysis rate <= min(fresh-quote rate, 1 / completed-analysis-bar interval)
+pair-action rate <= analysis rate / configured decision stride
+order rate <= every independent risk and broker gate
+```
+
+The remote endpoint has not published a performance or order-rate SLA in the cited product overview.
+Do not interpret the 0.25-second UI minimum as provider permission, guaranteed throughput, or fresh
+250 ms market data.
+
+Version 0.11 upgrades settings created by older releases to the default 1-second quote, 5-second
+analysis, 3-analysis-bar trade decision, and 5-second reconciliation profile. Thus nominal
+`t_analysis=5s < t_trade=15s`. Cadence schema v5 also migrates legacy runtime configs with no
+strategy field to the fail-safe `cash` champion. After that one-time migration, values selected in
+Settings are preserved.
+
+At each trade tick, the controller takes the newest completed analysis state whose timestamp is no
+later than the trade tick. It records one command from the exact nine-action vocabulary. The
+long-only inventory and risk mask can make some commands infeasible from a particular state. A sell
+reduces an existing holding and never creates a short. A two-leg rotation is executed sells first,
+then waits for broker fill/reconciliation before any buy; pair commands are not assumed atomic.
+
+### Order path remains deliberately slower
+
+A signal is not an order. Before any live submission, the controller still requires a passing,
+unexpired evidence certificate for the exact bar interval, decision stride, and settings, a time-limited account grant,
+fresh and sufficiently narrow quotes, market-hours permission, available exposure and loss budget,
+no open order, Robinhood's order review, a 12-second cooldown, and the session order-rate ceiling.
+The default live envelope allows at most two submissions per minute. A submitted order is immediately
+placed in the local open-order snapshot, then reconciled against Robinhood.
+
+The user also chooses a broker session and compatible order route. Regular hours can use market GFD
+or whole-share limits. Extended and 24 Hour Market routes are whole-share limit-only, and overnight
+eligibility is rechecked before each submission. Those fields are evidence-fingerprinted and
+session-grant-bound. See [Trading sessions and order routes](TRADING_SESSIONS.md).
+
+### Choosing a profile
+
+- **Default retail low latency:** 1 s quotes, 5 s analysis bars, one pair decision per 3 bars, 5 s reconciliation.
+- **Fast shadow experiment:** 0.25-0.5 s quotes and 1-5 s bars. Measure quote timestamps, duplicate
+  snapshots, provider errors, spread, modeled slippage, and CPU usage. No real orders.
+- **Live review:** only the exact cadence that passed Evidence Lab under realistic costs and has a
+  current certificate. A cadence change resets warm-up and changes the evidence fingerprint.
+
+Start faster settings in live shadow for several complete sessions. Promote nothing based on local
+throughput alone; the gates require out-of-sample economics after costs. Current packaged research
+has no passing live strategy certificate.
+
+### Current provider boundaries
+
+Robinhood's [Agentic Trading overview](https://robinhood.com/us/en/support/articles/agentic-trading-overview/)
+describes portfolio/account reads, quotes, order review, and order placement through Trading MCP, and
+warns that automated strategies can move quickly and be difficult to stop. Robinhood's
+[market-data explanation](https://robinhood.com/us/en/support/articles/using-market-data/) distinguishes
+displayed market prices from consolidated quotes and notes session-specific delays and extended-hours
+risks. GRANDE Alpha therefore treats quote timestamps, age, spread, and broker review as controls—not
+as proof of direct-feed quality.

@@ -44,7 +44,7 @@ it will not mean that any strategy is profitable.
 | Stocks and crypto Agent Desk | Research proposals and local observations only; no automatic multi-market orders |
 
 See the [product contract](docs/PRODUCT_CONTRACT.md), [roadmap to 1.0.0](docs/ROADMAP_TO_1_0.md),
-[versioning policy](docs/VERSIONING.md), and [changelog](CHANGELOG.md).
+[versioning policy](docs/RELEASE_PROCESS.md#versioning-policy), and [changelog](CHANGELOG.md).
 
 > [!IMPORTANT]
 > Source integration is not permission to distribute a broker-connected product. Public Robinhood
@@ -92,7 +92,7 @@ separately in **Settings**.
 For installation details, unsigned-build limitations, and credential recovery, read the
 [Windows installation guide](docs/WINDOWS_INSTALLATION.md). Public binary distribution remains
 blocked until the exact release artifact is code-signed and passes the
-[release checklist](docs/PUBLIC_RELEASE_CHECKLIST.md).
+[release checklist](docs/RELEASE_PROCESS.md#public-release-checklist).
 
 ### Command line without the desktop
 
@@ -149,8 +149,8 @@ Important boundaries:
 - Broker and venue state remain authoritative.
 
 Read [Safety and compliance](docs/SAFETY_AND_COMPLIANCE.md),
-[supervised experimental mode](docs/SUPERVISED_EXPERIMENTAL.md), and
-[bounded autonomous authority](docs/AUTONOMOUS_AUTHORITY.md) before enabling real-order controls.
+[supervised experimental mode](docs/LIVE_ACTIVATION.md), and
+[bounded autonomous authority](docs/UNATTENDED_ENGINE.md) before enabling real-order controls.
 
 ## Command-line companion
 
@@ -179,7 +179,7 @@ See the [CLI reference](docs/CLI.md).
 | Research a strategy | [Sandbox](docs/SANDBOX.md) · [Data readiness](docs/DATASET_READINESS.md) · [Evidence Lab](docs/EVIDENCE_LAB.md) |
 | Understand execution controls | [Architecture](docs/SYSTEM_ARCHITECTURE.md) · [Trading sessions](docs/TRADING_SESSIONS.md) |
 | Understand the product boundary | [Product contract](docs/PRODUCT_CONTRACT.md) · [Roadmap to 1.0.0](docs/ROADMAP_TO_1_0.md) |
-| Build or publish a release | [Versioning](docs/VERSIONING.md) · [Release process](docs/RELEASE_PROCESS.md) |
+| Build or publish a release | [Release and versioning](docs/RELEASE_PROCESS.md) |
 | Troubleshoot | [Troubleshooting](docs/TROUBLESHOOTING.md) · [Support](SUPPORT.md) |
 | Browse everything | [Documentation index](docs/README.md) |
 
@@ -188,7 +188,7 @@ See the [CLI reference](docs/CLI.md).
 The complete local product is currently available on the **Community** plan for `$0`, without a
 GRANDE Alpha account, payment method, or license server. Pro is a coming-soon product direction for
 convenience, organization, scale, and optional services. Safety, evidence, provenance, privacy,
-stop, and consent controls will not be paywalled. See [Community and Pro plans](docs/PRODUCT_PLANS.md).
+stop, and consent controls will not be paywalled. See [Community and Pro plans](docs/PRODUCT_CONTRACT.md#community-and-pro-plans).
 
 ## Development
 

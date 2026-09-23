@@ -39,4 +39,4 @@ This community project does not guarantee a response time, embargo period, bount
 
 GRANDE Alpha is not claimed to be penetration-tested, formally verified, suitable for institutional
 use, or resilient to a compromised host, dependency, broker, market-data source, or network. An
-unsigned build is not a trusted public binary. See the [release checklist](docs/PUBLIC_RELEASE_CHECKLIST.md).
+unsigned build is not a trusted public binary. See the [release checklist](docs/RELEASE_PROCESS.md#public-release-checklist).

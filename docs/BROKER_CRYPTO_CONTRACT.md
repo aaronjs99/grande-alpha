@@ -67,7 +67,7 @@ The adapter's own consumed-reference set and reviews still live in the broker in
 restart recovery. It remains default-deny for placement. Future live integration must use that
 boundary and add an explicit strategy/universe/evidence grant, managed exits/cancellation, and
 market-value/unrealized-loss controls. The existing ETF authority/evidence contract does not
-cover crypto. Scheduled shadow still blocks all crypto preview, placement, and cancellation.
+cover crypto. Shadow observation has no crypto order-writing path.
 
 Verification covers synthetic advertised-schema fixtures, account binding, decimal precision,
 route/size restrictions, stale and invalidated previews, changing balances/halts, uncertain
