@@ -28,10 +28,13 @@ This community project does not guarantee a response time, embargo period, bount
 
 - Research works without broker authority.
 - Broker reads and real-order capabilities are separate permissions.
-- Money-moving authority is bounded, held in memory, expires, and is not restored after restart.
+- Attended desktop grants remain bounded and in memory. The separate mixed-engine permit can persist
+  until revoked, but it remains bound to one account, strategy and approved limits; restart requires
+  the unchanged permit, durable order reconciliation and the account execution lease.
 - Credentials are stored through the Windows credential vault.
 - Order requests use idempotency references and local audit receipts.
-- Unknown account, quote, order, evidence, or provider state fails closed.
+- Unknown account, quote, order, or provider state fails closed. Research evidence does not itself
+  authorize orders.
 - Stop and cancellation controls are best effort, not exchange-side guarantees.
 - GRANDE Alpha installs no background execution scheduler.
 
@@ -39,4 +42,4 @@ This community project does not guarantee a response time, embargo period, bount
 
 GRANDE Alpha is not claimed to be penetration-tested, formally verified, suitable for institutional
 use, or resilient to a compromised host, dependency, broker, market-data source, or network. An
-unsigned build is not a trusted public binary. See the [release checklist](docs/RELEASE_PROCESS.md#public-release-checklist).
+unsigned build is not a trusted public binary. See [development and release](docs/DEVELOPMENT_RELEASE.md).

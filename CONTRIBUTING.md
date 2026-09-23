@@ -68,9 +68,9 @@ The pull-request template contains the required checklist. A passing CI run prov
 repository checks completed; it does not establish trading profitability, broker approval, legal
 suitability, or release readiness.
 
-Changes intended for the stable product should identify which
-[1.0.0 roadmap gate](docs/ROADMAP_TO_1_0.md) they advance and must preserve the
-[product contract](docs/PRODUCT_CONTRACT.md).
+Changes intended for the stable product should identify the capability they advance in the
+[user guide](docs/USER_GUIDE.md#what-is-implemented-tested-and-still-pending) and preserve the
+execution boundaries in the [architecture guide](docs/ARCHITECTURE.md).
 
 Unless explicitly stated otherwise, contributions intentionally submitted for inclusion are
 licensed under the repository's [Apache License 2.0](LICENSE).

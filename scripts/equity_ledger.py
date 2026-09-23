@@ -242,3 +242,42 @@ class EquityLedger:
                 raise ValueError("Execution history implies short inventory")
             totals[symbol] = max(0, total)
         return totals
+
+    def mark_to_market_pnl(self, account: str, quotes: dict) -> dict[str, float]:
+        """Value app-owned fills at executable bids, independent of account cash flows."""
+        with self._lock:
+            fills = self._db.execute(
+                "SELECT symbol,side,quantity,price,fee FROM equity_v1_fills "
+                "WHERE account=? ORDER BY executed_at,execution_id", (account,)
+            ).fetchall()
+        quantity: dict[str, float] = {}
+        cost: dict[str, float] = {}
+        realized = 0.0
+        for fill in fills:
+            symbol = fill["symbol"]
+            amount = float(fill["quantity"])
+            current_quantity = quantity.get(symbol, 0.0)
+            current_cost = cost.get(symbol, 0.0)
+            if fill["side"] == "buy":
+                quantity[symbol] = current_quantity + amount
+                cost[symbol] = current_cost + amount * fill["price"] + fill["fee"]
+                continue
+            if fill["side"] != "sell" or amount > current_quantity + 1e-8:
+                raise ValueError("Execution history is not a long-only buy/sell ledger")
+            average_cost = current_cost / current_quantity
+            realized += amount * fill["price"] - fill["fee"] - amount * average_cost
+            quantity[symbol] = max(0.0, current_quantity - amount)
+            cost[symbol] = max(0.0, current_cost - amount * average_cost)
+        unrealized = 0.0
+        for symbol, amount in quantity.items():
+            if amount <= 1e-8:
+                continue
+            quote = quotes.get(symbol)
+            if quote is None:
+                raise ValueError(f"Missing exact mark for held {symbol}")
+            quote.validate()
+            unrealized += amount * quote.bid - cost[symbol]
+        if not math.isfinite(realized) or not math.isfinite(unrealized):
+            raise ValueError("Execution performance is not finite")
+        return {"realized_usd": realized, "unrealized_usd": unrealized,
+                "total_usd": realized + unrealized}

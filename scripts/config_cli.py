@@ -4,11 +4,17 @@ from __future__ import annotations
 
 import argparse
 import json
-from dataclasses import asdict
 from pathlib import Path
 
 from grande_alpha.cli_table import format_table
-from grande_alpha.config import config_path, data_dir, load_config, migrate_legacy_data, upgrade_config
+from grande_alpha.config import (
+    config_document,
+    config_path,
+    data_dir,
+    load_config,
+    migrate_legacy_data,
+    upgrade_config,
+)
 
 
 def command_config_show(args: argparse.Namespace) -> int:
@@ -16,11 +22,17 @@ def command_config_show(args: argparse.Namespace) -> int:
     path = Path(args.path) if args.path else None
     config = load_config(path)
     resolved_path = path or config_path()
-    payload = {"path": str(resolved_path), "settings": asdict(config)}
+    document = config_document(config)
+    payload = {"path": str(resolved_path), "settings": document}
     if args.json:
         print(json.dumps(payload, indent=2, sort_keys=True))
         return 0
-    rows = [[name, value] for name, value in payload["settings"].items()]
+    rows = [["schema_version", document["schema_version"]]]
+    rows.extend(
+        [f"{section}.{name}", value]
+        for section, values in document.items() if isinstance(values, dict)
+        for name, value in values.items()
+    )
     print(format_table(["Setting", "Value"], rows, args.width))
     print(f"Path: {payload['path']}")
     return 0

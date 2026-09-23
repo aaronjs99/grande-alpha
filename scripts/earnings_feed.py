@@ -13,7 +13,7 @@ import json
 import math
 import os
 import sqlite3
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import httpx
@@ -90,10 +90,88 @@ class EarningsObservationStore:
                     value REAL NOT NULL, available_at TEXT NOT NULL,
                     source_sha256 TEXT NOT NULL REFERENCES earnings_observations(sha256)
                 );
+                CREATE TABLE IF NOT EXISTS earnings_provider_requests(
+                    request_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    requested_at TEXT NOT NULL, dataset TEXT NOT NULL, symbol TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS earnings_response_checks(
+                    sha256 TEXT NOT NULL REFERENCES earnings_observations(sha256),
+                    checked_at TEXT NOT NULL, PRIMARY KEY(sha256,checked_at)
+                );
+                CREATE TABLE IF NOT EXISTS earnings_events(
+                    event_id TEXT PRIMARY KEY, symbol TEXT NOT NULL, announced_at TEXT NOT NULL,
+                    payload TEXT NOT NULL
+                );
             """)
 
     def close(self):
         self.db.close()
+
+    def cached_observation(self, symbol: str, dataset: str, *, now: datetime,
+                           max_age: timedelta) -> dict | None:
+        """Return a recent raw observation without manufacturing a new availability time."""
+        row = self.db.execute(
+            "SELECT * FROM earnings_observations WHERE symbol=? AND dataset=? "
+            "AND observed_at<=? ORDER BY observed_at DESC LIMIT 1",
+            (symbol, dataset, now.astimezone(UTC).isoformat()),
+        ).fetchone()
+        if row is None:
+            return None
+        checked = self.db.execute("SELECT MAX(checked_at) FROM earnings_response_checks WHERE sha256=?",
+                                  (row["sha256"],)).fetchone()[0]
+        freshest = max(datetime.fromisoformat(row["observed_at"]),
+                       datetime.fromisoformat(checked) if checked else datetime.min.replace(tzinfo=UTC))
+        if now.astimezone(UTC) - freshest > max_age:
+            return None
+        return {"provider": row["provider"], "dataset": row["dataset"], "symbol": row["symbol"],
+                "observed_at": row["observed_at"], "sha256": row["sha256"],
+                "payload": json.loads(row["payload"])}
+
+    def reserve_request(self, symbol: str, dataset: str, *, now: datetime,
+                        max_requests_per_24h: int = 25) -> int:
+        """Count an attempted provider request before dispatch, including failed requests."""
+        if not symbol_valid(symbol) or dataset not in {"EARNINGS", "EARNINGS_ESTIMATES"}:
+            raise ValueError("Supported dataset and symbol are required")
+        if now.tzinfo is None or now.utcoffset() is None:
+            raise ValueError("Provider request time must be timezone-aware")
+        if type(max_requests_per_24h) is not int or max_requests_per_24h <= 0:
+            raise ValueError("Provider request budget must be a positive integer")
+        boundary = (now.astimezone(UTC) - timedelta(hours=24)).isoformat()
+        self.db.execute("BEGIN IMMEDIATE")
+        try:
+            count = self.db.execute(
+                "SELECT COUNT(*) FROM earnings_provider_requests WHERE requested_at>?", (boundary,)
+            ).fetchone()[0]
+            if count >= max_requests_per_24h:
+                raise RuntimeError("Alpha Vantage request budget is exhausted for this 24-hour window")
+            self.db.execute(
+                "INSERT INTO earnings_provider_requests(requested_at,dataset,symbol) VALUES(?,?,?)",
+                (now.astimezone(UTC).isoformat(), dataset, symbol),
+            )
+            self.db.commit()
+            return max_requests_per_24h - count - 1
+        except BaseException:
+            self.db.rollback()
+            raise
+
+    async def fetch_cached(self, client: AlphaVantageEarningsClient, symbol: str, dataset: str,
+                           *, now: datetime | None = None, cache_age: timedelta = timedelta(hours=12),
+                           max_requests_per_24h: int = 25) -> tuple[dict, bool, int | None]:
+        """Use stored raw data when recent; otherwise reserve quota before a network request."""
+        observed = now or datetime.now(UTC)
+        if observed.tzinfo is None or observed.utcoffset() is None or cache_age <= timedelta(0):
+            raise ValueError("Cache policy requires an aware time and positive age")
+        cached = self.cached_observation(symbol, dataset, now=observed, max_age=cache_age)
+        if cached is not None:
+            return cached, True, None
+        remaining = self.reserve_request(symbol, dataset, now=observed,
+                                         max_requests_per_24h=max_requests_per_24h)
+        result = await client.fetch(symbol, dataset)
+        self.record(result)
+        with self.db:
+            self.db.execute("INSERT OR IGNORE INTO earnings_response_checks VALUES(?,?)",
+                            (result["sha256"], observed.astimezone(UTC).isoformat()))
+        return result, False, remaining
 
     def record(self, observation: dict) -> None:
         required = {"provider", "dataset", "symbol", "observed_at", "sha256", "payload"}
@@ -219,16 +297,54 @@ class EarningsObservationStore:
             and announced <= datetime.fromisoformat(actual["available_at"]) <= actual_available
         )
 
+    def record_event(self, event: dict) -> None:
+        """Keep only fully screened events bound to stored pre-announcement facts."""
+        from grande_alpha.earnings import FIELDS, _screen
+
+        if not isinstance(event, dict) or set(event) != FIELDS or not self.verify_event(event):
+            raise ValueError("Earnings event is incomplete or lacks point-in-time provider evidence")
+        _screen(event, datetime.now(UTC), {"min_surprise_bps": 1, "min_momentum_bps": 1,
+                                           "max_spread_bps": 10_000, "max_event_age_days": 10_000,
+                                           "max_quote_age_seconds": 10_000})
+        payload = json.dumps(event, sort_keys=True, separators=(",", ":"), allow_nan=False)
+        with self.db:
+            self.db.execute("INSERT INTO earnings_events(event_id,symbol,announced_at,payload) "
+                            "VALUES(?,?,?,?) ON CONFLICT(event_id) DO UPDATE SET payload=excluded.payload",
+                            (event["event_id"], event["symbol"], event["announced_at"], payload))
+
+    def events_for_symbols(self, symbols: set[str]) -> list[dict]:
+        if not symbols:
+            return []
+        if len(symbols) > 100 or any(not symbol_valid(symbol) for symbol in symbols):
+            raise ValueError("A bounded set of exact symbols is required")
+        placeholders = ",".join("?" for _ in symbols)
+        rows = self.db.execute(
+            f"SELECT payload FROM earnings_events WHERE symbol IN ({placeholders}) "
+            "ORDER BY announced_at DESC,event_id", tuple(sorted(symbols)),
+        ).fetchall()
+        seen = set()
+        events = []
+        for row in rows:
+            event = json.loads(row["payload"])
+            if event["symbol"] not in seen and self.verify_event(event):
+                events.append(event)
+                seen.add(event["symbol"])
+        return events
+
 
 def command_fetch(args) -> int:
     api_key, _source = load_api_key()
-    observation = asyncio.run(AlphaVantageEarningsClient(api_key).fetch(args.symbol, args.dataset))
     store = EarningsObservationStore(Path(args.database))
     try:
-        store.record(observation)
+        observation, cached, remaining = asyncio.run(
+            store.fetch_cached(AlphaVantageEarningsClient(api_key), args.symbol, args.dataset,
+                               cache_age=timedelta(hours=args.cache_hours),
+                               max_requests_per_24h=args.max_requests_24h)
+        )
     finally:
         store.close()
-    print(json.dumps({key: observation[key] for key in observation if key != "payload"}, indent=2))
+    print(json.dumps({**{key: observation[key] for key in observation if key != "payload"},
+                      "cached": cached, "remaining_local_requests_24h": remaining}, indent=2))
     return 0
 
 
@@ -296,3 +412,14 @@ def command_verify_event(args) -> int:
         store.close()
     print(json.dumps({"verified": verified, "authority_granted": False}, indent=2))
     return 0 if verified else 2
+
+
+def command_import_event(args) -> int:
+    event = load_json(Path(args.input), max_bytes=128_000)
+    store = EarningsObservationStore(Path(args.database))
+    try:
+        store.record_event(event)
+    finally:
+        store.close()
+    print(json.dumps({"stored": True, "event_id": event["event_id"]}, indent=2))
+    return 0

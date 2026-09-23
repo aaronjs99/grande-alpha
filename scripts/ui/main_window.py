@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QSizePolicy,
     QSplitter,
+    QSystemTrayIcon,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -132,7 +133,10 @@ class MainWindow(QMainWindow):
         self._chart_times: deque[float] = deque(maxlen=1800)
         self._chart_prices: deque[float] = deque(maxlen=1800)
         self._closing_after_cleanup = False
+        self._tray_icon: QSystemTrayIcon | None = None
         self._connection_busy = False
+        self._connection_task: asyncio.Task | None = None
+        self._close_requested = False
         self.tasks = TaskSupervisor(self._on_task_error)
         self._stop_cancel_busy = False
         self.setWindowTitle(f"GRANDE Alpha {__version__} — Community Preview")
@@ -1046,13 +1050,43 @@ class MainWindow(QMainWindow):
         self.notice_bar.show()
 
     async def _connect(self) -> None:
+        if self._connection_task is not None or self._close_requested:
+            return
+        self._connection_task = asyncio.current_task()
+        self._on_busy(True)
         try:
             if self._snapshot.connected:
-                await self.controller.disconnect()
+                await self._disconnect_for_user()
             else:
                 await self.controller.connect()
         except Exception as exc:
-            QMessageBox.critical(self, "Robinhood connection", str(exc))
+            await self._stop_message("Robinhood connection", str(exc), error=True)
+        finally:
+            self._connection_task = None
+            self._on_busy(False)
+
+    async def _disconnect_for_user(self) -> bool:
+        self._set_stop_status("Stopping automation and disconnecting Robinhood…")
+        try:
+            await self.controller.disconnect()
+        except Exception as exc:
+            self._set_stop_status("Automation stopped. Broker order cleanup is unverified.")
+            accepted = await self._stop_message(
+                "Disconnect without verified order cleanup?",
+                f"{exc}\n\nLocal automation is stopped. Open orders may still fill in Robinhood. "
+                "Disconnect will not cancel orders or sell positions. Order records remain for "
+                "reconciliation on your next connection. Disconnect anyway?",
+                question=True,
+            )
+            if not accepted:
+                return False
+            try:
+                await self.controller.disconnect_without_order_cleanup(unverified=True)
+            except Exception as transport_exc:
+                await self._stop_message("Disconnect did not finish", str(transport_exc), error=True)
+                return False
+        self._set_stop_status("Disconnected. Local automation stopped; broker orders were not cancelled.")
+        return True
 
     def _authorize(self) -> None:
         if not self._snapshot.account or not self._snapshot.portfolio:
@@ -1214,6 +1248,7 @@ class MainWindow(QMainWindow):
         if self._stop_cancel_busy:
             return
         self._stop_cancel_busy = True
+        self._sync_data_timers()
         self.kill_button.setText("STOPPING…")
         self.kill_button.setEnabled(False)
         self.stop_cancel_action.setEnabled(False)
@@ -1291,6 +1326,7 @@ class MainWindow(QMainWindow):
             if plan is not None:
                 self.controller.discard_cancel_plan(plan)
             self._stop_cancel_busy = False
+            self._sync_data_timers()
             self.kill_button.setText("STOP + CANCEL")
             self.kill_button.setEnabled(self._snapshot.connected)
             self.stop_cancel_action.setEnabled(self._snapshot.connected)
@@ -1423,12 +1459,13 @@ class MainWindow(QMainWindow):
     def _on_busy(self, busy: bool) -> None:
         self._connection_busy = busy
         self._sync_data_timers()
-        self.connect_button.setEnabled(not busy)
+        self.connect_button.setEnabled(not busy and self._connection_task is None)
         self.connect_button.setText(
-            "Connecting in browser…"
+            ("Disconnecting…" if self._snapshot.connected else "Connecting in browser…")
             if busy
             else ("Disconnect" if self._snapshot.connected else "Connect Robinhood")
         )
+        self._set_controls()
 
     def _sync_data_timers(self) -> None:
         """Run broker timers only after connection/startup has fully settled.
@@ -1440,7 +1477,11 @@ class MainWindow(QMainWindow):
         created before there is a stable connected snapshot.
         """
 
-        should_run = self._snapshot.connected and not self._connection_busy
+        should_run = (
+            self._snapshot.connected and not self._connection_busy
+            and self._connection_task is None and not self._close_requested
+            and not self._stop_cancel_busy
+        )
         for timer in (self.timer, self.reconcile_timer):
             if should_run and not timer.isActive():
                 timer.start()
@@ -1638,6 +1679,17 @@ class MainWindow(QMainWindow):
             if safe_checks_available
             else "Unavailable while a live grant or strategy is active. Revoke authority and stop first."
         )
+        busy = self._connection_busy or self._connection_task is not None or self._close_requested or self._stop_cancel_busy
+        if busy:
+            for control in (
+                self.connect_button, self.broker_connect_action, self.authorize_button,
+                self.authorize_action, self.start_button, self.start_strategy_action,
+                self.shadow_button, self.shadow_action, self.flatten_button, self.flatten_action,
+                self.kill_button, self.stop_cancel_action, self.refresh_action,
+                self.settings_button, self.settings_action, self.forget_credentials_action,
+                self.activation_widget.safe_checks_button,
+            ):
+                control.setEnabled(False)
         self._apply_responsive_layout(self.width(), self.height())
 
     def _update_quotes(self, snapshot: TradingSnapshot) -> None:
@@ -1750,9 +1802,15 @@ class MainWindow(QMainWindow):
             self.agent_widget.shutdown()
             self.timer.stop()
             self.reconcile_timer.stop()
+            if self._tray_icon is not None:
+                self._tray_icon.hide()
+                QApplication.instance().quit()
             event.accept()
             return
-        if not self._snapshot.connected:
+        if self._close_requested:
+            event.ignore()
+            return
+        if not self._snapshot.connected and self._connection_task is None:
             # A disconnected window owns no broker transport. Close synchronously so
             # initial/offline use never creates an orphan asyncio task just to exit.
             self.timer.stop()
@@ -1760,26 +1818,48 @@ class MainWindow(QMainWindow):
             self.agent_widget.shutdown()
             self.controller.stop_for_exit()
             self._closing_after_cleanup = True
+            if self._tray_icon is not None:
+                self._tray_icon.hide()
+                QApplication.instance().quit()
             event.accept()
             return
-        if self._snapshot.connected:
-            answer = QMessageBox.question(
-                self,
-                "Exit GRANDE Alpha",
-                "Exit stops this app's automation. It does not cancel broker orders or sell "
-                "holdings. Existing orders may still fill after exit; check Robinhood directly. "
-                "Unresolved order records are kept for the next startup. Exit?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.No,
-            )
-            if answer != QMessageBox.StandardButton.Yes:
-                event.ignore()
-                return
+        dialog = QMessageBox(self)
+        dialog.setWindowTitle("Close GRANDE Alpha")
+        dialog.setText("What should happen to trading when this window closes?")
+        dialog.setInformativeText(
+            "Stopping blocks new app orders. Broker orders and filled holdings can remain; "
+            "check Robinhood for their final state. Closing succeeds even if the broker is disconnected."
+        )
+        keep = None
+        if QSystemTrayIcon.isSystemTrayAvailable():
+            keep = dialog.addButton("Keep running in tray", QMessageBox.ButtonRole.ActionRole)
+        stop = dialog.addButton("Stop trading and exit", QMessageBox.ButtonRole.DestructiveRole)
+        dialog.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
+        dialog.exec()
+        if keep is not None and dialog.clickedButton() is keep:
+            if self._tray_icon is None:
+                self._tray_icon = QSystemTrayIcon(QApplication.instance().windowIcon(), self)
+                self._tray_icon.setToolTip("GRANDE Alpha — trading status")
+                self._tray_icon.activated.connect(lambda _reason: self._restore_from_tray())
+            QApplication.instance().setQuitOnLastWindowClosed(False)
+            self._tray_icon.show()
+            self._tray_icon.showMessage("GRANDE Alpha", "Still running. Open this icon to return.")
+            self.hide()
             event.ignore()
-            self._start_task("shutdown", self._shutdown_then_close())
+            return
+        if dialog.clickedButton() is not stop:
+            event.ignore()
             return
         event.ignore()
+        self._close_requested = True
+        self._sync_data_timers()
+        self._set_controls()
         self._start_task("shutdown", self._shutdown_then_close())
+
+    def _restore_from_tray(self) -> None:
+        self.show()
+        self.raise_()
+        self.activateWindow()
 
     async def _shutdown_then_close(self) -> None:
         self.timer.stop()

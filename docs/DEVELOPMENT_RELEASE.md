@@ -1,0 +1,71 @@
+# Development and release
+
+Use Python 3.11 or 3.12 on Windows. `grande.ps1 setup` installs from the checkout with the
+selected system Python; a persistent virtual environment is optional. The package source remains
+under `scripts/`. Avoid installing development/build outputs into the tracked tree. Before a
+refactor, inspect the working tree and preserve other contributors' changes.
+
+## Local checks
+
+From the repository root:
+
+```powershell
+python -m ruff check scripts tests
+python -m pytest -q
+.\grande.ps1 verify
+```
+
+Run affected tests after each subsystem change and the entire suite before a release. Synthetic
+broker tests must cover stalled and ambiguous calls, durable references, duplicate/partial fills,
+concurrent processes, restart reconciliation, stale data, revocation, loss stops, timed recovery,
+and disconnected exit. Replay/accounting regression checks detect changes in strategy semantics.
+An offscreen Qt check is useful for narrow, portrait, and landscape layouts, but it is not a
+substitute for an installed Windows acceptance test.
+
+## Packaging and distribution
+
+Build a clean wheel outside the checkout, install it in a disposable location, and exercise the
+headless command line without Qt. Then build and inspect the Windows desktop artifact with its
+optional dependencies. The wheel must not include credentials, account data, generated `egg-info`,
+test output, local databases, or research datasets. A release also needs current documentation
+links, a dependency and secret audit, and a check that all command examples still parse.
+
+Version information comes from `scripts/_version.py` through package metadata. A version bump is
+not proof of production readiness. The proposed breaking cleanup is `0.18.0` only after its
+integrated checks pass; `1.0.0` requires a stable public contract, provider-observed execution
+and recovery results, signed/distributed artifacts, and support/compliance decisions. It does
+not certify profitability.
+
+For `1.0.0`, the exact release candidate must also satisfy these product gates:
+
+1. One coherent, accessible user journey with tested narrow and wide layouts, keyboard/focus
+   behavior, and understandable recovery messages.
+2. Reproducible research inputs with documented rights, point-in-time provenance, costs, and
+   independent review of any performance claim.
+3. Provider-observed order, partial-fill, timeout, ambiguous-submission, restart, and stop
+   behavior for every supported live route, followed by an independent execution-safety review.
+4. Tested install, upgrade, backup, repair, export, and uninstall behavior on clean supported
+   Windows profiles, including long-running resource and disconnected operation.
+5. Signed and timestamped distribution artifacts tied to a clean commit, reviewed dependencies,
+   a vulnerability-response owner, and a practiced release-revocation path.
+6. Documented provider permission and market-data rights for the public distribution model,
+   plus qualified review of applicable consumer, privacy, financial-promotion, and tax-record
+   obligations.
+7. A written compatibility and deprecation policy for CLI, configuration, database, receipts,
+   diagnostics, and integration contracts.
+
+These are distribution-quality thresholds, not a profitability certificate or guarantee of
+uninterrupted broker service. Open items remain open even when local tests pass.
+
+Local fake-broker tests, historical replay, forward shadow observation, provider-observed trading,
+and public deployment are different evidence levels. Report them separately. Never use a local
+test pass to claim a live order route is safe or profitable. Do not place a live order as a release
+test without the operator's exact approval and accepted financial limits.
+
+## Contribution workflow
+
+Work on `master` for this checkout without rewriting collaborator history. Review an external PR
+against the current package layout before incorporating it; a PR based on an older tree may need
+an explicit port. Commit only reviewed source/docs/tests, inspect the staged diff, then push after
+the full verification pass. Keep dated research results under [historical records](historical/README.md)
+when superseded rather than silently repurposing their evidence.

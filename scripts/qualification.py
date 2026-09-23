@@ -8,7 +8,9 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from grande_alpha.json_inputs import load_json
-from grande_alpha.standing import ROBINHOOD_CONTRACT_SHA256
+
+# Historical certificate format only. This inventory digest is not a live gate.
+HISTORICAL_BROKER_CONTRACT_SHA256 = "15f945f6287aecf6d89140c57e0fe0f6a0efff89ef53268a6f6afbcdbae8bc1f"
 
 REQUIRED_RECOVERY = {"stop", "daily_loss", "duplicate_process", "unknown_order", "restart"}
 
@@ -31,7 +33,7 @@ class ProductionGate:
         current = self.now()
         if any(t.tzinfo is None or t.utcoffset() is None for t in (issued, expires, current)):
             raise RuntimeError("Qualification certificate times must include offsets")
-        if value["candidate_digest"] != candidate_digest or value["broker_contract_sha256"] != ROBINHOOD_CONTRACT_SHA256:
+        if value["candidate_digest"] != candidate_digest or value["broker_contract_sha256"] != HISTORICAL_BROKER_CONTRACT_SHA256:
             raise RuntimeError("Qualification certificate does not match the candidate and broker contract")
         if not issued <= current < expires or expires - issued > timedelta(days=30):
             raise RuntimeError("Qualification certificate is expired, future-dated, or too long-lived")

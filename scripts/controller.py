@@ -84,6 +84,8 @@ AUTHORITY_MODE_SUPERVISED_EXPERIMENTAL = "supervised_experimental"
 SUPERVISED_MAX_ORDER_NOTIONAL = 10.0
 SUPERVISED_MAX_DAILY_NOTIONAL = 50.0
 SUPERVISED_MAX_TOTAL_EXPOSURE = 40.0
+DISCONNECT_TRUTH_TIMEOUT_SECONDS = 15.0
+BROKER_DISCONNECT_TIMEOUT_SECONDS = 8.0
 OrderConfirmer = Callable[[OrderConfirmationRequest], Awaitable[OrderConfirmationDecision]]
 
 
@@ -789,12 +791,9 @@ class TradingController:
         )
 
     async def disconnect(self) -> None:
-        self.agent.stop("Agent stopped before broker disconnect")
-        self._revoke_live_automation("Disconnected by user")
+        self._stop_for_cancel("Disconnected by user")
         if not self.snapshot.connected or self.snapshot.account is None:
-            await self.broker.disconnect()
-            self.snapshot = TradingSnapshot()
-            self._emit()
+            await self.disconnect_without_order_cleanup()
             return
         if getattr(self.broker, "connected", None) is False:
             self.log(
@@ -803,29 +802,51 @@ class TradingController:
                 "warning",
                 "connection",
             )
-            try:
-                await self.broker.disconnect()
-            except Exception as exc:
-                self.log(f"Disconnected transport cleanup failed: {exc}", "warning", "connection")
-            self.snapshot = TradingSnapshot()
-            self._emit()
+            await self.disconnect_without_order_cleanup(unverified=True)
             return
         account_number = self.snapshot.account.account_number
-        try:
-            async with self._reconcile_lock:
-                orders = await self._read_cancel_truth_locked(account_number)
-                owned_targets, _unrelated = self._cancel_scope(orders, account_number)
-        except Exception as exc:
-            raise BrokerError(
-                f"Disconnect blocked because exact account cleanup truth failed: {exc}"
-            ) from exc
-        if owned_targets or self._submission_reconcile_required:
-            raise BrokerError(
-                "Disconnect blocked: GRANDE-owned open or unresolved orders were not cancelled. "
-                "Use STOP + CANCEL and explicitly confirm the exact GRANDE-owned scope first."
+        if self._has_recorded_order_activity(account_number):
+            try:
+                async with asyncio.timeout(DISCONNECT_TRUTH_TIMEOUT_SECONDS):
+                    async with self._reconcile_lock:
+                        orders = await self._read_cancel_truth_locked(account_number)
+                        owned_targets, _unrelated = self._cancel_scope(orders, account_number)
+            except Exception as exc:
+                detail = "order check timed out" if isinstance(exc, TimeoutError) else str(exc)
+                raise BrokerError(
+                    f"Disconnect cleanup could not be verified: {detail}. Local automation is stopped."
+                ) from exc
+            managed = self.store.agent_ledger.status(account_number)
+            if (owned_targets or self._submission_reconcile_required
+                    or managed.pending_orders or managed.unresolved_orders):
+                raise BrokerError(
+                    "GRANDE-owned open or unresolved orders remain. Use STOP + CANCEL to review "
+                    "them, or explicitly disconnect without cancellation and manage them in Robinhood."
+                )
+        await self.disconnect_without_order_cleanup()
+
+    def _has_recorded_order_activity(self, account_number: str) -> bool:
+        return bool(
+            self._submission_reconcile_required
+            or self.store.unresolved_order_intents(account_number)
+            or self.store.owned_broker_order_bindings(account_number)
+            or self.store.agent_ledger.records(account_number)
+        )
+
+    async def disconnect_without_order_cleanup(self, *, unverified: bool = False) -> None:
+        """Close transport without broker writes, retaining durable order ownership."""
+
+        self._stop_for_cancel("Local automation stopped for broker disconnect")
+        if unverified:
+            self._cleanup_unresolved = True
+            self.log(
+                "Disconnected without verified order cleanup; check orders and fills in Robinhood. "
+                "Durable order records remain; disconnect sent no cancellation.",
+                "warning", "connection",
             )
-        await self.broker.disconnect()
+        await asyncio.wait_for(self.broker.disconnect(), BROKER_DISCONNECT_TIMEOUT_SECONDS)
         self.snapshot = TradingSnapshot()
+        self._cancel_plans.clear()
         self._emit()
 
     def update_config(self, config: AppConfig) -> None:
@@ -2249,9 +2270,13 @@ class TradingController:
         if not self.snapshot.connected or self.snapshot.account is None:
             raise RuntimeError("Connect the Agentic account before preparing cancellation")
         account_number = self.snapshot.account.account_number
-        async with self._reconcile_lock:
-            orders = await self._read_cancel_truth_locked(account_number)
-            targets, unrelated = self._cancel_scope(orders, account_number)
+        if self._has_recorded_order_activity(account_number):
+            async with self._reconcile_lock:
+                orders = await self._read_cancel_truth_locked(account_number)
+                targets, unrelated = self._cancel_scope(orders, account_number)
+        else:
+            targets = ()
+            unrelated = tuple(order.order_id for order in self._nonterminal_orders(self.snapshot.orders))
         plan = CancelPlan(
             account_number=account_number,
             targets=targets,

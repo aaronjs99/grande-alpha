@@ -8,7 +8,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from PySide6.QtGui import QCloseEvent
-from PySide6.QtWidgets import QApplication, QMessageBox
+from PySide6.QtWidgets import QApplication
 
 import grande_alpha.controller as controller_module
 import grande_alpha.risk as risk_module
@@ -2906,11 +2906,11 @@ async def test_window_exit_does_not_claim_broker_cleanup_was_verified(
     captured_tasks = []
     def capture_task(_name, coroutine):
         captured_tasks.append(coroutine)
-    monkeypatch.setattr(
-        main_window_module.QMessageBox,
-        "question",
-        lambda *_args, **_kwargs: QMessageBox.StandardButton.Yes,
-    )
+    def choose_stop(dialog):
+        next(button for button in dialog.buttons() if button.text() == "Stop trading and exit").click()
+        return 0
+
+    monkeypatch.setattr(main_window_module.QMessageBox, "exec", choose_stop)
     monkeypatch.setattr(window, "_start_task", capture_task)
 
     event = QCloseEvent()

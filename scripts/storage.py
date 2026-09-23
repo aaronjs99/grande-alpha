@@ -13,6 +13,7 @@ from zoneinfo import ZoneInfo
 
 from grande_alpha.candidate_execution import next_consecutive_losses
 from grande_alpha.config import data_dir
+from grande_alpha.loss_recovery import recovery_deadline
 from grande_alpha.models import Bar, BrokerOrder, OrderIntent, Quote, Signal, utc_now
 
 QUOTE_BATCH_SCHEMA_VERSION = 2
@@ -121,6 +122,18 @@ class AuditStore:
                     loss_limit REAL NOT NULL CHECK(loss_limit > 0),
                     loss_latched INTEGER NOT NULL CHECK(loss_latched IN (0,1)),
                     PRIMARY KEY(account_number, et_date)
+                );
+                CREATE TABLE IF NOT EXISTS loss_recovery (
+                    account_number TEXT PRIMARY KEY, scope_digest TEXT NOT NULL,
+                    loss_day TEXT NOT NULL, paused_at TEXT NOT NULL,
+                    eligible_at TEXT, cleared_at TEXT
+                );
+                CREATE TABLE IF NOT EXISTS mixed_daily_pnl (
+                    account_number TEXT NOT NULL, et_date TEXT NOT NULL,
+                    peak_pnl REAL NOT NULL, last_pnl REAL NOT NULL,
+                    loss_limit REAL NOT NULL CHECK(loss_limit > 0),
+                    loss_latched INTEGER NOT NULL CHECK(loss_latched IN (0,1)),
+                    PRIMARY KEY(account_number,et_date)
                 );
                 CREATE TABLE IF NOT EXISTS shadow_checkpoints (
                     id INTEGER PRIMARY KEY,
@@ -1360,9 +1373,45 @@ class AuditStore:
                 gaps.append(str(row["ref_id"]))
         return gaps
 
+    def _record_loss_pause(self, account_number: str, et_date: str, latched: bool,
+                           scope_digest: str | None, recovery_delay: int | None,
+                           recovery_unit: str, observed: datetime) -> bool:
+        """Update the account pause inside the caller's open risk transaction."""
+        if scope_digest is None:
+            return False
+        pause = self._connection.execute(
+            "SELECT * FROM loss_recovery WHERE account_number=?", (account_number,)
+        ).fetchone()
+        if latched and (pause is None or (pause["cleared_at"] is not None
+                                          and pause["loss_day"] != et_date)):
+            eligible = recovery_deadline(observed, recovery_delay, recovery_unit)
+            self._connection.execute(
+                "INSERT INTO loss_recovery VALUES(?,?,?,?,?,NULL) ON CONFLICT(account_number) "
+                "DO UPDATE SET scope_digest=excluded.scope_digest,loss_day=excluded.loss_day,"
+                "paused_at=excluded.paused_at,eligible_at=excluded.eligible_at,cleared_at=NULL",
+                (account_number, scope_digest, et_date, observed.astimezone(UTC).isoformat(),
+                 eligible.isoformat() if eligible else None),
+            )
+            pause = self._connection.execute(
+                "SELECT * FROM loss_recovery WHERE account_number=?", (account_number,)
+            ).fetchone()
+        if pause is None or pause["cleared_at"] is not None:
+            return False
+        deadline = _parse_aware_utc(pause["eligible_at"], field="loss recovery deadline") \
+            if pause["eligible_at"] else None
+        if deadline is None or observed.astimezone(UTC) < deadline:
+            return True
+        self._connection.execute(
+            "UPDATE loss_recovery SET cleared_at=? WHERE account_number=? AND cleared_at IS NULL",
+            (observed.astimezone(UTC).isoformat(), account_number),
+        )
+        return False
+
     def record_daily_risk(
         self, account_number: str, et_date: str, value: float, loss_limit: float,
         *, require_existing: bool = False, carry_previous_observation: bool = False,
+        scope_digest: str | None = None, recovery_delay: int | None = None,
+        recovery_unit: str = "manual", observed_at: datetime | None = None,
     ) -> dict[str, float | bool]:
         """Persist an observed account/day high-water mark and irreversible daily stop.
 
@@ -1377,6 +1426,12 @@ class AuditStore:
             if (isinstance(number, bool) or not isinstance(number, (int, float))
                     or not math.isfinite(number) or number < 0 or (positive and number == 0)):
                 raise ValueError("Daily risk values must be finite and nonnegative; the limit must be positive")
+        if scope_digest is not None and not scope_digest.strip():
+            raise ValueError("Loss recovery requires an exact scope identity")
+        observed = observed_at or utc_now()
+        if observed.tzinfo is None or observed.utcoffset() is None:
+            raise ValueError("Risk observation time must be aware")
+        recovery_blocked = False
         with self._lock, self._connection:
             row = self._connection.execute(
                 "SELECT * FROM live_daily_risk WHERE account_number=? AND et_date=?",
@@ -1412,8 +1467,92 @@ class AuditStore:
                 loss_limit=excluded.loss_limit,loss_latched=excluded.loss_latched""",
                 (account_number, et_date, peak, value, limit, int(latched)),
             )
+            recovery_blocked = self._record_loss_pause(
+                account_number, et_date, latched, scope_digest,
+                recovery_delay, recovery_unit, observed,
+            )
         return {"peak_value": peak, "last_value": float(value), "loss_limit": limit,
-                "loss_latched": latched}
+                "loss_latched": latched, "recovery_blocked": recovery_blocked}
+
+    def record_mixed_daily_pnl(
+        self, account_number: str, et_date: str, pnl: float, loss_limit: float,
+        *, scope_digest: str, recovery_delay: int | None, recovery_unit: str,
+        require_existing: bool = False, carry_previous_observation: bool = False,
+        observed_at: datetime | None = None,
+    ) -> dict[str, float | bool]:
+        """Latch app-owned realized plus marked-unrealized losses, excluding outside cash flows."""
+        if not account_number.strip() or not scope_digest.strip():
+            raise ValueError("Mixed daily risk requires exact account and scope")
+        if date.fromisoformat(et_date).isoformat() != et_date:
+            raise ValueError("Mixed daily risk requires an exact Eastern date")
+        if (isinstance(pnl, bool) or not isinstance(pnl, (int, float)) or not math.isfinite(pnl)
+                or isinstance(loss_limit, bool) or not isinstance(loss_limit, (int, float))
+                or not math.isfinite(loss_limit) or loss_limit <= 0):
+            raise ValueError("Mixed P/L and loss limit must be finite; limit must be positive")
+        observed = observed_at or utc_now()
+        if observed.tzinfo is None or observed.utcoffset() is None:
+            raise ValueError("Mixed risk observation time must be aware")
+        with self._lock, self._connection:
+            row = self._connection.execute(
+                "SELECT * FROM mixed_daily_pnl WHERE account_number=? AND et_date=?",
+                (account_number, et_date),
+            ).fetchone()
+            if row is None and require_existing:
+                raise ValueError("Mixed daily P/L history is missing; prior order risk cannot be reset")
+            peak, limit, latched = float(pnl), float(loss_limit), False
+            if row is None and carry_previous_observation:
+                previous = self._connection.execute(
+                    "SELECT last_pnl FROM mixed_daily_pnl WHERE account_number=? AND et_date<? "
+                    "ORDER BY et_date DESC LIMIT 1", (account_number, et_date),
+                ).fetchone()
+                if previous is not None:
+                    prior = previous["last_pnl"]
+                    if not isinstance(prior, (int, float)) or not math.isfinite(prior):
+                        raise ValueError("Previous mixed P/L observation is invalid")
+                    peak = max(peak, prior)
+            if row is not None:
+                if (not all(isinstance(row[key], (int, float)) and math.isfinite(row[key])
+                            for key in ("peak_pnl", "last_pnl", "loss_limit"))
+                        or row["peak_pnl"] < row["last_pnl"] or row["loss_limit"] <= 0
+                        or row["loss_latched"] not in (0, 1)):
+                    raise ValueError("Stored mixed daily P/L is invalid")
+                peak = max(peak, row["peak_pnl"])
+                limit = min(limit, row["loss_limit"])
+                latched = bool(row["loss_latched"])
+            latched = latched or peak - pnl >= limit
+            self._connection.execute(
+                "INSERT INTO mixed_daily_pnl VALUES(?,?,?,?,?,?) "
+                "ON CONFLICT(account_number,et_date) DO UPDATE SET "
+                "peak_pnl=excluded.peak_pnl,last_pnl=excluded.last_pnl,"
+                "loss_limit=excluded.loss_limit,loss_latched=excluded.loss_latched",
+                (account_number, et_date, peak, pnl, limit, int(latched)),
+            )
+            recovery_blocked = self._record_loss_pause(
+                account_number, et_date, latched, scope_digest,
+                recovery_delay, recovery_unit, observed,
+            )
+        return {"peak_pnl": peak, "last_pnl": float(pnl), "loss_limit": limit,
+                "loss_latched": latched, "recovery_blocked": recovery_blocked}
+
+    def acknowledge_loss_recovery(self, account_number: str, *, observed_at: datetime | None = None) -> bool:
+        """Explicit manual restart clears only the recovery pause, never daily loss history."""
+        observed = observed_at or utc_now()
+        if not account_number.strip() or observed.tzinfo is None or observed.utcoffset() is None:
+            raise ValueError("Manual recovery requires an account and aware time")
+        with self._lock, self._connection:
+            row = self._connection.execute(
+                "SELECT paused_at FROM loss_recovery WHERE account_number=? AND cleared_at IS NULL",
+                (account_number,),
+            ).fetchone()
+            if row is None:
+                return False
+            if observed.astimezone(UTC) < _parse_aware_utc(row["paused_at"], field="loss pause time"):
+                raise ValueError("Recovery cannot precede the loss pause")
+            self._connection.execute(
+                "UPDATE loss_recovery SET cleared_at=? WHERE account_number=? AND cleared_at IS NULL",
+                (observed.astimezone(UTC).isoformat(), account_number),
+            )
+            return True
 
     def live_daily_usage(self, account_number: str, et_date: str) -> dict[str, float | int | str]:
         """Restore placement-attempt usage and receipt-chain state for an ET trading date."""

@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import shutil
+import uuid
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -19,6 +21,25 @@ MCP_URL = "https://agent.robinhood.com/mcp/trading"
 ONBOARDING_VERSION = 1
 DISCLOSURE_VERSION = "2026-08"
 CADENCE_VERSION = 6
+CONFIG_SCHEMA_VERSION = 1
+
+CONFIG_SECTIONS = {
+    "broker": ("broker_connection_enabled", "live_trading_enabled"),
+    "data": ("remote_market_data_enabled", "market_history_retention_days",
+             "poll_seconds", "reconcile_seconds", "bar_seconds"),
+    "strategy": ("strategy_name", "trade_every_bars", "warmup_bars", "fast_ema",
+                 "slow_ema", "trend_threshold_bps", "momentum_bars", "hard_stop_pct",
+                 "take_profit_pct", "max_hold_minutes", "no_trade_open_minutes",
+                 "no_trade_close_minutes"),
+    "execution": ("market_hours", "order_type", "time_in_force", "limit_offset_bps",
+                  "settlement_model", "default_session_minutes"),
+    "risk": ("default_max_order_notional", "default_max_daily_notional",
+             "default_max_total_exposure", "default_max_daily_loss", "default_max_trades",
+             "default_max_orders_per_minute", "default_max_spread_bps",
+             "default_max_quote_age_seconds"),
+    "storage": ("personal_ledger_enabled",),
+    "desktop": ("onboarding_version", "disclosure_version"),
+}
 
 
 class ConfigUpgradeRequired(RuntimeError):
@@ -81,22 +102,45 @@ class AppConfig:
         return self.bar_seconds * self.trade_every_bars
 
     def validate_cadence(self) -> None:
-        try:
-            max_daily_notional = float(self.default_max_daily_notional)
-        except (TypeError, ValueError, OverflowError) as exc:
-            raise ValueError("Maximum daily notional must be finite and positive") from exc
-        if isinstance(self.default_max_daily_notional, bool) or not (
-            math.isfinite(max_daily_notional) and max_daily_notional > 0
-        ):
-            raise ValueError("Maximum daily notional must be finite and positive")
-        try:
-            max_quote_age = float(self.default_max_quote_age_seconds)
-        except (TypeError, ValueError, OverflowError) as exc:
-            raise ValueError("Maximum quote age must be finite and positive") from exc
-        if isinstance(self.default_max_quote_age_seconds, bool) or not (
-            math.isfinite(max_quote_age) and max_quote_age > 0
-        ):
-            raise ValueError("Maximum quote age must be finite and positive")
+        for name in ("broker_connection_enabled", "live_trading_enabled",
+                     "remote_market_data_enabled", "personal_ledger_enabled"):
+            if type(getattr(self, name)) is not bool:
+                raise ValueError(f"{name} must be true or false")
+        if not isinstance(self.disclosure_version, str):
+            raise ValueError("disclosure_version must be text")
+        for name in ("onboarding_version", "market_history_retention_days", "bar_seconds",
+                     "trade_every_bars",
+                     "warmup_bars", "fast_ema", "slow_ema", "momentum_bars",
+                     "max_hold_minutes", "default_session_minutes", "default_max_trades",
+                     "default_max_orders_per_minute"):
+            value = getattr(self, name)
+            minimum = 0 if name == "onboarding_version" else 1
+            if type(value) is not int or value < minimum:
+                raise ValueError(f"{name} must be an integer of at least {minimum}")
+        for name in ("no_trade_open_minutes", "no_trade_close_minutes"):
+            value = getattr(self, name)
+            if type(value) is not int or value < 0:
+                raise ValueError(f"{name} must be a nonnegative integer")
+        for name in ("hard_stop_pct", "take_profit_pct", "default_max_order_notional",
+                     "default_max_daily_notional", "default_max_total_exposure",
+                     "default_max_daily_loss", "default_max_spread_bps",
+                     "default_max_quote_age_seconds"):
+            value = getattr(self, name)
+            if (isinstance(value, bool) or not isinstance(value, (int, float))
+                    or not math.isfinite(value) or value <= 0):
+                raise ValueError(f"{name} must be finite and positive")
+        for name in ("trend_threshold_bps", "limit_offset_bps"):
+            value = getattr(self, name)
+            if (isinstance(value, bool) or not isinstance(value, (int, float))
+                    or not math.isfinite(value) or value < 0):
+                raise ValueError(f"{name} must be finite and nonnegative")
+        for name in ("poll_seconds", "reconcile_seconds"):
+            value = getattr(self, name)
+            if (isinstance(value, bool) or not isinstance(value, (int, float))
+                    or not math.isfinite(value)):
+                raise ValueError(f"{name} must be a finite number of seconds")
+        if self.hard_stop_pct >= 1 or self.take_profit_pct >= 1:
+            raise ValueError("Hard stop and take profit must be fractions below 1")
         if not 0.25 <= self.poll_seconds <= 5.0:
             raise ValueError("Quote request target must be between 0.25 and 5 seconds")
         if not 2.0 <= self.reconcile_seconds <= 60.0:
@@ -156,17 +200,42 @@ def load_config(path: Path | None = None) -> AppConfig:
     raw = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(raw, dict):
         raise ValueError("Configuration must be a JSON object")
-    if int(raw.get("cadence_version", 0)) < CADENCE_VERSION:
+    if "schema_version" not in raw:
         raise ConfigUpgradeRequired(
             "Configuration needs an explicit upgrade; run 'grande-alpha-cli config upgrade' first"
         )
-    allowed = set(AppConfig.__dataclass_fields__)
-    unknown = set(raw) - allowed
+    if type(raw["schema_version"]) is not int or raw["schema_version"] != CONFIG_SCHEMA_VERSION:
+        raise ValueError(f"Unsupported configuration schema version: {raw['schema_version']!r}")
+    unknown = set(raw) - {"schema_version", *CONFIG_SECTIONS}
     if unknown:
-        raise ValueError(f"Unknown configuration settings: {', '.join(sorted(unknown))}")
-    config = AppConfig(**raw)
+        raise ValueError(f"Unknown configuration sections: {', '.join(sorted(unknown))}")
+    missing = set(CONFIG_SECTIONS) - set(raw)
+    if missing:
+        raise ValueError(f"Missing configuration sections: {', '.join(sorted(missing))}")
+    values: dict = {}
+    for section, names in CONFIG_SECTIONS.items():
+        saved = raw[section]
+        if not isinstance(saved, dict):
+            raise ValueError(f"Configuration section '{section}' must be an object")
+        unknown_settings = set(saved) - set(names)
+        if unknown_settings:
+            raise ValueError(
+                f"Unknown {section} settings: {', '.join(sorted(unknown_settings))}"
+            )
+        values.update(saved)
+    config = AppConfig(**values)
     config.validate_cadence()
     return config
+
+
+def config_document(config: AppConfig) -> dict:
+    """Serialize one validated settings object without duplicating its defaults."""
+    config.validate_cadence()
+    values = asdict(config)
+    grouped = {section: {name: values[name] for name in names}
+               for section, names in CONFIG_SECTIONS.items()}
+    grouped["schema_version"] = CONFIG_SCHEMA_VERSION
+    return grouped
 
 
 def migrate_config_payload(raw: dict) -> dict:
@@ -198,14 +267,24 @@ def migrate_config_payload(raw: dict) -> dict:
     return upgraded
 
 
-def save_config(config: AppConfig, path: Path | None = None) -> None:
+def save_config(config: AppConfig, path: Path | None = None, *, _upgrading: bool = False) -> None:
     """Atomically persist a validated configuration to an explicitly writable location."""
-    config.validate_cadence()
+    document = config_document(config)
     path = path or (ensure_data_dir() / "config.json")
+    if path.exists() and not _upgrading:
+        # A normal settings save must never replace an old or malformed file
+        # before the operator has a validated, backed-up upgrade.
+        load_config(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    pending = path.with_suffix(".json.pending")
-    pending.write_text(json.dumps(asdict(config), indent=2), encoding="utf-8")
-    pending.replace(path)
+    pending = path.with_name(f"{path.name}.{uuid.uuid4().hex}.pending")
+    try:
+        with pending.open("x", encoding="utf-8") as stream:
+            json.dump(document, stream, indent=2)
+            stream.flush()
+            os.fsync(stream.fileno())
+        pending.replace(path)
+    finally:
+        pending.unlink(missing_ok=True)
 
 
 def upgrade_config(path: Path | None = None) -> Path | None:
@@ -221,13 +300,20 @@ def upgrade_config(path: Path | None = None) -> Path | None:
     raw = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(raw, dict):
         raise ValueError("Configuration must be a JSON object")
-    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-    backup = path.with_name(f"{path.stem}.{timestamp}.backup{path.suffix}")
-    shutil.copy2(path, backup)
+    if type(raw.get("schema_version")) is int and raw["schema_version"] == CONFIG_SCHEMA_VERSION:
+        load_config(path)
+        return None
+    if "schema_version" in raw:
+        raise ValueError(f"Unsupported configuration schema version: {raw['schema_version']!r}")
     migrated = migrate_config_payload(raw)
     allowed = set(AppConfig.__dataclass_fields__)
     unknown = set(migrated) - allowed
     if unknown:
         raise ValueError(f"Unknown configuration settings: {', '.join(sorted(unknown))}")
-    save_config(AppConfig(**migrated), path)
+    config = AppConfig(**migrated)
+    config.validate_cadence()
+    timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
+    backup = path.with_name(f"{path.stem}.{timestamp}.backup{path.suffix}")
+    shutil.copy2(path, backup)
+    save_config(config, path, _upgrading=True)
     return backup

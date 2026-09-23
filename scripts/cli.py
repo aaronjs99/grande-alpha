@@ -1285,17 +1285,50 @@ def command_engine_readiness(args: argparse.Namespace) -> int:
     return 0
 
 
+def command_session_run(args: argparse.Namespace) -> int:
+    """Dispatch one explicit session mode without guessing a strategy or limit file."""
+    from grande_alpha.autonomous_cli import command_run_autonomous
+    from grande_alpha.headless import command_engine_run
+    from grande_alpha.live_cli import command_live
+
+    files = {"policy": args.policy, "candidate": args.candidate,
+             "authorization": args.authorization, "earnings_database": args.earnings_database}
+    if args.mode == "shadow":
+        if args.strategy != "etf" or any(files.values()) or args.poll_seconds is not None:
+            raise ValueError("Shadow mode supports the ETF strategy and no live policy or candidate files")
+        args.duration = args.duration or 0
+        return command_engine_run(args)
+    if args.mode == "attended":
+        if (args.strategy != "etf" or not args.policy or
+                any(files[key] for key in ("candidate", "authorization", "earnings_database")) or
+                args.duration is not None or args.poll_seconds is not None):
+            raise ValueError("Attended ETF mode requires only --policy")
+        args.unattended = False
+        return command_live(args)
+    if (args.strategy != "mixed" or not all(files[key] for key in
+            ("candidate", "authorization", "earnings_database")) or args.policy or
+            args.duration is not None):
+        raise ValueError("Autonomous mixed mode requires --candidate, --authorization and --earnings-database")
+    args.poll_seconds = args.poll_seconds or 5.0
+    return command_run_autonomous(args)
+
+
 def build_parser() -> argparse.ArgumentParser:
-    from grande_alpha.authorization import command_authorization_check, command_authorization_template
+    from grande_alpha.authorization import (
+        command_authorization_check,
+        command_authorization_revoke,
+        command_authorization_template,
+    )
     from grande_alpha.autonomous_cli import (
         command_autonomous_readiness,
         command_candidate_template,
-        command_run_autonomous,
+        command_loss_recovery_ack,
     )
     from grande_alpha.device_notifications import command_notifications
     from grande_alpha.earnings import command_screen, command_template
     from grande_alpha.earnings_feed import (
         command_fetch,
+        command_import_event,
         command_key_delete,
         command_key_set,
         command_key_status,
@@ -1303,12 +1336,10 @@ def build_parser() -> argparse.ArgumentParser:
         command_record_fact,
         command_verify_event,
     )
-    from grande_alpha.headless import command_engine_inspect, command_engine_run
+    from grande_alpha.headless import command_engine_inspect
     from grande_alpha.live_cli import (
-        command_live,
         command_policy_check,
         command_policy_template,
-        command_standing_template,
         command_stop,
     )
     from grande_alpha.mixed_portfolio import command_plan
@@ -1332,6 +1363,16 @@ def build_parser() -> argparse.ArgumentParser:
     commands = parser.add_subparsers(dest="command", required=True)
     config = commands.add_parser("config", help="Inspect or explicitly upgrade local configuration")
     config_commands = config.add_subparsers(dest="config_command", required=True)
+    broker = commands.add_parser("broker", help="Inspect the connected broker contract")
+    broker_commands = broker.add_subparsers(dest="broker_command", required=True)
+    data = commands.add_parser("data", help="Earnings and historical-data observations")
+    data_commands = data.add_subparsers(dest="data_command", required=True)
+    research = commands.add_parser("research", help="Replay and evidence tools; no broker orders")
+    research_commands = research.add_subparsers(dest="research_command", required=True)
+    session = commands.add_parser("session", help="Run or stop an explicit trading session")
+    session_commands = session.add_subparsers(dest="session_command", required=True)
+    records = commands.add_parser("records", help="Read local activity, notifications and reports")
+    records_commands = records.add_subparsers(dest="records_command", required=True)
     config_show = config_commands.add_parser("show", help="Read validated settings without writing files")
     config_show.add_argument("--path", type=Path, help="Configuration file to inspect")
     config_show.add_argument("--json", action="store_true")
@@ -1348,7 +1389,7 @@ def build_parser() -> argparse.ArgumentParser:
     config_import_legacy.add_argument("--destination", type=Path, help="Target data directory")
     config_import_legacy.add_argument("--json", action="store_true")
     config_import_legacy.set_defaults(func=command_config_import_legacy)
-    portfolio = commands.add_parser("portfolio", help="Broker-isolated mixed-allocation research")
+    portfolio = research_commands.add_parser("portfolio", help="Broker-isolated mixed-allocation research")
     portfolio_commands = portfolio.add_subparsers(dest="portfolio_command", required=True)
     portfolio_template = portfolio_commands.add_parser("template", help="Mixed-portfolio research input template")
     portfolio_template.set_defaults(func=mixed_template)
@@ -1369,14 +1410,14 @@ def build_parser() -> argparse.ArgumentParser:
     forward_report.add_argument("--database", required=True)
     forward_report.add_argument("--settings", required=True)
     forward_report.set_defaults(func=command_forward_report)
-    notifications = commands.add_parser("notifications", help="On-device persistent notification inbox; no email")
+    notifications = records_commands.add_parser("notifications", help="On-device persistent notification inbox; no email")
     notifications.add_argument("--after", type=int, default=0)
     notifications.add_argument("--limit", type=int, default=100)
     notifications.add_argument("--unread", action="store_true")
     notifications.add_argument("--ack", type=int, help="Acknowledge one notification; never resumes trading")
     notifications.set_defaults(func=command_notifications)
 
-    earnings = commands.add_parser("earnings", help="Research-only point-in-time earnings screening; no orders")
+    earnings = data_commands.add_parser("earnings", help="Point-in-time earnings observations and screening")
     earnings_commands = earnings.add_subparsers(dest="earnings_command", required=True)
     earnings_template = earnings_commands.add_parser("template", help="Print the unfilled earnings research schema")
     earnings_template.set_defaults(func=command_template)
@@ -1387,6 +1428,8 @@ def build_parser() -> argparse.ArgumentParser:
     earnings_fetch.add_argument("--database", required=True)
     earnings_fetch.add_argument("--symbol", required=True)
     earnings_fetch.add_argument("--dataset", choices=("EARNINGS", "EARNINGS_ESTIMATES"), required=True)
+    earnings_fetch.add_argument("--cache-hours", type=float, default=12.0)
+    earnings_fetch.add_argument("--max-requests-24h", type=int, default=25)
     earnings_fetch.set_defaults(func=command_fetch)
     earnings_key_set = earnings_commands.add_parser("key-set", help="Store the API key with a hidden prompt")
     earnings_key_set.set_defaults(func=command_key_set)
@@ -1412,15 +1455,18 @@ def build_parser() -> argparse.ArgumentParser:
     earnings_verify.add_argument("--database", required=True)
     earnings_verify.add_argument("--input", required=True)
     earnings_verify.set_defaults(func=command_verify_event)
+    earnings_import = earnings_commands.add_parser("import-event", help="Store a provider-verified earnings event")
+    earnings_import.add_argument("--database", required=True)
+    earnings_import.add_argument("--input", required=True)
+    earnings_import.set_defaults(func=command_import_event)
 
-    engine = commands.add_parser("engine", help="Explicit headless foreground operation")
-    engine_commands = engine.add_subparsers(dest="engine_command", required=True)
+    engine_commands = session_commands
     readiness = engine_commands.add_parser("readiness", help="Offline JSON inventory of unattended-live blockers")
     readiness.add_argument("--workflow", choices=("current", "earnings"), default="current")
     readiness.add_argument("--setup", type=Path, help="Optional planning amounts; never grants authority")
     readiness.add_argument("--policy", type=Path, help="Validate a complete policy against current configuration offline")
     readiness.set_defaults(func=command_engine_readiness)
-    qualification = engine_commands.add_parser("qualification-check", help="Validate an exact-candidate certificate")
+    qualification = research_commands.add_parser("qualification-check", help="Check a historical certificate")
     qualification.add_argument("--certificate", required=True)
     qualification.add_argument("--candidate-digest", required=True)
     qualification.set_defaults(func=command_qualification_check)
@@ -1431,21 +1477,17 @@ def build_parser() -> argparse.ArgumentParser:
     autonomous_readiness = engine_commands.add_parser(
         "autonomous-readiness", help="Validate mixed live artifacts offline; no broker contact"
     )
-    for option in ("candidate", "qualification", "authorization", "earnings-database"):
+    for option in ("candidate", "authorization", "earnings-database"):
         autonomous_readiness.add_argument(f"--{option}", required=True)
-    autonomous_readiness.add_argument("--source")
     autonomous_readiness.set_defaults(func=command_autonomous_readiness)
-    autonomous_run = engine_commands.add_parser(
-        "run-autonomous", help="Qualified mixed live engine; foreground and session-aware"
+    recovery_ack = engine_commands.add_parser(
+        "loss-recovery-ack", help="Explicitly clear a manual loss pause; does not reset daily loss"
     )
-    for option in ("candidate", "qualification", "authorization", "earnings-database", "source"):
-        autonomous_run.add_argument(f"--{option}", required=True)
-    autonomous_run.add_argument("--connect", action="store_true")
-    autonomous_run.add_argument("--authenticate", action="store_true")
-    autonomous_run.add_argument("--poll-seconds", type=float, default=5.0)
-    autonomous_run.set_defaults(func=command_run_autonomous)
+    recovery_ack.add_argument("--account", required=True)
+    recovery_ack.add_argument("--database", required=True)
+    recovery_ack.set_defaults(func=command_loss_recovery_ack)
     authorization_template = engine_commands.add_parser(
-        "authorization-template", help="Print a blank seven-day-or-shorter mixed-engine permit"
+        "authorization-template", help="Print an until-revoked mixed-engine permit schema"
     )
     authorization_template.set_defaults(func=command_authorization_template)
     authorization_check = engine_commands.add_parser(
@@ -1455,54 +1497,52 @@ def build_parser() -> argparse.ArgumentParser:
     authorization_check.add_argument("--account", required=True)
     authorization_check.add_argument("--scope-digest", required=True)
     authorization_check.set_defaults(func=command_authorization_check)
+    authorization_revoke = engine_commands.add_parser(
+        "authorization-revoke", help="Revoke one persistent mixed authorization; does not cancel orders"
+    )
+    authorization_revoke.add_argument("--permit", required=True)
+    authorization_revoke.add_argument("--account", required=True)
+    authorization_revoke.set_defaults(func=command_authorization_revoke)
     policy_template = engine_commands.add_parser("policy-template", help="Print an unarmed live-policy template")
     policy_template.set_defaults(func=command_policy_template)
     policy_check = engine_commands.add_parser("policy-check", help="Validate explicit limits offline; grants no authority")
     policy_check.add_argument("--policy", required=True)
-    policy_check.add_argument("--unattended", action="store_true", help="Validate explicit standing terms too")
     policy_check.set_defaults(func=command_policy_check)
-    live_run = engine_commands.add_parser("run-live", help="Bounded ATTENDED live session; per-order approval required")
-    live_run.add_argument("--policy", required=True, help="Explicit account, strategy, limits, and duration JSON")
-    live_run.add_argument("--connect", action="store_true")
-    live_run.add_argument("--authenticate", action="store_true")
-    live_run.set_defaults(func=command_live)
-    standing_template = engine_commands.add_parser("standing-template", help="Unarmed standing-policy skeleton")
-    standing_template.set_defaults(func=command_standing_template)
-    unattended_run = engine_commands.add_parser("run-unattended", help="Evidence-gated bounded standing session; explicit terminal activation")
-    unattended_run.add_argument("--policy", required=True)
-    unattended_run.add_argument("--connect", action="store_true")
-    unattended_run.add_argument("--authenticate", action="store_true")
-    unattended_run.set_defaults(func=command_live, unattended=True)
     stop_run = engine_commands.add_parser("stop", help="Revoke all local standing sessions; no cancellation or liquidation")
     stop_run.set_defaults(func=command_stop)
-    engine_inspect = engine_commands.add_parser(
-        "inspect-broker", help="Inspect exact MCP tool schemas and descriptions; no orders or account reads"
+    engine_inspect = broker_commands.add_parser(
+        "inspect", help="Inspect MCP tool schemas and descriptions; no orders or account reads"
     )
     engine_inspect.add_argument("--connect", action="store_true")
     engine_inspect.add_argument("--authenticate", action="store_true")
     engine_inspect.add_argument("--tool", action="append", help="Include full metadata for this tool; repeatable")
     engine_inspect.add_argument("--full", action="store_true", help="Include all metadata (potentially very large)")
     engine_inspect.set_defaults(func=command_engine_inspect)
-    engine_run = engine_commands.add_parser("run", help="Run autonomous shadow; never real orders")
-    engine_run.add_argument("--mode", choices=["shadow"], default="shadow")
-    engine_run.add_argument("--connect", action="store_true", help="Authorize read-only broker access")
-    engine_run.add_argument("--authenticate", action="store_true", help="Allow interactive OAuth login")
-    engine_run.add_argument("--duration", type=float, default=0,
-                            help="Seconds after connection; 0 runs until Ctrl+C")
-    engine_run.set_defaults(func=command_engine_run)
+    session_run = engine_commands.add_parser("run", help="Run one explicit mode and strategy")
+    session_run.add_argument("--mode", choices=("shadow", "attended", "autonomous"), required=True)
+    session_run.add_argument("--strategy", choices=("etf", "mixed"), required=True)
+    session_run.add_argument("--connect", action="store_true")
+    session_run.add_argument("--authenticate", action="store_true")
+    session_run.add_argument("--policy", help="Attended ETF policy")
+    session_run.add_argument("--candidate", help="Mixed candidate JSON")
+    session_run.add_argument("--authorization", help="Persistent mixed authorization path")
+    session_run.add_argument("--earnings-database", help="Earnings observation database")
+    session_run.add_argument("--duration", type=float, help="Shadow duration in seconds; omitted runs until stopped")
+    session_run.add_argument("--poll-seconds", type=float, help="Mixed engine polling interval")
+    session_run.set_defaults(func=command_session_run)
 
-    status = commands.add_parser("status", help="Show local permissions and evidence state")
+    status = records_commands.add_parser("status", help="Show local permissions and evidence state")
     _output_options(status)
     status.set_defaults(func=command_status)
 
-    activation = commands.add_parser(
+    activation = engine_commands.add_parser(
         "activation",
         help="Show who owns every activation condition and the exact next action",
     )
     _output_options(activation)
     activation.set_defaults(func=command_activation)
 
-    evidence = commands.add_parser("evidence", help="Show or run the exact Evidence Lab gate table")
+    evidence = research_commands.add_parser("evidence", help="Show or run the exact Evidence Lab gate table")
     evidence_commands = evidence.add_subparsers(dest="evidence_command", required=True)
     evidence_show = evidence_commands.add_parser("show", help="Show a saved evidence receipt")
     evidence_show.add_argument("--id", type=int, help="Promotion receipt ID; default is latest")
@@ -1515,10 +1555,6 @@ def build_parser() -> argparse.ArgumentParser:
     _output_options(evidence_run, compact=True)
     evidence_run.set_defaults(func=command_evidence_run)
 
-    data = commands.add_parser(
-        "data", help="Audit historical-data readiness without running or reserving evidence"
-    )
-    data_commands = data.add_subparsers(dest="data_command", required=True)
     data_audit = data_commands.add_parser(
         "audit", help="Read-only audit of local caches, a CSV import, and the evidence ledger"
     )
@@ -1572,7 +1608,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     runtime_trace_template.set_defaults(func=command_data_runtime_trace_manifest_template)
 
-    sandbox = commands.add_parser("sandbox", help="Run a broker-isolated virtual replay")
+    sandbox = research_commands.add_parser("sandbox", help="Run a broker-isolated virtual replay")
     sandbox_commands = sandbox.add_subparsers(dest="sandbox_command", required=True)
     sandbox_run = sandbox_commands.add_parser("run", help="Run a virtual sandbox replay")
     _source_options(sandbox_run)
@@ -1581,23 +1617,23 @@ def build_parser() -> argparse.ArgumentParser:
     _output_options(sandbox_run)
     sandbox_run.set_defaults(func=command_sandbox_run)
 
-    runs = commands.add_parser("runs", help="List saved sandbox runs or inspect one")
+    runs = records_commands.add_parser("runs", help="List saved sandbox runs or inspect one")
     runs.add_argument("--id", help="Complete sandbox run ID")
     runs.add_argument("--limit", type=int, default=20)
     _output_options(runs)
     runs.set_defaults(func=command_runs)
 
-    receipts = commands.add_parser("receipts", help="Show local audit receipts")
+    receipts = records_commands.add_parser("receipts", help="Show local audit receipts")
     receipts.add_argument("--limit", type=int, default=30)
     _output_options(receipts)
     receipts.set_defaults(func=command_receipts)
 
-    glossary = commands.add_parser("glossary", help="Search the same definitions used by the GUI")
+    glossary = config_commands.add_parser("glossary", help="Search the same definitions used by the GUI")
     glossary.add_argument("query", nargs="?")
     _output_options(glossary)
     glossary.set_defaults(func=command_glossary)
 
-    plans = commands.add_parser(
+    plans = config_commands.add_parser(
         "plans", help="Show the free Community entitlement and truthful Pro roadmap"
     )
     _output_options(plans)

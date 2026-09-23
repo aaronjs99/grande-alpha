@@ -1,4 +1,4 @@
-"""Explicit foreground entry point for the qualified mixed live engine.
+"""Explicit foreground entry point for the mixed live engine.
 
 The runner can be authorized while markets are closed. It remains alive and
 abstains until the regular session is open; it never installs a scheduler.
@@ -15,20 +15,19 @@ from dataclasses import asdict, fields
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from grande_alpha.authorization import UserAuthorizationGate
+from grande_alpha.authorization import UserAuthorizationGate, create_authorization
 from grande_alpha.earnings import LIMITS
 from grande_alpha.equity_execution import EquityScope
 from grande_alpha.json_inputs import load_json
 from grande_alpha.mixed_engine import mixed_candidate_digest, run_cycles
 from grande_alpha.mixed_portfolio import AllocationPolicy
 from grande_alpha.models import utc_now
-from grande_alpha.qualification import ProductionGate
-from grande_alpha.research_source import load_snapshot
 
 
 def candidate_template() -> dict:
     scope = {item.name: None for item in fields(EquityScope)}
     scope["allowed_symbols"] = []
+    scope["loss_recovery_unit"] = "manual"
     return {
         "schema_version": 1,
         "scope": scope,
@@ -49,7 +48,8 @@ def load_candidate(path: Path) -> tuple[EquityScope, AllocationPolicy, dict]:
         raise ValueError("Every mixed execution scope field must be supplied")
     try:
         starts_at = datetime.fromisoformat(raw_scope["starts_at"])
-        expires_at = datetime.fromisoformat(raw_scope["expires_at"])
+        expires_at = (datetime.fromisoformat(raw_scope["expires_at"])
+                      if raw_scope["expires_at"] is not None else None)
     except (TypeError, ValueError) as exc:
         raise ValueError("Scope start and expiry must be ISO 8601 timestamps") from exc
     symbols = raw_scope["allowed_symbols"]
@@ -83,8 +83,7 @@ def command_candidate_template(_args) -> int:
     return 0
 
 
-def _readiness(candidate: Path, qualification: Path, authorization: Path,
-               earnings_db: Path, source: Path | None) -> dict:
+def _readiness(candidate: Path, authorization: Path, earnings_db: Path) -> dict:
     scope, policy, thresholds = load_candidate(candidate)
     digest = mixed_candidate_digest(scope, policy, thresholds)
     checks: dict[str, object] = {
@@ -96,10 +95,7 @@ def _readiness(candidate: Path, qualification: Path, authorization: Path,
         "broker_contacted": False,
     }
     blockers: list[str] = []
-    for label, gate in (
-        ("qualification", ProductionGate(qualification)),
-        ("authorization", UserAuthorizationGate(authorization, scope.account_number)),
-    ):
+    for label, gate in (("authorization", UserAuthorizationGate(authorization, scope.account_number)),):
         try:
             checks[label] = gate(digest) is True
         except Exception as exc:
@@ -110,22 +106,13 @@ def _readiness(candidate: Path, qualification: Path, authorization: Path,
         with contextlib.closing(sqlite3.connect(earnings_db.resolve().as_uri() + "?mode=ro", uri=True)) as db:
             observations = db.execute("SELECT COUNT(*) FROM earnings_observations").fetchone()[0]
             facts = db.execute("SELECT COUNT(*) FROM earnings_facts").fetchone()[0]
-        if observations == 0 or facts == 0:
-            raise ValueError("Provider observations and normalized earnings facts are missing")
+        checks["earnings_observations"] = observations
+        checks["earnings_facts"] = facts
         checks["earnings_store_opened"] = True
     except Exception as exc:
         checks["earnings_store_opened"] = False
         blockers.append(f"earnings_store: {exc}")
-    if source is not None:
-        try:
-            load_snapshot(source, now=utc_now(), max_age_seconds=scope.max_quote_age_seconds)
-            checks["research_snapshot_fresh"] = True
-        except Exception as exc:
-            checks["research_snapshot_fresh"] = False
-            blockers.append(f"research_snapshot: {exc}")
-    else:
-        checks["research_snapshot_fresh"] = False
-        blockers.append("research_snapshot: no live source path was supplied")
+    checks["research_inputs"] = "built internally from broker quotes and stored observations"
     checks["locally_ready"] = not blockers
     checks["live_ready"] = False
     checks["blockers"] = blockers + [
@@ -135,22 +122,42 @@ def _readiness(candidate: Path, qualification: Path, authorization: Path,
 
 
 def command_autonomous_readiness(args) -> int:
-    report = _readiness(Path(args.candidate), Path(args.qualification),
-                        Path(args.authorization), Path(args.earnings_database),
-                        Path(args.source) if args.source else None)
+    report = _readiness(Path(args.candidate), Path(args.authorization), Path(args.earnings_database))
     print(json.dumps(report, indent=2, allow_nan=False))
     return 0
 
 
+def command_loss_recovery_ack(args) -> int:
+    """Clear a manual recovery pause, never the current day's recorded loss."""
+    from grande_alpha.storage import AuditStore
+
+    path = Path(args.database)
+    if not path.is_file() or not sys.stdin.isatty():
+        raise RuntimeError("Manual recovery needs the existing local database and an interactive terminal")
+    phrase = f"RESTART {args.account}"
+    print("This does not reset today's loss budget or authorize a new strategy.")
+    if input(f"Type {phrase!r} to clear the recovery pause: ").strip() != phrase:
+        raise RuntimeError("Manual recovery declined")
+    store = AuditStore(path)
+    try:
+        changed = store.acknowledge_loss_recovery(args.account)
+    finally:
+        store.close()
+    print(json.dumps({"recovery_pause_cleared": changed, "daily_loss_reset": False}, indent=2))
+    return 0
+
+
 def command_run_autonomous(args) -> int:
-    """Run the evidence-qualified engine in this foreground process."""
+    """Run the account-bound mixed engine in this foreground process."""
     from grande_alpha.broker import RobinhoodMCPBroker
     from grande_alpha.config import data_dir
     from grande_alpha.earnings_feed import EarningsObservationStore
     from grande_alpha.equity_ledger import EquityLedger
     from grande_alpha.live_cli import terminal_line
+    from grande_alpha.live_data import LiveDataService
     from grande_alpha.process_lock import ProcessLock
     from grande_alpha.production import build_production_engine
+    from grande_alpha.read_retry import read_with_backoff
     from grande_alpha.standing import validate_contract
     from grande_alpha.storage import AuditStore
 
@@ -173,9 +180,11 @@ def command_run_autonomous(args) -> int:
         earnings = EarningsObservationStore(Path(args.earnings_database))
         resources.callback(earnings.close)
         broker = RobinhoodMCPBroker(allow_interactive_auth=args.authenticate)
+        source_service = LiveDataService(data_dir() / "market_v1.db", broker, earnings,
+                                         scope, policy, thresholds)
+        resources.callback(source_service.close)
         engine = build_production_engine(
             broker, ledger, audit, scope, policy, thresholds,
-            qualification_certificate=Path(args.qualification),
             authorization_permit=Path(args.authorization),
             earnings_store=earnings,
         )
@@ -183,57 +192,52 @@ def command_run_autonomous(args) -> int:
 
         async def session() -> None:
             try:
-                # Local qualification failures should be shown before OAuth begins.
-                if engine.qualification_gate(digest) is not True:
-                    raise RuntimeError("Qualification did not approve this exact candidate")
                 async with asyncio.timeout(300 if args.authenticate else 30):
                     await broker.connect()
                 validate_contract(broker)
-                accounts = [item for item in await broker.get_accounts()
+                accounts = [item for item in await read_with_backoff(broker.get_accounts)
                             if item.account_number == scope.account_number]
                 if len(accounts) != 1 or accounts[0].agentic_allowed is not True:
                     raise RuntimeError("The exact authorized Agentic account was not verified")
                 active = audit.active_standing_for_scope(digest)
                 if active is None:
-                    if not sys.stdin.isatty() or not sys.stdout.isatty():
-                        raise RuntimeError("Initial live activation requires an interactive terminal")
-                    # Certificate and durable permit are checked before asking the user
-                    # to create an active standing session.
-                    engine.qualification_gate(digest)
-                    phrase = f"ARM AUTONOMOUS {digest}"
-                    print("Authorization may be completed now, even while markets are closed.")
-                    print(json.dumps({"account": accounts[0].masked,
-                                      "symbols": list(scope.allowed_symbols),
-                                      "starts_at": scope.starts_at.isoformat(),
-                                      "expires_at": scope.expires_at.isoformat(),
-                                      "max_order_usd": scope.max_order_usd,
-                                      "max_exposure_usd": scope.max_exposure_usd,
-                                      "max_daily_notional_usd": scope.max_daily_notional_usd,
-                                      "max_daily_loss_usd": scope.max_daily_loss_usd,
-                                      "max_orders": scope.max_orders}, indent=2))
-                    print(f"Type exactly {phrase!r} within 60 seconds; Escape declines:")
-                    response = await terminal_line(expires_at=utc_now() + timedelta(seconds=60))
-                    if response != phrase:
-                        raise RuntimeError("Autonomous activation declined; no authority was created")
+                    try:
+                        engine.authorization_gate(digest)
+                    except (FileNotFoundError, RuntimeError, ValueError):
+                        if not sys.stdin.isatty() or not sys.stdout.isatty():
+                            raise RuntimeError("Initial live authorization requires an interactive terminal") from None
+                        phrase = f"AUTHORIZE {digest}"
+                        print("Review the account, strategy and limits. Approval is valid until revoked.")
+                        print(json.dumps({"account": accounts[0].masked,
+                                          "symbols": list(scope.allowed_symbols),
+                                          "starts_at": scope.starts_at.isoformat(),
+                                          "expires_at": scope.expires_at.isoformat() if scope.expires_at else None,
+                                          "max_order_usd": scope.max_order_usd,
+                                          "max_exposure_usd": scope.max_exposure_usd,
+                                          "max_daily_notional_usd": scope.max_daily_notional_usd,
+                                          "max_daily_loss_usd": scope.max_daily_loss_usd,
+                                          "max_orders": scope.max_orders}, indent=2))
+                        print(f"Type exactly {phrase!r} within 60 seconds; Escape declines:")
+                        response = await terminal_line(expires_at=utc_now() + timedelta(seconds=60))
+                        if response != phrase:
+                            raise RuntimeError("Autonomous authorization declined; no authority was created") from None
+                        create_authorization(Path(args.authorization), scope.account_number, digest)
                     engine.arm()
                 else:
                     engine.recover(active)
-                    print(f"Recovered the same unexpired authorization {active}; no new grant was created.")
-
-                source_path = Path(args.source)
-
-                async def source():
-                    return load_snapshot(source_path, now=utc_now(),
-                                         max_age_seconds=scope.max_quote_age_seconds)
+                    print(f"Recovered the same unchanged authorization {active}; no new grant was created.")
 
                 print("Autonomous runner active. It waits while the supported market session is closed. Ctrl+C revokes new orders.")
-                await run_cycles(engine, source, poll_seconds=args.poll_seconds)
+                await run_cycles(engine, source_service.snapshot, poll_seconds=args.poll_seconds)
             finally:
                 # Local revocation must precede any potentially stalled network cleanup.
-                if engine.authority_id is not None:
-                    engine.stop()
-                async with asyncio.timeout(15):
-                    await broker.disconnect()
+                try:
+                    if engine.authority_id is not None:
+                        engine.stop()
+                finally:
+                    with contextlib.suppress(Exception):
+                        async with asyncio.timeout(15):
+                            await broker.disconnect()
 
         try:
             asyncio.run(session())

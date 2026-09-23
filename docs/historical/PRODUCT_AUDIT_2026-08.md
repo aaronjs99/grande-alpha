@@ -6,13 +6,13 @@ tests. No broker account was connected and no order was placed.
 
 ## Current generalized product
 
-![Community desktop workspace](images/audit/responsive-after-02-main-1366x768.png)
+![Community desktop workspace](../images/audit/responsive-after-02-main-1366x768.png)
 
-![Generalized settings and permissions](images/audit/responsive-after-06-settings-840x680.png)
+![Generalized settings and permissions](../images/audit/responsive-after-06-settings-840x680.png)
 
-![Local research sandbox](images/audit/responsive-after-05-sandbox-1366x768.png)
+![Local research sandbox](../images/audit/responsive-after-05-sandbox-1366x768.png)
 
-![Community and planned Pro plans](images/product/community-and-pro-plans.png)
+![Community and planned Pro plans](../images/product/community-and-pro-plans.png)
 
 ## Journey health
 

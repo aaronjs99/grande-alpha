@@ -175,8 +175,8 @@ def screen(payload: Any) -> dict[str, Any]:
         raise ValueError("All research thresholds must be explicit")
     thresholds = {key: _number(limits[key], key, positive=True) for key in LIMITS}
     events = payload["events"]
-    if not isinstance(events, list) or not 1 <= len(events) <= 10_000:
-        raise ValueError("Supply between 1 and 10000 events")
+    if not isinstance(events, list) or len(events) > 10_000:
+        raise ValueError("Supply at most 10000 events")
     seen: set[str] = set()
     results = []
     for index, event in enumerate(events):

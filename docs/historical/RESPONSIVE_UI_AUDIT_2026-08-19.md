@@ -38,7 +38,7 @@ installation-specific copy are intentionally excluded from the public bundle.
 
 ### 2. Portrait main workspace at 900 by 1200 — healthy
 
-![Responsive portrait main workspace](images/audit/responsive-after-01-main-900x1200.png)
+![Responsive portrait main workspace](../images/audit/responsive-after-01-main-900x1200.png)
 
 The window now honors 900 pixels. Header actions form a compact two-column grid, KPI cards use two
 columns without clipping either text line, and the chart and complete three-symbol quote table stack
@@ -46,7 +46,7 @@ vertically. The market and tab workspaces remain separated by an adjustable spli
 
 ### 3. Landscape main workspace at 1366 by 768 — healthy
 
-![Responsive landscape main workspace](images/audit/responsive-after-02-main-1366x768.png)
+![Responsive landscape main workspace](../images/audit/responsive-after-02-main-1366x768.png)
 
 The landscape layout retains the efficient one-row KPI band and horizontal chart/quote split. Visible
 actions consume only their real slots, so hidden live controls no longer leave unexplained gaps. The
@@ -54,14 +54,14 @@ research/onboarding workspace receives more vertical room than in the intermedia
 
 ### 4. Wide desktop at 1920 by 1080 — healthy
 
-![Responsive wide desktop](images/audit/responsive-after-03-main-1920x1080.png)
+![Responsive wide desktop](../images/audit/responsive-after-03-main-1920x1080.png)
 
 The existing wide-screen hierarchy is preserved: brand and actions share one row, all KPI cards remain in
 one band, and chart, quote table, and tab content expand with the window.
 
 ### 5. Constrained landscape at 1024 by 700 — healthy with intentional scrolling
 
-![Responsive constrained landscape](images/audit/responsive-after-04-main-1024x700.png)
+![Responsive constrained landscape](../images/audit/responsive-after-04-main-1024x700.png)
 
 The requested size is now honored. Actions and KPI cards reflow without clipped values. Because this
 viewport is landscape, the chart and complete quote table stay side by side instead of competing for two
@@ -71,9 +71,9 @@ pixel-based horizontal scrolling and manually adjustable columns.
 
 ### 6. Research Sandbox in landscape and portrait — healthy
 
-![Responsive landscape sandbox](images/audit/responsive-after-05-sandbox-1366x768.png)
+![Responsive landscape sandbox](../images/audit/responsive-after-05-sandbox-1366x768.png)
 
-![Responsive portrait sandbox](images/audit/responsive-after-09-sandbox-portrait-900x1200.png)
+![Responsive portrait sandbox](../images/audit/responsive-after-09-sandbox-portrait-900x1200.png)
 
 The configuration/results splitter remains horizontal on landscape screens and becomes vertical on a
 narrow portrait surface. Metric cards reflow to the available result width. The fill table/inspector also
@@ -82,7 +82,7 @@ resizable.
 
 ### 7. Live Readiness at 1024 by 700 — healthy
 
-![Responsive Live Readiness](images/audit/responsive-after-10-live-readiness-1024x700.png)
+![Responsive Live Readiness](../images/audit/responsive-after-10-live-readiness-1024x700.png)
 
 The market overview is intentionally hidden on this task-focused tab. Safe checks, the selected-next-step
 action, complete supervised-versus-autonomous summary, ownership legend, and readiness table begin in the
@@ -90,12 +90,12 @@ viewport. The task page scrolls vertically so selected-row detail and external l
 without overpainting the table. The table keeps independent adjustable columns and horizontal scrolling
 for full next-action text.
 
-![Responsive Live Readiness resources](images/audit/responsive-after-12-live-readiness-resources-1024x700.png)
+![Responsive Live Readiness resources](../images/audit/responsive-after-12-live-readiness-resources-1024x700.png)
 
 The lower scroll position verifies that the complete selected-row explanation and configured external
 guidance link remain readable and clickable at the same constrained size.
 
-![Tall portrait Live Readiness](images/audit/responsive-after-11-live-readiness-1066x1888.png)
+![Tall portrait Live Readiness](../images/audit/responsive-after-11-live-readiness-1066x1888.png)
 
 On a tall portrait display, the checklist table now shows every current row without its vertical scrollbar
 and is capped at 520 pixels instead of expanding into a large empty table body. The selected-row explanation and the neutral
@@ -104,11 +104,11 @@ is not a fake pass/fail gate and is excluded from the readiness count.
 
 ### 8. Settings and supervised confirmations — healthy
 
-![Responsive settings](images/audit/responsive-after-06-settings-840x680.png)
+![Responsive settings](../images/audit/responsive-after-06-settings-840x680.png)
 
-![Responsive supervised session](images/audit/responsive-after-07-session-720x650.png)
+![Responsive supervised session](../images/audit/responsive-after-07-session-720x650.png)
 
-![Responsive single-order confirmation](images/audit/responsive-after-08-order-confirmation-1024x700.png)
+![Responsive single-order confirmation](../images/audit/responsive-after-08-order-confirmation-1024x700.png)
 
 Settings retains fixed Save/Cancel controls around a vertically scrollable body and can now shrink to 640
 by 520. The supervised-session dialog scrolls risk/routing detail while keeping attestation, exact typed

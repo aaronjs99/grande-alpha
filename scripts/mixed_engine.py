@@ -1,7 +1,7 @@
-"""Integrated mixed-strategy dispatch core, closed by default without qualification.
+"""Mixed-strategy dispatch, closed by default without an exact user permit.
 
-The production CLI activates this engine only through its configured gates.
-Tests supply fabricated dependencies, not provider observations or evidence certificates.
+The foreground CLI activates this engine through independent authorization, broker,
+data, and risk checks. Tests use fabricated dependencies, not provider observations.
 """
 
 from __future__ import annotations
@@ -23,6 +23,7 @@ from grande_alpha.market_calendar import regular_session_times
 from grande_alpha.mixed_portfolio import AllocationPolicy, plan
 from grande_alpha.models import utc_now
 from grande_alpha.portfolio_replay import EASTERN
+from grande_alpha.read_retry import read_with_backoff
 
 
 def mixed_candidate_digest(scope: EquityScope, policy: AllocationPolicy, earnings_thresholds: dict) -> str:
@@ -38,11 +39,11 @@ def mixed_candidate_digest(scope: EquityScope, policy: AllocationPolicy, earning
 
 
 def _closed_gate(_):
-    raise RuntimeError("Mixed-strategy production qualification and activation are not implemented")
+    raise RuntimeError("Mixed-strategy authorization is not configured")
 
 
 async def run_cycles(engine, source, *, poll_seconds: float = 5, max_cycles: int | None = None):
-    """Drive an already-armed engine; a source returns a validated local/research snapshot.
+    """Drive an already-armed engine from current broker and stored earnings observations.
 
     Never renews authority, reconnects/retries broker writes, or installs a scheduler.
     """
@@ -82,6 +83,14 @@ async def run_cycles(engine, source, *, poll_seconds: float = 5, max_cycles: int
                         await asyncio.sleep(.1)
                         engine.heartbeat()
                     snapshot = await source_task
+            except (ConnectionError, TimeoutError, OSError):
+                source_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError, ConnectionError, TimeoutError, OSError):
+                    await source_task
+                engine.audit.receipt("mixed_data_wait", "Read-only market data unavailable; no order submitted",
+                                     {}, "warning")
+                await idle()
+                continue
             except BaseException:
                 source_task.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
@@ -101,7 +110,7 @@ async def run_cycles(engine, source, *, poll_seconds: float = 5, max_cycles: int
 
 class MixedExecutionEngine:
     def __init__(self, broker, ledger, audit, scope: EquityScope, policy: AllocationPolicy,
-                 earnings_thresholds: dict, *, eligibility, qualification_gate=_closed_gate,
+                 earnings_thresholds: dict, *, eligibility, authorization_gate=_closed_gate,
                  research_verifier=None):
         scope.validate()
         policy.validate()
@@ -109,7 +118,7 @@ class MixedExecutionEngine:
         self.scope, self.policy = scope, policy
         self.thresholds = copy.deepcopy(earnings_thresholds)
         self.eligibility = eligibility
-        self.qualification_gate = qualification_gate
+        self.authorization_gate = authorization_gate
         self.research_verifier = research_verifier
         self.authority_id = None
         self._lease_owner = None
@@ -120,13 +129,13 @@ class MixedExecutionEngine:
         return mixed_candidate_digest(self.scope, self.policy, self.thresholds)
 
     def arm(self):
-        """Requires an external qualified activation gate; never interprets a chat as consent."""
+        """Require an exact user permit before acquiring the durable process lease."""
         if self.authority_id is not None:
             raise RuntimeError("Revoke the existing session before rearming")
-        if self.qualification_gate(self._digest) is not True:
-            raise RuntimeError("Qualification gate did not explicitly approve the exact scope")
-        if not self.scope.starts_at <= utc_now() < self.scope.expires_at:
-            raise RuntimeError("Mixed scope is not active")
+        if self.authorization_gate(self._digest) is not True:
+            raise RuntimeError("Authorization did not approve the exact scope")
+        if not self._scope_current():
+            raise RuntimeError("Mixed scope has expired")
         authority_id = str(uuid.uuid4())
         lease_owner = str(uuid.uuid4())
         self.ledger.acquire_lease(self.scope.account_number, lease_owner, now=utc_now())
@@ -144,10 +153,10 @@ class MixedExecutionEngine:
         """Recover an unexpired, unchanged durable grant after process restart."""
         if self.authority_id is not None or not isinstance(authority_id, str) or not authority_id.strip():
             raise RuntimeError("Recovery requires one inactive engine and an exact authority ID")
-        if self.qualification_gate(self._digest) is not True:
-            raise RuntimeError("Qualification gate did not approve the exact recovered scope")
-        if not self.scope.starts_at <= utc_now() < self.scope.expires_at:
-            raise RuntimeError("Recovered mixed scope is not active")
+        if self.authorization_gate(self._digest) is not True:
+            raise RuntimeError("Authorization did not approve the exact recovered scope")
+        if not self._scope_current():
+            raise RuntimeError("Recovered mixed scope has expired")
         if not self.audit.standing_active(authority_id, self._digest):
             raise RuntimeError("Standing authority is missing, stopped, or changed")
         lease_owner = str(uuid.uuid4())
@@ -169,9 +178,17 @@ class MixedExecutionEngine:
         authority_id = self.authority_id
         owned = self.ledger.unresolved(self.scope.account_number)
         self.stop()
-        if not cancel_open or not owned:
-            return {"authority_id": authority_id, "cancelled": [], "remaining": []}
-        orders = await self.broker.get_orders(self.scope.account_number)
+        if not cancel_open:
+            remaining = sorted(row["ref"] for row in owned)
+            self.audit.receipt("mixed_shutdown", "Local authority stopped; broker order status unverified",
+                               {"authority_id": authority_id, "unresolved_refs": remaining},
+                               "critical" if remaining else "warning")
+            return {"authority_id": authority_id, "cancelled": [], "remaining": remaining,
+                    "broker_verified": False}
+        if not owned:
+            return {"authority_id": authority_id, "cancelled": [], "remaining": [],
+                    "broker_verified": False}
+        orders = await read_with_backoff(lambda: self.broker.get_orders(self.scope.account_number))
         by_id = {order.order_id: order for order in orders}
         cancelled = []
         for row in owned:
@@ -181,7 +198,7 @@ class MixedExecutionEngine:
                 if accepted is not True:
                     raise RuntimeError("Broker did not explicitly accept cancellation of a Grande Alpha order")
                 cancelled.append(order.order_id)
-        refreshed = await self.broker.get_orders(self.scope.account_number)
+        refreshed = await read_with_backoff(lambda: self.broker.get_orders(self.scope.account_number))
         remaining = sorted(order.order_id for order in refreshed
                            if not order_is_terminal(order)
                            and any(row["order_id"] == order.order_id for row in owned))
@@ -190,20 +207,25 @@ class MixedExecutionEngine:
                             "remaining": remaining}, "critical" if remaining else "warning")
         if remaining:
             raise RuntimeError("One or more Grande Alpha orders remain open after cancellation")
-        return {"authority_id": authority_id, "cancelled": cancelled, "remaining": remaining}
+        return {"authority_id": authority_id, "cancelled": cancelled, "remaining": remaining,
+                "broker_verified": True}
 
     def heartbeat(self) -> None:
         self._check()
         self.ledger.renew_lease(self.scope.account_number, self._lease_owner, now=utc_now())
 
+    def _scope_current(self) -> bool:
+        now = utc_now()
+        return self.scope.expires_at is None or now < self.scope.expires_at
+
     def _check(self):
         if (self.authority_id is None or self._lease_owner is None or self.digest() != self._digest
-                or not self.scope.starts_at <= utc_now() < self.scope.expires_at
+                or not self._scope_current()
                 or not self.audit.standing_active(self.authority_id, self._digest)
                 or not self.ledger.lease_active(self.scope.account_number, self._lease_owner, now=utc_now())):
             raise RuntimeError("Mixed authority stopped, expired, changed, or missing")
-        if self.qualification_gate(self._digest) is not True:
-            raise RuntimeError("Qualification gate did not explicitly approve the exact scope")
+        if self.authorization_gate(self._digest) is not True:
+            raise RuntimeError("Authorization did not approve the exact scope")
 
     def _projected_caps(self, intent, snapshot, request):
         if intent.side == "sell":
@@ -237,13 +259,14 @@ class MixedExecutionEngine:
 
     async def _snapshot(self):
         started = utc_now()
-        accounts = [a for a in await self.broker.get_accounts() if a.account_number == self.scope.account_number]
+        accounts = [a for a in await read_with_backoff(self.broker.get_accounts)
+                    if a.account_number == self.scope.account_number]
         if len(accounts) != 1:
             raise RuntimeError("Exact scoped account was not found uniquely")
-        portfolio = await self.broker.get_portfolio(self.scope.account_number)
+        portfolio = await read_with_backoff(lambda: self.broker.get_portfolio(self.scope.account_number))
         portfolio.validate()
-        positions = await self.broker.get_positions(self.scope.account_number)
-        orders = await self.broker.get_orders(self.scope.account_number)
+        positions = await read_with_backoff(lambda: self.broker.get_positions(self.scope.account_number))
+        orders = await read_with_backoff(lambda: self.broker.get_orders(self.scope.account_number))
         if len({o.order_id for o in orders}) != len(orders):
             raise RuntimeError("Duplicate provider order identities")
         for pending in self.ledger.unresolved(self.scope.account_number):
@@ -261,15 +284,21 @@ class MixedExecutionEngine:
         if any(not math.isclose(inventory.get(s, 0), actual.get(s, 0), abs_tol=1e-8, rel_tol=1e-8)
                for s in set(inventory) | set(actual)):
             raise RuntimeError("Account inventory does not match durable execution history")
-        quotes = await self.broker.get_quotes(sorted(set(self.scope.allowed_symbols) | set(actual)))
+        quotes = await read_with_backoff(
+            lambda: self.broker.get_quotes(sorted(set(self.scope.allowed_symbols) | set(actual)))
+        )
         self._check()
         day = utc_now().astimezone(EASTERN).date().isoformat()
         usage = self.ledger.daily_usage(self.scope.account_number, day)
         legacy = self.audit.live_daily_usage(self.scope.account_number, day)
-        self.audit.record_daily_risk(self.scope.account_number, day, portfolio.total_value,
-                                    self.scope.max_daily_loss_usd,
-                                    require_existing=usage["orders"]+legacy["submitted_orders"] > 0,
-                                    carry_previous_observation=True)
+        pnl = self.ledger.mark_to_market_pnl(self.scope.account_number, quotes)
+        self.audit.record_mixed_daily_pnl(
+            self.scope.account_number, day, pnl["total_usd"], self.scope.max_daily_loss_usd,
+            require_existing=usage["orders"]+legacy["submitted_orders"] > 0,
+            carry_previous_observation=True, scope_digest=self._digest,
+            recovery_delay=self.scope.loss_recovery_delay,
+            recovery_unit=self.scope.loss_recovery_unit,
+        )
         return accounts[0], portfolio, positions, quotes, started
 
     def _plan(self, request, theses, snapshot):
@@ -362,15 +391,21 @@ class MixedExecutionEngine:
                     usage = self.ledger.daily_usage(account.account_number, day)
                     recent_orders = self.ledger.orders_since(account.account_number, now - timedelta(minutes=1))
                     legacy = self.audit.live_daily_usage(account.account_number, day)
-                    loss = self.audit.record_daily_risk(account.account_number, day, portfolio.total_value,
-                                                        self.scope.max_daily_loss_usd,
-                                                        require_existing=usage["orders"]+legacy["submitted_orders"] > 0)
+                    pnl = self.ledger.mark_to_market_pnl(account.account_number, quotes)
+                    loss = self.audit.record_mixed_daily_pnl(
+                        account.account_number, day, pnl["total_usd"], self.scope.max_daily_loss_usd,
+                        require_existing=usage["orders"]+legacy["submitted_orders"] > 0,
+                        scope_digest=self._digest,
+                        recovery_delay=self.scope.loss_recovery_delay,
+                        recovery_unit=self.scope.loss_recovery_unit,
+                    )
                     decision = assess_ticket(intent, self.scope, account=account, portfolio=portfolio,
                                              positions=positions, quotes=quotes, now=now, reconciled_at=reconciled_at,
                                              tradable=tradable, fractional=fractional,
                                              daily_notional=usage["notional"]+legacy["daily_notional"],
                                              daily_orders=usage["orders"]+legacy["submitted_orders"],
-                                             daily_loss_latched=loss["loss_latched"], has_unresolved_orders=False,
+                                             daily_loss_latched=loss["loss_latched"] or loss["recovery_blocked"],
+                                             has_unresolved_orders=False,
                                              orders_last_minute=recent_orders)
                     if not decision["allowed"]:
                         return {"status": "RISK_BLOCKED", "submitted": False, "reasons": decision["reasons"]}
@@ -385,7 +420,11 @@ class MixedExecutionEngine:
                     self.ledger.observe(account.account_number, ref, order, observed_at=utc_now())
                     self.audit.receipt("mixed_order", "Stock-capable order response recorded", {"ref": ref}, "warning")
                     return {"status": "RESPONSE_RECORDED", "submitted": True, "ref": ref}
-            except BaseException:
+            except BaseException as exc:
+                if ref is None and isinstance(exc, (ConnectionError, TimeoutError, OSError)):
+                    self.audit.receipt("mixed_read_wait", "Broker read unavailable before order selection",
+                                       {}, "warning")
+                    return {"status": "READ_UNAVAILABLE", "submitted": False}
                 self.stop()
                 if ref is not None:
                     if attempted:

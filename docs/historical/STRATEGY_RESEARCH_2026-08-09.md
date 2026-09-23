@@ -56,7 +56,7 @@ a genuinely untouched final holdout are required before another promotion attemp
 The image below is retained only as an audit artifact showing the former behavior. It includes the
 invalidated overnight result and is not a current performance plot.
 
-![Sandbox virtual trade timeline](images/sandbox_trade_timeline.png)
+![Sandbox virtual trade timeline](../images/sandbox_trade_timeline.png)
 
 The chart makes possible early exits visible, but it does not prove that holding longer would have
 improved a causal strategy. That question requires predeclared post-sale opportunity windows,

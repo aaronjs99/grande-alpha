@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- Ported the stalled Robinhood transport, STOP, and disconnect fixes from Antonio's open
+  PR #13 into the current `scripts/` layout. Active and queued callers now release on
+  transport interruption; shutdown has bounded waits, and a read-only session does not
+  require another broker order read to stop. An unverified disconnect requires an explicit
+  decision and retains durable order records.
+- Reorganized current documentation into five guides and preserved dated findings under
+  `docs/historical/`. Reworked the README to distinguish implemented code, local tests,
+  and provider-observed deployment evidence.
+- Grouped saved settings by responsibility with stricter validation. Existing flat files
+  require an explicit backed-up upgrade; ordinary startup and settings saves do not
+  silently migrate or overwrite them.
+- Added exact-scope persistent mixed authorization, a bounded earnings request cache,
+  internal mixed strategy inputs, a daily loss recovery timer, and read-only retry rules.
+  These changes are not a claim of live autonomous qualification.
+
 - Consolidated desktop and CLI terminology, removed an unused desktop stylesheet, and corrected
   obsolete scheduled-shadow wording. Verification now lints tests and builds wheels from a fresh
   source distribution so stale files in a developer checkout cannot enter the package.

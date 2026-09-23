@@ -10,6 +10,7 @@ from datetime import datetime
 from decimal import Decimal
 
 from grande_alpha.earnings import _number
+from grande_alpha.loss_recovery import validate_recovery
 from grande_alpha.market_calendar import regular_session_times
 from grande_alpha.models import Account, OrderIntent, Portfolio, Position, Quote
 from grande_alpha.portfolio_replay import EASTERN
@@ -48,7 +49,7 @@ class EquityScope:
     account_number: str
     allowed_symbols: tuple[str, ...]
     starts_at: datetime
-    expires_at: datetime
+    expires_at: datetime | None
     max_order_usd: float
     max_exposure_usd: float
     max_daily_notional_usd: float
@@ -57,6 +58,8 @@ class EquityScope:
     max_quote_age_seconds: float
     max_spread_bps: float
     max_orders_per_minute: int = 2
+    loss_recovery_delay: int | None = None
+    loss_recovery_unit: str = "manual"
 
     def validate(self):
         if not isinstance(self.account_number, str) or not self.account_number.strip():
@@ -65,11 +68,13 @@ class EquityScope:
                 or any(not symbol_valid(s) for s in self.allowed_symbols)
                 or len(set(self.allowed_symbols)) != len(self.allowed_symbols)):
             raise ValueError("An exact unique equity universe is required")
-        for timestamp in (self.starts_at, self.expires_at):
+        for timestamp in (self.starts_at,):
             if not isinstance(timestamp, datetime) or timestamp.tzinfo is None or timestamp.utcoffset() is None:
                 raise ValueError("Scope times must be timezone-aware")
-        if not 0 < (self.expires_at-self.starts_at).total_seconds() <= 7*86400:
-            raise ValueError("Scope must expire within seven days; no implicit renewal")
+        if self.expires_at is not None:
+            if (not isinstance(self.expires_at, datetime) or self.expires_at.tzinfo is None
+                    or self.expires_at.utcoffset() is None or self.expires_at <= self.starts_at):
+                raise ValueError("Optional scope expiry must be after the aware start time")
         for name in ("max_order_usd", "max_exposure_usd", "max_daily_notional_usd", "max_daily_loss_usd",
                      "max_quote_age_seconds", "max_spread_bps"):
             _number(getattr(self, name), name, positive=True)
@@ -79,6 +84,7 @@ class EquityScope:
             raise ValueError("An explicit positive order count is required")
         if type(self.max_orders_per_minute) is not int or self.max_orders_per_minute <= 0:
             raise ValueError("An explicit positive order-rate limit is required")
+        validate_recovery(self.loss_recovery_delay, self.loss_recovery_unit)
 
 
 def assess_ticket(intent: EquityOrderIntent, scope: EquityScope, *, account: Account,
@@ -102,7 +108,7 @@ def assess_ticket(intent: EquityOrderIntent, scope: EquityScope, *, account: Acc
     if type(orders_last_minute) is not int or orders_last_minute < 0:
         raise ValueError("Invalid durable order-rate usage")
     reasons = []
-    if not scope.starts_at <= now < scope.expires_at:
+    if now < scope.starts_at or (scope.expires_at is not None and now >= scope.expires_at):
         reasons.append("SCOPE_EXPIRED_OR_NOT_STARTED")
     if intent.created_at > now or (now-intent.created_at).total_seconds() > scope.max_quote_age_seconds:
         reasons.append("TICKET_NOT_FRESH")
@@ -147,7 +153,9 @@ def assess_ticket(intent: EquityOrderIntent, scope: EquityScope, *, account: Acc
         raise ValueError("Risk calculation overflowed")
     if not fractional and (intent.dollar_amount is not None or intent.quantity != int(intent.quantity)):
         reasons.append("FRACTIONAL_ELIGIBILITY_MISSING")
-    if notional > scope.max_order_usd or used+notional > scope.max_daily_notional_usd or daily_orders >= scope.max_orders:
+    if notional > scope.max_order_usd or (intent.side == "buy" and
+                                         (used+notional > scope.max_daily_notional_usd
+                                          or daily_orders >= scope.max_orders)):
         reasons.append("ORDER_OR_DAILY_CAP")
     if orders_last_minute >= scope.max_orders_per_minute:
         reasons.append("ORDER_RATE_LIMIT")

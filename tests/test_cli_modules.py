@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from argparse import Namespace
 
-from grande_alpha.cli import build_parser
+import pytest
+
+from grande_alpha.cli import build_parser, command_session_run
 from grande_alpha.cli_table import format_table
 from grande_alpha.config_cli import (
     command_config_import_legacy,
@@ -35,3 +37,19 @@ def test_config_show_does_not_create_missing_file(tmp_path, capsys) -> None:
     assert result == 0
     assert '"settings"' in output
     assert not path.exists()
+
+
+def test_public_cli_has_six_groups_and_one_session_runner() -> None:
+    parser = build_parser()
+    for group in ("config", "broker", "data", "research", "session", "records"):
+        assert group in parser.format_help()
+    with pytest.raises(SystemExit):
+        parser.parse_args(["engine", "run-autonomous"])
+    args = parser.parse_args(["session", "run", "--mode", "autonomous", "--strategy", "mixed"])
+    assert args.func is command_session_run
+    with pytest.raises(ValueError, match="requires"):
+        command_session_run(args)
+    with pytest.raises(SystemExit):
+        parser.parse_args(["session", "run", "--mode", "autonomous"])
+    with pytest.raises(SystemExit):
+        parser.parse_args(["session", "run", "--mode", "standing", "--strategy", "etf"])
