@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 from collections import deque
+from decimal import Decimal
 from pathlib import Path
 
 import pyqtgraph as pg
@@ -13,6 +14,7 @@ from PySide6.QtWidgets import (
     QBoxLayout,
     QCheckBox,
     QComboBox,
+    QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
     QGridLayout,
@@ -30,6 +32,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from grande_alpha.agent_ledger import AgentBudget
 from grande_alpha.agent_models import AgentSettings, AgentSnapshot, parse_symbols
 from grande_alpha.ui.table_layout import configure_adjustable_columns
 
@@ -50,6 +53,7 @@ class AgentWidget(QScrollArea):
         self._connected = False
         self._last_cycle = 0
         self._balance_account: str | None = None
+        self._budget_account: str | None = None
         self._balance_times: deque[float] = deque(maxlen=500)
         self._balances: deque[float] = deque(maxlen=500)
         self._scan_task: asyncio.Task | None = None
@@ -93,6 +97,39 @@ class AgentWidget(QScrollArea):
         layout.addLayout(self.metrics)
         self.crypto_funds = label("Crypto buying power · unavailable")
         layout.addWidget(self.crypto_funds)
+        self.journal_status = label("Execution journal · No managed orders recorded")
+        layout.addWidget(self.journal_status)
+        self.budget_toggle = QPushButton("Plan stock + crypto cash limits")
+        self.budget_toggle.setCheckable(True)
+        layout.addWidget(self.budget_toggle)
+        self.budget_box = QGroupBox("Cash limits · saving does not authorize trades")
+        self.budget_box.setVisible(False)
+        self.budget_toggle.toggled.connect(self.budget_box.setVisible)
+        budget_form = QFormLayout(self.budget_box)
+        budget_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
+        self.budget_inputs = {}
+        for name, title in (
+            ("max_order_cash", "Cash per buy order"),
+            ("max_committed_cash", "Combined committed cash"),
+            ("max_daily_buy_cash", "Daily buy-attempt budget (Eastern time)"),
+            ("max_realized_loss", "Cumulative realized loss budget"),
+        ):
+            spin = QDoubleSpinBox()
+            spin.setRange(0, 1000000)
+            spin.setDecimals(2)
+            spin.setPrefix("$")
+            self.budget_inputs[name] = spin
+            budget_form.addRow(title, spin)
+        budget_form.addRow(label(
+            "Limits cover managed stock and crypto orders together. Committed cash includes pending buys "
+            "and the recorded purchase cost of holdings. It is not their current market value. Daily buy "
+            "attempts reset at midnight Eastern; realized losses remain recorded across days and restarts. "
+            "Zero limits block new buys. Changing limits never clears orders or losses."
+        ))
+        self.save_budget = QPushButton("Save cash limits · trading remains off")
+        self.save_budget.clicked.connect(self._save_budget)
+        budget_form.addRow(self.save_budget)
+        layout.addWidget(self.budget_box)
 
         self.configure = QPushButton("Configure universe and AI")
         self.configure.setCheckable(True)
@@ -274,6 +311,21 @@ class AgentWidget(QScrollArea):
     def update_account(self, snapshot) -> None:
         self._connected = bool(snapshot.connected and self.controller.config.broker_connection_enabled)
         account = snapshot.account.account_number if snapshot.account and self._connected else None
+        budget = snapshot.agent_budget if account and snapshot.agent_budget and snapshot.agent_budget.get("account_number") == account else None
+        if account != self._budget_account:
+            self._budget_account = account if budget else None
+            limits = budget.get("limits", {}) if budget else {}
+            for key, spin in self.budget_inputs.items():
+                spin.setValue(float(limits.get(key, 0)))
+        if budget:
+            self.journal_status.setText(
+                f"Execution journal · ${budget['committed_cash']:,.2f} committed · "
+                f"${budget['daily_buy_cash']:,.2f} daily buy usage · {budget['pending_orders']} pending · "
+                f"{snapshot.agent_recovery_status}" +
+                (f" · {budget['block_reason']}" if budget['block_reason'] else "")
+            )
+        else:
+            self.journal_status.setText("Execution journal · Connect to load this account's saved limits and order state")
         if account != self._balance_account:
             self._balance_times.clear()
             self._balances.clear()
@@ -305,6 +357,8 @@ class AgentWidget(QScrollArea):
     def _set_controls(self) -> None:
         running = self.controller.agent.snapshot.running
         enabled = self._connected and not self.controller.shadow_only_runtime
+        self.save_budget.setEnabled(enabled and not running)
+        self.budget_box.setEnabled(enabled and not running)
         self.start.setEnabled(enabled and not running)
         self.export_contracts.setEnabled(enabled and not running)
         self.stop.setEnabled(running)
@@ -313,6 +367,14 @@ class AgentWidget(QScrollArea):
         self.load_scans.setEnabled(
             enabled and not running and (self._scan_task is None or self._scan_task.done())
         )
+
+    def _save_budget(self) -> None:
+        try:
+            budget = AgentBudget(**{key: Decimal(f"{spin.value():.2f}") for key, spin in self.budget_inputs.items()})
+            self.controller.save_agent_budget(budget)
+            self.update_account(self.controller.snapshot)
+        except (ValueError, RuntimeError) as exc:
+            QMessageBox.warning(self, "Cash limits not saved", str(exc))
 
     def update_agent(self, snapshot: AgentSnapshot) -> None:
         if snapshot.running and self.configure.isChecked():

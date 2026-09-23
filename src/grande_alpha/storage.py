@@ -37,6 +37,9 @@ class AuditStore:
         self._connection = sqlite3.connect(self.path, check_same_thread=False)
         self._connection.row_factory = sqlite3.Row
         self._initialize()
+        from grande_alpha.agent_ledger import AgentLedger
+
+        self.agent_ledger = AgentLedger(self._connection, self._lock)
 
     def _initialize(self) -> None:
         with self._lock, self._connection:

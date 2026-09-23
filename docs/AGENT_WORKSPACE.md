@@ -74,19 +74,30 @@ EXIT is a suggestion to evaluate reducing an existing long holding; it is never 
   proposals, reasons, and data-check status. These receipts are not ETF evidence certificates.
 - The screenshot above uses labeled synthetic test fixtures and no real account data.
 
+## Plan execution cash limits
+
+**Plan stock + crypto cash limits** saves an account-specific per-buy limit, combined committed
+cash limit, Eastern-day buy-attempt limit, and cumulative realized-loss budget. All start at
+zero. Saving them leaves trading off. The execution-journal status line reports committed cash,
+daily usage, pending orders, and recovery blocks when managed execution records exist.
+
+Reservations, immutable order references, and fill accounting now persist across restarts.
+Read-only recovery checks exact broker order and inventory evidence without retrying a placement.
+See [managed execution journal and current integration limits](AGENT_EXECUTION_JOURNAL.md) for
+the accounting definitions and the remaining authority/exit work. No orders are created by
+the budget controls or by starting agent analysis.
+
 ## Live execution work still required
 
 The existing ETF grant only covers the original ticker set and runtime contract. It cannot
 authorize arbitrary stocks or crypto. Before adding a live multi-market route, validate:
 
-1. Connect the [schema-aligned crypto transport primitives](BROKER_CRYPTO_CONTRACT.md) to a
-   durable execution coordinator, with immutable intent provenance, partial-fill accounting,
-   uncertain-outcome reconciliation across restarts, and managed exits. Extend equity execution
-   beyond the original ETF pair under its own validated instrument contract.
+1. Complete a managed exit/cancellation workflow around the new durable execution coordinator.
+   Extend equity execution beyond the original ETF pair under its own validated instrument contract.
 2. Validate authenticated read responses and broker behavior against the advertised contracts.
    Schema validation and mock tests do not prove production fill behavior.
-3. A shared durable allocation/exposure/loss ledger across both markets and user-selected
-   budget limits, with crypto's continuous sessions handled explicitly.
+3. Add market-value exposure and unrealized-loss controls alongside the shared cash allocation
+   and realized-loss ledger. The cash budgets do not establish those additional protections.
 4. Reproducible observations, replay, after-cost evidence, and an authorization contract bound
    to the chosen strategy/model/version, instrument universe, and risk limits.
 
@@ -96,7 +107,8 @@ The remaining restriction here is GRANDE's unvalidated implementation and strate
 The September 23 compatibility export has been used to correct scan nesting, scan identifiers,
 crypto quote symbols, account identifiers, pair rules, and crypto order/fee semantics. Synthetic
 response fixtures and generated request arguments were checked against its advertised schemas.
-The transport primitives are not connected to Agent controls and do not unlock live authority.
+The transport primitives and durable coordinator remain disconnected from AI order decisions
+and do not unlock live authority. The new budget controls configure cash limits only.
 
 After connecting on your computer, open **Configure universe and AI → Export broker compatibility
 report**. The JSON contains the server's input/output schemas and tool descriptions, including

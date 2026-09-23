@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from decimal import Decimal
 
 import pytest
 from PySide6.QtWidgets import QApplication
 from test_responsive_ui import DisabledBroker
 
+from grande_alpha.agent_ledger import AgentBudget
 from grande_alpha.agent_models import AgentSettings, AgentSnapshot
 from grande_alpha.config import AppConfig
 from grande_alpha.controller import TradingController, TradingSnapshot
@@ -87,4 +89,68 @@ async def test_agent_crypto_quotes_use_selected_rhs_account_only(tmp_path, app):
     controller.snapshot.account = replace(controller.snapshot.account, rhc_account_number="")
     with pytest.raises(RuntimeError, match="linked crypto"):
         await controller._agent_crypto_quotes([])
+    store.close()
+
+
+def test_saved_cash_limits_reload_without_creating_live_authority(tmp_path, app):
+    path = tmp_path / "persistent-budget.db"
+    account = Account("fixture-budget", "Agentic", "cash", True, "active")
+    store = AuditStore(path)
+    controller = TradingController(DisabledBroker(), AppConfig(broker_connection_enabled=True), store)
+    controller.snapshot.connected = True
+    controller.snapshot.account = account
+    window = MainWindow(controller, controller.config)
+    widget = window.agent_widget
+    widget.update_account(controller.snapshot)
+    for name, value in (("max_order_cash", 5), ("max_committed_cash", 10), ("max_daily_buy_cash", 12), ("max_realized_loss", 1)):
+        widget.budget_inputs[name].setValue(value)
+    widget._save_budget()
+    assert controller.risk.grant is None
+    assert controller.agent_executor._authorize(None) is False
+    assert controller.store.agent_ledger.status(account.account_number).limits.max_committed_cash == Decimal(10)
+    assert controller.store.agent_ledger.records(account.account_number) == []
+    window._closing_after_cleanup = True
+    window.close()
+    store.close()
+
+    reopened = AuditStore(path)
+    other = TradingController(DisabledBroker(), AppConfig(broker_connection_enabled=True), reopened)
+    other.snapshot.connected = True
+    other.snapshot.account = account
+    new_window = MainWindow(other, other.config)
+    widget = new_window.agent_widget
+    # Quotes can update the UI before the slower account/budget reconciliation.
+    widget.update_account(other.snapshot)
+    other.snapshot.agent_budget = other.agent_executor.status_payload(account.account_number)
+    widget.update_account(other.snapshot)
+    assert widget.budget_inputs["max_committed_cash"].value() == 10
+    assert "0 pending" in widget.journal_status.text()
+    assert "PROPOSALS ONLY" in widget.mode.text()
+    other.snapshot.account = replace(account, account_number="different-account")
+    widget.update_account(other.snapshot)
+    assert widget.budget_inputs["max_committed_cash"].value() == 0
+    new_window._closing_after_cleanup = True
+    new_window.close()
+    reopened.close()
+
+
+@pytest.mark.asyncio
+async def test_controller_recovery_status_and_etf_boundary_are_connected(tmp_path, app):
+    from test_agent_ledger import NOW, dispatch, ticket
+
+    store = AuditStore(tmp_path / "recovery-ui.db")
+    controller = TradingController(DisabledBroker(), AppConfig(broker_connection_enabled=True), store)
+    controller.snapshot.connected = True
+    controller.snapshot.account = Account("fixture", "Agentic", "cash", True, "active")
+    controller.save_agent_budget(AgentBudget(Decimal(6), Decimal(10), Decimal(12), Decimal(1)))
+    dispatch(store.agent_ledger, ticket(), NOW)
+    with pytest.raises(RuntimeError, match="Managed stock/crypto commitments"):
+        controller._assert_agent_route_clear()
+    await controller._recover_agent_execution()
+    assert controller.snapshot.agent_recovery_status.startswith("Recovery blocked:")
+    assert controller.snapshot.agent_budget["unresolved_orders"] == 1
+    assert controller.risk.grant is None
+    controller.shadow_only_runtime = True
+    with pytest.raises(RuntimeError, match="Scheduled"):
+        controller.save_agent_budget(AgentBudget())
     store.close()

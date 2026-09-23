@@ -5,8 +5,9 @@ server on September 23, 2026. The export is not committed: repository fixtures c
 identifiers and values only. No broker was authenticated or called during development verification.
 
 `broker/crypto.py` provides isolated positions, orders, preview, placement, and cancellation
-primitives. **The Agent workspace cannot invoke these order methods.** This is transport work,
-not a completed autonomous executor or a grant of trading authority.
+primitives. The [managed execution journal](AGENT_EXECUTION_JOURNAL.md) now wraps submission and
+recovery with durable references and shared capital reservations. **Agent analysis and budget
+controls cannot invoke order mutations.** Live runtime authority remains disconnected.
 
 ## Account and instrument mapping
 
@@ -61,13 +62,12 @@ quantity, and contradictory cumulative totals fail validation.
 
 ## Required before autonomous integration
 
-The current consumed-reference set and reviews live in the broker instance, not a durable
-journal. A live coordinator must persist intent and dispatch state **before** invoking placement,
-reserve shared equity/crypto exposure, reconcile unresolved requests across process restarts,
-own orders before cancellation, and enforce an explicit strategy/universe/budget grant.
-These primitives must not be wired directly to model output or a UI start button. The existing
-ETF authority/evidence contract does not cover them. Scheduled shadow still blocks all crypto
-preview, placement, and cancellation methods.
+The adapter's own consumed-reference set and reviews still live in the broker instance.
+`AgentExecutor` adds the durable pre-dispatch boundary, shared cash reservations, and read-only
+restart recovery. It remains default-deny for placement. Future live integration must use that
+boundary and add an explicit strategy/universe/evidence grant, managed exits/cancellation, and
+market-value/unrealized-loss controls. The existing ETF authority/evidence contract does not
+cover crypto. Scheduled shadow still blocks all crypto preview, placement, and cancellation.
 
 Verification covers synthetic advertised-schema fixtures, account binding, decimal precision,
 route/size restrictions, stale and invalidated previews, changing balances/halts, uncertain

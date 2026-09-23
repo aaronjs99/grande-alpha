@@ -5,11 +5,13 @@ from __future__ import annotations
 import argparse
 import tempfile
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from pathlib import Path
 
 from PySide6.QtWidgets import QApplication
 from test_responsive_ui import DisabledBroker
 
+from grande_alpha.agent_ledger import AgentBudget
 from grande_alpha.agent_models import AgentDecision, AgentSnapshot, AssetClass, Instrument
 from grande_alpha.config import AppConfig
 from grande_alpha.controller import TradingController, TradingSnapshot
@@ -18,7 +20,7 @@ from grande_alpha.storage import AuditStore
 from grande_alpha.ui.main_window import MainWindow
 
 
-def capture(path: Path, width: int = 1366, height: int = 900) -> None:
+def capture(path: Path, width: int = 1366, height: int = 900, *, budget: bool = False) -> None:
     app = QApplication.instance() or QApplication([])
     with tempfile.TemporaryDirectory() as directory:
         store = AuditStore(Path(directory) / "synthetic.db")
@@ -29,6 +31,7 @@ def capture(path: Path, width: int = 1366, height: int = 900) -> None:
         widget = window.agent_widget
         window.tabs.setCurrentWidget(widget)
         now = datetime(2026, 9, 23, 15, tzinfo=UTC)
+        store.agent_ledger.save_budget("synthetic", AgentBudget(Decimal(5), Decimal(10), Decimal(12), Decimal(1)), now=now)
         for index, balance in enumerate((1000, 1000.3, 999.9, 1000.1)):
             widget.update_account(
                 TradingSnapshot(
@@ -36,6 +39,7 @@ def capture(path: Path, width: int = 1366, height: int = 900) -> None:
                     account=Account("synthetic", "Synthetic", "cash", True, "active"),
                     portfolio=Portfolio(balance, 900, 900, crypto_buying_power=850, crypto_value=25),
                     last_reconcile_at=now + timedelta(seconds=index * 30),
+                    agent_budget=controller.agent_executor.status_payload("synthetic"),
                 )
             )
         decisions = []
@@ -74,6 +78,7 @@ def capture(path: Path, width: int = 1366, height: int = 900) -> None:
             )
         )
         widget.mode.setText("SYNTHETIC UI VERIFICATION · PROPOSALS ONLY · NO REAL TRADES")
+        widget.budget_toggle.setChecked(budget)
         window.show()
         app.processEvents()
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -88,5 +93,6 @@ if __name__ == "__main__":
     parser.add_argument("--output", type=Path, default=Path("docs/images/agent-workspace.png"))
     parser.add_argument("--width", type=int, default=1366)
     parser.add_argument("--height", type=int, default=900)
+    parser.add_argument("--budget", action="store_true")
     args = parser.parse_args()
-    capture(args.output, args.width, args.height)
+    capture(args.output, args.width, args.height, budget=args.budget)

@@ -32,6 +32,9 @@ The `tony-dev` branch also includes **Agent · Stocks + Crypto**: continuous wat
 discovery, supported crypto-pair observations, optional local AI analysis, and an activity dashboard.
 This workspace produces research proposals and does not place multi-market orders. See
 [Agent workspace setup and current execution limits](docs/AGENT_WORKSPACE.md).
+The Agent page also saves shared stock/crypto cash-limit plans and displays durable order
+recovery status. Saving a budget does not enable trading; see the
+[execution journal and remaining live-integration work](docs/AGENT_EXECUTION_JOURNAL.md).
 
 On Windows, the immediately usable path is the signed-Python source launcher:
 

@@ -20,6 +20,8 @@ from grande_alpha.action_lab import (
     live_feasible_action_ids,
     pair_action_for_target,
 )
+from grande_alpha.agent_execution import AgentExecutor
+from grande_alpha.agent_ledger import AgentBudget
 from grande_alpha.agent_models import AgentSettings
 from grande_alpha.agent_runtime import AgentRuntime
 from grande_alpha.broker.base import (
@@ -123,6 +125,8 @@ class TradingSnapshot:
     pair_action_label: str = "(0,0)"
     last_analysis_at: datetime | None = None
     last_trade_decision_at: datetime | None = None
+    agent_budget: dict | None = None
+    agent_recovery_status: str = "No managed stock/crypto orders recorded"
 
 
 @dataclass(frozen=True)
@@ -191,6 +195,9 @@ class TradingController(QObject):
         self.broker = broker
         self.config = config
         self.store = store
+        # Default-deny authorizer: budgets and recovered journal entries do not
+        # inherit the original ETF grant or create new live authority.
+        self.agent_executor = AgentExecutor(broker, store.agent_ledger)
         self.shadow_only_runtime = shadow_only_runtime
         self._auto_shadow_sleep = auto_shadow_sleep or asyncio.sleep
         self.risk = RiskEngine(config.no_trade_open_minutes, config.no_trade_close_minutes)
@@ -259,6 +266,48 @@ class TradingController(QObject):
         if not account or not account.rhs_account_number or not account.rhc_account_number:
             raise BrokerError("The selected Agentic account has no verified linked crypto account")
         return await self.broker.get_crypto_quotes(instruments, rhs_account_number=account.rhs_account_number)
+
+    def save_agent_budget(self, budget: AgentBudget) -> None:
+        if self.shadow_only_runtime:
+            raise RuntimeError("Scheduled shadow cannot configure execution budgets")
+        if not self.snapshot.connected or self.snapshot.account is None:
+            raise RuntimeError("Connect the selected Agentic account before saving its budget")
+        account = self.snapshot.account.account_number
+        self.store.agent_ledger.save_budget(account, budget)
+        self.snapshot.agent_budget = self.agent_executor.status_payload(account)
+        self.log("Stock/crypto cash limits saved; no trading authority granted", category="agent_budget")
+        self.snapshot_changed.emit(self.snapshot)
+
+    async def _recover_agent_execution(self) -> None:
+        if self.shadow_only_runtime or self.snapshot.account is None:
+            return
+        account = self.snapshot.account.account_number
+        try:
+            status = self.store.agent_ledger.status(account)
+            recorded = self.store.agent_ledger.records(account)
+            needs_recovery = status.block_reason not in ("", "Trading budget is not configured", "Cumulative realized loss budget reached")
+            if status.pending_orders or status.has_inventory or (recorded and needs_recovery):
+                await self.agent_executor.recover(account)
+                status = self.store.agent_ledger.status(account)
+                self.snapshot.agent_recovery_status = (
+                    f"{status.unresolved_orders} order outcome(s) unresolved; no retries"
+                    if status.unresolved_orders else "Managed orders and inventory reconciled"
+                )
+            else:
+                self.snapshot.agent_recovery_status = "No pending managed stock/crypto orders"
+        except Exception as exc:
+            message = f"Recovery blocked: {exc}"
+            if message != self.snapshot.agent_recovery_status:
+                self.log(message, "error", "agent_recovery")
+            self.snapshot.agent_recovery_status = message
+        self.snapshot.agent_budget = self.agent_executor.status_payload(account)
+
+    def _assert_agent_route_clear(self) -> None:
+        if self.snapshot.account is None:
+            return
+        status = self.store.agent_ledger.status(self.snapshot.account.account_number)
+        if status.pending_orders or status.has_inventory or status.block_reason not in ("", "Trading budget is not configured"):
+            raise RuntimeError("Managed stock/crypto commitments or recovery blocks must be resolved before using the separate ETF route")
 
     def set_order_confirmer(self, confirmer: OrderConfirmer | None) -> None:
         """Install the non-persistent UI callback used for each reviewed real-money order."""
@@ -1155,6 +1204,7 @@ class TradingController(QObject):
                     ):
                         self.store.validate_execution_inventory(account_number, positions)
                     self._validate_reconciled_live_state()
+                    await self._recover_agent_execution()
                     if (
                         self.risk.session_status() == "LOSS LIMIT"
                         and not self._leveraged_positions()
@@ -1488,6 +1538,7 @@ class TradingController(QObject):
             raise RuntimeError("The selected broker account is not an active Agentic account")
         if grant.account_number != self.snapshot.account.account_number:
             raise RuntimeError("Grant account does not match the connected Agentic account")
+        self._assert_agent_route_clear()
         if self.snapshot.account.account_type.lower() == "cash" and self.config.settlement_model != "cash_t1":
             raise RuntimeError("Cash-account authority requires the T+1 settlement evidence model")
         if self.snapshot.portfolio.total_value <= 0 or self.snapshot.portfolio.buying_power <= 0:
@@ -3179,6 +3230,8 @@ class TradingController(QObject):
             raise RuntimeError("Liquidation-only authority cannot create exposure")
         if not self._live_automation_current(allow_loss_liquidation=liquidation_only):
             return None
+        if intent.side == "buy":
+            self._assert_agent_route_clear()
         if intent.side == "buy" and (reason := self._live_loss_entry_block_reason()):
             self.log(f"Order blocked: {reason}", "warning", "risk", intent.as_dict())
             return None
@@ -3449,6 +3502,8 @@ class TradingController(QObject):
         if grant is None:
             self.store.update_intent(intent.ref_id, None, "blocked_authority_revoked")
             return None
+        if intent.side == "buy":
+            self._assert_agent_route_clear()
         self.store.mark_intent_submitting(
             intent.ref_id,
             account_number=self.snapshot.account.account_number,

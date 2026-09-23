@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Added a durable shared stock/crypto execution journal: atomic cash reservations across
+  database connections, immutable one-use references committed before broker dispatch,
+  read-only restart recovery, cumulative fill/inventory checks, and fee-net realized-loss
+  accounting. Missing outcomes retain their reservations; recovery never retries an order.
+- Added account-specific cash-limit planning and execution-recovery status to the Agent page.
+  Saving limits grants no authority. The new coordinator defaults to refusing placement;
+  AI-to-order authorization, broader equity routing, managed exits/cancellation, and
+  market-value/unrealized-loss controls remain unfinished.
 - Aligned stock scans and crypto discovery with the connected server's exported contracts:
   saved scan IDs and nested equity results, compact crypto quote symbols with pair-ID checks,
   independently optional book clocks, account-routed quotes, and refreshed pair restrictions.
