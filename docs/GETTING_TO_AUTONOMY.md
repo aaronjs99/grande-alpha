@@ -86,9 +86,9 @@ and qualification. Keep unsupported settings visibly unavailable instead of acce
 
 Daily loss recovery now persists observed account-value peaks and a same-day stop latch. Historical
 offline checks covered process restart, re-arming, recovered balances, stricter limits, missing
-history, failed persistence, and trading-day rollover. The automated suite was removed from the
-repository and must be rebuilt for future regression and qualification work; prior fabricated-account
-checks do not establish broker-side recovery or qualify unattended operation.
+history, failed persistence, and trading-day rollover. A focused fake-broker regression suite is
+again present and runs in CI, but it does not replace the former full suite or establish
+provider-side recovery or unattended-trading qualification.
 The [standing engine](UNATTENDED_ENGINE.md) now has an explicit placement-delegation path, pinned
 provider metadata, local stop monitoring, and no-retry recovery logic. These are implementation
 results, not a claim that all deployment or strategy qualification work is complete.
