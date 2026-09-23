@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Redesigned the Agent workspace as a light Agent Desk dashboard with large metric cards,
+  an account-history chart, tagged research activity, and six colored module avatars.
+  The layout adapts to narrower windows and retains existing analysis/settings controls.
+  All displayed values remain broker observations or research proposals; no simulated
+  performance, live authority, or order execution is introduced by the redesign.
 - Added durable, separately authorized cancellation of exact managed stock/crypto orders.
   Cancellation attempts are committed before broker writes, cannot be resent after restart,
   and retain cash until terminal order/fill reconciliation. Managed sales reject competing

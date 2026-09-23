@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import math
 import tempfile
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -32,7 +33,9 @@ def capture(path: Path, width: int = 1366, height: int = 900, *, budget: bool = 
         window.tabs.setCurrentWidget(widget)
         now = datetime(2026, 9, 23, 15, tzinfo=UTC)
         store.agent_ledger.save_budget("synthetic", AgentBudget(Decimal(5), Decimal(10), Decimal(12), Decimal(1)), now=now)
-        for index, balance in enumerate((1000, 1000.3, 999.9, 1000.1)):
+        values = [1000 + 0.12 * math.sin(i / 4) + 0.06 * math.cos(i / 1.7) for i in range(40)]
+        values[-1] = 1000.1
+        for index, balance in enumerate(values):
             widget.update_account(
                 TradingSnapshot(
                     connected=True,
@@ -81,6 +84,9 @@ def capture(path: Path, width: int = 1366, height: int = 900, *, budget: bool = 
         widget.budget_toggle.setChecked(budget)
         window.show()
         app.processEvents()
+        if budget:
+            widget.ensureWidgetVisible(widget.save_budget)
+            app.processEvents()
         path.parent.mkdir(parents=True, exist_ok=True)
         if not window.grab().save(str(path)):
             raise RuntimeError("Could not save agent screenshot")
@@ -91,8 +97,8 @@ def capture(path: Path, width: int = 1366, height: int = 900, *, budget: bool = 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", type=Path, default=Path("docs/images/agent-workspace.png"))
-    parser.add_argument("--width", type=int, default=1366)
-    parser.add_argument("--height", type=int, default=900)
+    parser.add_argument("--width", type=int, default=1600)
+    parser.add_argument("--height", type=int, default=1200)
     parser.add_argument("--budget", action="store_true")
     args = parser.parse_args()
     capture(args.output, args.width, args.height, budget=args.budget)

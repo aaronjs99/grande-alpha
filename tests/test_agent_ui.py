@@ -154,3 +154,34 @@ async def test_controller_recovery_status_and_etf_boundary_are_connected(tmp_pat
     with pytest.raises(RuntimeError, match="Scheduled"):
         controller.save_agent_budget(AgentBudget())
     store.close()
+
+
+@pytest.mark.parametrize('width,height', [(1600, 1200), (900, 1100)])
+def test_dashboard_reflows_and_saved_limit_controls_remain_reachable(tmp_path, app, width, height):
+    from PySide6.QtCore import QPoint
+
+    store = AuditStore(tmp_path / 'dashboard-layout.db')
+    controller = TradingController(DisabledBroker(), AppConfig(), store)
+    window = MainWindow(controller, controller.config)
+    widget = window.agent_widget
+    window.resize(width, height)
+    window.tabs.setCurrentWidget(widget)
+    window.show()
+    app.processEvents()
+    assert widget.horizontalScrollBar().maximum() == 0
+    assert len(widget.stage_cards) == 6
+    if width >= 1100:
+        assert widget.stage_cards[0].y() == widget.stage_cards[-1].y()
+        assert widget.chart.mapTo(widget.widget(), QPoint()).y() < widget.activity.mapTo(widget.widget(), QPoint()).y() + 100
+    else:
+        assert widget.stage_cards[-1].y() > widget.stage_cards[0].y()
+        assert widget.activity.mapTo(widget.widget(), QPoint()).y() > widget.chart.mapTo(widget.widget(), QPoint()).y()
+    widget.budget_toggle.setChecked(True)
+    app.processEvents()
+    widget.ensureWidgetVisible(widget.save_budget)
+    app.processEvents()
+    position = widget.save_budget.mapTo(widget.viewport(), widget.save_budget.rect().center())
+    assert widget.viewport().rect().contains(position)
+    assert not widget.save_budget.isEnabled()
+    window.close()
+    store.close()

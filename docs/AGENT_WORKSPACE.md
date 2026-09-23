@@ -7,6 +7,26 @@ The existing ETF execution engine and its evidence/authority checks remain separ
 
 ![Agent workspace with synthetic verification data, not real account performance](images/agent-workspace.png)
 
+## Agent Desk interface
+
+The Agent tab uses a light dashboard inspired by the supplied reference: four large account
+and research metrics, a green account-history chart beside a tagged activity feed, a shared
+status strip, and six colored avatar cards. The cards represent Scout, Analyst, Risk,
+Execution, Equities, and Crypto pipeline modules, not six independent trading agents.
+
+`[SCAN]`, `[IDEA]`, and `[RISK]` describe research observations and proposals. They are not
+broker fills. Account history uses this session's broker-reported snapshots and can include
+deposits or withdrawals; it is not trading P&L. Missing account data remains blank rather
+than showing sample profits, win rates, or invented activity. The screenshots use explicitly
+synthetic fixtures; those values are not included in the running dashboard.
+
+Scroll below the module cards for market observations, crypto buying power, execution-journal
+status, **Configure universe and AI**, and **Plan stock + crypto cash limits**. Smaller windows
+stack the chart and feed and wrap the metric/module cards. Existing connection, analysis,
+budget, and authority behavior is unchanged.
+
+![Narrow-window layout with synthetic verification data](images/agent-workspace-narrow.png)
+
 ## Start an analysis run
 
 1. Enable broker access in Settings and connect your Robinhood Agentic account.
