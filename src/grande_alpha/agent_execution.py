@@ -121,8 +121,10 @@ def observe_equity(ticket: ExecutionTicket, order: BrokerOrder) -> ExecutionObse
 class AgentExecutor:
     def __init__(self, broker: Broker, ledger: AgentLedger, *,
                  authorize: Callable[[ExecutionTicket], bool] = lambda _ticket: False,
+                 authorize_cancel: Callable[[ExecutionTicket], bool] = lambda _ticket: False,
                  clock: Callable[[], datetime] = utc_now) -> None:
         self.broker, self.ledger, self._authorize, self._clock = broker, ledger, authorize, clock
+        self._authorize_cancel = authorize_cancel
         self._lock = asyncio.Lock()
 
     async def _account(self, account_number: str) -> Account:
@@ -135,6 +137,31 @@ class AgentExecutor:
         """Read only: never resume, retry, preview, place, or cancel while recovering."""
         async with self._lock:
             await self._recover(account_number)
+
+    async def cancel_managed(self, ticket: ExecutionTicket) -> bool:
+        """Attempt one explicitly authorized cancellation; acceptance is not terminality."""
+        async with self._lock:
+            ticket.validate()
+            if self._authorize_cancel(ticket) is not True:
+                raise PermissionError("No managed cancellation authority")
+            rows = [r for r in self.ledger.records(ticket.account_number) if r["ref_id"] == ticket.ref_id]
+            if len(rows) != 1 or rows[0]["ticket"] != ticket:
+                raise ValueError("Cancellation cannot adopt an unowned or changed order")
+            if self.ledger.cancellation(ticket.ref_id) is not None:
+                raise ValueError("Cancellation was already attempted; reconcile without resending")
+            await self._recover(ticket.account_number)
+            row = next(r for r in self.ledger.records(ticket.account_number) if r["ref_id"] == ticket.ref_id)
+            if self._authorize_cancel(ticket) is not True:
+                raise PermissionError("Managed cancellation authority was revoked")
+            self.ledger.claim_cancellation(ticket, row["broker_order_id"], now=self._clock())
+            try:
+                cancel = self.broker.cancel_crypto_order if ticket.market == "crypto" else self.broker.cancel_order
+                accepted = await cancel(ticket.account_number, row["broker_order_id"])
+                self.ledger.note_cancellation(ticket.ref_id, accepted, now=self._clock())
+                return accepted
+            except BaseException:
+                self.ledger.note_cancellation(ticket.ref_id, None, now=self._clock())
+                raise
 
     async def _recover(self, account_number: str) -> None:
         records = [r for r in self.ledger.records(account_number) if r["submission_started_at"] is not None]
@@ -215,6 +242,11 @@ class AgentExecutor:
         known = {(r["market"], r["broker_order_id"]) for r in self.ledger.records(ticket.account_number) if r["broker_order_id"]}
         orders = await self.broker.get_orders(ticket.account_number)
         crypto_orders = await self.broker.get_crypto_orders(ticket.account_number)
+        if ticket.side == "sell" and (
+            (ticket.market == "equity" and any(o.symbol == ticket.symbol and not order_is_terminal(o) for o in orders))
+            or (ticket.market == "crypto" and any(o.pair_id == ticket.provider_id and not o.terminal for o in crypto_orders))
+        ):
+            raise ValueError("Managed exit conflicts with an open order on this instrument")
         if ticket.side == "buy" and (
             any(not order_is_terminal(o) and ("equity", o.order_id) not in known for o in orders)
             or any(not o.terminal and ("crypto", o.order_id) not in known for o in crypto_orders)
@@ -263,10 +295,13 @@ class AgentExecutor:
             available_cash = await self._preflight(ticket)
             validate_review()
             self.ledger.reserve(ticket, available_cash=available_cash, now=self._clock())
-            if self._authorize(ticket) is not True:
+            try:
+                if self._authorize(ticket) is not True:
+                    raise PermissionError("Live execution authority was revoked before dispatch")
+                validate_review()
+            except BaseException:
                 self.ledger.release(ticket.ref_id, now=self._clock())
-                raise PermissionError("Live execution authority was revoked before dispatch")
-            validate_review()
+                raise
             self.ledger.claim_dispatch(ticket, now=self._clock())
             try:
                 order = await submit()

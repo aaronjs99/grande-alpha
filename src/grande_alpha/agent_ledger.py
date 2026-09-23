@@ -173,6 +173,12 @@ class AgentLedger:
                     id INTEGER PRIMARY KEY, account TEXT NOT NULL, ref_id TEXT,
                     recorded_at TEXT NOT NULL, event TEXT NOT NULL, payload_json TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS agent_cancellations (
+                    ref_id TEXT PRIMARY KEY REFERENCES agent_tickets(ref_id),
+                    started_at TEXT NOT NULL, state TEXT NOT NULL CHECK(state IN
+                      ('dispatching','awaiting_terminal','unknown','terminal')),
+                    accepted INTEGER, updated_at TEXT NOT NULL
+                );
             """)
 
     @contextmanager
@@ -371,6 +377,41 @@ class AgentLedger:
             self._db.execute("UPDATE agent_tickets SET state='unresolved' WHERE account=? AND state IN ('dispatching','open','unresolved')", (account,))
             self._event(account, None, "recovery_blocked", {"reason": reason}, now or utc_now())
 
+    def cancellation(self, ref_id: str) -> dict | None:
+        with self._lock:
+            row = self._db.execute("SELECT * FROM agent_cancellations WHERE ref_id=?", (ref_id,)).fetchone()
+            return dict(row) if row else None
+
+    def claim_cancellation(self, ticket: ExecutionTicket, order_id: str, *, now: datetime | None = None) -> None:
+        """Record one cancellation attempt before a broker write; never retry it implicitly."""
+        now = now or utc_now()
+        with self._transaction():
+            row = self._db.execute("SELECT * FROM agent_tickets WHERE ref_id=?", (ticket.ref_id,)).fetchone()
+            if (row is None or self._ticket(row) != ticket or row["state"] != "open"
+                    or row["submission_started_at"] is None or row["broker_order_id"] != order_id):
+                raise ValueError("Cancellation requires an exact reconciled open managed order")
+            if self.cancellation(ticket.ref_id) is not None:
+                raise ValueError("Cancellation was already attempted; reconcile without resending")
+            self._db.execute("INSERT INTO agent_cancellations VALUES(?,?,'dispatching',NULL,?)",
+                             (ticket.ref_id, stamp(now), stamp(now)))
+            self._event(ticket.account_number, ticket.ref_id, "cancellation_started", {"order_id": order_id}, now)
+
+    def note_cancellation(self, ref_id: str, accepted: bool | None, *, now: datetime | None = None) -> None:
+        if accepted is not None and type(accepted) is not bool:
+            raise ValueError("Cancellation acknowledgement must be a boolean or unknown")
+        now = now or utc_now()
+        with self._transaction():
+            row = self._db.execute("SELECT account FROM agent_tickets WHERE ref_id=?", (ref_id,)).fetchone()
+            attempt = self.cancellation(ref_id)
+            if row is None or attempt is None:
+                raise ValueError("Cancellation has no durable dispatch boundary")
+            # A parallel reconciliation may already have established terminality.
+            if attempt["state"] != "terminal":
+                self._db.execute("UPDATE agent_cancellations SET state=?,accepted=?,updated_at=? WHERE ref_id=?",
+                                 ("unknown" if accepted is None else "awaiting_terminal", accepted, stamp(now), ref_id))
+            self._event(row["account"], ref_id, "cancellation_response",
+                        {"accepted": accepted, "releases_cash": False}, now)
+
     def reconcile(self, account: str, observations: list[ExecutionObservation], positions: dict[str, Decimal], *, now: datetime | None = None) -> None:
         """Atomically apply exact cumulative fills only when broker inventory agrees."""
         self._account(account)
@@ -478,6 +519,9 @@ class AgentLedger:
                          (str(Decimal(totals["realized_pnl"]) + realized), str(amount(totals["realized_losses"]) + max(ZERO, -realized)), breach, ticket.account_number))
         self._db.execute("UPDATE agent_tickets SET broker_order_id=?,broker_state=?,state=?,cumulative_quantity=?,net_cash=? WHERE ref_id=?",
                          (observed.order_id, observed.state, "terminal" if observed.terminal else "open", str(quantity), str(cash), ticket.ref_id))
+        if observed.terminal:
+            self._db.execute("UPDATE agent_cancellations SET state='terminal',updated_at=? WHERE ref_id=?",
+                             (stamp(now), ticket.ref_id))
         if delta_qty or row["broker_state"] != observed.state or row["state"] not in {"terminal", "open"}:
             self._event(ticket.account_number, ticket.ref_id, "execution_reconciled",
                         {"quantity": quantity, "net_cash": cash, "state": observed.state, "realized_delta": realized}, now)

@@ -55,7 +55,36 @@ A missing order in a response does not prove it was never submitted. An accepted
 does not prove the order is canceled. Both conditions retain the reservation pending exact
 broker evidence. Only a **never-dispatched** local reservation can be released without a broker
 outcome; the released reference still cannot be reused. The UI does not yet offer an order
-release/cancellation workflow.
+release/cancellation workflow. The backend cancellation boundary described below is available
+for future explicitly authorized controls; it is not invoked by restart recovery or the AI.
+
+## Managed cancellation and exits
+
+`AgentExecutor.cancel_managed(ticket)` requires a separate, default-deny cancellation authorizer.
+Placement authority alone is insufficient. The executor verifies the unchanged owned ticket,
+refreshes its account-scoped order/fill/position state, requires an open order with an exact broker
+ID, and rechecks cancellation authority immediately before committing the attempt. An atomic
+`agent_cancellations` row prevents two app connections from claiming the same cancellation.
+The new table is added without rewriting existing budgets, fills, or tickets.
+
+Each managed order permits one cancellation attempt through this coordinator. An accepted or
+rejected acknowledgement, timeout, canceled await, or process restart never permits an automatic
+resend. Pending cash and inventory remain governed by the original order. Recovery only reads
+the broker; only validated terminal order evidence resolves the cancellation record. A late
+acknowledgement cannot overwrite a terminal result established by another app connection.
+If cancellation loses a race with a fill, that fill is recorded normally. Partial fills followed
+by cancellation retain their purchase cost while releasing only unspent reservations. A rejected
+or unresolved attempt requires broker review; there is no retry/reset control in the app yet.
+
+Managed sells still require a fresh quantity-based limit review, their own runtime authorization,
+verified managed inventory and sellable quantity, and no open order on the same instrument.
+They can reduce verified holdings even when entry budgets are zero or exhausted. Confirmed sales
+reduce recorded cost and record fee-net realized gains/losses. These checks do not implement an
+automatic exit strategy, stop-loss policy, or broker cancellation of every account order.
+
+If authorization or review freshness fails after reserving cash but before dispatch, the local
+reservation is released. Its reference remains consumed. A committed dispatch is never released
+on that basis, because its broker outcome may be unknown.
 
 ## Reconciliation and cash accounting
 
@@ -86,7 +115,8 @@ stock orders. Crypto preserves its separate pair identity, account IDs, precisio
 The runtime authorizer defaults to false, including after restart.
 
 Before connecting AI proposals to live execution, the app still needs a reviewed authority
-contract bound to strategy/model/universe and evidence; a managed exit and cancellation workflow;
+contract bound to strategy/model/universe and evidence; UI/session integration for managed exits
+and cancellation;
 market-value/unrealized-loss controls; and validated broader equity routing. These are not
 satisfied by saving a cash budget or by passing synthetic tests.
 

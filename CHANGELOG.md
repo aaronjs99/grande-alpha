@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Added durable, separately authorized cancellation of exact managed stock/crypto orders.
+  Cancellation attempts are committed before broker writes, cannot be resent after restart,
+  and retain cash until terminal order/fill reconciliation. Managed sales reject competing
+  open orders and remain possible with exhausted entry budgets. These backend operations
+  remain default-deny and are not connected to AI proposals or live UI controls.
 - Added a durable shared stock/crypto execution journal: atomic cash reservations across
   database connections, immutable one-use references committed before broker dispatch,
   read-only restart recovery, cumulative fill/inventory checks, and fee-net realized-loss

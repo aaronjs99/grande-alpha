@@ -92,7 +92,9 @@ the budget controls or by starting agent analysis.
 The existing ETF grant only covers the original ticker set and runtime contract. It cannot
 authorize arbitrary stocks or crypto. Before adding a live multi-market route, validate:
 
-1. Complete a managed exit/cancellation workflow around the new durable execution coordinator.
+1. Connect reviewed session/UI controls to the durable managed exit/cancellation coordinator.
+   Its backend now journals cancellation attempts, prevents resends, and verifies managed sales;
+   it still defaults to refusing broker writes and has no AI or UI order callback.
    Extend equity execution beyond the original ETF pair under its own validated instrument contract.
 2. Validate authenticated read responses and broker behavior against the advertised contracts.
    Schema validation and mock tests do not prove production fill behavior.
