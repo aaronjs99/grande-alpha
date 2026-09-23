@@ -155,6 +155,6 @@ permissions, market-data rights, safety checks, and trading consent are not prod
 The same snapshot is available without a GUI:
 
 ```powershell
-.\cli.ps1 plans
-.\cli.ps1 plans --json
+.\grande.ps1 cli plans
+.\grande.ps1 cli plans --json
 ```

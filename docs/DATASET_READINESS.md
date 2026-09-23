@@ -221,7 +221,7 @@ key only in the `ALPHA_VANTAGE_API_KEY` environment variable; it is not written 
 printed by the command.
 
 ```powershell
-.\cli.ps1 earnings fetch --database C:\private\earnings.db --symbol MSFT --dataset EARNINGS_ESTIMATES
+.\grande.ps1 cli earnings fetch --database C:\private\earnings.db --symbol MSFT --dataset EARNINGS_ESTIMATES
 ```
 
 The provider documents the estimates endpoint as including annual and quarterly EPS/revenue

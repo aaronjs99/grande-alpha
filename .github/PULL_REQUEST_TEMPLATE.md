@@ -10,7 +10,7 @@ Describe the user problem and the focused change.
 
 ## Verification
 
-- [ ] `./verify.ps1` passes.
+- [ ] `./grande.ps1 verify` passes.
 - [ ] New or changed behavior has tests.
 - [ ] No test connects to a live broker or places an order.
 - [ ] Documentation and `CHANGELOG.md` are updated when needed.

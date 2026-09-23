@@ -112,8 +112,8 @@ crashed, wait ten seconds and relaunch so the stale instance lock can clear.
 From PowerShell in the project directory:
 
 ```powershell
-.\verify.ps1
-.\build.ps1
+.\grande.ps1 verify
+.\grande.ps1 build
 ```
 
 The local unsigned candidate is `dist\GRANDEAlpha\GRANDEAlpha.exe`. A successful build does not make

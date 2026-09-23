@@ -3,8 +3,8 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$ProjectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
-. (Join-Path $ProjectRoot 'runtime-path.ps1')
+$ProjectRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
+. (Join-Path $PSScriptRoot 'runtime.ps1')
 $ConfiguredPython = if ($PythonExecutable) {
     [IO.Path]::GetFullPath($PythonExecutable)
 } else {

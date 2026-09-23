@@ -1,6 +1,6 @@
 $ErrorActionPreference = 'Stop'
-$ProjectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
-. (Join-Path $ProjectRoot 'runtime-path.ps1')
+$ProjectRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
+. (Join-Path $PSScriptRoot 'runtime.ps1')
 $PythonExe = Get-GrandeAlphaPython $ProjectRoot
 $Version = & $PythonExe -c "from grande_alpha import __version__; print(__version__)"
 $ReleaseRoot = Join-Path $ProjectRoot "release\grande-alpha-$Version-unsigned-windows-x64"
@@ -19,7 +19,7 @@ if ($GitStatus.Count -gt 0) {
 $ReleaseCommit = (& git -C $ProjectRoot rev-parse HEAD).Trim()
 if ($LASTEXITCODE -ne 0 -or -not $ReleaseCommit) { throw "Could not resolve the release commit" }
 
-& (Join-Path $ProjectRoot 'verify.ps1')
+& (Join-Path $ProjectRoot 'grande.ps1') verify
 
 $WheelCandidates = @(
     Get-ChildItem -LiteralPath (Join-Path $ProjectRoot 'artifacts\wheel-check') `
@@ -124,7 +124,7 @@ try {
         --requirement $BuilderAuditRequirements
     if ($LASTEXITCODE -ne 0) { throw "Release builder dependency vulnerability audit failed" }
 
-    & (Join-Path $ProjectRoot 'build.ps1') -PythonExecutable $BuildPython
+    & (Join-Path $ProjectRoot 'grande.ps1') build -PythonExecutable $BuildPython
 
     if (Test-Path -LiteralPath $ReleaseRoot) {
         Remove-Item -LiteralPath $ReleaseRoot -Recurse -Force

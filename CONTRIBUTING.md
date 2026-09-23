@@ -19,14 +19,14 @@ GRANDE Alpha supports 64-bit Windows with Python 3.11 or 3.12.
 ```powershell
 git clone https://github.com/aaronjs99/grande-alpha.git
 cd grande-alpha
-.\setup.ps1
-.\verify.ps1
+.\grande.ps1 setup
+.\grande.ps1 verify
 ```
 
 Run the source application only when interactive UI testing is necessary:
 
 ```powershell
-.\run.ps1
+.\grande.ps1 run
 ```
 
 ## Engineering expectations
@@ -46,11 +46,11 @@ Run the source application only when interactive UI testing is necessary:
 The standard check runs linting, bytecode compilation, and a wheel build:
 
 ```powershell
-.\verify.ps1
+.\grande.ps1 verify
 ```
 
 For UI changes, also exercise the supported portrait and landscape layouts and attach only redacted
-screenshots. For packaging changes, run `build.ps1` and treat the result as an unsigned candidate.
+screenshots. For packaging changes, run `.\grande.ps1 build` and treat the result as an unsigned candidate.
 
 ## Pull requests
 

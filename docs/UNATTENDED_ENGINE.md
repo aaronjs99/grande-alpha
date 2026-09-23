@@ -29,8 +29,8 @@ cap realized losses. Broker outages, price gaps, partial fills and unclosed posi
 ## Prepare and validate; do not activate an unqualified candidate
 
 ```powershell
-.\cli.ps1 engine standing-template
-.\cli.ps1 engine policy-check --unattended --policy C:\private\standing-policy.json
+.\grande.ps1 cli engine standing-template
+.\grande.ps1 cli engine policy-check --unattended --policy C:\private\standing-policy.json
 ```
 
 The standing policy extends the attended policy with this explicit `standing` object:
@@ -50,7 +50,7 @@ All other fields follow [the session policy schema](CLI.md). No account, money a
 or duration is chosen automatically. After strategy qualification and operator approval, activation is:
 
 ```powershell
-.\cli.ps1 engine run-unattended --policy C:\private\standing-policy.json --connect
+.\grande.ps1 cli engine run-unattended --policy C:\private\standing-policy.json --connect
 ```
 
 Local OAuth and the typed `SKIP REVIEW AND ARM` phrase must be completed by the operator. Session
@@ -63,7 +63,7 @@ The separate mixed route has a bounded multi-day scope; see [live activation](LI
 In a second terminal on the same PC and Windows user/data directory:
 
 ```powershell
-.\cli.ps1 engine stop
+.\grande.ps1 cli engine stop
 ```
 
 This records revocation for all local standing sessions without taking the runner's instance lock

@@ -1,8 +1,8 @@
 param([switch]$Full, [switch]$Broker)
 
 $ErrorActionPreference = 'Stop'
-$ProjectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
-. (Join-Path $ProjectRoot 'runtime-path.ps1')
+$ProjectRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
+. (Join-Path $PSScriptRoot 'runtime.ps1')
 $RuntimeRoot = Get-GrandeAlphaRuntimeRoot $ProjectRoot
 $VenvPython = Get-GrandeAlphaPython $ProjectRoot
 $Candidate = Join-Path $ProjectRoot 'dist\GRANDEAlpha\GRANDEAlpha.exe'
@@ -16,7 +16,7 @@ Write-Host 'GRANDE Alpha readiness doctor' -ForegroundColor Cyan
 Write-Host ('Repository: {0}' -f $ProjectRoot)
 
 if (-not (Test-Path -LiteralPath $VenvPython)) {
-    Write-Check 'Source environment' 'MISSING - run .\setup.ps1' Red
+    Write-Check 'Source environment' 'MISSING - run .\grande.ps1 setup' Red
     $SourceReady = $false
 } else {
     $Version = & $VenvPython -c "from grande_alpha import __version__; print(__version__)"
@@ -36,11 +36,11 @@ if (-not (Test-Path -LiteralPath $VenvPython)) {
         if ($LASTEXITCODE -eq 0) {
             Write-Check 'Taskbar identity' 'READY - GRANDE Alpha logo pin' Green
         } else {
-            Write-Check 'Taskbar identity' 'MISMATCH - rerun .\install-local.ps1' Red
+            Write-Check 'Taskbar identity' 'MISMATCH - rerun .\grande.ps1 install' Red
             $SourceReady = $false
         }
     } else {
-        Write-Check 'Taskbar identity' 'NOT INSTALLED - run .\install-local.ps1' DarkGray
+        Write-Check 'Taskbar identity' 'NOT INSTALLED - run .\grande.ps1 install' DarkGray
     }
 
     $BrokerState = & $VenvPython -c "import asyncio; from grande_alpha.broker.oauth import CredentialTokenStorage; s=CredentialTokenStorage(); print('STORED - run -Broker to verify' if asyncio.run(s.get_tokens()) is not None else 'NOT STORED')"
@@ -62,7 +62,7 @@ if (Test-Path -LiteralPath $Candidate) {
 if ($Full -and $SourceReady) {
     Write-Host ''
     Write-Host 'Running full verification...' -ForegroundColor Cyan
-    & (Join-Path $ProjectRoot 'verify.ps1')
+    & (Join-Path $ProjectRoot 'grande.ps1') verify
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }
 
@@ -75,8 +75,8 @@ if ($Broker -and $SourceReady) {
 
 Write-Host ''
 if ($SourceReady) {
-    Write-Host 'SOURCE APP READY: run .\run.ps1 or Start GRANDE Alpha.cmd' -ForegroundColor Green
+    Write-Host 'SOURCE APP READY: run .\grande.ps1 run or Start GRANDE Alpha.cmd' -ForegroundColor Green
     exit 0
 }
-Write-Host 'NOT READY: run .\setup.ps1, then rerun this doctor.' -ForegroundColor Red
+Write-Host 'NOT READY: follow the failing check above, then rerun this doctor.' -ForegroundColor Red
 exit 1

@@ -5,14 +5,16 @@
 From the repository or Windows source bundle:
 
 ```powershell
-.\setup.ps1
-.\doctor.ps1 -Full
-.\install-local.ps1
-.\run.ps1
+.\grande.ps1 install
+.\grande.ps1 run
 ```
 
+For a source-only run without shortcuts, use `.\grande.ps1 setup` followed by
+`.\grande.ps1 run`. The `install` task includes setup. Run `.\grande.ps1 doctor -Full`
+after installation to verify the source environment and tests.
+
 The source launcher uses the machine's signed Python executable and keeps the app code visible and
-auditable. `doctor.ps1` reports the source environment, Python signature, optional Robinhood OAuth
+auditable. `.\grande.ps1 doctor` reports the source environment, Python signature, optional Robinhood OAuth
 state, and packaged-candidate signature without printing credentials or account data.
 
 If the checkout already has `.venv`, the scripts use it. Otherwise, setup creates the managed runtime
@@ -27,7 +29,7 @@ need recovery, explicitly name their source directory with
 `grande-alpha-cli config import-legacy --source <directory>`; the operation only copies recognized
 files and preserves the source directory.
 
-`install-local.ps1` creates Desktop and Start Menu shortcuts that launch the source application via
+`.\grande.ps1 install` creates Desktop and Start Menu shortcuts that launch the source application via
 the trusted system PowerShell and signed Python runtime. The shortcuts point to the current source
 folder, so keep that folder in its installed location. Version 0.17 and later do not install a
 morning-check shortcut or any Windows scheduled task.
@@ -55,7 +57,7 @@ Windows Smart App Control and enterprise Code Integrity can require an enterpris
 and block that file. Renaming, re-zipping, self-signing, disabling Smart App Control, or bypassing
 policy is not an acceptable product fix.
 
-`release.ps1` therefore creates two artifacts:
+`.\grande.ps1 release` therefore creates two artifacts:
 
 - `grande-alpha-<version>-windows-source.zip`: supported preview path; run setup and doctor.
 - `grande-alpha-<version>-unsigned-windows-x64.zip`: signing candidate only; contains an explicit

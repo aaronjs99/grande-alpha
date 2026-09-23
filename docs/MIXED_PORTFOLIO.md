@@ -37,8 +37,8 @@ See [the issuer's product explanation](https://www.proshares.com/our-etfs/levera
 ## Offline use
 
 ```powershell
-.\cli.ps1 portfolio template
-.\cli.ps1 portfolio plan --input C:\private\mixed-research.json
+.\grande.ps1 cli portfolio template
+.\grande.ps1 cli portfolio plan --input C:\private\mixed-research.json
 ```
 
 The request includes `capital_usd` (total modeled portfolio value, including cash), all policy fields,
@@ -71,9 +71,9 @@ database. The live CLI also displays new notices in its existing terminal, with 
 escaped. No email, webhook, external delivery service or pop-up process is used.
 
 ```powershell
-.\cli.ps1 notifications --unread
-.\cli.ps1 notifications --ack 12
-.\cli.ps1 notifications --after 12
+.\grande.ps1 cli notifications --unread
+.\grande.ps1 cli notifications --ack 12
+.\grande.ps1 cli notifications --after 12
 ```
 
 Acknowledgement marks one notification read; it does not erase its receipt, resume trading or
@@ -164,8 +164,8 @@ Status: offline implementation with synthetic regression tests. No broker connec
 certificate, historical performance claim or live-trading authority is produced.
 
 ```powershell
-.\cli.ps1 portfolio replay --input C:\private\portfolio-replay.json
-.\cli.ps1 portfolio replay-report --input C:\private\portfolio-replay.json
+.\grande.ps1 cli portfolio replay --input C:\private\portfolio-replay.json
+.\grande.ps1 cli portfolio replay-report --input C:\private\portfolio-replay.json
 ```
 
 Supply exactly these top-level fields: `initial_cash`, `daily_loss_usd`, `slippage_bps`, `fee_bps`,
@@ -217,8 +217,8 @@ late backfills and nonchronological inserts. Reporting reruns the exact replay o
 stored frames.
 
 ```powershell
-.\cli.ps1 portfolio forward-append --database C:\private\forward.db --input C:\private\frame.json
-.\cli.ps1 portfolio forward-report --database C:\private\forward.db --settings C:\private\replay-settings.json
+.\grande.ps1 cli portfolio forward-append --database C:\private\forward.db --input C:\private\frame.json
+.\grande.ps1 cli portfolio forward-report --database C:\private\forward.db --settings C:\private\replay-settings.json
 ```
 
 Individual-stock execution and multi-day recovery now exist behind the separate

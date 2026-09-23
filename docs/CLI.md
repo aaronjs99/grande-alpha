@@ -23,20 +23,20 @@ For dynamic stock/ETF research targets and device-only alerts, see [mixed portfo
 These commands capture data and produce evidence; none grants broker authority:
 
 ```powershell
-.\cli.ps1 earnings key-set
-.\cli.ps1 earnings key-status
-.\cli.ps1 earnings fetch --database C:\private\earnings.db --symbol MSFT --dataset EARNINGS_ESTIMATES
-.\cli.ps1 earnings normalize --database C:\private\earnings.db --source-sha SHA256 --kind consensus --period 2026-12-31 --basis alpha_vantage_eps --currency USD
-.\cli.ps1 earnings record-fact --database C:\private\earnings.db --input C:\private\normalized-fact.json
-.\cli.ps1 earnings verify-event --database C:\private\earnings.db --input C:\private\event.json
-.\cli.ps1 portfolio replay-report --input C:\private\historical-replay.json
-.\cli.ps1 portfolio forward-append --database C:\private\forward.db --input C:\private\frame.json
-.\cli.ps1 portfolio forward-report --database C:\private\forward.db --settings C:\private\replay-settings.json
-.\cli.ps1 engine qualification-check --certificate C:\private\qualification.json --candidate-digest SHA256
-.\cli.ps1 engine authorization-template
-.\cli.ps1 engine authorization-check --permit C:\private\authorization.json --account ACCOUNT --scope-digest SHA256
-.\cli.ps1 engine autonomous-template
-.\cli.ps1 engine autonomous-readiness --candidate C:\private\candidate.json --qualification C:\private\qualification.json --authorization C:\private\authorization.json --earnings-database C:\private\earnings.db --source C:\private\current-research.json
+.\grande.ps1 cli earnings key-set
+.\grande.ps1 cli earnings key-status
+.\grande.ps1 cli earnings fetch --database C:\private\earnings.db --symbol MSFT --dataset EARNINGS_ESTIMATES
+.\grande.ps1 cli earnings normalize --database C:\private\earnings.db --source-sha SHA256 --kind consensus --period 2026-12-31 --basis alpha_vantage_eps --currency USD
+.\grande.ps1 cli earnings record-fact --database C:\private\earnings.db --input C:\private\normalized-fact.json
+.\grande.ps1 cli earnings verify-event --database C:\private\earnings.db --input C:\private\event.json
+.\grande.ps1 cli portfolio replay-report --input C:\private\historical-replay.json
+.\grande.ps1 cli portfolio forward-append --database C:\private\forward.db --input C:\private\frame.json
+.\grande.ps1 cli portfolio forward-report --database C:\private\forward.db --settings C:\private\replay-settings.json
+.\grande.ps1 cli engine qualification-check --certificate C:\private\qualification.json --candidate-digest SHA256
+.\grande.ps1 cli engine authorization-template
+.\grande.ps1 cli engine authorization-check --permit C:\private\authorization.json --account ACCOUNT --scope-digest SHA256
+.\grande.ps1 cli engine autonomous-template
+.\grande.ps1 cli engine autonomous-readiness --candidate C:\private\candidate.json --qualification C:\private\qualification.json --authorization C:\private\authorization.json --earnings-database C:\private\earnings.db --source C:\private\current-research.json
 ```
 
 The hidden prompt stores the key in Windows Credential Manager. A process-local
@@ -61,9 +61,9 @@ an evidence gate, and durable local revocation. It does not renew authority afte
 ## Readiness without irrelevant prerequisites
 
 ```powershell
-.\cli.ps1 engine readiness
-.\cli.ps1 engine readiness --workflow earnings
-.\cli.ps1 engine readiness --setup .\operator-setup.json --policy .\session.live-policy.json
+.\grande.ps1 cli engine readiness
+.\grande.ps1 cli engine readiness --workflow earnings
+.\grande.ps1 cli engine readiness --setup .\operator-setup.json --policy .\session.live-policy.json
 ```
 
 The default workflow assesses the installed deterministic strategy. AI subscriptions and earnings
@@ -87,9 +87,9 @@ unattended operation. Malformed or ambiguous inputs fail rather than manufacturi
 Run the existing strategy continuously against Robinhood reads, without opening the desktop:
 
 ```powershell
-.\cli.ps1 engine run --connect --duration 300
+.\grande.ps1 cli engine run --connect --duration 300
 # Until Ctrl+C (foreground; no scheduler or automatic restart):
-.\cli.ps1 engine run --connect
+.\grande.ps1 cli engine run --connect
 ```
 
 This is **virtual trading, not live autonomous execution**. The read-only broker wrapper blocks
@@ -125,8 +125,8 @@ the CLI is a way to operate an agent, not a separate trading strategy or reliabi
 ### Inspect the actual broker contract
 
 ```powershell
-.\cli.ps1 engine inspect-broker --connect
-.\cli.ps1 engine inspect-broker --connect --tool place_equity_order --tool cancel_equity_order
+.\grande.ps1 cli engine inspect-broker --connect
+.\grande.ps1 cli engine inspect-broker --connect --tool place_equity_order --tool cancel_equity_order
 ```
 
 This performs MCP initialization and tool discovery only: no account reads, order reviews,
@@ -142,16 +142,16 @@ This qualifies the broader autonomy language in the public guide; unattended can
 has not been established. Recheck the live metadata before relying on this dated observation.
 Connecting successfully does not resolve the application's other evidence and lifecycle blockers.
 
-After `setup.ps1`, the repo-local wrapper is the easiest entry point:
+After `.\grande.ps1 setup`, the repo-local wrapper is the easiest entry point:
 
 ```powershell
-.\cli.ps1 status
-.\cli.ps1 activation --width 150
-.\cli.ps1 evidence show
-.\cli.ps1 evidence show --failures-only --width 150
-.\cli.ps1 glossary "Deflated Sharpe"
-.\cli.ps1 plans
-.\cli.ps1 receipts --limit 20
+.\grande.ps1 cli status
+.\grande.ps1 cli activation --width 150
+.\grande.ps1 cli evidence show
+.\grande.ps1 cli evidence show --failures-only --width 150
+.\grande.ps1 cli glossary "Deflated Sharpe"
+.\grande.ps1 cli plans
+.\grande.ps1 cli receipts --limit 20
 ```
 
 The installed command is also available as `grande-alpha-cli` when its Python Scripts directory is
@@ -200,10 +200,10 @@ The default source is deterministic and offline. It can verify mechanics but can
 eligible live-review certificate.
 
 ```powershell
-.\cli.ps1 sandbox run --source demo --days 7 --fills 25
-.\cli.ps1 sandbox run --source csv --csv .\history.csv --interval 1m
-.\cli.ps1 runs
-.\cli.ps1 runs --id COMPLETE-RUN-ID
+.\grande.ps1 cli sandbox run --source demo --days 7 --fills 25
+.\grande.ps1 cli sandbox run --source csv --csv .\history.csv --interval 1m
+.\grande.ps1 cli runs
+.\grande.ps1 cli runs --id COMPLETE-RUN-ID
 ```
 
 All fills are virtual `TQQQS`/`SQQQS` fills. Add `--json` to any inspection command for scripts.
@@ -211,8 +211,8 @@ All fills are virtual `TQQQS`/`SQQQS` fills. Add `--json` to any inspection comm
 ## Run the Evidence Lab
 
 ```powershell
-.\cli.ps1 evidence run --source demo --days 7
-.\cli.ps1 evidence run --source csv --csv .\history.csv --interval 1m
+.\grande.ps1 cli evidence run --source demo --days 7
+.\grande.ps1 cli evidence run --source csv --csv .\history.csv --interval 1m
 ```
 
 An attested exact runtime trace has a separate, range-bound source path. `--start` and `--end`

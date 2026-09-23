@@ -80,11 +80,13 @@ Requirements:
 From PowerShell in the repository directory:
 
 ```powershell
-.\setup.ps1
-.\doctor.ps1 -Full
-.\install-local.ps1
-.\run.ps1
+.\grande.ps1 setup
+.\grande.ps1 run
 ```
+
+The source checkout has one main command: `grande.ps1`. Use `install` to add Desktop and Start
+Menu shortcuts (it runs setup), `doctor` to inspect the installation, and `cli` for terminal
+research commands. `verify`, `build`, and `release` are development and packaging tasks.
 
 The app starts in research mode. Broker access and real-order controls remain disabled until enabled
 separately in **Settings**.
@@ -162,10 +164,10 @@ but remains closed until its exact production certificate, authorization, curren
 real-world provider checks pass. See the [production qualification guide](docs/PRODUCTION_QUALIFICATION.md).
 
 ```powershell
-.\cli.ps1 --help
-.\cli.ps1 status
-.\cli.ps1 evidence show --width 150
-.\cli.ps1 plans --json
+.\grande.ps1 cli --help
+.\grande.ps1 cli status
+.\grande.ps1 cli evidence show --width 150
+.\grande.ps1 cli plans --json
 ```
 
 See the [CLI reference](docs/CLI.md).
@@ -199,8 +201,8 @@ resources from the domain services. The repository-root PowerShell files are
 only Windows entry points.
 
 ```powershell
-.\setup.ps1
-.\verify.ps1
+.\grande.ps1 setup
+.\grande.ps1 verify
 ```
 
 The source check does not connect to a broker or place an order. Before opening a pull request,

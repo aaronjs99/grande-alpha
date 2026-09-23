@@ -1,11 +1,11 @@
 $ErrorActionPreference = 'Stop'
-$ProjectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
-. (Join-Path $ProjectRoot 'runtime-path.ps1')
+$ProjectRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
+. (Join-Path $PSScriptRoot 'runtime.ps1')
 $PowerShell = (Get-Command powershell.exe -ErrorAction Stop).Source
 $Icon = Join-Path $ProjectRoot 'assets\brand\grande-alpha.ico'
-$Launcher = Join-Path $ProjectRoot 'run.ps1'
+$Launcher = Join-Path $ProjectRoot 'grande.ps1'
 
-& (Join-Path $ProjectRoot 'setup.ps1')
+& (Join-Path $ProjectRoot 'grande.ps1') setup
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 $PythonExe = Get-GrandeAlphaPython $ProjectRoot
 
@@ -20,7 +20,7 @@ foreach ($ShortcutPath in @(
 )) {
     $Shortcut = $Shell.CreateShortcut($ShortcutPath)
     $Shortcut.TargetPath = $PowerShell
-    $Shortcut.Arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$Launcher`""
+    $Shortcut.Arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$Launcher`" run"
     $Shortcut.WorkingDirectory = $ProjectRoot
     $Shortcut.IconLocation = "$Icon,0"
     $Shortcut.Description = 'GRANDE Alpha research and consent-gated trading workstation'
@@ -43,7 +43,7 @@ foreach ($ObsoleteShortcut in @(
     }
 }
 
-& (Join-Path $ProjectRoot 'doctor.ps1')
+& (Join-Path $ProjectRoot 'grande.ps1') doctor
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 Write-Host 'Local installation complete. Start GRANDE Alpha from its desktop or Start Menu shortcut.' -ForegroundColor Green

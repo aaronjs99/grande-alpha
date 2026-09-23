@@ -16,8 +16,8 @@ It does not establish broker or provider approval.
 On a supported clean Windows environment:
 
 ```powershell
-.\setup.ps1
-.\verify.ps1
+.\grande.ps1 setup
+.\grande.ps1 verify
 ```
 
 CI must pass on every supported Python version. Dependency-audit findings require remediation or a
@@ -26,7 +26,7 @@ documented, time-bounded exception. No release test may place a real order.
 ## 3. Build candidates
 
 ```powershell
-.\release.ps1
+.\grande.ps1 release
 ```
 
 The process creates a source bundle and an explicitly unsigned Windows binary candidate, together
@@ -132,7 +132,7 @@ For version 1.0.0, every mandatory item in the [roadmap to 1.0.0](ROADMAP_TO_1_0
 
 ### Engineering
 
-- [ ] `verify.ps1` passes.
+- [ ] `.\grande.ps1 verify` passes.
 - [ ] Dependency vulnerability audit passes or exceptions are documented.
 - [ ] Source and packaged GUI smoke tests pass.
 - [ ] SBOM and SHA-256 checksums are generated.

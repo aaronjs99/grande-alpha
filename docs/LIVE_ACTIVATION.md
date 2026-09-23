@@ -209,9 +209,9 @@ For a candidate-specific inventory, run `engine autonomous-readiness`. It does n
 broker or grant authority. The template contains no personal account or money amount:
 
 ```powershell
-.\cli.ps1 engine autonomous-template
-.\cli.ps1 engine autonomous-readiness --candidate C:\private\candidate.json --qualification C:\private\qualification.json --authorization C:\private\authorization.json --earnings-database "$env:LOCALAPPDATA\GRANDEAlpha\earnings.db" --source C:\private\current-research.json
-.\cli.ps1 engine run-autonomous --candidate C:\private\candidate.json --qualification C:\private\qualification.json --authorization C:\private\authorization.json --earnings-database "$env:LOCALAPPDATA\GRANDEAlpha\earnings.db" --source C:\private\current-research.json --connect
+.\grande.ps1 cli engine autonomous-template
+.\grande.ps1 cli engine autonomous-readiness --candidate C:\private\candidate.json --qualification C:\private\qualification.json --authorization C:\private\authorization.json --earnings-database "$env:LOCALAPPDATA\GRANDEAlpha\earnings.db" --source C:\private\current-research.json
+.\grande.ps1 cli engine run-autonomous --candidate C:\private\candidate.json --qualification C:\private\qualification.json --authorization C:\private\authorization.json --earnings-database "$env:LOCALAPPDATA\GRANDEAlpha\earnings.db" --source C:\private\current-research.json --connect
 ```
 
 `run-autonomous` validates the exact certificate and permit, connects to the selected Agentic

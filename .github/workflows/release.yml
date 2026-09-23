@@ -21,7 +21,7 @@ jobs:
       - run: .\.venv\Scripts\python.exe -m pip install --upgrade pip setuptools
       - run: .\.venv\Scripts\python.exe -m pip install -e ".[desktop,dev]"
       - shell: powershell
-        run: .\release.ps1
+        run: .\grande.ps1 release
         env:
           QT_QPA_PLATFORM: offscreen
       - id: release_version

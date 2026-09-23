@@ -13,17 +13,15 @@ It never connects to a broker or grants order authority.
 ## Source application (works without a GRANDE Alpha signing certificate)
 
 ```powershell
-.\setup.ps1
-.\doctor.ps1 -Full
-.\install-local.ps1
-.\run.ps1
+.\grande.ps1 setup
+.\grande.ps1 run
 ```
 
 The launcher uses the trusted Python installation on the machine. Review
 [Windows installation](WINDOWS_INSTALLATION.md) before distributing a binary.
 
-`install-local.ps1` gives the Desktop and Start-menu shortcuts the same Windows identity as the
-running app, and `doctor.ps1` verifies it. If a generic Python or PowerShell item was pinned before
+`.\grande.ps1 install` is optional; it runs setup and gives Desktop and Start-menu shortcuts the same Windows identity as the
+running app, and `.\grande.ps1 doctor` verifies it. If a generic Python or PowerShell item was pinned before
 installation, unpin that stale item once, launch **GRANDE Alpha** from the installed shortcut, and
 pin the branded GRANDE Alpha button.
 
@@ -47,7 +45,7 @@ exact broker-reviewed order.
 
 ## Research session
 
-1. Start with `.\run.ps1` or `Start GRANDE Alpha.cmd`.
+1. Start with `.\grande.ps1 run` or `Start GRANDE Alpha.cmd`.
 2. Read the first-run disclosures and leave every optional capability off.
 3. Open **Readiness** to see each condition's owner and exact next action.
 4. Open **Research**.
@@ -118,8 +116,8 @@ default widths. Compact fields such as Status start narrow so Observed and Requi
 For the matching terminal research and inspection surface, see the [command-line companion](CLI.md):
 
 ```powershell
-.\cli.ps1 status
-.\cli.ps1 evidence show --width 150
+.\grande.ps1 cli status
+.\grande.ps1 cli evidence show --width 150
 ```
 
 To authenticate and validate the complete provider read path without invoking any write method,
@@ -133,11 +131,11 @@ and watchlist access; "read-only" describes this diagnostic's behavior, not the 
 ## Source checkout
 
 ```powershell
-.\setup.ps1
-.\verify.ps1
-.\run.ps1
+.\grande.ps1 setup
+.\grande.ps1 verify
+.\grande.ps1 run
 ```
 
-Use `.\build.ps1` for an unsigned local Windows candidate and `.\release.ps1` for both an explicitly
+Use `.\grande.ps1 build` for an unsigned local Windows candidate and `.\grande.ps1 release` for both an explicitly
 labeled unsigned candidate and a runnable source bundle. Do not distribute the executable as a
 finished public binary until it has a valid Authenticode signature.

@@ -17,7 +17,7 @@ Search [existing issues](https://github.com/aaronjs99/grande-alpha/issues) befor
 ## Before reporting a bug
 
 1. Reproduce the issue in research mode if possible.
-2. Run `./verify.ps1` from a source checkout.
+2. Run `./grande.ps1 verify` from a source checkout.
 3. Note the GRANDE Alpha version, Windows version, Python version, and exact safe reproduction steps.
 4. If useful, export **File → Export redacted diagnostics** and inspect the JSON yourself.
 5. Remove all personal, financial, legal-status, tax, credential, account, position, order, and
