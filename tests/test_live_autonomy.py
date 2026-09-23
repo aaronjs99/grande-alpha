@@ -344,6 +344,123 @@ def _intent(ref_id: str) -> OrderIntent:
     )
 
 
+def _seed_loss_trades(store: AuditStore, count: int) -> None:
+    for index in range(count):
+        at = NOW - timedelta(minutes=10 - index)
+        _seed_holding(
+            store, symbol="TQQQ", quantity=0.1, price=50,
+            order_id=f"loss-entry-{index}", timestamp=at,
+        )
+        store.record_broker_order_executions(
+            ACCOUNT_NUMBER,
+            _observed_fill(
+                _order(
+                    f"loss-exit-{index}", side="sell", quantity=0.1,
+                    dollar_amount=None, created_at=at + timedelta(seconds=1),
+                ),
+                quantity=0.1, price=49.99, execution_id=f"loss-execution-{index}",
+                timestamp=at + timedelta(seconds=1),
+            ),
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("losses", [2, 3])
+async def test_live_new_buy_obeys_candidate_consecutive_loss_limit(tmp_path, monkeypatch, losses):
+    monkeypatch.setattr(controller_module, "load_sandbox_config", lambda: SandboxConfig(max_consecutive_losses=3))
+    controller, broker, store, grant = _controller(tmp_path, monkeypatch)
+    try:
+        _seed_loss_trades(store, losses)
+        controller.authorize_live(grant)
+        controller.start_strategy()
+        controller.snapshot.signal = Signal(Regime.BULLISH, 1, "buy", NOW)
+        controller.snapshot.last_analysis_at = NOW
+        controller._analysis_sequence += controller.config.trade_every_bars
+        await controller._evaluate_and_trade()
+        assert len(broker.review_calls) == (1 if losses < 3 else 0)
+        assert len(broker.place_calls) == (1 if losses < 3 else 0)
+        if losses == 3:
+            assert any("Consecutive loss pause" in row["summary"] for row in store.recent_receipts(20))
+    finally:
+        store.close()
+
+
+@pytest.mark.asyncio
+async def test_loss_pause_survives_restart_and_resets_next_eastern_day(tmp_path, monkeypatch):
+    monkeypatch.setattr(controller_module, "load_sandbox_config", lambda: SandboxConfig(max_consecutive_losses=3))
+    controller, broker, store, grant = _controller(tmp_path, monkeypatch)
+    _seed_loss_trades(store, 3)
+    controller.authorize_live(grant)
+    controller.start_strategy()
+    assert await controller._submit(_intent("before-restart"), broker.quotes["TQQQ"]) is None
+    store.close()
+    restarted, broker, store, grant = _controller(tmp_path, monkeypatch)
+    try:
+        restarted.authorize_live(grant)
+        restarted.start_strategy()
+        assert await restarted._submit(_intent("after-restart"), broker.quotes["TQQQ"]) is None
+        next_day = NOW + timedelta(days=1)
+        for module in (controller_module, risk_module, storage_module):
+            monkeypatch.setattr(module, "utc_now", lambda: next_day)
+        broker.quotes = _quotes(next_day)
+        restarted.snapshot.quotes = broker.quotes
+        restarted.snapshot.last_reconcile_at = next_day
+        grant = replace(grant, starts_at=next_day, expires_at=next_day + timedelta(hours=1))
+        grant = replace(grant, strategy_fingerprint=restarted.current_strategy_fingerprint(grant))
+        restarted.authorize_live(grant)
+        restarted.start_strategy()
+        assert await restarted._submit(_intent("next-day"), broker.quotes["TQQQ"]) is not None
+        assert broker.place_calls == ["next-day"]
+    finally:
+        store.close()
+
+
+@pytest.mark.asyncio
+async def test_loss_pause_allows_managed_exit_of_remaining_position(tmp_path, monkeypatch):
+    monkeypatch.setattr(controller_module, "load_sandbox_config", lambda: SandboxConfig(max_consecutive_losses=3))
+    controller, broker, store, grant = _controller(tmp_path, monkeypatch)
+    try:
+        controller.authorize_live(grant)
+        controller.start_strategy()
+        _seed_loss_trades(store, 3)
+        _seed_holding(store, symbol="TQQQ", quantity=0.1, price=50, order_id="remaining")
+        broker.positions = [Position("TQQQ", 0.1, 0.1, 50)]
+        controller.snapshot.positions = list(broker.positions)
+        controller.snapshot.signal = Signal(Regime.FLAT, 0, "exit", NOW)
+        controller.snapshot.last_analysis_at = NOW
+        controller._analysis_sequence += controller.config.trade_every_bars
+        await controller._evaluate_and_trade()
+        assert len(broker.placed_intents) == 1
+        assert broker.placed_intents[0].side == "sell"
+        assert broker.placed_intents[0].quantity == pytest.approx(0.1)
+    finally:
+        store.close()
+
+
+@pytest.mark.asyncio
+async def test_loss_limit_is_rechecked_after_order_confirmation(tmp_path, monkeypatch):
+    monkeypatch.setattr(controller_module, "load_sandbox_config", lambda: SandboxConfig(max_consecutive_losses=3))
+    controller, broker, store, grant = _controller(tmp_path, monkeypatch)
+
+    async def confirm(request):
+        # Simulate newly reconciled executions arriving while the preview is open.
+        _seed_loss_trades(store, 3)
+        return await _accept_reviewed_order(request)
+
+    controller.set_order_confirmer(confirm)
+    try:
+        controller.authorize_live(grant)
+        controller.start_strategy()
+        assert await controller._submit(_intent("late-loss"), broker.quotes["TQQQ"]) is None
+        assert broker.review_calls == ["late-loss"]
+        assert broker.place_calls == []
+        assert "late-loss" not in controller.risk.authorized_notionals
+        assert not store.unresolved_order_intents(ACCOUNT_NUMBER)
+        assert any("Consecutive loss pause" in row["summary"] for row in store.recent_receipts(20))
+    finally:
+        store.close()
+
+
 def _bind_owned_order(
     store: AuditStore,
     order: BrokerOrder,

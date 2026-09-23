@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Live buys now enforce the candidate's consecutive-loss limit using fee-inclusive provider
+  sell executions and proportionally allocated entry costs. The Eastern-day peak streak
+  survives restart and reauthorization; reaching the cap pauses new buys through that day
+  while managed exits remain available. The check runs before review and after the final
+  broker refresh. Missing entry-cost history blocks new buys.
 - Reconciliation now rejects position changes that disagree with the broker's cumulative
   execution quantity before recording a fill or resolving a submission. Partial and cancelled
   orders remain unresolved on a mismatch, and the controller revokes live authority.

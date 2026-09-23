@@ -3112,6 +3112,26 @@ class TradingController(QObject):
             return None
         return request
 
+    def _live_loss_entry_block_reason(self) -> str:
+        """Block new exposure after today's loss streak, while allowing exits."""
+        if self.snapshot.account is None:
+            return "Cannot establish consecutive losses without a bound account"
+        try:
+            contract = self.runtime_execution_contract()
+            streak = self.store.live_loss_streak(
+                self.snapshot.account.account_number,
+                utc_now().astimezone(EASTERN).date().isoformat(),
+            )
+        except (ValueError, TypeError, OverflowError) as exc:
+            return f"Cannot establish consecutive losses from execution history: {exc}"
+        if streak["peak_consecutive_losses"] >= contract.max_consecutive_losses:
+            return (
+                "Consecutive loss pause: no new buys for this Eastern trading day "
+                f"(limit {contract.max_consecutive_losses}; "
+                f"observed streak {streak['peak_consecutive_losses']})"
+            )
+        return ""
+
     async def _submit_serialized(
         self,
         intent: OrderIntent,
@@ -3125,6 +3145,9 @@ class TradingController(QObject):
         if liquidation_only and intent.side != "sell":
             raise RuntimeError("Liquidation-only authority cannot create exposure")
         if not self._live_automation_current(allow_loss_liquidation=liquidation_only):
+            return None
+        if intent.side == "buy" and (reason := self._live_loss_entry_block_reason()):
+            self.log(f"Order blocked: {reason}", "warning", "risk", intent.as_dict())
             return None
         exit_position = None
         if intent.side == "sell":
@@ -3295,6 +3318,14 @@ class TradingController(QObject):
             return None
         refreshed_exit_position = None
         if intent.side == "buy":
+            # Confirmation and provider reads yield control. Rebuild the streak
+            # from the refreshed execution ledger before crossing placement.
+            if reason := self._live_loss_entry_block_reason():
+                self.risk.release_authorization(intent.ref_id, reason)
+                self._persist_risk_receipts()
+                self.store.update_intent(intent.ref_id, None, "consecutive_loss_blocked")
+                self.log(f"Order blocked after review: {reason}", "warning", "risk", intent.as_dict())
+                return None
             if self._leveraged_positions():
                 self._revoke_live_automation(
                     "Leveraged inventory appeared after review; exposure-increasing placement blocked"
