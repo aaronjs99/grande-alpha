@@ -34,7 +34,7 @@ def capture(path: Path, width: int = 1366, height: int = 900) -> None:
                 TradingSnapshot(
                     connected=True,
                     account=Account("synthetic", "Synthetic", "cash", True, "active"),
-                    portfolio=Portfolio(balance, 900, 900),
+                    portfolio=Portfolio(balance, 900, 900, crypto_buying_power=850, crypto_value=25),
                     last_reconcile_at=now + timedelta(seconds=index * 30),
                 )
             )

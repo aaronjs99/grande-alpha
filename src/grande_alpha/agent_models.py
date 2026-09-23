@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
 
+from grande_alpha.crypto_models import CryptoPairRules
 from grande_alpha.models import Quote
 
 
@@ -21,6 +22,7 @@ class Instrument:
     symbol: str
     provider_id: str = ""
     source: str = "watchlist"
+    crypto_rules: CryptoPairRules | None = None
 
     @property
     def key(self) -> str:

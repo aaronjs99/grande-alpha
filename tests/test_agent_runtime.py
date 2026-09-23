@@ -10,9 +10,52 @@ import pytest
 from grande_alpha.agent_analyst import parse_decisions
 from grande_alpha.agent_models import AgentSettings, AssetClass, Instrument, parse_symbols
 from grande_alpha.agent_runtime import AgentRuntime
+from grande_alpha.broker.discovery import RobinhoodDiscovery
+from grande_alpha.crypto_models import CryptoQuote
 from grande_alpha.models import Quote
 
 NOW = datetime(2026, 9, 23, 15, 0, tzinfo=UTC)
+
+
+@pytest.mark.asyncio
+async def test_reported_pair_halts_refresh_each_cycle_and_account_overrides_block_buys():
+    from crypto_fixtures import FakeCryptoServer
+
+    server = FakeCryptoServer()
+    market = ReadMarket()
+    agent = market.runtime()
+    agent._crypto_pairs = RobinhoodDiscovery(server.call, server.schemas).currency_pairs
+    agent._crypto_account_type = lambda: "individual"
+    await agent.cycle()
+    pair = server.responses["get_currency_pairs"]["results"][0]
+    pair["tradability_by_account_type"] = {"individual": "sell_only"}
+    market.now += timedelta(seconds=30)
+    await agent.cycle()
+    assert "sell_only" in agent.snapshot.decisions[-1].reason
+    pair["halted"] = True
+    market.now += timedelta(seconds=30)
+    await agent.cycle()
+    assert "halt" in agent.snapshot.decisions[-1].reason
+    assert sum(name == "get_currency_pairs" for name, _ in server.calls) == 3
+
+
+@pytest.mark.parametrize("changes,reason", [
+    ({"bid_timestamp": NOW - timedelta(seconds=30)}, "stale"),
+    ({"ask_timestamp": NOW + timedelta(seconds=3)}, "future"),
+    ({"timestamp": NOW - timedelta(seconds=30), "bid_timestamp": NOW, "ask_timestamp": NOW}, "stale"),
+    ({"timestamp": NOW + timedelta(seconds=3), "bid_timestamp": NOW, "ask_timestamp": NOW}, "future"),
+])
+def test_crypto_freshness_checks_all_available_provider_clocks(changes, reason):
+    market = ReadMarket()
+    quote = replace(CryptoQuote("BTC-USD", 100, 100.02, 100, NOW), **changes)
+    decision = market.runtime()._inspect(Instrument(AssetClass.CRYPTO, "BTC-USD"), quote, NOW)
+    assert decision.risk_status == "Blocked" and reason in decision.reason
+
+
+def test_equity_midpoint_research_still_uses_book_clocks_not_old_last_trade():
+    quote = Quote("AAPL", 100, 100.02, 100, NOW - timedelta(seconds=60), NOW, NOW)
+    decision = ReadMarket().runtime()._inspect(Instrument(AssetClass.EQUITY, "AAPL"), quote, NOW)
+    assert decision.risk_status != "Blocked"
 
 
 class ReadMarket:

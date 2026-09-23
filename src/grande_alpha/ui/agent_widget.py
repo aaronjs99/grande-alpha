@@ -79,7 +79,7 @@ class AgentWidget(QScrollArea):
         for index, (name, value) in enumerate(
             (
                 ("Selected Agentic account value", self.balance),
-                ("Broker buying power", self.buying_power),
+                ("Equity buying power", self.buying_power),
                 ("Candidates this cycle", self.candidates),
                 ("Action proposals · not fills", self.proposals),
             )
@@ -91,6 +91,8 @@ class AgentWidget(QScrollArea):
             self.metric_cards.append(card)
             self.metrics.addWidget(card, index // 2, index % 2)
         layout.addLayout(self.metrics)
+        self.crypto_funds = label("Crypto buying power · unavailable")
+        layout.addWidget(self.crypto_funds)
 
         self.configure = QPushButton("Configure universe and AI")
         self.configure.setCheckable(True)
@@ -280,6 +282,11 @@ class AgentWidget(QScrollArea):
         portfolio = snapshot.portfolio if self._connected else None
         self.balance.setText(f"${portfolio.total_value:,.2f}" if portfolio else "—")
         self.buying_power.setText(f"${portfolio.buying_power:,.2f}" if portfolio else "—")
+        crypto_bp = portfolio.crypto_buying_power if portfolio else None
+        self.crypto_funds.setText(
+            f"Crypto buying power · ${crypto_bp:,.2f} (broker reported)"
+            if crypto_bp is not None else "Crypto buying power · unavailable"
+        )
         timestamp = snapshot.last_reconcile_at
         if (
             portfolio

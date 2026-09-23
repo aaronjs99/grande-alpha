@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Aligned stock scans and crypto discovery with the connected server's exported contracts:
+  saved scan IDs and nested equity results, compact crypto quote symbols with pair-ID checks,
+  independently optional book clocks, account-routed quotes, and refreshed pair restrictions.
+  The Agent dashboard now distinguishes equity buying power from crypto cash buying power.
+- Added isolated crypto broker primitives for scoped holdings/orders, exact-decimal previews,
+  single-dispatch placement, and acknowledged cancellation. They preserve fee-inclusive net
+  amounts and leave uncertain outcomes unresolved. These methods remain disconnected from
+  Agent order controls pending durable multi-market authority and reconciliation; no live
+  eligibility or evidence gates were changed.
 - Added the Stocks + Crypto Agent workspace: bounded continuous equity watchlist/saved-scan
   discovery, supported USD crypto-pair discovery and quotes, separate market-hours/spread checks,
   optional local Ollama analysis with validated structured proposals, and account/activity views.

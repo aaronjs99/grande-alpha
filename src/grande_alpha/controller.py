@@ -237,7 +237,7 @@ class TradingController(QObject):
         self.agent = AgentRuntime(
             equity_quotes=broker.get_quotes,
             crypto_pairs=broker.discover_crypto,
-            crypto_quotes=broker.get_crypto_quotes,
+            crypto_quotes=self._agent_crypto_quotes,
             equity_scan=broker.discover_equities,
             connected=lambda: bool(
                 self.config.broker_connection_enabled
@@ -246,12 +246,19 @@ class TradingController(QObject):
             ),
             changed=self.agent_changed.emit,
             log=self.log,
+            crypto_account_type=lambda: self.snapshot.account.brokerage_account_type if self.snapshot.account else "",
         )
 
     def start_agent(self, settings: AgentSettings) -> None:
         if self.shadow_only_runtime:
             raise RuntimeError("Scheduled ETF shadow does not start the multi-market agent")
         self.agent.start(settings)
+
+    async def _agent_crypto_quotes(self, instruments):
+        account = self.snapshot.account
+        if not account or not account.rhs_account_number or not account.rhc_account_number:
+            raise BrokerError("The selected Agentic account has no verified linked crypto account")
+        return await self.broker.get_crypto_quotes(instruments, rhs_account_number=account.rhs_account_number)
 
     def set_order_confirmer(self, confirmer: OrderConfirmer | None) -> None:
         """Install the non-persistent UI callback used for each reviewed real-money order."""

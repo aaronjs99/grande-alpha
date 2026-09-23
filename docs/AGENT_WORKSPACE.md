@@ -13,7 +13,8 @@ The existing ETF execution engine and its evidence/authority checks remain separ
 2. Open **Agent · Stocks + Crypto** and **Configure universe and AI**.
 3. Enter stock/ETF symbols. The initial watchlist retains QQQ/TQQQ/SQQQ; change it
    to your intended research universe. **Load saved scans** optionally adds candidates
-   from an existing Robinhood equity scan. The app does not create or edit scans.
+   from an existing Robinhood equity scan. Only `EQUITY` rows with visible tickers are used;
+   add the symbol column if your scan omits it. The app does not create or edit scans.
 4. Leave crypto blank to discover supported USD pairs, or enter symbols such as
    `BTC, ETH`. The catalog establishes supported pair identity, not account-specific
    permission to trade. Unsupported requested pairs produce a visible error.
@@ -52,14 +53,21 @@ quotes. Equity proposals are restricted to the regular equity session, including
 existing exchange holiday/early-close calendar. Crypto observations are not stopped by
 the equity calendar. Research spread limits are 20 bps for equities and 100 bps for crypto;
 the maximum observation age is 15 seconds. Freshness is checked again after model inference.
-Crypto `updated_at` is provider quote time, not certified executable-book provenance.
+Crypto freshness includes `updated_at` and every available bid/ask clock; a missing side
+does not erase a known stale or future-dated clock. Crypto `updated_at` alone is provider
+quote time, not certified executable-book provenance. Quotes use the selected account's
+numeric RHS identifier. Pair restrictions are refreshed every cycle, including account-type
+overrides; reported halts block proposals while regional eligibility is unresolved.
 EXIT is a suggestion to evaluate reducing an existing long holding; it is never a short order.
 
 ## What the dashboard proves
 
-- Account value and buying power come from the existing selected Agentic portfolio view.
+- Account value, equity buying power, and crypto cash buying power come from the selected
+  Agentic portfolio view. Crypto buying power stays **unavailable** when the broker omits it;
+  equity buying power never substitutes. Broker total value already includes crypto holdings,
+  so the app does not add `crypto_value` again.
   The chart records that account's observations during this app session. Deposits and
-  withdrawals can move it; it is not P&L, a combined crypto-account valuation, or a return chart.
+  withdrawals can move it; it is not P&L or a return chart.
 - Candidate and proposal counts come from the last completed agent cycle. Proposals are
   not fills. No synthetic profit, win rate, trade count, or agent conversation is shown.
 - Local receipts record each cycle's instrument identities, quotes, analysis mode,
@@ -71,10 +79,12 @@ EXIT is a suggestion to evaluate reducing an existing long holding; it is never 
 The existing ETF grant only covers the original ticker set and runtime contract. It cannot
 authorize arbitrary stocks or crypto. Before adding a live multi-market route, validate:
 
-1. Actual provider schemas and crypto-to-Agentic-account mapping, including separately scoped
-   balances, positions, tradability, supported sizes, precision, fees, and order types.
-2. Asset-specific preview/place/cancel contracts, immutable execution provenance, partial fills,
-   uncertain outcomes, idempotency, restart reconciliation, and managed exits.
+1. Connect the [schema-aligned crypto transport primitives](BROKER_CRYPTO_CONTRACT.md) to a
+   durable execution coordinator, with immutable intent provenance, partial-fill accounting,
+   uncertain-outcome reconciliation across restarts, and managed exits. Extend equity execution
+   beyond the original ETF pair under its own validated instrument contract.
+2. Validate authenticated read responses and broker behavior against the advertised contracts.
+   Schema validation and mock tests do not prove production fill behavior.
 3. A shared durable allocation/exposure/loss ledger across both markets and user-selected
    budget limits, with crypto's continuous sessions handled explicitly.
 4. Reproducible observations, replay, after-cost evidence, and an authorization contract bound
@@ -83,9 +93,10 @@ authorize arbitrary stocks or crypto. Before adding a live multi-market route, v
 No flags or receipts are changed to impersonate these checks. Public broker documentation
 supports delegated agent orders; per-order confirmation is not a universal Robinhood restriction.
 The remaining restriction here is GRANDE's unvalidated implementation and strategy evidence.
-The new read adapter checks discovered input argument names and rejects unsupported response
-shapes rather than guessing order routes. Its crypto/scanner fixtures are synthetic contract
-examples; authenticated compatibility must still be verified against the user's actual server.
+The September 23 compatibility export has been used to correct scan nesting, scan identifiers,
+crypto quote symbols, account identifiers, pair rules, and crypto order/fee semantics. Synthetic
+response fixtures and generated request arguments were checked against its advertised schemas.
+The transport primitives are not connected to Agent controls and do not unlock live authority.
 
 After connecting on your computer, open **Configure universe and AI → Export broker compatibility
 report**. The JSON contains the server's input/output schemas and tool descriptions, including
@@ -97,7 +108,7 @@ requires appropriately redacted read-only fixtures; the export does not manufact
 ## Development verification
 
 ```bash
-QT_QPA_PLATFORM=offscreen PYTHONPATH=src python -m pytest -q tests/test_agent_*.py
+QT_QPA_PLATFORM=offscreen PYTHONPATH=src python -m pytest -q tests/test_agent_*.py tests/test_crypto_adapter.py
 QT_QPA_PLATFORM=offscreen PYTHONPATH=src:tests python tests/capture_agent_ui.py
 ```
 

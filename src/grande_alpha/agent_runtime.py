@@ -40,6 +40,7 @@ class AgentRuntime:
         log: Callable,
         clock: Callable[[], datetime] = utc_now,
         analyst: OllamaAnalyst | None = None,
+        crypto_account_type: Callable[[], str] = lambda: "",
     ) -> None:
         self._equity_quotes = equity_quotes
         self._crypto_pairs = crypto_pairs
@@ -50,6 +51,7 @@ class AgentRuntime:
         self._log = log
         self._clock = clock
         self._analyst = analyst or OllamaAnalyst()
+        self._crypto_account_type = crypto_account_type
         self._task: asyncio.Task | None = None
         self._cycle_lock = asyncio.Lock()
         self._history: dict[str, deque[tuple[datetime, float]]] = {}
@@ -121,6 +123,12 @@ class AgentRuntime:
             del self._history[next(iter(self._history))]
         history = self._history.setdefault(instrument.key, deque(maxlen=12))
         reason = ""
+        if instrument.crypto_rules is not None:
+            # A research buy proposal cannot override current pair restrictions.
+            reason = instrument.crypto_rules.restriction("buy", self._crypto_account_type())
+        if reason:
+            history.clear()
+            return AgentDecision(instrument, quote, "hold", reason, "Blocked", analyst=self.snapshot.analyst)
         if quote is None:
             reason = "Broker omitted the requested quote"
         else:
@@ -130,8 +138,12 @@ class AgentRuntime:
                     raise ValueError("Quote midpoint and spread must be finite")
                 if quote.symbol != instrument.symbol:
                     raise ValueError("Quote identity does not match the candidate")
-                timestamp = quote.book_timestamp or quote.timestamp
-                newest = quote.latest_book_timestamp or quote.timestamp
+                if instrument.asset_class == AssetClass.CRYPTO:
+                    clocks = [t for t in (quote.timestamp, quote.bid_timestamp, quote.ask_timestamp) if t is not None]
+                    timestamp, newest = min(clocks), max(clocks)
+                else:
+                    timestamp = quote.book_timestamp or quote.timestamp
+                    newest = quote.latest_book_timestamp or quote.timestamp
                 age = (now - timestamp).total_seconds()
                 if (newest - now).total_seconds() > 2:
                     reason = "Quote timestamp is in the future"
@@ -217,9 +229,8 @@ class AgentRuntime:
                             instruments += await self._equity_scan(self.settings.scan_id)
                         instruments = list({item.key: item for item in instruments}.values())
                     else:
-                        # Recheck supported pairs periodically without flooding the provider.
-                        if self._pairs is None or cycle % 20 == 0:
-                            self._pairs = await self._crypto_pairs()
+                        # Halts and restrictions can change while running; refresh each cycle.
+                        self._pairs = await self._crypto_pairs()
                         wanted = {
                             s.replace("/", "-") if "-" in s or "/" in s else f"{s}-USD"
                             for s in self.settings.crypto_symbols
