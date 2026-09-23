@@ -17,9 +17,8 @@ jobs:
         with:
           python-version: '3.12'
           cache: pip
-      - run: python -m venv .venv
-      - run: .\.venv\Scripts\python.exe -m pip install --upgrade pip setuptools
-      - run: .\.venv\Scripts\python.exe -m pip install -e ".[desktop,dev]"
+      - run: python -m pip install --upgrade pip setuptools
+      - run: python -m pip install -e ".[desktop,dev]"
       - shell: powershell
         run: .\grande.ps1 release
         env:
@@ -27,7 +26,7 @@ jobs:
       - id: release_version
         shell: powershell
         run: |
-          $version = .\.venv\Scripts\python.exe -c "from grande_alpha import __version__; print(__version__)"
+          $version = python -c "from grande_alpha import __version__; print(__version__)"
           "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
       - uses: actions/upload-artifact@v4
         with:

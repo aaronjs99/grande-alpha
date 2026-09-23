@@ -17,10 +17,10 @@ The source launcher uses the machine's signed Python executable and keeps the ap
 auditable. `.\grande.ps1 doctor` reports the source environment, Python signature, optional Robinhood OAuth
 state, and packaged-candidate signature without printing credentials or account data.
 
-If the checkout already has `.venv`, the scripts use it. Otherwise, setup creates the managed runtime
-at `%LOCALAPPDATA%\GRANDEAlpha\runtime`. Keeping the runtime outside the extracted source tree avoids
-the Windows path-length failure caused by deeply nested PySide6 QML files. For isolated automation,
-set `GRANDE_ALPHA_RUNTIME_DIR` to another short absolute directory before running setup.
+The scripts use `python.exe` on `PATH` and install source dependencies into that Python's user site;
+they do not create a local virtual environment. To choose a different Python 3.11 or 3.12 executable,
+set `GRANDE_ALPHA_PYTHON` to its absolute path before running setup. An existing `.venv` is untouched.
+Release packaging still uses disposable isolated build environments to verify the distributable.
 
 Normal startup does not discover or merge data from a legacy application directory. If an existing
 configuration needs a schema upgrade, run `grande-alpha-cli config upgrade`; it keeps a timestamped

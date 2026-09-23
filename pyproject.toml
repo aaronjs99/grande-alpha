@@ -58,9 +58,11 @@ dev = [
 grande-alpha = "grande_alpha.app:main"
 grande-alpha-cli = "grande_alpha.cli:main"
 
-[tool.setuptools.packages.find]
-where = ["scripts"]
-include = ["grande_alpha*"]
+[tool.setuptools]
+packages = ["grande_alpha", "grande_alpha.assets", "grande_alpha.broker", "grande_alpha.ui"]
+
+[tool.setuptools.package-dir]
+grande_alpha = "scripts"
 
 [tool.setuptools.dynamic]
 version = {attr = "grande_alpha._version.__version__"}
@@ -71,8 +73,11 @@ grande_alpha = ["assets/*.png"]
 [tool.ruff]
 line-length = 110
 target-version = "py311"
-src = ["scripts", "tests"]
+src = ["tests"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
 ignore = ["E501"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["grande_alpha"]

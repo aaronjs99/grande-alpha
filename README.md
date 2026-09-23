@@ -194,8 +194,8 @@ stop, and consent controls will not be paywalled. See [Community and Pro plans](
 
 ## Development
 
-The executable Python package is kept in
-[`scripts/grande_alpha/`](scripts/grande_alpha/). Its internal `broker`, `ui`, and
+The executable Python package is kept directly in
+[`scripts/`](scripts/). Its internal `broker`, `ui`, and
 `assets` modules separate external adapters, presentation, and packaged
 resources from the domain services. The repository-root PowerShell entrypoint
 delegates Windows-specific build and installation work to `scripts/windows/`.

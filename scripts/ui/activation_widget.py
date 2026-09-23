@@ -21,8 +21,12 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from grande_alpha.activation_guidance import activation_summary, decorate_readiness
-from grande_alpha.external_guidance import ExternalGuidanceLink, external_guidance_links
+from grande_alpha.activation_guidance import (
+    ExternalGuidanceLink,
+    activation_summary,
+    decorate_readiness,
+    external_guidance_links,
+)
 from grande_alpha.ui.table_layout import configure_adjustable_columns
 from grande_alpha.ui.themes import set_item_foreground, set_widget_style
 

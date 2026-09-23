@@ -3,8 +3,7 @@ param([switch]$Full, [switch]$Broker)
 $ErrorActionPreference = 'Stop'
 $ProjectRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 . (Join-Path $PSScriptRoot 'runtime.ps1')
-$RuntimeRoot = Get-GrandeAlphaRuntimeRoot $ProjectRoot
-$VenvPython = Get-GrandeAlphaPython $ProjectRoot
+$PythonExe = Get-GrandeAlphaPython $ProjectRoot
 $Candidate = Join-Path $ProjectRoot 'dist\GRANDEAlpha\GRANDEAlpha.exe'
 $SourceReady = $true
 
@@ -15,15 +14,19 @@ function Write-Check([string]$Name, [string]$Status, [ConsoleColor]$Color) {
 Write-Host 'GRANDE Alpha readiness doctor' -ForegroundColor Cyan
 Write-Host ('Repository: {0}' -f $ProjectRoot)
 
-if (-not (Test-Path -LiteralPath $VenvPython)) {
+try {
+    $Version = & $PythonExe -c "from grande_alpha import __version__; print(__version__)" 2>$null
+    $ImportReady = $LASTEXITCODE -eq 0
+} catch {
+    $ImportReady = $false
+}
+if (-not $ImportReady) {
     Write-Check 'Source environment' 'MISSING - run .\grande.ps1 setup' Red
     $SourceReady = $false
 } else {
-    $Version = & $VenvPython -c "from grande_alpha import __version__; print(__version__)"
-    if ($LASTEXITCODE -ne 0) { throw 'GRANDE Alpha import failed' }
     Write-Check 'Source environment' ('READY - version {0}' -f $Version) Green
-    Write-Check 'Runtime location' $RuntimeRoot DarkGray
-    $PythonSignature = Get-AuthenticodeSignature -LiteralPath $VenvPython
+    Write-Check 'Python location' $PythonExe DarkGray
+    $PythonSignature = Get-AuthenticodeSignature -LiteralPath $PythonExe
     $PythonStatus = if ($PythonSignature.Status -eq 'Valid') { 'VALID trusted Python signature' } else { $PythonSignature.Status }
     Write-Check 'Python launcher' $PythonStatus $(if ($PythonSignature.Status -eq 'Valid') { 'Green' } else { 'Yellow' })
 
@@ -32,7 +35,7 @@ if (-not (Test-Path -LiteralPath $VenvPython)) {
     $ShortcutPaths = @($DesktopShortcut, $StartShortcut)
     $ExistingShortcuts = @($ShortcutPaths | Where-Object { Test-Path -LiteralPath $_ })
     if ($ExistingShortcuts.Count -eq $ShortcutPaths.Count) {
-        & $VenvPython -m grande_alpha.windows_shortcut --check @ExistingShortcuts | Out-Null
+        & $PythonExe -m grande_alpha.windows_shortcut --check @ExistingShortcuts | Out-Null
         if ($LASTEXITCODE -eq 0) {
             Write-Check 'Taskbar identity' 'READY - GRANDE Alpha logo pin' Green
         } else {
@@ -43,7 +46,7 @@ if (-not (Test-Path -LiteralPath $VenvPython)) {
         Write-Check 'Taskbar identity' 'NOT INSTALLED - run .\grande.ps1 install' DarkGray
     }
 
-    $BrokerState = & $VenvPython -c "import asyncio; from grande_alpha.broker.oauth import CredentialTokenStorage; s=CredentialTokenStorage(); print('STORED - run -Broker to verify' if asyncio.run(s.get_tokens()) is not None else 'NOT STORED')"
+    $BrokerState = & $PythonExe -c "import asyncio; from grande_alpha.broker.oauth import CredentialTokenStorage; s=CredentialTokenStorage(); print('STORED - run -Broker to verify' if asyncio.run(s.get_tokens()) is not None else 'NOT STORED')"
     if ($LASTEXITCODE -ne 0) { throw 'Broker credential readiness check failed' }
     Write-Check 'Robinhood OAuth' $BrokerState Yellow
 }
@@ -69,7 +72,7 @@ if ($Full -and $SourceReady) {
 if ($Broker -and $SourceReady) {
     Write-Host ''
     Write-Host 'Starting explicit read-only Robinhood OAuth and data check...' -ForegroundColor Cyan
-    & $VenvPython -m grande_alpha.broker_check
+    & $PythonExe -m grande_alpha.broker_check
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }
 

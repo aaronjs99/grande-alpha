@@ -150,8 +150,8 @@ requires appropriately redacted read-only fixtures; the export does not manufact
 ## Development verification
 
 ```bash
-QT_QPA_PLATFORM=offscreen PYTHONPATH=scripts python -m pytest -q tests/test_agent_*.py tests/test_crypto_adapter.py
-QT_QPA_PLATFORM=offscreen PYTHONPATH=scripts:tests python tests/capture_agent_ui.py
+QT_QPA_PLATFORM=offscreen PYTHONPATH=tests python -m pytest -q tests/test_agent_*.py tests/test_crypto_adapter.py
+QT_QPA_PLATFORM=offscreen PYTHONPATH=tests python tests/capture_agent_ui.py
 ```
 
 Tests use fake read callbacks and HTTP transports. They do not authenticate, run a model,

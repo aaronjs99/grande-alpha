@@ -53,7 +53,7 @@ Research candidates cannot unlock a selected runtime path merely by doing well: 
 ## Deliberate EMA research-runtime rules
 
 When `EMA momentum` is deliberately selected instead of the cash champion, the implementation in
-`scripts/grande_alpha/strategy.py` uses completed QQQ midpoint bars:
+`scripts/strategy.py` uses completed QQQ midpoint bars:
 
 | Parameter | Value |
 |---|---:|

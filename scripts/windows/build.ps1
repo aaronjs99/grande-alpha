@@ -12,7 +12,7 @@ $ConfiguredPython = if ($PythonExecutable) {
 }
 $PythonExe = if (Test-Path -LiteralPath $ConfiguredPython) { $ConfiguredPython } else { 'python' }
 $IconIco = Join-Path $ProjectRoot 'assets\brand\grande-alpha.ico'
-$IconPng = Join-Path $ProjectRoot 'scripts\grande_alpha\assets\app-icon.png'
+$IconPng = Join-Path $ProjectRoot 'scripts\assets\app-icon.png'
 
 & $PythonExe -m PyInstaller --noconfirm --clean --windowed --name GRANDEAlpha `
     --icon $IconIco --add-data "${IconPng};grande_alpha/assets" `
@@ -20,8 +20,7 @@ $IconPng = Join-Path $ProjectRoot 'scripts\grande_alpha\assets\app-icon.png'
     --collect-data rfc3987_syntax `
     --hidden-import mcp.client.auth.oauth2 --hidden-import mcp.client.streamable_http `
     --hidden-import mcp.shared.auth `
-    --paths (Join-Path $ProjectRoot 'scripts') `
-    (Join-Path $ProjectRoot 'scripts\grande_alpha\app.py')
+    (Join-Path $ProjectRoot 'scripts\app.py')
 $BuildExitCode = $LASTEXITCODE
 if ($BuildExitCode -ne 0) {
     throw "PyInstaller failed with exit code $BuildExitCode"

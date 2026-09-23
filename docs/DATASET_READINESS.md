@@ -55,7 +55,7 @@ day fails readiness even if the remaining 141 days are individually complete.
 Print the exact JSON template without creating or modifying evidence:
 
 ```powershell
-.\.venv\Scripts\python.exe -m grande_alpha.cli data manifest-template --target-interval 5s
+.\grande.ps1 cli data manifest-template --target-interval 5s
 ```
 
 Save the output beside the CSV as, for example, `qqq-tqqq-sqqq-5s.manifest.json`, then replace every
@@ -100,13 +100,13 @@ Keep the source agreement or terms snapshot outside the repository if redistribu
 First inventory the existing local caches and evidence ledger:
 
 ```powershell
-.\.venv\Scripts\python.exe -m grande_alpha.cli data audit --target-interval 5s --width 150
+.\grande.ps1 cli data audit --target-interval 5s --width 150
 ```
 
 Then audit the supplied file and manifest:
 
 ```powershell
-.\.venv\Scripts\python.exe -m grande_alpha.cli data audit `
+.\grande.ps1 cli data audit `
   --csv "C:\data\qqq-tqqq-sqqq-5s.csv" `
   --interval 5s `
   --target-interval 5s `

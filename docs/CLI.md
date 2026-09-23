@@ -256,8 +256,8 @@ The data audit reads caches, a supplied CSV, and the evidence-ledger inventory w
 trial or reserving/revealing a final holdout:
 
 ```powershell
-.\.venv\Scripts\python.exe -m grande_alpha.cli data audit --target-interval 5s --width 150
-.\.venv\Scripts\python.exe -m grande_alpha.cli data manifest-template --target-interval 5s
+.\grande.ps1 cli data audit --target-interval 5s --width 150
+.\grande.ps1 cli data manifest-template --target-interval 5s
 ```
 
 For a supplied file, `--interval` is mandatory because the command never guesses or relabels cadence.
