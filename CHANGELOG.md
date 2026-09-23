@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Fixed STOP + CANCEL to revoke local trading authority and stop the Agent and live
+  shadow before waiting for broker checks. The UI now shows progress and completion,
+  handles empty order lists and errors explicitly, prevents overlapping clicks, and
+  uses a non-blocking cancellation dialog. A 30-second read-only preview timeout leaves
+  automation stopped; cancellations still require exact scope confirmation and terminal
+  verification. Robinhood stays connected and filled positions remain open.
 - Added an application-wide light/dark toggle in the top bar and View menu, remembered
   across restarts. Both themes cover the Agent dashboard, other tabs, dialogs, tables,
   status colors, and charts. Appearance is stored separately from trading configuration.

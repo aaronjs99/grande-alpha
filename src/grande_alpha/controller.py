@@ -2207,8 +2207,23 @@ class TradingController(QObject):
     async def stop_and_cancel(self, reason: str = "STOP + CANCEL pressed") -> bool:
         """Lock order creation without an implicit provider cancellation write."""
 
-        self.agent.stop(reason)
         return await self.execute_confirmed_cancel(None, reason=reason)
+
+    def _stop_for_cancel(self, reason: str) -> None:
+        """Halt locally before waiting for broker truth or writing any receipts."""
+
+        self.snapshot.strategy_running = False
+        self.snapshot.session_expires_at = None
+        self._authority_mode = None
+        self.risk.revoke(reason)
+        try:
+            try:
+                self.agent.stop(reason)
+            finally:
+                self.stop_shadow(reason)
+            self._persist_risk_receipts()
+        finally:
+            self._emit()
 
     @staticmethod
     def _cancel_order_target(
@@ -2388,7 +2403,7 @@ class TradingController(QObject):
     async def prepare_cancel_plan(self) -> CancelPlan:
         """Read an exact GRANDE-owned cancellation scope without moving money."""
 
-        self.agent.stop("Agent stopped by STOP + CANCEL")
+        await self.stop_and_cancel("STOP requested; preparing cancellation review")
         if self.shadow_only_runtime:
             raise RuntimeError("Auto-shadow runtime has no real-order cancellation authority")
         if not self.snapshot.connected or self.snapshot.account is None:
@@ -2407,17 +2422,19 @@ class TradingController(QObject):
         self._cancel_plans[plan.token] = plan
         return plan
 
+    def discard_cancel_plan(self, plan: CancelPlan) -> None:
+        """Release a completed or declined review without any broker action."""
+
+        self._cancel_plans.pop(plan.token, None)
+
     async def execute_confirmed_cancel(
         self,
         plan: CancelPlan | None,
         *,
         reason: str = "STOP + CANCEL confirmed",
     ) -> bool:
+        self._stop_for_cancel(reason)
         if self.shadow_only_runtime:
-            self.stop_shadow(f"{reason}; cancellation BLOCKED by auto-shadow runtime")
-            self.snapshot.strategy_running = False
-            self.snapshot.session_expires_at = None
-            self.risk.disarm()
             self.log(
                 f"BLOCKED: {reason} cannot cancel orders in auto-shadow runtime",
                 "critical",
@@ -2426,11 +2443,6 @@ class TradingController(QObject):
             )
             self._emit()
             return True
-        self.stop_shadow(reason)
-        self.snapshot.strategy_running = False
-        self.snapshot.session_expires_at = None
-        self.risk.revoke(reason)
-        self._persist_risk_receipts()
         if plan is None:
             self.log(
                 f"{reason}; new orders locked; broker cancellation requires explicit confirmation",

@@ -71,6 +71,8 @@ from grande_alpha.ui.themes import (
 )
 from grande_alpha.ui.welcome_widget import WelcomeWidget
 
+STOP_PREVIEW_TIMEOUT_SECONDS = 30.0
+
 
 class MetricCard(QFrame):
     def __init__(self, title: str, value: str = "—") -> None:
@@ -132,6 +134,7 @@ class MainWindow(QMainWindow):
         self._chart_prices: deque[float] = deque(maxlen=1800)
         self._closing_after_cleanup = False
         self._connection_busy = False
+        self._stop_cancel_busy = False
         self._auto_shadow_starting = False
         self._auto_shadow_retry_seconds = 15
         self._auto_shadow_retry_remaining = 0
@@ -147,6 +150,7 @@ class MainWindow(QMainWindow):
         controller.snapshot_changed.connect(self._on_snapshot)
         controller.event.connect(self._on_event)
         controller.connection_busy.connect(self._on_busy)
+        controller.agent_changed.connect(self._clear_stop_status_on_restart)
         self.timer = QTimer(self)
         self.timer.setInterval(int(config.poll_seconds * 1000))
         self.timer.timeout.connect(self._schedule_quote_refresh)
@@ -239,6 +243,10 @@ class MainWindow(QMainWindow):
         self.shadow_button.clicked.connect(self._toggle_shadow)
         self.kill_button = QPushButton("STOP + CANCEL")
         self.kill_button.setObjectName("danger")
+        self.kill_button.setToolTip(
+            "Stop automation immediately, then review GRANDE-owned open orders for cancellation. "
+            "Robinhood stays connected; filled positions remain open."
+        )
         self.kill_button.clicked.connect(lambda: asyncio.create_task(self._stop_and_cancel()))
         self.flatten_button = QPushButton("Flatten Position")
         self.flatten_button.setObjectName("flatten")
@@ -262,6 +270,12 @@ class MainWindow(QMainWindow):
         self.header_layout.addWidget(self.header_actions_widget, 0, 1)
         self.header_layout.setColumnStretch(1, 1)
         outer.addWidget(self.header)
+
+        self.stop_status = QLabel()
+        self.stop_status.setWordWrap(True)
+        self.stop_status.setAccessibleName("Stop and cancellation status")
+        self.stop_status.hide()
+        outer.addWidget(self.stop_status)
 
         self.broker_panel = QWidget()
         broker_layout = QVBoxLayout(self.broker_panel)
@@ -1081,38 +1095,152 @@ class MainWindow(QMainWindow):
             "to review and explicitly confirm any GRANDE-owned cancellations.",
         )
 
-    async def _stop_and_cancel(self) -> None:
+    def _set_stop_status(self, text: str) -> None:
+        self.stop_status.setText(text)
+        self.stop_status.show()
+
+    def _clear_stop_status_on_restart(self, _agent_snapshot=None) -> None:
+        if not self._stop_cancel_busy and (
+            self._snapshot.strategy_running
+            or self._snapshot.shadow_running
+            or self.controller.agent.snapshot.running
+        ):
+            self.stop_status.hide()
+
+    async def _stop_message(
+        self,
+        title: str,
+        text: str,
+        *,
+        question: bool = False,
+        error: bool = False,
+    ) -> bool:
+        """Keep the asyncio/Qt event loop running while the operator reads a dialog."""
+
+        dialog = QMessageBox(self)
+        dialog.setWindowTitle(title)
+        dialog.setText(text)
+        dialog.setTextFormat(Qt.TextFormat.PlainText)
+        dialog.setIcon(
+            QMessageBox.Icon.Question if question else
+            QMessageBox.Icon.Critical if error else QMessageBox.Icon.Information
+        )
+        dialog.setStandardButtons(
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            if question else QMessageBox.StandardButton.Ok
+        )
+        dialog.setDefaultButton(
+            QMessageBox.StandardButton.No if question else QMessageBox.StandardButton.Ok
+        )
+        finished = asyncio.get_running_loop().create_future()
+
+        def resolve(_result: int) -> None:
+            if not finished.done():
+                clicked = dialog.clickedButton()
+                finished.set_result(
+                    clicked is not None
+                    and dialog.standardButton(clicked) == QMessageBox.StandardButton.Yes
+                )
+
+        dialog.finished.connect(resolve)
+        dialog.open()
         try:
-            plan = await self.controller.prepare_cancel_plan()
-        except Exception as exc:
-            QMessageBox.critical(self, "Cancellation preview failed", str(exc))
+            return await finished
+        finally:
+            dialog.finished.disconnect(resolve)
+            dialog.close()
+            dialog.deleteLater()
+
+    async def _stop_and_cancel(self) -> None:
+        if self._stop_cancel_busy:
             return
-        scope = "\n".join(plan.order_summaries) or "No eligible GRANDE-owned open orders."
-        unrelated = (
-            f"\n\n{len(plan.unrelated_order_ids)} unrelated open order(s) will remain untouched."
-            if plan.unrelated_order_ids
-            else ""
-        )
-        answer = QMessageBox.question(
-            self,
-            "Confirm GRANDE-owned order cancellation",
-            f"Agentic account ••••{plan.account_number[-4:]}\n"
-            f"Cancel exactly {len(plan.order_ids)} GRANDE-owned order(s):\n\n{scope}"
-            f"{unrelated}\n\nFilled positions remain open. Continue?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-            QMessageBox.StandardButton.No,
-        )
-        if answer != QMessageBox.StandardButton.Yes:
-            await self.controller.stop_and_cancel("STOP requested; cancellation declined")
-            return
-        verified = await self.controller.execute_confirmed_cancel(plan)
-        if not verified:
-            QMessageBox.critical(
-                self,
-                "Cancellation not verified",
-                "New orders are locked, but every prior order could not be verified terminal. "
-                "Check Robinhood immediately and retry STOP + CANCEL.",
+        self._stop_cancel_busy = True
+        self.kill_button.setText("STOPPING…")
+        self.kill_button.setEnabled(False)
+        self.stop_cancel_action.setEnabled(False)
+        self._set_stop_status("Stopping automation and checking Robinhood open orders…")
+        plan = None
+        try:
+            if self.controller.shadow_only_runtime:
+                await self.controller.stop_and_cancel()
+                message = "Shadow stopped. This read-only session cannot cancel real orders."
+                self._set_stop_status(message)
+                await self._stop_message("Shadow stopped", message)
+                return
+            # Only the read-only preview is bounded here. Broker write outcomes must
+            # continue through the controller's terminal verification, never be retried.
+            try:
+                plan = await asyncio.wait_for(
+                    self.controller.prepare_cancel_plan(), timeout=STOP_PREVIEW_TIMEOUT_SECONDS
+                )
+            except TimeoutError:
+                message = (
+                    "Automation stopped; new orders are locked. Robinhood's order check timed out. "
+                    "No cancellation was sent. Check open orders in Robinhood, then retry STOP + CANCEL."
+                )
+                self._set_stop_status(message)
+                await self._stop_message("Order check timed out", message, error=True)
+                return
+            unrelated = (
+                f" {len(plan.unrelated_order_ids)} unrelated open order(s) remain untouched."
+                if plan.unrelated_order_ids else ""
             )
+            if not plan.order_ids:
+                message = (
+                    "Automation stopped; new orders are locked. "
+                    "No GRANDE-owned open orders to cancel."
+                    f"{unrelated} Robinhood stays connected. Filled positions remain open."
+                )
+                self._set_stop_status(message)
+                await self._stop_message("Stopped — no orders to cancel", message)
+                return
+            self._set_stop_status("Automation stopped. Waiting for your cancellation decision.")
+            accepted = await self._stop_message(
+                "Confirm GRANDE-owned order cancellation",
+                f"Agentic account ••••{plan.account_number[-4:]}\n"
+                f"Cancel exactly {len(plan.order_ids)} GRANDE-owned order(s):\n\n"
+                + "\n".join(plan.order_summaries)
+                + f"\n\n{unrelated.strip()}\nFilled positions remain open. Continue?",
+                question=True,
+            )
+            if not accepted:
+                self._set_stop_status(
+                    "Automation stopped; new orders are locked. Cancellation declined; "
+                    "no cancellation was sent. Robinhood stays connected."
+                )
+                return
+            self.kill_button.setText("VERIFYING…")
+            self._set_stop_status("Automation stopped. Cancelling reviewed orders and verifying their final state…")
+            verified = await self.controller.execute_confirmed_cancel(plan)
+            if verified:
+                message = (
+                    f"Automation stopped. All {len(plan.order_ids)} reviewed order(s) are verified terminal "
+                    "(cancelled, filled, or otherwise closed)."
+                    f"{unrelated} Robinhood stays connected. Filled positions remain open."
+                )
+                self._set_stop_status(message)
+                await self._stop_message("Stop and cancellation check complete", message)
+            else:
+                message = (
+                    "Automation stopped; new orders are locked. Cancellation could not be verified. "
+                    "Check open orders and fills in Robinhood before retrying STOP + CANCEL."
+                )
+                self._set_stop_status(message)
+                await self._stop_message("Cancellation not verified", message, error=True)
+        except Exception as exc:
+            message = (
+                "STOP + CANCEL could not complete. Check open orders and fills in Robinhood. "
+                f"Cancellation is not confirmed.\n\n{exc}"
+            )
+            self._set_stop_status(message)
+            await self._stop_message("Stop and cancellation check failed", message, error=True)
+        finally:
+            if plan is not None:
+                self.controller.discard_cancel_plan(plan)
+            self._stop_cancel_busy = False
+            self.kill_button.setText("STOP + CANCEL")
+            self.kill_button.setEnabled(self._snapshot.connected)
+            self.stop_cancel_action.setEnabled(self._snapshot.connected)
 
     def _toggle_shadow(self) -> None:
         try:
@@ -1276,6 +1404,7 @@ class MainWindow(QMainWindow):
 
     def _on_snapshot(self, snapshot: TradingSnapshot) -> None:
         self._snapshot = snapshot
+        self._clear_stop_status_on_restart()
         self.agent_widget.update_account(snapshot)
         self._sync_data_timers()
         if snapshot.account:
@@ -1411,7 +1540,7 @@ class MainWindow(QMainWindow):
             session_available and live and not self._snapshot.strategy_running and not shadow
         )
         self.shadow_button.setEnabled(connected and (shadow or not live))
-        self.kill_button.setEnabled(connected)
+        self.kill_button.setEnabled(connected and not self._stop_cancel_busy)
         self.flatten_button.setEnabled(bool(self._snapshot.positions))
         self.fund_view_action.setVisible(self.config.personal_ledger_enabled)
         self.broker_connect_action.setEnabled(broker_enabled)
@@ -1424,7 +1553,7 @@ class MainWindow(QMainWindow):
         self.start_strategy_action.setEnabled(
             session_available and live and not self._snapshot.strategy_running and not shadow
         )
-        self.stop_cancel_action.setEnabled(connected)
+        self.stop_cancel_action.setEnabled(connected and not self._stop_cancel_busy)
         self.flatten_action.setEnabled(connected and bool(self._snapshot.positions))
         safe_checks_available = (
             self.controller.risk.grant is None and not self._snapshot.strategy_running
