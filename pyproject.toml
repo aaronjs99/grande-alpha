@@ -59,7 +59,8 @@ grande-alpha = "grande_alpha.app:main"
 grande-alpha-cli = "grande_alpha.cli:main"
 
 [tool.setuptools.packages.find]
-where = ["src"]
+where = ["scripts"]
+include = ["grande_alpha*"]
 
 [tool.setuptools.dynamic]
 version = {attr = "grande_alpha._version.__version__"}

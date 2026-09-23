@@ -3,9 +3,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
-import shutil
 import sys
-import textwrap
 from dataclasses import asdict, replace
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -16,13 +14,12 @@ from platformdirs import user_data_path
 from grande_alpha import __version__
 from grande_alpha.activation_guidance import decorate_readiness
 from grande_alpha.candidate_execution import contract_from_app_and_sandbox, runtime_parity_assessment
-from grande_alpha.config import (
-    APP_NAME,
-    config_path,
-    data_dir,
-    load_config,
-    migrate_legacy_data,
-    upgrade_config,
+from grande_alpha.cli_table import format_table
+from grande_alpha.config import APP_NAME, load_config
+from grande_alpha.config_cli import (
+    command_config_import_legacy,
+    command_config_show,
+    command_config_upgrade,
 )
 from grande_alpha.data_readiness import (
     DatasetReadinessReport,
@@ -59,92 +56,6 @@ from grande_alpha.sandbox import SandboxConfig, SandboxReplayEngine, load_sandbo
 from grande_alpha.storage import AuditStore
 from grande_alpha.strategy import STRATEGY_NAMES
 from grande_alpha.terminology import TERM_HELP
-
-CLI_WIDTHS: dict[str, int] = {
-    "Gate": 22,
-    "Status": 11,
-    "Observed": 31,
-    "Requirement": 43,
-    "Time": 25,
-    "Severity": 9,
-    "Category": 20,
-    "Summary": 55,
-    "Run": 12,
-    "Source": 32,
-    "Metric": 24,
-    "Condition": 25,
-    "Owner": 16,
-    "Current result": 28,
-    "Exact next action": 58,
-    "Value": 28,
-}
-
-
-def _cell(value: Any) -> str:
-    if value is None:
-        return "-"
-    return (
-        str(value)
-        .replace("\r", " ")
-        .replace("\n", " ")
-        .replace("—", "-")
-        .replace("–", "-")
-        .replace("…", "...")
-        .replace("•", " / ")
-        .replace("·", " / ")
-        .replace("×", "x")
-        .replace("≥", ">=")
-        .replace("≤", "<=")
-    )
-
-
-def format_table(headers: list[str], rows: list[list[Any]], width: int | None = None) -> str:
-    """Render a wrapping terminal table; --width is the CLI equivalent of dragging columns."""
-
-    if not headers:
-        return ""
-    available = width or shutil.get_terminal_size((120, 30)).columns
-    available = max(54, available)
-    string_rows = [[_cell(value) for value in row] for row in rows]
-    minimums = [max(5, len(header)) for header in headers]
-    preferred = []
-    for column, header in enumerate(headers):
-        content = max([len(header), *(len(row[column]) for row in string_rows)] or [len(header)])
-        preferred.append(max(minimums[column], min(CLI_WIDTHS.get(header, 28), content)))
-    separators = 3 * (len(headers) - 1)
-    while sum(preferred) + separators > available:
-        candidates = [index for index, value in enumerate(preferred) if value > minimums[index]]
-        if not candidates:
-            break
-        largest = max(candidates, key=lambda index: preferred[index] - minimums[index])
-        preferred[largest] -= 1
-
-    def rule(character: str = "-") -> str:
-        return "+".join(character * value for value in preferred)
-
-    def wrapped(values: list[str]) -> list[str]:
-        cells = [
-            textwrap.wrap(value, width=preferred[index], break_long_words=True, break_on_hyphens=False)
-            or [""]
-            for index, value in enumerate(values)
-        ]
-        height = max(len(value) for value in cells)
-        return [
-            " | ".join(
-                cells[column][line].ljust(preferred[column])
-                if line < len(cells[column])
-                else " " * preferred[column]
-                for column in range(len(headers))
-            ).rstrip()
-            for line in range(height)
-        ]
-
-    lines = [*wrapped(headers), rule("=")]
-    for index, row in enumerate(string_rows):
-        lines.extend(wrapped(row))
-        if index != len(string_rows) - 1:
-            lines.append(rule())
-    return "\n".join(lines)
 
 
 def _json(value: Any) -> None:
@@ -1371,56 +1282,6 @@ def command_engine_readiness(args: argparse.Namespace) -> int:
         "optional_enhancements": optional,
     }
     print(json.dumps(report, indent=2, allow_nan=False))
-    return 0
-
-
-def command_config_show(args: argparse.Namespace) -> int:
-    """Print validated settings without creating, upgrading, or changing them."""
-    path = Path(args.path) if args.path else None
-    config = load_config(path)
-    resolved_path = path or config_path()
-    payload = {"path": str(resolved_path), "settings": asdict(config)}
-    if args.json:
-        print(json.dumps(payload, indent=2, sort_keys=True))
-        return 0
-    rows = [[name, value] for name, value in payload["settings"].items()]
-    print(format_table(["Setting", "Value"], rows, args.width))
-    print(f"Path: {payload['path']}")
-    return 0
-
-
-def command_config_upgrade(args: argparse.Namespace) -> int:
-    """Back up and upgrade an explicitly selected configuration file."""
-    path = Path(args.path) if args.path else None
-    backup = upgrade_config(path)
-    target = path or config_path()
-    payload = {"path": str(target), "backup": str(backup) if backup else None, "upgraded": backup is not None}
-    if args.json:
-        print(json.dumps(payload, indent=2, sort_keys=True))
-    elif backup:
-        print(f"Upgraded {target}; backup retained at {backup}")
-    else:
-        print(f"No saved configuration exists at {target}; defaults were not written.")
-    return 0
-
-
-def command_config_import_legacy(args: argparse.Namespace) -> int:
-    """Copy selected legacy data without automatic discovery or source deletion."""
-    source = Path(args.source)
-    destination = Path(args.destination) if args.destination else data_dir()
-    copied = migrate_legacy_data(source, destination)
-    payload = {
-        "source": str(source),
-        "destination": str(destination),
-        "copied": [str(path) for path in copied],
-        "source_preserved": True,
-    }
-    if args.json:
-        print(json.dumps(payload, indent=2, sort_keys=True))
-    elif copied:
-        print(f"Copied {len(copied)} legacy files to {destination}; source files remain unchanged.")
-    else:
-        print("No eligible legacy files were copied; existing destination files were left unchanged.")
     return 0
 
 

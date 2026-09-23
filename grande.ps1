@@ -38,8 +38,8 @@ switch ($Task) {
         Write-Host "Runtime: $RuntimeRoot" -ForegroundColor Green
     }
     'verify' {
-        Invoke-Python -Arguments @('-m', 'ruff', 'check', 'src', 'tests')
-        Invoke-Python -Arguments @('-m', 'compileall', '-q', 'src')
+        Invoke-Python -Arguments @('-m', 'ruff', 'check', 'scripts/grande_alpha', 'tests')
+        Invoke-Python -Arguments @('-m', 'compileall', '-q', 'scripts/grande_alpha')
         $env:QT_QPA_PLATFORM = 'offscreen'
         Invoke-Python -Arguments @('-m', 'pytest', '-q')
         # Build from a fresh sdist so removed source files cannot leak from build/lib.

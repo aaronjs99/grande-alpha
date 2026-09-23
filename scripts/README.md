@@ -1,8 +1,9 @@
-# Repository tools
+# Product source and repository tools
 
-This directory contains repository-only tooling. The installed application lives
-in `src/grande_alpha/`; do not place importable product code here.
+This directory contains both the installable `grande_alpha/` package and
+Windows-only developer tooling under `windows/`. Packaging finds the Python
+package here; `windows/` is not shipped as importable product code.
 
-Root-level PowerShell files are small Windows entry points for setup, launch,
-verification, and packaging. They call the installed package and do not
-duplicate application logic.
+The root `grande.ps1` command handles setup, launch, verification, and
+packaging. It calls the installed package or a focused Windows tool; it does
+not duplicate application logic.

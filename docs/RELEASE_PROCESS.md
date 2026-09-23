@@ -7,7 +7,7 @@ It does not establish broker or provider approval.
 
 - Use a clean commit on the intended release branch.
 - Confirm the version follows the [versioning policy](#versioning-policy).
-- Update `src/grande_alpha/_version.py`, then confirm the built package, release notes, and proposed tag agree.
+- Update `scripts/grande_alpha/_version.py`, then confirm the built package, release notes, and proposed tag agree.
 - Review all changes since the previous tag, including dependencies, migrations, permissions, data
   flows, provider contracts, and user-visible risk.
 

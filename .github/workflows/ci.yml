@@ -21,8 +21,8 @@ jobs:
           cache: pip
       - run: python -m pip install --upgrade pip setuptools
       - run: python -m pip install -e ".[desktop,dev]"
-      - run: python -m ruff check src tests
-      - run: python -m compileall -q src
+      - run: python -m ruff check scripts/grande_alpha tests
+      - run: python -m compileall -q scripts/grande_alpha
       - run: python -m pytest -q
         env:
           QT_QPA_PLATFORM: offscreen

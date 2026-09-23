@@ -195,10 +195,10 @@ stop, and consent controls will not be paywalled. See [Community and Pro plans](
 ## Development
 
 The executable Python package is kept in
-[`src/grande_alpha/`](src/grande_alpha/). Its internal `broker`, `ui`, and
+[`scripts/grande_alpha/`](scripts/grande_alpha/). Its internal `broker`, `ui`, and
 `assets` modules separate external adapters, presentation, and packaged
-resources from the domain services. The repository-root PowerShell files are
-only Windows entry points.
+resources from the domain services. The repository-root PowerShell entrypoint
+delegates Windows-specific build and installation work to `scripts/windows/`.
 
 ```powershell
 .\grande.ps1 setup
