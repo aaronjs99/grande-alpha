@@ -33,28 +33,65 @@ Applied prompts are recorded with local research receipts; do not include secret
 
 ![Synthetic prompt controls, no real account information](images/agent-mcp-prompts.png)
 
-## ChatGPT Astra setup button
+## Easy ChatGPT Astra setup
 
-Open **Prompts + AI connections → ChatGPT Astra setup** for an offline, scrollable guide.
-It includes official OpenAI links and buttons to copy instructions, this installation's
-server command, and a read-only verification prompt. Opening the guide does not enable
-MCP, install software, collect API keys, create a tunnel, or connect an account.
+Open **Agent · Stocks + Crypto → Prompts + AI connections → ChatGPT Astra setup**.
+The recommended route is the **ChatGPT desktop app on the same computer**, using its
+local Codex tools. It does not require Terminal, a tunnel, or an API key. Install and
+sign in to ChatGPT desktop before starting.
 
-The guide describes OpenAI's **Secure MCP Tunnel** route for ChatGPT, including the
-separate developer-mode and Platform tunnel prerequisites, followed by selecting Astra
-when available. A tunnel must run on the same computer as GRANDE and be associated with
-the intended ChatGPT workspace. Setup and model availability depend on your OpenAI
-account. This route has not been authenticated or tested against your account.
+1. **Add GRANDE connection.** Close ChatGPT's Settings window, then click the button.
+   GRANDE saves its connection settings for you. Click **Next**.
+2. **Allow research access.** Review the sharing description and switch access on.
+   This permission lasts only for the current GRANDE session. Click **Next**.
+3. **Try Astra.** Restart ChatGPT desktop, start a local Codex chat on this computer,
+   and select Astra if your account offers it. Click **Copy test message** and paste it
+   into that chat. GRANDE reports when a research request arrives; verify the actual
+   tool result in ChatGPT. The message only reads research status, so Robinhood need not
+   be connected for this test.
 
-The copied local-client JSON is not a ChatGPT server URL. The server command uses the
-running Python interpreter and the absolute bridge path, so install GRANDE in that
-environment first. Packaged executables show a source-installation note instead of an
-invalid Python command. The copy buttons only change the clipboard.
+“Connection saved” means configuration was written, not that ChatGPT has connected.
+GRANDE cannot identify the client/model behind a request or unlock unavailable models.
+Workspace policies and project overrides still apply. This is a conversation-driven
+research connection, not the continuous analyst or automatic order execution.
 
-![Offline ChatGPT Astra setup guide, with synthetic example paths](images/chatgpt-astra-setup.png)
+**Using ChatGPT in a browser?** Open **Advanced / browser setup / troubleshooting**.
+Hosted chats cannot read the desktop's local settings. The separate Secure MCP Tunnel
+instructions remain there, along with manual setup, official links and troubleshooting.
+No tunnel software, OpenAI account, or API credential is created or managed by this wizard.
+A standalone frozen desktop executable needs a Python source installation for the local
+connection; the wizard explains this instead of generating an invalid command.
+
+![Three-step ChatGPT Astra setup, with synthetic data and no connection enabled](images/chatgpt-astra-setup.png)
+
+### What the setup button changes
+
+Opening the modeless wizard is inert. Clicking **Add GRANDE connection** adds only
+`mcp_servers.grande-alpha` to the local ChatGPT/Codex settings in
+`$CODEX_HOME/config.toml`, or `~/.codex/config.toml` when that variable is unset.
+The entry records this Python executable, the absolute bridge path and the package's
+source path. It does not change the model, approval policy, sandbox, other connections,
+account login or trading authority. Other local clients using those same settings can
+also see the connection. GRANDE's separate research-access switch still starts off.
+
+The installer preserves existing bytes and validates the resulting TOML, refuses an
+incompatible existing entry or invalid/unsupported file, and detects settings edits
+before replacing the file. Close ChatGPT Settings while adding/removing the entry.
+Existing settings receive a private `config.toml.grande-backup-*` copy in the same folder;
+new files/backups use owner-only permissions on POSIX. Backups may contain private
+settings, so keep them local. No settings contents are printed in errors.
+
+**Remove saved connection and turn access off**, under Advanced, revokes research
+access first and removes only the unchanged entry managed by this wizard. Other edits
+are preserved. If someone changed the GRANDE entry, remove it in ChatGPT's
+**Settings → MCP servers** instead. Restart ChatGPT after removal to refresh its tools.
+Research already running can be stopped on the Agent desk. Revocation cannot retract
+information already sent to an AI provider.
 
 Official sources reviewed September 24, 2026:
 
+- [Local desktop connections](https://learn.chatgpt.com/docs/extend/mcp)
+- [Configuration location and precedence](https://learn.chatgpt.com/docs/config-file/config-basic)
 - [Secure MCP Tunnel](https://developers.openai.com/api/docs/guides/secure-mcp-tunnels)
 - [Connect and test a ChatGPT plugin](https://developers.openai.com/plugins/deploy/connect-chatgpt)
 - [Model availability and selection](https://learn.chatgpt.com/docs/models)
@@ -64,8 +101,8 @@ Official sources reviewed September 24, 2026:
 MCP means **Model Context Protocol**. This build exposes a **local stdio MCP server**.
 Use a client that can launch a local executable and configure stdio servers. It does not
 connect universally to every AI product: clients requiring a hosted HTTPS MCP URL cannot
-use this local configuration directly; the ChatGPT setup guide explains the separate
-Secure MCP Tunnel option. No public endpoint, tunneling service, or cloud
+use this local configuration directly; the Advanced guide explains the separate
+Secure MCP Tunnel option for hosted ChatGPT. No public endpoint, tunneling service, or cloud
 account is created, and the app does not install an AI client or download a model.
 
 From a source checkout, install the updated entry points once:
@@ -78,8 +115,8 @@ Then:
 
 1. Keep GRANDE open, connect Robinhood, and save your research setup.
 2. In **Prompts + AI connections**, read the sharing description and check
-   **Enable research MCP for this app session**.
-3. Click **Copy MCP client configuration**. Paste the resulting `mcpServers` entry
+   **Allow AI research access for this app session**.
+3. Click **Other AI apps (advanced): copy connection settings**. Paste the resulting `mcpServers` entry
    into the compatible AI client's MCP settings (some clients use a different wrapper).
    The copied paths point to this computer's Python, source tree and local bridge.
 4. Restart/reload that client's MCP connection if required. The client launches the
@@ -131,7 +168,7 @@ labels must be considered together; a completed observation may already be stale
 
 ## Stop or revoke access
 
-- Uncheck **Enable research MCP** to revoke AI access; research already running continues
+- Uncheck **Allow AI research access** to revoke AI access; research already running continues
   until stopped. Revocation cannot retract data already shared with an AI client.
 - **Stop agent**, **STOP + CANCEL**, **Disconnect**, broker-permission revocation, and
   **Exit** revoke MCP access and stop research. Re-enable it deliberately before a new
@@ -153,7 +190,9 @@ successful connection/enable. Local cycle receipts follow the existing retention
 Tests use fake brokers, a simulated market clock, mocked model HTTP, and actual MCP
 in-memory and stdio clients. They exercise concurrent workers, prompt boundaries, malformed
 commands, default-off access, queue bounds, stale sessions, STOP revocation, and desktop
-shutdown. No provider login, live model, or real order is used. Client-specific UI setup
+shutdown. Setup tests also preserve existing configuration/comments, reject conflicts and
+invalid files, protect backups, exercise removal after unrelated edits, and launch an actual
+stdio client from the generated settings. No provider login, live model, or real order is used. Client-specific UI setup
 still depends on the AI application chosen by the user.
 
 Primary protocol reference: [official MCP Python SDK v1 documentation](https://py.sdk.modelcontextprotocol.io/v1/).

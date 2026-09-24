@@ -2,10 +2,15 @@
 
 ## Unreleased
 
-- Added **ChatGPT Astra setup** beside the Agent MCP controls: a modeless help window
-  with official connection/model links, tunnel prerequisites, an installation-specific
-  server command and a read-only test prompt. Opening help changes no permissions and
-  starts no connection; ChatGPT account setup remains an external step.
+- Simplified **ChatGPT Astra setup** into three guided steps: add the local desktop
+  connection, allow research access, and send a copied test message to Astra. The desktop
+  route writes the named ChatGPT/Codex connection with a private settings backup,
+  preserving existing options and refusing conflicts. No Terminal, tunnel or API key is
+  needed for that route. Browser/tunnel and manual instructions are under Advanced.
+- Added a removal control and actual research-request feedback. Saving settings never
+  claims a successful ChatGPT connection; requests do not identify the client/model.
+  Research sharing stays off until explicitly enabled and is revoked by Stop/Disconnect/
+  Exit. This does not make Astra the continuous analyst or enable real-money trades.
 
 - Added concurrent Equities/Crypto research workers with independent progress, bounded
   cycle deadlines, cancellation of both workers, and separate local-model prompts.

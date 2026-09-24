@@ -179,6 +179,7 @@ class TradingController(QObject):
     snapshot_changed = Signal(object)
     agent_changed = Signal(object)
     agent_mcp_changed = Signal(bool)
+    agent_mcp_context_requested = Signal()
     agent_settings_changed = Signal()
     event = Signal(str, str)
     connection_busy = Signal(bool)
@@ -346,6 +347,7 @@ class TradingController(QObject):
                 except (ValueError, TypeError, OverflowError):
                     continue
         settings = self.agent.settings
+        self.agent_mcp_context_requested.emit()
         return {
             "mode": "research_only", "orders_available": False,
             "running": snapshot.running, "cycle": snapshot.cycle, "phase": snapshot.phase,

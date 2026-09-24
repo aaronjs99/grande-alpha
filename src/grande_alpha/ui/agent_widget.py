@@ -256,7 +256,7 @@ class AgentWidget(QScrollArea):
 
         self.prompts_toggle = QPushButton("Prompts + AI connections")
         self.prompts_toggle.setCheckable(True)
-        self.prompt_box = QGroupBox("Worker prompts and MCP")
+        self.prompt_box = QGroupBox("Prompts + AI connections")
         self.prompt_box.setVisible(False)
         self.prompts_toggle.toggled.connect(self.prompt_box.setVisible)
         prompt_form = QFormLayout(self.prompt_box)
@@ -281,23 +281,23 @@ class AgentWidget(QScrollArea):
             "Do not include secrets; applied prompts are recorded locally with research cycles."
         ))
         prompt_form.addRow(label(
-            "MCP lets a compatible local AI app read symbols, price observations and prompts, change research "
+            "A connected AI app can read symbols, price observations and prompts, change research "
             "prompts/universes, and start or stop analysis. Its provider may process that shared data. "
             "Account balances, credentials, positions and order tools are excluded. Access starts off and "
             "ends on Stop agent, STOP + CANCEL, Disconnect or Exit."
         ))
-        self.mcp_enabled = QCheckBox("Enable research MCP for this app session")
+        self.mcp_enabled = QCheckBox("Allow AI research access for this app session")
         self.mcp_enabled.toggled.connect(self._toggle_mcp)
         prompt_form.addRow(self.mcp_enabled)
-        self.copy_mcp = QPushButton("Copy MCP client configuration")
+        self.copy_mcp = QPushButton("Other AI apps (advanced): copy connection settings")
         self.copy_mcp.clicked.connect(self._copy_mcp_config)
         self.copy_mcp.setEnabled(not getattr(sys, "frozen", False))
-        prompt_form.addRow(self.copy_mcp)
         self.chatgpt_setup = QPushButton("ChatGPT Astra setup")
-        self.chatgpt_setup.setToolTip("Open connection instructions, official links, and a test prompt")
+        self.chatgpt_setup.setToolTip("Connect in three guided steps")
         self.chatgpt_setup.clicked.connect(self._show_chatgpt_setup)
         prompt_form.addRow(self.chatgpt_setup)
-        self.mcp_status = label("MCP is off · supports local stdio clients · live orders unavailable")
+        prompt_form.addRow(self.copy_mcp)
+        self.mcp_status = label("AI research access is off · start with ChatGPT Astra setup")
         prompt_form.addRow(self.mcp_status)
 
         controls = QHBoxLayout()
@@ -546,12 +546,12 @@ class AgentWidget(QScrollArea):
         self.mcp_enabled.blockSignals(True)
         self.mcp_enabled.setChecked(enabled)
         self.mcp_enabled.blockSignals(False)
-        self.mcp_status.setText("MCP enabled · research access only" if enabled else "MCP is off · enable it again to allow AI access")
+        self.mcp_status.setText("AI research access is on · trading remains off" if enabled else "AI research access is off · enable it again to reconnect")
         self._set_controls()
 
     def _show_chatgpt_setup(self) -> None:
         if self._chatgpt_help is None:
-            self._chatgpt_help = ChatGPTSetupDialog(self.controller.agent_bridge.path, self)
+            self._chatgpt_help = ChatGPTSetupDialog(self.controller, self)
         self._chatgpt_help.show()
         self._chatgpt_help.raise_()
         self._chatgpt_help.activateWindow()
