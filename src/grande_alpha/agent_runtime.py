@@ -22,6 +22,7 @@ from grande_alpha.agent_analyst import (
     AI_MAX_ANALYSIS_AGE_SECONDS,
     AI_MAX_PRICE_DRIFT_BPS,
     AI_REQUEST_TIMEOUT_SECONDS,
+    AnalystResponseError,
     OllamaAnalyst,
 )
 from grande_alpha.agent_diagnostics import completed_check_report
@@ -146,6 +147,8 @@ class AgentRuntime:
             error = "Ollama is unreachable; open the Ollama app"
         except httpx.HTTPStatusError as exc:
             error = f"Ollama returned HTTP {exc.response.status_code}; check the model and Ollama server log"
+        except AnalystResponseError as exc:
+            error = str(exc)
         except (ValueError, TypeError, KeyError):
             error = "AI returned an invalid decision format or source citation"
         except Exception:

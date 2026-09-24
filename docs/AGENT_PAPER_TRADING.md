@@ -97,6 +97,21 @@ proposal counts or a sanitized timeout/connection/HTTP/format failure. Usable pr
 counts precede the news and paper-fill checks and are not trade counts. The report is
 also available through **Copy trading diagnostics** and the research MCP context.
 
+Ollama's response schema now names every requested instrument explicitly and limits
+each instrument's citations to its supplied article IDs. With no articles, the
+required citation list is empty; HOLD and EXIT do not require news citations. When
+the enabled news filter already blocks new buys, that instrument's requested action
+choices are HOLD and EXIT. This prevents asking the model to invent supporting news.
+The parser independently checks every reply, including duplicate fields, instrument
+identity and direct-news citations for news-backed buys. Valid replies in the earlier
+array format remain supported. Invalid replies are not repaired into trading signals.
+
+**Last AI result** distinguishes invalid JSON, missing decision fields, changed
+instruments, invalid actions, unknown article IDs, missing direct-news citations,
+incomplete replies and output-limit failures using fixed error codes. It never copies
+raw model output into an error. These checks do not change the two-publisher news
+requirement, spread limits, quote freshness, or the later-quote virtual fill rule.
+
 The initial four-distinct-quotes / 60-second warm-up still applies. The history buffer
 now retains enough samples at five-second cadence to satisfy it; the demo keeps its
 original fixed observation window. Model latency, market hours, news coverage, spread

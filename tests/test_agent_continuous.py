@@ -247,11 +247,12 @@ async def test_slow_ai_reply_cannot_bypass_current_market_or_news_checks(blocker
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('failure', ['timeout', 'http', 'invalid', 'connect'])
+@pytest.mark.parametrize('failure', ['timeout', 'http', 'invalid', 'connect', 'citation'])
 async def test_last_ai_failure_survives_next_request_without_exporting_raw_errors(monkeypatch, failure):
     import httpx
 
     import grande_alpha.agent_runtime as runtime
+    from grande_alpha.agent_analyst import AnalystResponseError
 
     market = ReadMarket()
 
@@ -264,6 +265,8 @@ async def test_last_ai_failure_survives_next_request_without_exporting_raw_error
                 raise httpx.HTTPStatusError('PRIVATE_BODY', request=response.request, response=response)
             if failure == 'connect':
                 raise httpx.ConnectError('PRIVATE_ENDPOINT')
+            if failure == 'citation':
+                raise AnalystResponseError('unknown_source')
             raise ValueError('PRIVATE_MODEL_RESPONSE')
 
     monkeypatch.setattr(runtime, 'AI_TIMEOUT_SECONDS', 0.01)
@@ -277,7 +280,8 @@ async def test_last_ai_failure_survives_next_request_without_exporting_raw_error
         await asyncio.sleep(0.02)
         market.now += timedelta(seconds=5)
         await agent.cycle()
-        expected = {'timeout': 'timed out', 'http': 'HTTP 500', 'invalid': 'invalid decision', 'connect': 'unreachable'}[failure]
+        expected = {'timeout': 'timed out', 'http': 'HTTP 500', 'invalid': 'invalid decision',
+                    'connect': 'unreachable', 'citation': '[unknown_source]'}[failure]
         previous = dict(agent.snapshot.analysis_last_result)
         assert all(expected in value for value in previous.values())
         assert all(d.action == 'hold' and not d.buy_allowed for d in agent.snapshot.decisions)
@@ -286,6 +290,74 @@ async def test_last_ai_failure_survives_next_request_without_exporting_raw_error
         assert agent.snapshot.analysis_last_result == previous
         assert expected in agent.snapshot.diagnostics and 'PRIVATE_' not in agent.snapshot.diagnostics
         assert agent.paper_context()['fill_count'] == 0
+    finally:
+        await shutdown(agent)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('reply', ['valid_buy', 'unknown_source', 'news_blocked', 'no_news_hold'])
+async def test_structured_ollama_reply_reaches_only_eligible_next_quote_paper_fills(monkeypatch, reply):
+    import json
+
+    import httpx
+    from test_agent_sources import prepared_sources
+
+    from grande_alpha.agent_analyst import OllamaAnalyst
+
+    market = ReadMarket()
+    calls = []
+
+    def handle(request):
+        assert str(request.url) == 'http://127.0.0.1:11434/api/chat'
+        body = json.loads(request.content)
+        calls.append(body)
+        rows = {}
+        for item in json.loads(body['messages'][1]['content'])['observations']:
+            articles = item['source_context']['articles']
+            ids = [articles[0]['id']] if articles else []
+            if reply == 'unknown_source':
+                ids = ['PRIVATE_INVENTED_ID']
+            # In news_blocked, deliberately ignore the generation constraint:
+            # independent runtime checks must still reject this one-publisher buy.
+            rows[item['key']] = {'action': 'hold' if reply == 'no_news_hold' else 'buy',
+                                 'reason': 'Fixture decision', 'source_ids': ids}
+        return httpx.Response(200, json={'done': True, 'message': {'content': json.dumps({'decisions': rows})}})
+
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(httpx, 'AsyncClient', lambda **kw: real_client(**kw, transport=httpx.MockTransport(handle)))
+    agent = await manual_agent(market, AgentSettings(equity_symbols=('AAPL',), crypto_symbols=('BTC',),
+                                                   news_enabled=True, local_ai_enabled=True,
+                                                   local_ai_model='fixture'), OllamaAnalyst())
+    agent.sources = prepared_sources(clock=lambda: market.now)
+    if reply == 'news_blocked':
+        agent.sources._items = agent.sources._items[::2]  # One publisher per instrument.
+    elif reply == 'no_news_hold':
+        agent.sources._items = ()
+
+    async def cached_news(*_args, **_kwargs):
+        pass
+
+    monkeypatch.setattr(agent.sources, 'refresh', cached_news)
+    try:
+        for index in range(5):
+            market.now = NOW + timedelta(seconds=15 * index)
+            await agent.cycle()
+            await asyncio.sleep(0)
+        await asyncio.gather(*(job['task'] for job in agent._ai_jobs.values()))
+        assert len(calls) == 2
+        market.now += timedelta(seconds=5)
+        await agent.cycle()
+        assert agent.paper_context()['fill_count'] == 0
+        assert agent.paper_context()['pending_count'] == (2 if reply == 'valid_buy' else 0)
+        results = agent.snapshot.analysis_last_result.values()
+        if reply == 'unknown_source':
+            assert all('[unknown_source]' in value for value in results)
+            assert 'PRIVATE_' not in agent.snapshot.diagnostics
+        else:
+            assert all('1/1 usable proposals' in value for value in results)
+        market.now += timedelta(seconds=5)
+        await agent.cycle()
+        assert agent.paper_context()['fill_count'] == (2 if reply == 'valid_buy' else 0)
     finally:
         await shutdown(agent)
 
