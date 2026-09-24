@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import html
 import json
 import sys
 from collections import deque
@@ -9,8 +10,8 @@ from decimal import Decimal
 from pathlib import Path
 
 import pyqtgraph as pg
-from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QColor
+from PySide6.QtCore import Qt, QTimer, QUrl
+from PySide6.QtGui import QColor, QDesktopServices
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -38,6 +39,7 @@ from PySide6.QtWidgets import (
 
 from grande_alpha.agent_ledger import AgentBudget
 from grande_alpha.agent_models import AgentSettings, AgentSnapshot, parse_symbols
+from grande_alpha.agent_sources import FEEDS, safe_url
 from grande_alpha.models import utc_now
 from grande_alpha.ui.agent_card import AgentCard
 from grande_alpha.ui.chatgpt_setup import ChatGPTSetupDialog
@@ -236,7 +238,7 @@ class AgentWidget(QScrollArea):
         form.addRow("Local model", self.model)
         form.addRow(
             label(
-                "Optional AI sends symbols and numeric price observations to Ollama on this computer. "
+                "Optional AI sends symbols, numeric prices and enabled source excerpts to Ollama on this computer. "
                 "No broker credentials or account balances are sent. Only use a locally installed model; "
                 "your Ollama configuration controls any further processing. With AI off, the labeled "
                 "rules baseline measures observed price changes. Neither mode is a validated strategy."
@@ -411,9 +413,32 @@ class AgentWidget(QScrollArea):
         paper_details_layout = QVBoxLayout(paper_details)
         paper_details_layout.addWidget(self.paper_status)
         paper_details_layout.addWidget(self.paper_summary)
+        self.paper_evaluation = label("No paper performance observations yet.")
+        paper_details_layout.addWidget(self.paper_evaluation)
         paper_details_layout.addWidget(self.paper_positions)
         paper_details_layout.addWidget(self.paper_fills)
         layout.addWidget(paper_details)
+
+        sources_box = QGroupBox("News + trends · sources behind the analysis")
+        sources_layout = QVBoxLayout(sources_box)
+        self.sources_status = label("News research is off. Enable it in Session setup.")
+        sources_layout.addWidget(self.sources_status)
+        self.sources_table = self._table(["Source", "Published (UTC)", "Headline"])
+        self.sources_table.setMinimumHeight(160)
+        self.sources_table.setMaximumHeight(260)
+        self.sources_table.setColumnWidth(0, 155)
+        self.sources_table.setColumnWidth(1, 150)
+        self.sources_table.setColumnWidth(2, 670)
+        self.sources_table.cellDoubleClicked.connect(self._open_source)
+        sources_layout.addWidget(self.sources_table)
+        sources_layout.addWidget(label(
+            "Double-click a headline to open its source. News checks require recent ticker-specific "
+            "coverage from two publishers and no flagged risk words before a new buy. This experimental "
+            "filter can miss context; it is not a profitability signal. Local AI can analyze the excerpts "
+            "when enabled. Social posts are unverified context and never count as news confirmation."
+        ))
+        layout.addWidget(sources_box)
+        self._sources_render_key = None
 
         candidates_panel, candidates_layout = self._panel()
         heading = label("// MARKET OBSERVATIONS")
@@ -456,6 +481,16 @@ class AgentWidget(QScrollArea):
         self.paper_source.setMinimumWidth(0)
         self.paper_source.currentIndexChanged.connect(lambda: self._set_controls())
         form.addRow("Price source", self.paper_source)
+        self.news_enabled = QCheckBox("Read news and apply headline checks to new buys")
+        self.social_enabled = QCheckBox("Include public social context · Bluesky, when available")
+        self.news_enabled.toggled.connect(self._news_toggled)
+        form.addRow(self.news_enabled)
+        form.addRow(self.social_enabled)
+        form.addRow(label(
+            "Reads BBC Business, CNBC, CoinDesk and Federal Reserve public feeds every 10 minutes. "
+            "Optional social search sends up to eight watchlist symbols to Bluesky. No paid keys are "
+            "required by this setup; inaccessible sources are reported. The offline demo skips all feeds."
+        ))
         self.repeat_demo = QCheckBox("Repeat offline demo until I press Stop")
         form.addRow(self.repeat_demo)
         self.paper_cash = QDoubleSpinBox()
@@ -501,6 +536,42 @@ class AgentWidget(QScrollArea):
         except Exception as exc:
             self.paper_status.setText(f"Paper session did not start: {exc}")
 
+    def _news_toggled(self, enabled: bool) -> None:
+        if not enabled:
+            self.social_enabled.setChecked(False)
+        self._set_controls()
+
+    def _open_source(self, row: int, _column: int) -> None:
+        item = self.sources_table.item(row, 2)
+        if item:
+            try:
+                url = safe_url(item.data(Qt.ItemDataRole.UserRole), tuple(h for f in FEEDS for h in f.hosts) + ("bsky.app",))
+                QDesktopServices.openUrl(QUrl(url))
+            except (ValueError, TypeError):
+                self.sources_status.setText("Source link is unavailable.")
+
+    def _update_sources(self, snapshot: AgentSnapshot) -> None:
+        report = snapshot.research_sources
+        signature = (json.dumps(report, sort_keys=True), self.controller.agent.paper_source)
+        if signature == self._sources_render_key:
+            return
+        self._sources_render_key = signature
+        items = (report or {}).get("items", [])[:60]
+        if not report:
+            self.sources_status.setText("Offline demo skips external feeds." if self.controller.agent.paper_source == "demo"
+                                        else "News research is off or has not fetched yet. Enable it in Session setup.")
+        else:
+            health = " · ".join(f"{s['source']}: {s['status']} ({s['fresh_items']})" for s in report["sources"])
+            self.sources_status.setText(f"Last source check {report['refreshed_at']} · publication window 48 hours\n{health}")
+        self.sources_table.setRowCount(len(items))
+        for row, source in enumerate(items):
+            for column, value in enumerate((source["source"], source["published_at"][:16].replace("T", " "), source["title"])):
+                item = QTableWidgetItem(value)
+                tooltip = f"{source['excerpt']}\n{source['url']}\nFirst seen: {source['first_seen_at']}\nSource ID: {source['id']}"
+                item.setToolTip("<qt>" + html.escape(tooltip).replace("\n", "<br>") + "</qt>")
+                item.setData(Qt.ItemDataRole.UserRole, source["url"])
+                self.sources_table.setItem(row, column, item)
+
     def _update_paper(self, paper: dict | None) -> None:
         self.paper_positions.setVisible(bool(paper and paper["positions"]))
         self.paper_fills.setVisible(bool(paper))
@@ -538,6 +609,14 @@ class AgentWidget(QScrollArea):
             f"Virtual cash ${float(paper['cash']):,.2f}  ·  Portfolio at last bids ${float(paper['equity']):,.2f}\n"
             f"Total P&L ${float(paper['total_pnl']):+,.2f}  ·  Realized ${float(paper['realized_pnl']):+,.2f}"
             f"  ·  Unrealized ${float(paper['unrealized_pnl']):+,.2f}"
+        )
+        expectancy = f"${float(paper['expectancy']):+,.2f}" if paper.get("expectancy") is not None else "—"
+        factor = f"{float(paper['profit_factor']):.2f}" if paper.get("profit_factor") is not None else "— (no losses yet)"
+        self.paper_evaluation.setText(
+            f"Average closed trade {expectancy} · Profit factor {factor} · "
+            f"Max observed drawdown {float(paper.get('max_drawdown_pct', 0)):.2f}%"
+            + (" (partial older history)" if not paper.get("drawdown_complete", True) else "")
+            + f"\n{paper.get('evaluation', '')} · Policy: {paper.get('strategy', {}).get('policy', 'price-only')}"
         )
         self.paper_positions.setRowCount(len(paper["positions"]))
         for row, p in enumerate(paper["positions"]):
@@ -617,7 +696,7 @@ class AgentWidget(QScrollArea):
             else:
                 stage = snapshot.team_status.get(name, "")
                 working = snapshot.phase == "Working" and (
-                    stage in {"Scanning", "Analyzing", "Checking data", "Checking quotes and limits"}
+                    stage in {"Scanning", "Analyzing", "Checking data", "Checking quotes and limits", "Reading news sources"}
                     or name == "VELA" and "Analyzing" in snapshot.worker_status.values()
                 )
                 card.set_activity(working, handoff=name in handoffs)
@@ -694,6 +773,7 @@ class AgentWidget(QScrollArea):
             local_ai_model=self.model.text().strip(), local_ai_enabled=self.local_ai.isChecked(),
             research_brief=self.briefs["team"].text(), equity_brief=self.briefs["equity"].text(),
             crypto_brief=self.briefs["crypto"].text(),
+            news_enabled=self.news_enabled.isChecked(), social_enabled=self.social_enabled.isChecked(),
         )
 
     def _save_settings(self) -> None:
@@ -724,6 +804,8 @@ class AgentWidget(QScrollArea):
         self.interval.setValue(settings.interval_seconds)
         self.local_ai.setChecked(settings.local_ai_enabled)
         self.model.setText(settings.local_ai_model)
+        self.news_enabled.setChecked(settings.news_enabled)
+        self.social_enabled.setChecked(settings.social_enabled)
 
     def _apply_briefs(self) -> None:
         values = {market: editor.text() for market, editor in self.briefs.items()}
@@ -869,6 +951,8 @@ class AgentWidget(QScrollArea):
                                     and (self.paper_source.currentData() == "demo" or enabled))
         self.paper_start.setText("Start offline demo" if self.paper_source.currentData() == "demo" else "Start paper trading")
         self.repeat_demo.setEnabled(not running and self.paper_source.currentData() == "demo")
+        self.news_enabled.setEnabled(not running and not self.controller.shadow_only_runtime)
+        self.social_enabled.setEnabled(not running and self.news_enabled.isChecked() and not self.controller.shadow_only_runtime)
         for editor in (self.paper_source, self.paper_cash, self.paper_trade_cash):
             editor.setEnabled(not running)
         self.export_contracts.setEnabled(enabled and not running)
@@ -899,6 +983,7 @@ class AgentWidget(QScrollArea):
         mode = ("DEMO · VIRTUAL MONEY" if snapshot.paper["source"] == "demo" else "PAPER · VIRTUAL MONEY") if paper_mode else "PROPOSALS ONLY"
         self.mode.setText(f"{snapshot.phase.upper()} · CYCLE {snapshot.cycle} · {mode}")
         self._update_paper(snapshot.paper)
+        self._update_sources(snapshot)
         self.equity_status.setText(snapshot.worker_status.get("equity", "Idle") + " · " + snapshot.market_status.get("equity", "Waiting for stock observations"))
         self.crypto_status.setText(snapshot.worker_status.get("crypto", "Idle") + " · " + snapshot.market_status.get("crypto", "Waiting for crypto observations"))
         self.candidates.setText(str(len(snapshot.decisions)))

@@ -59,11 +59,15 @@ off when stopped. Card glows ease in and out, and active avatars gently breathe.
 Brief handoffs remain visible before fading; ordinary refreshes do not restart
 the motion. Animations pause on hidden pages without queuing old events or
 changing the trading cadence. Research-only analysis remains available below the dashboard.
-The page does not have token-launch, mempool, wallet, or social-media scanners.
+Optional news feeds and a bounded public Bluesky search are available in **Session setup**.
+See [news research and performance evaluation](AGENT_MARKET_RESEARCH.md) for source coverage,
+buy filters, provenance and provider limitations. There are no token-launch, mempool or wallet scanners.
 Connecting ChatGPT through MCP does not turn these stages into autonomous LLMs.
 
 Below the cards, the details show virtual cash, realized/unrealized/total P&L,
 open virtual holdings, pending count, and the latest 30 simulated fills.
+The evaluation line adds average closed-trade P&L, profit factor and maximum observed
+drawdown. These describe recorded paper outcomes; they are not profitability certificates.
 Holdings are valued at their last eligible bid, with quote timestamps and old
 valuations labeled. A rotating discovery universe does not update every holding
 every cycle. Portfolio value includes those last known marks.

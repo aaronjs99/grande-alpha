@@ -51,8 +51,14 @@ class AgentSettings:
     max_quote_age_seconds: float = 15.0
     equity_max_spread_bps: float = 20.0
     crypto_max_spread_bps: float = 100.0
+    news_enabled: bool = False
+    social_enabled: bool = False
 
     def validate(self) -> None:
+        if type(self.news_enabled) is not bool or type(self.social_enabled) is not bool:
+            raise ValueError("News and social settings must be true or false")
+        if self.social_enabled and not self.news_enabled:
+            raise ValueError("Enable news research before adding social context")
         for brief in (self.research_brief, self.equity_brief, self.crypto_brief):
             if not isinstance(brief, str) or len(brief) > 2000 or "\x00" in brief:
                 raise ValueError("Each research prompt must be at most 2,000 characters without NUL")
@@ -81,6 +87,8 @@ class AgentDecision:
     change_bps: float | None = None
     analyst: str = "Rules baseline"
     execution_status: str = "Not submitted — multi-market execution is not validated"
+    buy_allowed: bool = True
+    source_context: dict | None = None
 
 
 @dataclass(frozen=True)
@@ -100,3 +108,4 @@ class AgentSnapshot:
     elapsed_seconds: float = 0
     team_status: dict[str, str] = field(default_factory=dict)
     team_events: tuple[dict, ...] = ()
+    research_sources: dict | None = None

@@ -36,6 +36,10 @@ and realized/unrealized P&L. Its dashboard shows virtual equity history, closed-
 win rate, fills, and six named workflow cards with actual handoffs. An optional
 repeat setting keeps the offline demo running until stopped.
 See [Agent paper trading](docs/AGENT_PAPER_TRADING.md).
+Optional **News + trends** research adds dated publisher headlines, official announcements,
+bounded public social context, source citations and an experimental buy filter. Paper
+evaluation now includes profit factor, average closed-trade P&L and maximum observed
+drawdown. See [source setup and evaluation limits](docs/AGENT_MARKET_RESEARCH.md).
 It does not place multi-market broker orders. See
 [Agent workspace setup and current execution limits](docs/AGENT_WORKSPACE.md).
 Equities and Crypto run as concurrent research workers. **Prompts + AI connections**

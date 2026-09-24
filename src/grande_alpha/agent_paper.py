@@ -79,6 +79,18 @@ class PaperLedger:
             pnls = [money(fill["realized_pnl"]) for fill in exits if fill["side"] == "sell"]
             self.state.update(wins=sum(p > 0 for p in pnls), losses=sum(p < 0 for p in pnls),
                               breakeven=sum(p == 0 for p in pnls), equity_history=[])
+        if self.state and "gross_profit" not in self.state:
+            pnls = [money(json.loads(row[0])["realized_pnl"]) for row in self._db.execute(
+                "SELECT payload FROM paper_fills WHERE session_id=?", (self.state["session_id"],))]
+            peak, drawdown = money(self.state["initial_cash"]), Decimal(0)
+            for point in self.state["equity_history"]:
+                value = money(point["equity"])
+                peak = max(peak, value)
+                drawdown = max(drawdown, 100 * (peak - value) / peak)
+            self.state.update(gross_profit=str(sum((p for p in pnls if p > 0), Decimal(0))),
+                              gross_loss=str(-sum((p for p in pnls if p < 0), Decimal(0))),
+                              equity_peak=str(peak), max_drawdown_pct=str(drawdown),
+                              drawdown_complete=False, strategy={"policy": "legacy session"})
 
     def close(self) -> None:
         self._db.close()
@@ -104,7 +116,15 @@ class PaperLedger:
             "last_quotes": {}, "fills": [], "fill_count": 0, "observed_at": None,
             "created_at": datetime.now(UTC).isoformat(),
             "wins": 0, "losses": 0, "breakeven": 0, "equity_history": [],
+            "gross_profit": "0", "gross_loss": "0", "equity_peak": str(capital), "max_drawdown_pct": "0",
+            "drawdown_complete": True, "strategy": {},
         })
+
+    def set_strategy(self, strategy: dict) -> None:
+        if self.state:
+            state = deepcopy(self.state)
+            state["strategy"] = dict(strategy)
+            self._save(state)
 
     def cancel_pending(self) -> None:
         if self.state and self.state["pending"]:
@@ -149,16 +169,17 @@ class PaperLedger:
             if key in positions:
                 positions[key].update(bid=str(quote.bid), marked_at=timestamp.isoformat())
             intent = pending.pop(key, None)
-            if intent and item.risk_status == "Data checks passed":
+            if intent and item.risk_status == "Data checks passed" and (intent["side"] == "sell" or item.buy_allowed):
                 signal_at = datetime.fromisoformat(intent["signal_at"])
                 if signal_at < timestamp and (now - signal_at).total_seconds() <= 600:
-                    self._fill(state, item, intent["side"], timestamp)
+                    self._fill(state, item, intent["side"], timestamp, intent.get("source_ids", []))
             # One holding per symbol, no repeated accumulation or short positions.
             if item.risk_status == "Data checks passed":
-                side = "buy" if item.action == "buy" and key not in positions else (
+                side = "buy" if item.action == "buy" and item.buy_allowed and key not in positions else (
                     "sell" if item.action == "exit" and key in positions else None)
                 if side and (side == "sell" or money(state["cash"]) >= money(state["trade_cash"])):
-                    pending[key] = {"side": side, "signal_at": timestamp.isoformat()}
+                    pending[key] = {"side": side, "signal_at": timestamp.isoformat(),
+                                    "source_ids": [a["id"] for a in (item.source_context or {}).get("articles", [])]}
         state["observed_at"] = now.isoformat()
         equity = money(state["cash"]) + sum(
             (money(p["quantity"]) * money(p["bid"]) for p in positions.values()), Decimal(0))
@@ -166,10 +187,13 @@ class PaperLedger:
         if not history or now > datetime.fromisoformat(history[-1]["at"]):
             history.append({"at": now.isoformat(), "equity": str(equity)})
         state["equity_history"] = history[-500:]
+        peak = max(money(state["equity_peak"]), equity)
+        state["equity_peak"] = str(peak)
+        state["max_drawdown_pct"] = str(max(money(state["max_drawdown_pct"]), 100 * (peak - equity) / peak))
         self._save(state)
 
     @staticmethod
-    def _fill(state: dict, item: AgentDecision, side: str, at: datetime) -> None:
+    def _fill(state: dict, item: AgentDecision, side: str, at: datetime, source_ids: list[str]) -> None:
         key, quote = item.instrument.key, item.quote
         positions = state["positions"]
         cash = money(state["cash"])
@@ -186,7 +210,8 @@ class PaperLedger:
             cost = quantity * price
             cash -= cost
             positions[key] = {"quantity": str(quantity), "cost": str(cost),
-                              "bid": str(quote.bid), "marked_at": at.isoformat()}
+                              "bid": str(quote.bid), "marked_at": at.isoformat(),
+                              "entry_sources": list(source_ids)}
         else:
             holding = positions.pop(key, None)
             if holding is None:
@@ -199,11 +224,14 @@ class PaperLedger:
             state["realized_pnl"] = str(money(state["realized_pnl"]) + pnl)
             outcome = "wins" if pnl > 0 else "losses" if pnl < 0 else "breakeven"
             state[outcome] += 1
+            metric = "gross_profit" if pnl > 0 else "gross_loss"
+            state[metric] = str(money(state[metric]) + abs(pnl))
         state["cash"] = str(cash)
         state["fill_count"] += 1
         state["fills"].append({"number": state["fill_count"], "key": key, "side": side,
                                "quantity": str(quantity), "price": str(price),
-                               "realized_pnl": str(pnl), "filled_at": at.isoformat()})
+                               "realized_pnl": str(pnl), "filled_at": at.isoformat(),
+                               "source_ids": positions[key]["entry_sources"] if side == "buy" else holding.get("entry_sources", [])})
         state["fills"] = state["fills"][-200:]
 
     def summary(self, *, active: bool = False, now: datetime | None = None, max_age: float = 15) -> dict | None:
@@ -222,6 +250,7 @@ class PaperLedger:
             cost += basis
         equity = money(state["cash"]) + value
         closed = state["wins"] + state["losses"] + state["breakeven"]
+        gross_profit, gross_loss = money(state["gross_profit"]), money(state["gross_loss"])
         return {
             "session_id": state["session_id"], "source": state["source"], "active": active,
             "initial_cash": state["initial_cash"], "cash": state["cash"], "equity": str(equity),
@@ -235,5 +264,11 @@ class PaperLedger:
             "closed_trades": closed, "win_rate": 100 * state["wins"] / closed if closed else None,
             "return_pct": str(100 * (equity / money(state["initial_cash"]) - 1)),
             "equity_history": deepcopy(state["equity_history"]),
+            "profit_factor": str(gross_profit / gross_loss) if gross_loss else None,
+            "gross_profit": str(gross_profit), "gross_loss": str(gross_loss),
+            "expectancy": str(money(state["realized_pnl"]) / closed) if closed else None,
+            "max_drawdown_pct": state["max_drawdown_pct"], "drawdown_complete": state["drawdown_complete"],
+            "strategy": deepcopy(state["strategy"]),
+            "evaluation": "Synthetic demo — not performance evidence" if state["source"] == "demo" else "Forward paper observation — no validated trading edge",
             "model": "Virtual only; next eligible quote; fractional units; 5 bps adverse slippage; no fees; immediate settlement; no liquidity model",
         }

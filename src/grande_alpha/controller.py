@@ -349,6 +349,7 @@ class TradingController(QObject):
                         "age_seconds": quote.age_seconds(self.agent._now()), "samples": item.samples,
                         "change_bps": item.change_bps, "proposal": item.action,
                         "data_checks": item.risk_status,
+                        "buy_allowed": item.buy_allowed, "source_context": item.source_context,
                     })
                 except (ValueError, TypeError, OverflowError):
                     continue
@@ -370,6 +371,9 @@ class TradingController(QObject):
             "paper": self.agent.paper_context(),
             "team_status": snapshot.team_status, "team_events": snapshot.team_events,
             "elapsed_seconds": snapshot.elapsed_seconds, "loop_demo": self.agent.loop_demo,
+            "research_sources": snapshot.research_sources,
+            "news_enabled": settings.news_enabled and self.agent.paper_source != "demo",
+            "social_enabled": settings.social_enabled and self.agent.paper_source != "demo",
         }
 
     def start_agent(self, settings: AgentSettings) -> None:

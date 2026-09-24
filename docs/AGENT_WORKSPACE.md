@@ -77,7 +77,10 @@ model if you want local inference. Stop the agent to revoke model calls immediat
 The analyst has no broker tools. Unknown or duplicate instruments, extra fields, incomplete
 responses, tool requests, invalid JSON, and timeouts reject the model output. A model failure
 produces HOLD with a visible explanation; it does not quietly switch to rules-based buys.
-Model reasons are untrusted commentary, not verified facts. There is no news or sentiment feed.
+Model reasons are untrusted commentary, not verified facts. Optional public news feeds and
+Bluesky context are available in **Session setup**. With news enabled, the analyst also
+receives dated source excerpts and must cite supplied IDs; an independent coverage/headline
+filter screens new buys. See [news sources, limitations and paper evaluation](AGENT_MARKET_RESEARCH.md).
 
 Independent checks reject invalid, stale, future-dated, repeated, or excessively wide
 quotes. Equity proposals are restricted to the regular equity session, including the

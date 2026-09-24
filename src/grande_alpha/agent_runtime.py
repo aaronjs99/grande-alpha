@@ -25,6 +25,7 @@ from grande_alpha.agent_models import (
     Instrument,
 )
 from grande_alpha.agent_paper import DEMO_CYCLES, PaperLedger, demo_market, demo_time, validate_paper_settings
+from grande_alpha.agent_sources import NEWS_POLICY, ResearchSources
 from grande_alpha.models import Quote, utc_now
 from grande_alpha.policy import market_session_allowed
 
@@ -47,6 +48,7 @@ class AgentRuntime:
         analyst: OllamaAnalyst | None = None,
         crypto_account_type: Callable[[], str] = lambda: "",
         paper: PaperLedger | None = None,
+        sources: ResearchSources | None = None,
     ) -> None:
         self._equity_quotes = equity_quotes
         self._crypto_pairs = crypto_pairs
@@ -57,6 +59,7 @@ class AgentRuntime:
         self._log = log
         self._clock = clock
         self._analyst = analyst or OllamaAnalyst()
+        self.sources = sources or ResearchSources(clock=clock)
         self._crypto_account_type = crypto_account_type
         self._task: asyncio.Task | None = None
         self._cycle_lock = asyncio.Lock()
@@ -114,6 +117,9 @@ class AgentRuntime:
         loop = asyncio.get_running_loop()
         if source:
             self.paper.start(source, initial_cash, trade_cash)
+            self.paper.set_strategy({"policy": NEWS_POLICY if settings.news_enabled and source != "demo" else "price-only",
+                                     "model": settings.local_ai_model if settings.local_ai_enabled and source != "demo" else "rules",
+                                     "social_context": settings.social_enabled and source != "demo"})
         self.paper_source = source
         self.loop_demo = loop_demo
         self._event_sequence = 0
@@ -320,6 +326,8 @@ class AgentRuntime:
         self._handoff(name, "VELA", f"{len(quotes)} {asset_class.value} quotes ready")
         now = self._now()
         decisions = [self._inspect(item, quotes.get(item.symbol), now, settings) for item in batch]
+        if settings.news_enabled and self.paper_source != "demo":
+            decisions = [replace(item, source_context=self.sources.context(item.instrument, now)) for item in decisions]
         progress("Analyzing")
         eligible = [item for item in decisions if item.risk_status == "Data checks passed"]
         if settings.local_ai_enabled and eligible and self.paper_source != "demo":
@@ -335,6 +343,7 @@ class AgentRuntime:
                         {"at": at.isoformat(), "mid": mid}
                         for at, mid in self._history[item.instrument.key]
                     ],
+                    **({"source_context": item.source_context} if item.source_context is not None else {}),
                 }
                 for item in eligible
             ]
@@ -369,6 +378,15 @@ class AgentRuntime:
                     item = replace(item, action="hold", risk_status="Blocked", reason="Quote expired during analysis")
                 elif item.instrument.asset_class == AssetClass.EQUITY and not market_session_allowed(now, 0, 0, "regular_hours"):
                     item = replace(item, action="hold", risk_status="Blocked", reason="Equity session closed during analysis")
+            if settings.news_enabled and self.paper_source != "demo":
+                context = self.sources.context(item.instrument, now)
+                supported = context["buy_supported"]
+                reason = item.reason
+                if not supported and item.action == "buy":
+                    reason = "News filter: " + ("headline risk terms: " + ", ".join(context["risk_terms"])
+                                               if context["risk_terms"] else context["coverage"])
+                item = replace(item, buy_allowed=supported, source_context=context,
+                               action="hold" if item.action == "buy" and not supported else item.action, reason=reason)
             result.append(item)
         return result
 
@@ -393,6 +411,17 @@ class AgentRuntime:
 
             def current():
                 return generation == self._generation and self._available()
+
+            if settings.news_enabled and self.paper_source != "demo":
+                symbols = settings.equity_symbols + tuple(s.split("-")[0].split("/")[0] for s in (settings.crypto_symbols or ("BTC", "ETH")))
+                self._publish(team_status={**self.snapshot.team_status, "VELA": "Reading news sources"})
+                await self.sources.refresh(symbols, social=settings.social_enabled)
+                if not current():
+                    return
+                source_report = self.sources.summary()
+                self._publish(research_sources=source_report)
+                self._handoff("VELA", "KADE", f"{len(source_report['items'])} dated source items · "
+                              f"{sum(s['status'] == 'OK' for s in source_report['sources'])}/{len(source_report['sources'])} feeds available", "NEWS")
 
             def combined():
                 return self._recheck([item for market in AssetClass for item in results.get(market, [])], settings)
@@ -467,5 +496,7 @@ class AgentRuntime:
                     "research_brief": settings.research_brief,
                     "equity_brief": settings.equity_brief, "crypto_brief": settings.crypto_brief,
                     "decisions": [asdict(item) for item in decisions],
+                    "source_policy": NEWS_POLICY if settings.news_enabled and self.paper_source != "demo" else "off",
+                    "source_health": (self.snapshot.research_sources or {}).get("sources", []),
                 },
             )
