@@ -115,3 +115,4 @@ class AgentSnapshot:
     analysis_status: dict[str, str] = field(default_factory=dict)
     sources_loading: bool = False
     cycle_started_at: datetime | None = None
+    diagnostics: str = ""

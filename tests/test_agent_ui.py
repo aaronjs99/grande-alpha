@@ -76,6 +76,30 @@ def test_agent_readiness_never_inherits_an_etf_live_status(tmp_path, app):
     store.close()
 
 
+def test_trading_diagnostics_remain_visible_and_copy_as_plain_text_during_scan(tmp_path, app):
+    store = AuditStore(tmp_path / 'diagnostics-ui.db')
+    controller = TradingController(DisabledBroker(), AppConfig(), store)
+    window = MainWindow(controller, controller.config)
+    widget = window.agent_widget
+    assert not widget.copy_diagnostics.isEnabled()
+    report = ('Last completed check 38 · fixture time\nStocks: session closed\n'
+              'Crypto: 2/2 spread exceeds limit\n\nBid 100 · ask 102 · spread 1.980% · limit 1.000%')
+    snapshot = AgentSnapshot(running=True, cycle=38, phase='Waiting', diagnostics=report)
+    widget.update_agent(snapshot)
+    widget.update_agent(replace(snapshot, cycle=39, phase='Working', decisions=()))
+    assert 'Last completed check 38' in widget.diagnostics_summary.text()
+    assert widget.diagnostics_text.toPlainText() == report
+    widget.copy_diagnostics.click()
+    assert QApplication.clipboard().text().startswith('Current monitor state: Working · running: True\n')
+    assert QApplication.clipboard().text().endswith(report)
+    widget.update_agent(AgentSnapshot(phase='Starting', running=True))
+    assert not widget.copy_diagnostics.isEnabled()
+    assert 'No completed quote check yet' in widget.diagnostics_summary.text()
+    window._closing_after_cleanup = True
+    window.close()
+    store.close()
+
+
 @pytest.mark.asyncio
 async def test_agent_crypto_quotes_use_selected_rhs_account_only(tmp_path, app):
     class ScopedBroker(DisabledBroker):

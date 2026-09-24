@@ -333,7 +333,8 @@ class TradingController(QObject):
             return {"status": "Research stopped; MCP remains enabled; orders and positions unchanged"}
         snapshot = self.agent.snapshot
         observations = []
-        if self.agent.paper_source == "demo" or (self.snapshot.connected and self.config.broker_connection_enabled):
+        observations_allowed = self.agent.paper_source == "demo" or (self.snapshot.connected and self.config.broker_connection_enabled)
+        if observations_allowed:
             for item in snapshot.decisions:
                 quote = item.quote
                 try:
@@ -349,6 +350,7 @@ class TradingController(QObject):
                         "age_seconds": quote.age_seconds(self.agent._now()), "samples": item.samples,
                         "change_bps": item.change_bps, "proposal": item.action,
                         "data_checks": item.risk_status,
+                        "reason": item.reason,
                         "buy_allowed": item.buy_allowed, "source_context": item.source_context,
                     })
                 except (ValueError, TypeError, OverflowError):
@@ -366,6 +368,7 @@ class TradingController(QObject):
             "quote_interval_seconds": settings.interval_seconds,
             "analysis_status": snapshot.analysis_status,
             "sources_loading": snapshot.sources_loading,
+            "completed_check_diagnostics": snapshot.diagnostics if observations_allowed else "",
             "workers": snapshot.worker_status,
             "observed_at": snapshot.observed_at.isoformat() if snapshot.observed_at else None,
             "briefs": {"team": settings.research_brief, "equity": settings.equity_brief, "crypto": settings.crypto_brief},

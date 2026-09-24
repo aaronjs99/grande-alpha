@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMessageBox,
+    QPlainTextEdit,
     QPushButton,
     QScrollArea,
     QSpinBox,
@@ -83,7 +84,7 @@ QPushButton#primary { background: #159d71; border-color: #159d71; color: white; 
 QPushButton#primary:disabled { background: #deebe5; color: #78938a; border-color: #deebe5; }
 QGroupBox { background: #ffffff; border: 1px solid #dce3e7; border-radius: 7px; margin-top: 16px; padding: 16px; font-weight: 600; }
 QGroupBox::title { subcontrol-origin: margin; left: 14px; color: #526771; }
-QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox { background: #f8fafb; color: #27343e; border: 1px solid #d4dfe4; border-radius: 4px; padding: 7px; min-height: 20px; }
+QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox, QPlainTextEdit { background: #f8fafb; color: #27343e; border: 1px solid #d4dfe4; border-radius: 4px; padding: 7px; min-height: 20px; }
 QTableWidget { background: #ffffff; alternate-background-color: #f8fafb; color: #43535f; border: none; gridline-color: #edf0f2; selection-background-color: #e0f2eb; selection-color: #17242c; font-family: 'Menlo', 'Consolas', monospace; font-size: 9pt; }
 QTableWidget::item { padding: 8px 5px; border-bottom: 1px solid #f0f3f5; }
 QHeaderView::section { background: #f8fafb; color: #657782; border: none; padding: 9px 5px; font-size: 8pt; }
@@ -323,6 +324,25 @@ class AgentWidget(QScrollArea):
         self.run_detail.setObjectName("metricCaption")
         layout.addWidget(self.run_status)
         layout.addWidget(self.run_detail)
+        diagnostic_controls = QHBoxLayout()
+        self.diagnostics_toggle = QPushButton('Why no trades?')
+        self.diagnostics_toggle.setCheckable(True)
+        self.copy_diagnostics = QPushButton('Copy trading diagnostics')
+        self.copy_diagnostics.clicked.connect(self._copy_diagnostics)
+        diagnostic_controls.addWidget(self.diagnostics_toggle)
+        diagnostic_controls.addWidget(self.copy_diagnostics)
+        layout.addLayout(diagnostic_controls)
+        self.diagnostics_summary = label('No completed quote check yet.')
+        self.diagnostics_summary.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        layout.addWidget(self.diagnostics_summary)
+        self.diagnostics_text = QPlainTextEdit()
+        self.diagnostics_text.setReadOnly(True)
+        self.diagnostics_text.setMinimumHeight(180)
+        self.diagnostics_text.setMaximumHeight(280)
+        self.diagnostics_text.hide()
+        self.diagnostics_toggle.toggled.connect(self.diagnostics_text.setVisible)
+        layout.addWidget(self.diagnostics_text)
+        self._diagnostics_render_key = None
         layout.addWidget(self.paper_box)
         layout.addWidget(self.prompt_box)
 
@@ -1124,6 +1144,13 @@ class AgentWidget(QScrollArea):
 
     def update_agent(self, snapshot: AgentSnapshot) -> None:
         self._dashboard_snapshot = snapshot
+        if snapshot.diagnostics != self._diagnostics_render_key:
+            self._diagnostics_render_key = snapshot.diagnostics
+            self.diagnostics_text.setPlainText(snapshot.diagnostics)
+            self.diagnostics_summary.setText('\n'.join(snapshot.diagnostics.splitlines()[:3])
+                                             or 'No completed quote check yet.')
+            self.copy_diagnostics.setEnabled(bool(snapshot.diagnostics))
+            self.copy_diagnostics.setText('Copy trading diagnostics')
         if snapshot.running:
             self._run_error = ""
         self._update_clock()
@@ -1191,6 +1218,13 @@ class AgentWidget(QScrollArea):
                                    ("paper fills use virtual money" if snapshot.paper else "research proposals only"))
         self.activity.resizeRowsToContents()
         self._set_controls()
+
+    def _copy_diagnostics(self) -> None:
+        snapshot = self._dashboard_snapshot
+        if snapshot.diagnostics:
+            QApplication.clipboard().setText(f'Current monitor state: {snapshot.phase} · running: {snapshot.running}\n'
+                                            + snapshot.diagnostics)
+            self.copy_diagnostics.setText('Copied · paste into chat')
 
     def shutdown(self) -> None:
         self._clock_timer.stop()

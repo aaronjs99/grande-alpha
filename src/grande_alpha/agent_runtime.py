@@ -17,6 +17,7 @@ from dataclasses import asdict, replace
 from datetime import datetime, timedelta
 
 from grande_alpha.agent_analyst import OllamaAnalyst
+from grande_alpha.agent_diagnostics import completed_check_report
 from grande_alpha.agent_models import (
     AgentDecision,
     AgentSettings,
@@ -409,7 +410,10 @@ class AgentRuntime:
                     if instrument.asset_class == AssetClass.EQUITY
                     else settings.crypto_max_spread_bps
                 ):
-                    reason = "Spread exceeds this market's research limit"
+                    limit = (settings.equity_max_spread_bps if instrument.asset_class == AssetClass.EQUITY
+                             else settings.crypto_max_spread_bps)
+                    reason = (f"Spread {quote.spread_bps / 100:.3f}% exceeds {limit / 100:.3f}% limit "
+                              f"(bid {quote.bid:.10g}; ask {quote.ask:.10g})")
                 elif instrument.asset_class == AssetClass.EQUITY and not market_session_allowed(
                     now, 0, 0, "regular_hours"
                 ):
@@ -434,7 +438,8 @@ class AgentRuntime:
                 instrument,
                 quote,
                 "hold",
-                "Collecting at least 4 distinct quotes spanning 60 seconds",
+                f"Collecting at least 4 distinct quotes spanning 60 seconds "
+                f"({len(history)} quotes, {(history[-1][0] - history[0][0]).total_seconds():.1f}s so far)",
                 "Warming up",
                 len(history),
                 analyst=self.snapshot.analyst,
@@ -687,8 +692,12 @@ class AgentRuntime:
             team.update(VELA=self.snapshot.analyst, KADE=f"{eligible}/{len(decisions)} data checks passed",
                         RUNE=(f"{self.paper.state['fill_count'] - fills_before} paper fills this cycle" if self.paper_source else "Research only"),
                         ZARA="Portfolio updated" if self.paper_source else "Cycle recorded")
-            self._publish(phase="Waiting", observed_at=self._now(), decisions=tuple(decisions),
-                          market_status=status, worker_status=workers, team_status=team)
+            observed_at = self._now()
+            diagnostics = completed_check_report(cycle=cycle, at=observed_at, decisions=decisions, settings=settings,
+                                                 source=self.paper_source, paper=self.paper_context() if self.paper_source else None,
+                                                 markets=status, analysis=self.snapshot.analysis_status, history=self._history)
+            self._publish(phase="Waiting", observed_at=observed_at, decisions=tuple(decisions),
+                          market_status=status, worker_status=workers, team_status=team, diagnostics=diagnostics)
             self._log(
                 f"Agent cycle {cycle}: {len(decisions)} candidates; "
                 f"{sum(item.action != 'hold' for item in decisions)} proposals; no orders submitted",

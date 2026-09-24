@@ -1,5 +1,27 @@
 # Agent paper trading
 
+## Diagnose a run with zero fills
+
+Below Start/Stop, **Why no trades?** expands the latest completed check. Its dated
+stock/crypto summary remains visible while the next quote request is in progress.
+**Copy trading diagnostics** copies a plain-text report you can paste for support.
+The report includes bid/ask prices, actual spreads versus limits, quote age, warm-up
+progress, price movement versus the rules threshold, news-filter and analyst status,
+and virtual fill/pending/position counts. It excludes account identifiers, real
+balances, credentials, research prompts and raw provider errors. No file is written
+and copying does not start or change a run. Stop retains the last dated report; a new
+run clears it until the first check completes. Reports cover only the sampled batch.
+
+**Rules baseline** means continuous AI is off. A connected ChatGPT research chat does
+not run the local analyst. The rules require movement greater than the larger of
+0.20% and twice the current spread after warm-up; the crypto spread limit is 1.00%.
+For example, a 0.80% spread passes that limit but requires a rise greater than 1.60%
+over the observed window for a rules BUY. A run can therefore remain on HOLD even
+with valid quotes. A smaller watchlist does not guarantee a trade. These diagnostics
+do not loosen entry checks, create signals, or alter simulated-fill economics.
+
+## Start paper trading
+
 On **Agent · Stocks + Crypto**, connect Robinhood and click **Start continuous paper
 trading**. The desktop now selects **Robinhood quotes** by default. Open **Session
 setup** to change the price source or virtual cash; choose **Offline demo** explicitly

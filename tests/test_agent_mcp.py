@@ -44,6 +44,20 @@ async def pump(controller):
 
 
 @pytest.mark.asyncio
+async def test_completed_diagnostics_follow_broker_observation_consent(desktop):
+    _, controller = desktop
+    controller.set_agent_mcp_enabled(True)
+    controller.agent = ReadMarket().runtime()
+    await controller.agent.cycle()
+    context = controller._agent_mcp_command('context', {})
+    assert 'Last completed check 1' in context['completed_check_diagnostics']
+    assert context['observations'][0]['reason']
+    controller.snapshot.connected = False
+    context = controller._agent_mcp_command('context', {})
+    assert not context['observations'] and not context['completed_check_diagnostics']
+
+
+@pytest.mark.asyncio
 async def test_mcp_protocol_tools_prompts_and_no_broker_write_capabilities(desktop):
     _, controller = desktop
     bridge = controller.agent_bridge
