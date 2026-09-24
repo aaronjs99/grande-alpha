@@ -1,5 +1,11 @@
 # Agent paper trading
 
+New desktop sessions select **Adaptive trend · paper experiment** in **Session setup**.
+It makes price decisions each quote with independent exits and exposure limits;
+Qwen supplies optional advisory context, and missing news coverage does not prevent
+entry. **Legacy** retains the earlier rules/AI decisions and two-publisher news filter.
+See [the adaptive strategy, validation and limits](ADAPTIVE_PAPER_STRATEGY.md).
+
 ## Diagnose a run with zero fills
 
 Below Start/Stop, **Why no trades?** expands the latest completed check. Its dated
@@ -12,7 +18,7 @@ balances, credentials, research prompts and raw provider errors. No file is writ
 and copying does not start or change a run. Stop retains the last dated report; a new
 run clears it until the first check completes. Reports cover only the sampled batch.
 
-**Rules baseline** means continuous AI is off. A connected ChatGPT research chat does
+In **Legacy** mode, **Rules baseline** means continuous AI is off. A connected ChatGPT research chat does
 not run the local analyst. The rules require movement greater than the larger of
 0.20% and twice the current spread after warm-up; the crypto spread limit is 1.00%.
 For example, a 0.80% spread passes that limit but requires a rise greater than 1.60%
@@ -72,8 +78,8 @@ crypto batch. The batch limit and current-quote freshness checks still apply.
 
 News collection runs in the background on its existing ten-minute cadence. Optional
 AI analysis also runs in the background with at most one request per market in flight.
-Fresh quote checks and valuations continue while it works. No rules-based buys replace
-a pending or failed AI response. Each result is used once, only with eligible current
+Fresh quote checks and valuations continue while it works. In **Legacy** mode, no
+rules-based buys replace a pending or failed AI response. Each result is used once, only with eligible current
 quotes, unchanged research settings and instrument identity, and still-available input
 source IDs. Continuous paper analysis has a separate lifetime: a request may run for
 45 seconds, and its newest input observation and request start must be no more than
@@ -85,11 +91,11 @@ greater than 20 bps (0.20%) from the corresponding input price rejects the reply
 requires a fresh analysis. This checks observed updates; it cannot certify price moves
 between updates. Source and news checks run again before any simulated entry.
 
-This separates inference latency from executable quote age: a 19–23-second reply no
+For legacy model decisions, this separates inference latency from executable quote age: a 19–23-second reply no
 longer expires solely because inference exceeded 15 seconds. Invalid, expired or
 changed-market replies still produce HOLD. Acceptance queues a paper intent only;
 a later eligible quote is still required for a fill. No rules-based buys replace a
-failed model response. These are simulation controls, not validated real-order authority.
+failed model response in legacy mode. These are simulation controls, not validated real-order authority.
 
 The live status shows current request elapsed time. **Last AI result** persists while
 the next request runs and reports its model, completion time, request duration, usable

@@ -9,7 +9,9 @@ a model automatically, or enable live stock/crypto orders.
 
 1. Connect Robinhood for quotes. On **Agent · Stocks + Crypto**, open **Session setup**
    and choose **Robinhood quotes**.
-2. Check **Read news and apply headline checks to new buys**. Optionally check
+2. Choose the paper strategy. **Adaptive trend** uses news as context and checks
+   headline risks; **Legacy** requires two matching publishers before buying.
+   Check the news option. Optionally check
    **Include public social context · Bluesky, when available**. These options start off;
    no news-provider key is required. Stop the current run before changing settings.
 3. Set your stock/crypto watchlists in **Configure universe and AI**, then click
@@ -53,7 +55,7 @@ Rate-limited requests wait at least fifteen minutes and honor longer numeric ret
 headers up to one day. Quotes continue independently, and Stop cancels collection.
 
 X posts are unverified social context for the optional local analyst and MCP reader.
-They never count as the two required news publishers when the news filter is on.
+They never count as the two required news publishers in the legacy news filter.
 When only X is enabled, the existing numeric strategy remains eligible without a
 news requirement; collecting X data does not itself initiate a trade. Local AI must
 be configured and enabled to analyze this context. With local AI off, the price rules
@@ -78,7 +80,7 @@ excerpts and content-derived IDs accompany the data. Article pages are not scrap
 The panel shows up to 60 headlines; it is not exhaustive market coverage.
 
 In continuous paper mode, collection happens in the background so slow feeds do not
-stall quote checks. News-enabled buys still need qualifying current coverage. Optional
+stall quote checks. Legacy news-enabled buys still need qualifying current coverage. Optional
 AI also runs in the background; expired replies are rejected and cannot replace current
 quote checks. See [continuous monitoring and timing limits](AGENT_PAPER_TRADING.md).
 
@@ -96,11 +98,16 @@ zero recent entries is different from a failed request; both are shown accuratel
 
 ## How it affects proposals
 
-The existing price-movement rules remain the baseline. With news enabled, a new
+In legacy mode, the existing price-movement rules remain the baseline. With news enabled, a new
 buy also needs fresh, directly matching headlines from at least two distinct news
 publishers, with no configured headline risk terms. Exact duplicate headlines across
 publishers count once. This is a coverage filter, not proof of independent reporting
 or a forecast of price direction. It does not initiate a buy on its own.
+
+**Adaptive trend** evaluates price trends, modeled costs and position exits on each
+valid quote. Local AI provides advisory context. News risk terms still block buys,
+but missing matching coverage does not. This explicitly selected experiment does
+not alter legacy checks or live-order authority. See [its full rules](ADAPTIVE_PAPER_STRATEGY.md).
 
 Matching uses a small explicit company/coin-name dictionary, cashtags and selected
 unambiguous uppercase tickers. It is incomplete and can misidentify a company name.

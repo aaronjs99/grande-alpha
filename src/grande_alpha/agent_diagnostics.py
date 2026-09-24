@@ -37,7 +37,11 @@ def completed_check_report(*, cycle, at, decisions, settings, source, paper, mar
     else:
         lines.append('Paper trading is off. Research-only proposals do not produce simulated fills.')
     ai = settings.local_ai_enabled and source != 'demo'
-    lines.append('Analyst: local AI enabled' if ai else
+    adaptive = source == 'broker_quotes' and settings.paper_strategy == 'adaptive'
+    lines.append('Strategy: Adaptive trend v1 · paper experiment · price decisions on each valid quote' if adaptive else
+                 'Strategy: Legacy · rules or AI decisions')
+    lines.append('Analyst: local AI provides advisory context; price strategy continues independently' if adaptive and ai else
+                 'Analyst: adaptive price rules · local AI context is OFF' if adaptive else 'Analyst: local AI enabled' if ai else
                  'Analyst: rules baseline · continuous AI is OFF. A connected ChatGPT chat is not a background analyst.')
     if ai:
         lines.extend(f'AI {market.value}: {analysis.get(market.value, "Waiting for eligible observations")}' for market in AssetClass)
@@ -49,14 +53,21 @@ def completed_check_report(*, cycle, at, decisions, settings, source, paper, mar
             lines.append(f'AI replies require continuous valid quote history and at most '
                          f'{AI_MAX_PRICE_DRIFT_BPS / 100:.2f}% observed price movement during analysis.')
     news = settings.news_enabled and source != 'demo'
-    lines += [f'News entry filter: {"ON (two matching news publishers required)" if news else "OFF"}',
+    news_label = ('CONTEXT + headline-risk checks; missing coverage does not block entries' if adaptive else
+                  'ON (two matching news publishers required)') if news else 'OFF'
+    lines += [f'News entry filter: {news_label}',
               f'X monitoring: {"ON" if settings.twitter_enabled and source != "demo" else "OFF"}',
               f'Quote checks: {settings.interval_seconds}s target · maximum quote age: {settings.max_quote_age_seconds:g}s',
-              'Rules baseline: BUY above +max(0.20%, twice the spread); EXIT below the negative threshold.',
+              ('Adaptive entry: rising 30s/120s trends, a 30s breakout, and movement above spread/slippage and noise costs.'
+               if adaptive else 'Rules baseline: BUY above +max(0.20%, twice the spread); EXIT below the negative threshold.'),
               'Signals need at least 4 distinct quotes spanning 60s. Invalid quotes restart this window.',
               'A BUY queues a virtual entry; a later eligible quote fills it. EXIT needs a virtual holding.',
               'The conditions can remain unmet indefinitely. Changing the watchlist does not ensure a trade.',
               '', 'Observed candidates (this batch only):']
+    if adaptive:
+        lines[-2:-2] = ['Adaptive exits: 1% net stop, 0.75% observed trailing decline, 2% net target, trend reversal or 30 minutes.',
+                        'Limits: four positions; 40% starting virtual capital; one QQQ/TQQQ/SQQQ exposure; 60s re-entry cooldown.',
+                        'New entries pause at 3% session drawdown. Exits and stops require eligible quotes; fills may exceed these levels.']
     for item in decisions[:40]:
         lines += [f'{item.instrument.key}: {item.action.upper()} · {item.risk_status}', f'  Reason: {item.reason[:700]}']
         context = item.source_context or {}
@@ -78,7 +89,13 @@ def completed_check_report(*, cycle, at, decisions, settings, source, paper, mar
             span = max(0, (samples[-1][0] - samples[0][0]).total_seconds()) if samples else 0
             lines.append(f'  Warm-up: {item.samples} distinct quotes (need 4); span {span:.1f}s (need 60s)')
             change = f'{item.change_bps / 100:+.3f}%' if item.change_bps is not None else 'not ready'
-            lines.append(f'  Observed price change: {change} · rules entry threshold: >+{max(20, 2 * spread) / 100:.3f}%')
+            metrics = item.strategy_context or {}
+            if adaptive and metrics:
+                lines.append(f'  Strategy movement: {metrics["movement_bps"] / 100:+.3f}% · '
+                             f'entry threshold: >{metrics["entry_threshold_bps"] / 100:.3f}% · '
+                             f'round-trip spread/slippage: {metrics["round_trip_cost_bps"] / 100:.3f}%')
+            else:
+                lines.append(f'  Observed price change: {change} · rules entry threshold: >+{max(20, 2 * spread) / 100:.3f}%')
         except (ValueError, TypeError, OverflowError):
             lines.append('  Quote values are invalid; no signal or simulated fill is eligible.')
     return '\n'.join(lines)

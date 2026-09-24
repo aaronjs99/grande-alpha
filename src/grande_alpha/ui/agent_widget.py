@@ -466,10 +466,10 @@ class AgentWidget(QScrollArea):
         self.sources_table.cellDoubleClicked.connect(self._open_source)
         sources_layout.addWidget(self.sources_table)
         sources_layout.addWidget(label(
-            "Double-click a headline to open its source. News checks require recent ticker-specific "
-            "coverage from two publishers and no flagged risk words before a new buy. This experimental "
-            "filter can miss context; it is not a profitability signal. Local AI can analyze the excerpts "
-            "when enabled. Social posts are unverified context and never count as news confirmation."
+            "Double-click a headline to open its source. Adaptive paper trading uses news as context "
+            "and blocks new entries on flagged headline risks; missing coverage does not block price signals. "
+            "The legacy strategy requires two matching publishers when news is enabled. Local AI can analyze "
+            "the excerpts. Social posts remain unverified context; headlines do not establish profitability."
         ))
         layout.addWidget(sources_box)
         self._sources_render_key = None
@@ -516,7 +516,15 @@ class AgentWidget(QScrollArea):
         self.paper_source.setMinimumWidth(0)
         self.paper_source.currentIndexChanged.connect(lambda: self._set_controls())
         form.addRow("Price source", self.paper_source)
+        self.paper_strategy = QComboBox()
+        self.paper_strategy.addItem("Adaptive trend · paper experiment", "adaptive")
+        self.paper_strategy.addItem("Legacy · rules or AI decisions", "legacy")
+        form.addRow("Paper strategy", self.paper_strategy)
+        self.strategy_note = label("")
+        form.addRow(self.strategy_note)
         self.news_enabled = QCheckBox("Read news and apply headline checks to new buys")
+        self.paper_strategy.currentIndexChanged.connect(self._update_strategy_copy)
+        self._update_strategy_copy()
         self.social_enabled = QCheckBox("Include public social context · Bluesky, when available")
         self.news_enabled.toggled.connect(self._news_toggled)
         form.addRow(self.news_enabled)
@@ -576,6 +584,20 @@ class AgentWidget(QScrollArea):
             "Fractional units, immediate settlement, no fees or liquidity constraints. "
             "P&L uses the last eligible bid; old valuations are labeled. Demo results do not predict returns."
         ))
+
+    def _update_strategy_copy(self) -> None:
+        adaptive = self.paper_strategy.currentData() == "adaptive"
+        self.news_enabled.setText("Read news as context and check headline risks" if adaptive else
+                                 "Read news and apply headline checks to new buys")
+        self.strategy_note.setText(
+            "Adaptive: price trends and spread/slippage costs are checked each quote. Qwen supplies optional "
+            "background context; missing headlines or a pending AI reply do not stop price decisions. "
+            "Up to four positions, 40% virtual exposure; exits use a 1% stop, 0.75% trailing decline, "
+            "2% target, trend reversal or 30-minute limit. New entries pause at 3% session drawdown. "
+            "Experimental paper rules; no validated return. The offline demo keeps its fixed rules."
+            if adaptive else "Legacy: the local AI supplies decisions when enabled. With news enabled, "
+            "each new buy needs two matching publishers. The offline demo keeps its fixed rules."
+        )
 
     def _start_paper(self) -> None:
         self._run_error = ""
@@ -936,6 +958,7 @@ class AgentWidget(QScrollArea):
             crypto_brief=self.briefs["crypto"].text(),
             news_enabled=self.news_enabled.isChecked(), social_enabled=self.social_enabled.isChecked(),
             twitter_enabled=self.twitter_enabled.isChecked(),
+            paper_strategy=self.paper_strategy.currentData(),
         )
 
     def _save_settings(self) -> None:
@@ -972,6 +995,7 @@ class AgentWidget(QScrollArea):
         self.news_enabled.setChecked(settings.news_enabled)
         self.social_enabled.setChecked(settings.social_enabled)
         self.twitter_enabled.setChecked(settings.twitter_enabled)
+        self.paper_strategy.setCurrentIndex(max(0, self.paper_strategy.findData(settings.paper_strategy)))
 
     def _apply_briefs(self) -> None:
         values = {market: editor.text() for market, editor in self.briefs.items()}
@@ -1125,7 +1149,7 @@ class AgentWidget(QScrollArea):
         self.twitter_enabled.setEnabled(not running and not self.controller.shadow_only_runtime)
         self.connect_x.setEnabled(not running and not self.controller.shadow_only_runtime)
         self.x_connection.setEnabled(not running and not self.controller.shadow_only_runtime)
-        for editor in (self.paper_source, self.paper_cash, self.paper_trade_cash):
+        for editor in (self.paper_source, self.paper_strategy, self.paper_cash, self.paper_trade_cash):
             editor.setEnabled(not running)
         self.export_contracts.setEnabled(enabled and not running)
         self.stop.setEnabled(running or bool(self.controller.agent_bridge.session))

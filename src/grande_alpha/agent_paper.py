@@ -167,6 +167,7 @@ class PaperLedger:
                 continue
             state["last_quotes"][key] = timestamp.isoformat()
             if key in positions:
+                positions[key]["peak_bid"] = str(max(money(positions[key].get("peak_bid", positions[key]["bid"])), money(quote.bid)))
                 positions[key].update(bid=str(quote.bid), marked_at=timestamp.isoformat())
             intent = pending.pop(key, None)
             if intent and item.risk_status == "Data checks passed" and (intent["side"] == "sell" or item.buy_allowed):
@@ -214,6 +215,7 @@ class PaperLedger:
             cash -= cost
             positions[key] = {"quantity": str(quantity), "cost": str(cost),
                               "bid": str(quote.bid), "marked_at": at.isoformat(),
+                              "opened_at": at.isoformat(), "peak_bid": str(quote.bid),
                               "entry_sources": list(source_ids)}
         else:
             holding = positions.pop(key, None)

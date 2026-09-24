@@ -54,8 +54,11 @@ class AgentSettings:
     news_enabled: bool = False
     social_enabled: bool = False
     twitter_enabled: bool = False
+    paper_strategy: str = "legacy"
 
     def validate(self) -> None:
+        if self.paper_strategy not in {"legacy", "adaptive"}:
+            raise ValueError("Choose the legacy or adaptive paper strategy")
         if any(type(value) is not bool for value in (self.news_enabled, self.social_enabled, self.twitter_enabled)):
             raise ValueError("News and social settings must be true or false")
         if self.social_enabled and not self.news_enabled:
@@ -90,6 +93,7 @@ class AgentDecision:
     execution_status: str = "Not submitted — multi-market execution is not validated"
     buy_allowed: bool = True
     source_context: dict | None = None
+    strategy_context: dict | None = None
 
 
 @dataclass(frozen=True)

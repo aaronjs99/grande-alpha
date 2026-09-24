@@ -22,6 +22,31 @@ def app():
     return QApplication.instance() or QApplication([])
 
 
+def test_paper_strategy_choice_preserves_dashboard_and_explains_news_and_ai_roles(tmp_path, app):
+    store = AuditStore(tmp_path / 'paper-strategy-ui.db')
+    controller = TradingController(DisabledBroker(), AppConfig(), store)
+    window = MainWindow(controller, controller.config)
+    widget = window.agent_widget
+    assert widget.paper_strategy.currentData() == 'adaptive'
+    assert widget._read_settings().paper_strategy == 'adaptive'
+    assert 'context' in widget.news_enabled.text()
+    assert 'four positions' in widget.strategy_note.text()
+    assert len(widget.team_cards) == 6
+    assert widget.activity is not None and widget.curve is not None
+    widget.paper_strategy.setCurrentIndex(widget.paper_strategy.findData('legacy'))
+    assert widget._read_settings().paper_strategy == 'legacy'
+    assert 'two matching publishers' in widget.strategy_note.text()
+    controller.agent.settings = AgentSettings(paper_strategy='adaptive')
+    controller.agent_settings_changed.emit()
+    assert widget.paper_strategy.currentData() == 'adaptive'
+    controller.agent.snapshot = AgentSnapshot(running=True)
+    widget._set_controls()
+    assert not widget.paper_strategy.isEnabled()
+    controller.agent.snapshot = AgentSnapshot()
+    window.close()
+    store.close()
+
+
 def test_agent_page_is_available_without_grant_and_shows_only_broker_account_value(tmp_path, app):
     store = AuditStore(tmp_path / "agent-ui.db")
     controller = TradingController(DisabledBroker(), AppConfig(broker_connection_enabled=True), store)

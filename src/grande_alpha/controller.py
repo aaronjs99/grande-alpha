@@ -352,6 +352,7 @@ class TradingController(QObject):
                         "data_checks": item.risk_status,
                         "reason": item.reason,
                         "buy_allowed": item.buy_allowed, "source_context": item.source_context,
+                        "price_strategy": item.strategy_context,
                     })
                 except (ValueError, TypeError, OverflowError):
                     continue
@@ -365,6 +366,8 @@ class TradingController(QObject):
             "cycle_started_at": snapshot.cycle_started_at.isoformat() if snapshot.cycle_started_at else None,
             "error": snapshot.error,
             "continuous_paper": self.agent.continuous_paper,
+            "paper_strategy": settings.paper_strategy if self.agent.continuous_paper else "legacy",
+            "ai_role": ("advisory" if self.agent.adaptive_paper else "decision") if local_ai_active else "off",
             "quote_interval_seconds": settings.interval_seconds,
             "analysis_status": snapshot.analysis_status,
             "analysis_last_result": snapshot.analysis_last_result if observations_allowed else {},
@@ -375,7 +378,9 @@ class TradingController(QObject):
             "briefs": {"team": settings.research_brief, "equity": settings.equity_brief, "crypto": settings.crypto_brief},
             "local_ai_enabled": local_ai_active,
             "prompt_effect": "Demo uses fixed rules and synthetic prices" if self.agent.paper_source == "demo" else (
-                "Local AI uses briefs next cycle" if local_ai_active else "Rules are unchanged; briefs are context for the connected AI client"),
+                "Local AI uses briefs for advisory context; the adaptive price strategy controls paper trades"
+                if local_ai_active and self.agent.adaptive_paper else "Local AI uses briefs next cycle" if local_ai_active else
+                "Rules are unchanged; briefs are context for the connected AI client"),
             "universe": {"equity": settings.equity_symbols, "crypto": settings.crypto_symbols},
             "observations": observations,
             "observation_source": "synthetic_demo" if self.agent.paper_source == "demo" else "broker_quotes",

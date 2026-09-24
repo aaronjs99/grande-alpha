@@ -35,6 +35,7 @@ from grande_alpha.agent_models import (
 )
 from grande_alpha.agent_paper import DEMO_CYCLES, PaperLedger, demo_market, demo_time, validate_paper_settings
 from grande_alpha.agent_sources import NEWS_POLICY, REFRESH_SECONDS, ResearchSources
+from grande_alpha.agent_strategy import ADAPTIVE_POLICY, HISTORY_SECONDS, adaptive_decision, limit_entries
 from grande_alpha.models import Quote, utc_now
 from grande_alpha.policy import market_session_allowed
 
@@ -77,13 +78,14 @@ class AgentRuntime:
         self._pairs: list[Instrument] | None = None
         self._session_id = ""
         self._generation = 0
-        self.settings = AgentSettings()
+        self.settings = AgentSettings(paper_strategy="adaptive")
         self.paper = paper or PaperLedger()
         self.paper_source: str | None = None
         self.loop_demo = False
         self._event_sequence = 0
         self._background_tasks: set[asyncio.Task] = set()
         self._ai_jobs: dict[AssetClass, dict] = {}
+        self._ai_due: dict[AssetClass, datetime] = {}
         self._source_task: asyncio.Task | None = None
         self._source_due: datetime | None = None
         self._source_failed = False
@@ -92,6 +94,15 @@ class AgentRuntime:
     @property
     def continuous_paper(self) -> bool:
         return self.paper_source == "broker_quotes"
+
+    @property
+    def adaptive_paper(self) -> bool:
+        return self.continuous_paper and self.settings.paper_strategy == "adaptive"
+
+    def _source_context(self, instrument, now, settings):
+        return {**self.sources.context(instrument, now),
+                "news_required": settings.news_enabled and not self.adaptive_paper,
+                "usage": "context and headline-risk checks" if self.adaptive_paper else "entry confirmation"}
 
     def _background(self, coroutine) -> asyncio.Task:
         task = asyncio.create_task(coroutine)
@@ -230,7 +241,14 @@ class AgentRuntime:
                     buy_allowed = False
                     reason = blocker
                     blockers.append(blocker)
-            output.append(replace(item, action=action, reason=reason, buy_allowed=buy_allowed))
+            if self.adaptive_paper:
+                # The selected price strategy acts every quote. AI proposals are
+                # separately labeled context, never a pending/failure trade gate.
+                if proposals is not None and original and not blocker:
+                    item = replace(item, reason=item.reason + f" · AI context ({action}): " + reason)
+                output.append(item)
+            else:
+                output.append(replace(item, action=action, reason=reason, buy_allowed=buy_allowed))
         if completed:
             if not rejected:
                 result = (f"AI reply rechecked: {len(accepted)}/{len(inputs)} usable proposals "
@@ -238,14 +256,19 @@ class AgentRuntime:
                           "news and paper-fill checks still apply")
                 if blockers:
                     result += " · " + blockers[0]
+                if self.adaptive_paper:
+                    result += " · Advisory only; adaptive price strategy decides paper trades"
             last = (f"{self._now().isoformat()} · {settings.local_ai_model} · "
                     f"request {outcome['seconds']:.1f}s · {result}")
             self._publish(analysis_last_result={**self.snapshot.analysis_last_result, market.value: last})
             job = None
         # Rotate discovery after consuming this batch; immediately re-analyzing
         # the same follow-up quotes would pin the scan to these symbols forever.
-        if job is None and eligible and not completed:
+        due = self._ai_due.get(market)
+        if job is None and eligible and not completed and (not self.adaptive_paper or due is None or self._now() >= due):
             task = self._background(self._ask_analyst(settings, observations, prompts))
+            if self.adaptive_paper:
+                self._ai_due[market] = self._now() + timedelta(seconds=60)
             self._ai_jobs[market] = {'task': task, 'settings': settings, 'observations': observations,
                                     'started_at': self._now(),
                                     'instruments': {item.instrument.key: item.instrument for item in eligible}}
@@ -253,6 +276,8 @@ class AgentRuntime:
         elif job:
             elapsed = max(0, (self._now() - job['started_at']).total_seconds())
             result = f"Analyzing latest quotes · {elapsed:.0f}s / {AI_TIMEOUT_SECONDS:g}s maximum"
+        elif self.adaptive_paper and due and not completed and eligible:
+            result = f"Next AI context in {max(0, math.ceil((due - self._now()).total_seconds()))}s; price strategy continues"
         self._publish(analysis_status={**self.snapshot.analysis_status, market.value: result})
         return output
 
@@ -299,7 +324,12 @@ class AgentRuntime:
         loop = asyncio.get_running_loop()
         if source:
             self.paper.start(source, initial_cash, trade_cash)
-            self.paper.set_strategy({"policy": NEWS_POLICY if settings.news_enabled and source != "demo" else "price-only",
+            adaptive = source == "broker_quotes" and settings.paper_strategy == "adaptive"
+            self.paper.set_strategy({"policy": ADAPTIVE_POLICY if adaptive else NEWS_POLICY if settings.news_enabled and source != "demo" else "price-only",
+                                     "paper_strategy": settings.paper_strategy if source == "broker_quotes" else "legacy",
+                                     "ai_role": ("advisory" if adaptive else "decision") if settings.local_ai_enabled and source != "demo" else "off",
+                                     "news_role": "context and headline-risk checks" if adaptive and settings.news_enabled else
+                                                  "two-publisher entry filter" if settings.news_enabled and source != "demo" else "off",
                                      "model": settings.local_ai_model if settings.local_ai_enabled and source != "demo" else "rules",
                                      "social_context": settings.social_enabled and source != "demo",
                                      "twitter_context": settings.twitter_enabled and source != "demo",
@@ -308,6 +338,7 @@ class AgentRuntime:
         self.paper_source = source
         self._background_tasks = set()
         self._ai_jobs = {}
+        self._ai_due = {}
         self._source_task = None
         self._source_due = None
         self._source_failed = False
@@ -322,7 +353,9 @@ class AgentRuntime:
         self._publish(
             running=True,
             phase="Starting",
-            analyst="Demo rules baseline" if source == "demo" else f"Local AI · {settings.local_ai_model}"
+            analyst="Demo rules baseline" if source == "demo" else
+            ("Adaptive paper trend" + (f" · AI context: {settings.local_ai_model}" if settings.local_ai_enabled else ""))
+            if self.adaptive_paper else f"Local AI · {settings.local_ai_model}"
             if settings.local_ai_enabled
             else "Rules baseline",
         )
@@ -449,7 +482,8 @@ class AgentRuntime:
             # Discovery universes can change on every scan; cap long-running memory.
             del self._history[next(iter(self._history))]
         # Keep enough distinct quotes to span 60s even at the fastest supported cadence.
-        history_size = 12 if self.paper_source == "demo" else max(12, math.ceil(120 / settings.interval_seconds) + 1)
+        window = HISTORY_SECONDS if self.adaptive_paper else 120
+        history_size = 12 if self.paper_source == "demo" else max(12, math.ceil(window / settings.interval_seconds) + 1)
         history = self._history.setdefault(instrument.key, deque(maxlen=history_size))
         reason = ""
         if instrument.crypto_rules is not None:
@@ -497,6 +531,9 @@ class AgentRuntime:
                     if history and (timestamp - history[-1][0]).total_seconds() > 600:
                         history.clear()
                     history.append((timestamp, quote.mid))
+                    if self.adaptive_paper:
+                        while len(history) > 1 and (timestamp - history[0][0]).total_seconds() > HISTORY_SECONDS:
+                            history.popleft()
             except (ValueError, TypeError, OverflowError) as exc:
                 reason = str(exc)
         if reason:
@@ -586,9 +623,11 @@ class AgentRuntime:
         self._handoff(name, "VELA", f"{len(quotes)} {asset_class.value} quotes ready")
         now = self._now()
         decisions = [self._inspect(item, quotes.get(item.symbol), now, settings) for item in batch]
+        if self.adaptive_paper:
+            decisions = [adaptive_decision(item, self._history.get(item.instrument.key, ()), self.paper.state, now)
+                         for item in decisions]
         if (settings.news_enabled or settings.twitter_enabled) and self.paper_source != "demo":
-            decisions = [replace(item, source_context={**self.sources.context(item.instrument, now),
-                                                       'news_required': settings.news_enabled}) for item in decisions]
+            decisions = [replace(item, source_context=self._source_context(item.instrument, now, settings)) for item in decisions]
         progress("Analyzing")
         eligible = [item for item in decisions if item.risk_status == "Data checks passed"]
         if settings.local_ai_enabled and (eligible or self.continuous_paper) and self.paper_source != "demo":
@@ -602,8 +641,9 @@ class AgentRuntime:
                     "samples": item.samples,
                     "observations": [
                         {"at": at.isoformat(), "mid": mid}
-                        for at, mid in self._history[item.instrument.key]
+                        for at, mid in list(self._history[item.instrument.key])[-25:]
                     ],
+                    **({"price_strategy": item.strategy_context, "ai_role": "advisory"} if self.adaptive_paper else {}),
                     **({"source_context": item.source_context} if item.source_context is not None else {}),
                 }
                 for item in eligible
@@ -622,7 +662,7 @@ class AgentRuntime:
                         if item in eligible else item for item in decisions
                     ]
             except Exception:
-                decisions = [
+                decisions = decisions if self.adaptive_paper else [
                     replace(item, action="hold", reason="Local AI unavailable or invalid response; no proposal accepted", risk_status="Blocked")
                     if item in eligible else item for item in decisions
                 ]
@@ -643,10 +683,10 @@ class AgentRuntime:
                 elif item.instrument.asset_class == AssetClass.EQUITY and not market_session_allowed(now, 0, 0, "regular_hours"):
                     item = replace(item, action="hold", risk_status="Blocked", reason="Equity session closed during analysis")
             if (settings.news_enabled or settings.twitter_enabled) and self.paper_source != "demo":
-                context = {**self.sources.context(item.instrument, now), 'news_required': settings.news_enabled}
+                context = self._source_context(item.instrument, now, settings)
                 if settings.news_enabled and self.continuous_paper and self._source_failed:
                     context.update(buy_supported=False, coverage="News refresh unavailable")
-                supported = not settings.news_enabled or context["buy_supported"]
+                supported = not settings.news_enabled or (not context["risk_terms"] if self.adaptive_paper else context["buy_supported"])
                 reason = item.reason
                 if not supported and item.action == "buy":
                     reason = "News filter: " + ("headline risk terms: " + ", ".join(context["risk_terms"])
@@ -654,7 +694,7 @@ class AgentRuntime:
                 item = replace(item, buy_allowed=item.buy_allowed and supported, source_context=context,
                                action="hold" if item.action == "buy" and not supported else item.action, reason=reason)
             result.append(item)
-        return result
+        return limit_entries(result, self.paper.state) if self.adaptive_paper else result
 
     def _consume_paper(self, decisions, settings):
         before = self.paper.state['fill_count']
