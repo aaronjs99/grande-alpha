@@ -381,6 +381,7 @@ class TradingController(QObject):
             "research_sources": snapshot.research_sources,
             "news_enabled": settings.news_enabled and self.agent.paper_source != "demo",
             "social_enabled": settings.social_enabled and self.agent.paper_source != "demo",
+            "twitter_enabled": settings.twitter_enabled and self.agent.paper_source != "demo",
         }
 
     def start_agent(self, settings: AgentSettings) -> None:

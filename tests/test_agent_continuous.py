@@ -307,3 +307,29 @@ async def test_old_worker_cleanup_cannot_stop_a_restarted_session():
     agent.stop()
     await asyncio.gather(new, return_exceptions=True)
     assert agent.snapshot.phase == 'Stopped' and not agent.snapshot.error
+
+
+@pytest.mark.asyncio
+async def test_rotating_crypto_batches_use_ai_results_before_moving_to_new_candidates():
+    market = ReadMarket()
+    inputs = []
+
+    async def pairs():
+        return [Instrument(AssetClass.CRYPTO, f'C{i}-USD', str(i)) for i in range(40)]
+
+    class Analyst:
+        async def analyze(self, _model, observations):
+            inputs.extend(o['key'] for o in observations)
+            return {o['key']: ('buy', 'Fixture price analysis') for o in observations}
+
+    market.pairs = pairs
+    agent = await manual_agent(market, AgentSettings(equity_symbols=(), crypto_symbols=(),
+                                                   local_ai_enabled=True, local_ai_model='fixture'), Analyst())
+    for index in range(35):
+        market.now = NOW + timedelta(seconds=5 * index)
+        await agent.cycle()
+        await asyncio.sleep(0)
+    assert len(set(inputs)) > 20  # Discovery continues after an analysis batch is consumed.
+    assert agent.paper_context()['fill_count'] > 0
+    assert all(f['key'].startswith('crypto:') for f in agent.paper_context()['fills'])
+    await shutdown(agent)

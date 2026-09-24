@@ -41,6 +41,13 @@ rotating through other candidates. If more than 20 held/pending instruments exis
 in one market, that priority group itself rotates. This does not scan every traded
 asset at once, and unsupported or absent quotes cannot be invented.
 
+When local AI is enabled, the next quote batch also prioritizes the instruments in
+its outstanding analysis, after holdings and pending intents. A completed answer is
+matched to fresh observations for those instruments before discovery moves on. After
+consuming the answer, the scan rotates before starting another analysis. This fixes
+AI answers being discarded because each update had already switched to a different
+crypto batch. The batch limit and input-quote freshness checks still apply.
+
 News collection runs in the background on its existing ten-minute cadence. Optional
 AI analysis also runs in the background with at most one request per market in flight.
 Fresh quote checks and valuations continue while it works. No rules-based buys replace
@@ -91,6 +98,12 @@ The next-quote-check countdown shows the scheduled pause; network processing can
 take additional time. Background AI and news progress are displayed separately.
 A running session can legitimately have zero fills. Startup errors appear beside the controls, and a disabled paper
 button explains when a Robinhood connection is required.
+
+HOLD details include the observed price change and rule threshold, or the model's
+actual waiting/error reason. News-blocked buys show the number of matching news
+publishers out of two. An AI veto is not mislabeled as missing news when coverage
+passes or the news filter is disabled. These explanations do not lower entry checks
+or force trades. See [X monitoring and research setup](AGENT_MARKET_RESEARCH.md).
 
 While a quote update is in progress, its elapsed time keeps updating independently
 of broker responses. Worker labels distinguish stock scanning, crypto-pair loading

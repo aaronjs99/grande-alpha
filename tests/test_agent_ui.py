@@ -277,3 +277,62 @@ def test_delayed_quote_status_updates_with_the_clock_and_recovers(tmp_path, app,
     assert 'delayed' not in widget.run_detail.text()
     window.close()
     store.close()
+
+
+def test_hold_diagnostics_show_actual_threshold_and_do_not_blame_news_for_an_ai_veto(tmp_path, app):
+    from test_agent_paper import decision
+
+    store = AuditStore(tmp_path / 'hold-reasons.db')
+    controller = TradingController(DisabledBroker(), AppConfig(), store)
+    window = MainWindow(controller, controller.config)
+    widget = window.agent_widget
+    item = replace(decision('hold'), reason='Observed midpoint change +3.0 bps; research threshold 20.0 bps')
+    snapshot = AgentSnapshot(running=True, cycle=2, phase='Waiting', decisions=(item,))
+    widget.update_agent(snapshot)
+    assert '+3.0 bps' in widget.run_detail.text() and '20.0 bps' in widget.run_detail.text()
+    for required, supported in ((True, True), (False, False)):
+        item = replace(item, buy_allowed=False, reason='AI result expired; requesting a fresh analysis',
+                       source_context={'news_required': required, 'buy_supported': supported, 'risk_terms': [], 'coverage': 'Fixture'})
+        widget.update_agent(replace(snapshot, decisions=(item,)))
+        assert 'AI result expired' in widget.run_detail.text()
+        assert 'News blocks' not in widget.run_detail.text()
+    window.close()
+    store.close()
+
+
+@pytest.mark.asyncio
+async def test_x_connection_form_masks_saves_and_removes_key_without_enabling_news(tmp_path, app, monkeypatch):
+    import asyncio
+
+    from PySide6.QtWidgets import QLineEdit
+
+    from grande_alpha.agent_x import X_SERVICE
+
+    vault = {}
+    monkeypatch.setattr('keyring.set_password', lambda service, user, value: vault.update({(service, user): value}))
+    monkeypatch.setattr('keyring.delete_password', lambda service, user: vault.pop((service, user)))
+    store = AuditStore(tmp_path / 'x-ui.db')
+    controller = TradingController(DisabledBroker(), AppConfig(), store)
+    window = MainWindow(controller, controller.config)
+    widget, token = window.agent_widget, 'synthetic_X_token_12345'
+    form = widget.x_connection
+    assert not widget.twitter_enabled.isChecked()
+    assert form.token.echoMode() == QLineEdit.EchoMode.Password
+    form.token.setText(token)
+    form.save.click()
+    task = form.task
+    assert form.token.text() == '' and not widget.paper_start.isEnabled()
+    await asyncio.wait_for(task, 2)
+    assert vault[(X_SERVICE, 'bearer')] == token
+    assert widget.twitter_enabled.isChecked() and not widget.news_enabled.isChecked()
+    assert token not in form.status.text() and token not in repr(widget._read_settings())
+    form.remove.click()
+    await asyncio.wait_for(form.task, 2)
+    assert not vault and not widget.twitter_enabled.isChecked()
+    widget.update_agent(AgentSnapshot(research_sources={'items': [], 'sources': [], 'refreshed_at': None, 'twitter': {
+        'status': 'OK', 'trends': [{'symbol': 'AAPL', 'sample_posts': 2, 'sample_change': 1}],
+        'notice': 'Fixture sampled posts; not total X volume',
+    }}))
+    assert 'AAPL: 2 posts (+1 vs previous sample)' in widget.twitter_trends.text()
+    window.close()
+    store.close()

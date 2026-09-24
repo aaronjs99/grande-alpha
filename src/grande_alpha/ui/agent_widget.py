@@ -47,6 +47,7 @@ from grande_alpha.ui.agent_card import AgentCard
 from grande_alpha.ui.chatgpt_setup import ChatGPTSetupDialog
 from grande_alpha.ui.table_layout import configure_adjustable_columns
 from grande_alpha.ui.themes import color, set_item_foreground, theme_css
+from grande_alpha.ui.x_connection import XConnection
 
 PACIFIC_TIME = ZoneInfo("America/Los_Angeles")
 
@@ -434,6 +435,8 @@ class AgentWidget(QScrollArea):
         sources_layout = QVBoxLayout(sources_box)
         self.sources_status = label("News research is off. Enable it in Session setup.")
         sources_layout.addWidget(self.sources_status)
+        self.twitter_trends = label("")
+        sources_layout.addWidget(self.twitter_trends)
         self.sources_table = self._table(["Source", "Published (UTC)", "Headline"])
         self.sources_table.setMinimumHeight(160)
         self.sources_table.setMaximumHeight(260)
@@ -503,6 +506,17 @@ class AgentWidget(QScrollArea):
             "Optional social search sends up to eight watchlist symbols to Bluesky. No paid keys are "
             "required by this setup; inaccessible sources are reported. The offline demo skips all feeds."
         ))
+        self.twitter_enabled = QCheckBox('Monitor X / Twitter trends · X API key required')
+        form.addRow(self.twitter_enabled)
+        self.connect_x = QPushButton('Connect X / Twitter')
+        self.connect_x.setCheckable(True)
+        form.addRow(self.connect_x)
+        self.x_connection = XConnection(self.controller.agent.sources.twitter.credentials)
+        self.x_connection.hide()
+        self.connect_x.toggled.connect(self.x_connection.setVisible)
+        self.x_connection.connection_changed.connect(self._x_changed)
+        self.x_connection.busy_changed.connect(self._set_controls)
+        form.addRow(self.x_connection)
         self.repeat_demo = QCheckBox("Repeat offline demo until I press Stop")
         form.addRow(self.repeat_demo)
         self.paper_cash = QDoubleSpinBox()
@@ -559,11 +573,15 @@ class AgentWidget(QScrollArea):
             self.social_enabled.setChecked(False)
         self._set_controls()
 
+    def _x_changed(self, connected: bool) -> None:
+        self.twitter_enabled.setChecked(connected)
+        self.controller.agent.sources._cache_key = None
+
     def _open_source(self, row: int, _column: int) -> None:
         item = self.sources_table.item(row, 2)
         if item:
             try:
-                url = safe_url(item.data(Qt.ItemDataRole.UserRole), tuple(h for f in FEEDS for h in f.hosts) + ("bsky.app",))
+                url = safe_url(item.data(Qt.ItemDataRole.UserRole), tuple(h for f in FEEDS for h in f.hosts) + ("bsky.app", "x.com"))
                 QDesktopServices.openUrl(QUrl(url))
             except (ValueError, TypeError):
                 self.sources_status.setText("Source link is unavailable.")
@@ -576,13 +594,22 @@ class AgentWidget(QScrollArea):
         self._sources_render_key = signature
         items = (report or {}).get("items", [])[:60]
         if not report:
-            self.sources_status.setText("Loading news sources; quote checks continue." if snapshot.sources_loading else
+            self.sources_status.setText("Loading research sources; quote checks continue." if snapshot.sources_loading else
                                         "Offline demo skips external feeds." if self.controller.agent.paper_source == "demo"
-                                        else "News research is off or has not fetched yet. Enable it in Session setup.")
+                                        else "Research sources are off or have not fetched yet. Enable news or X in Session setup.")
         else:
             health = " · ".join(f"{s['source']}: {s['status']} ({s['fresh_items']})" for s in report["sources"])
-            self.sources_status.setText(f"Last source check {report['refreshed_at']} · publication window 48 hours\n{health}"
+            self.sources_status.setText(f"Last source check {report['refreshed_at']} · news window 48 hours · X window 1 hour\n{health}"
                                        + ("\nRefreshing in the background; quote checks continue." if snapshot.sources_loading else ""))
+        twitter = (report or {}).get('twitter') or {}
+        trends = []
+        for entry in twitter.get('trends', []):
+            change = entry['sample_change']
+            comparison = 'first sample' if change is None else f'{change:+d} vs previous sample'
+            trends.append(f"{entry['symbol']}: {entry['sample_posts']} posts ({comparison})")
+        self.twitter_trends.setText(('X / Twitter · ' + twitter['status'] + '\n' + ' · '.join(trends)
+                                    + '\n' + twitter['notice']) if twitter else '')
+        self.twitter_trends.setVisible(bool(twitter))
         self.sources_table.setRowCount(len(items))
         for row, source in enumerate(items):
             for column, value in enumerate((source["source"], source["published_at"][:16].replace("T", " "), source["title"])):
@@ -711,7 +738,6 @@ class AgentWidget(QScrollArea):
                 text = (f"{prefix} · Update {snapshot.cycle} · {signals['buy']} BUY / {signals['exit']} EXIT / "
                         f"{signals['hold']} HOLD{fills}{wait}")
                 held = {p['key'] for p in paper['positions']} if paper else set()
-                settings_ai = self.controller.agent.settings.local_ai_enabled
 
                 def signal_reason(item):
                     if item.risk_status != "Data checks passed":
@@ -721,13 +747,14 @@ class AgentWidget(QScrollArea):
                                 "EXIT signal; waiting for a later eligible quote" if paper else "EXIT proposal; research does not simulate fills")
                     if item.action == "buy" and paper and item.instrument.key in held:
                         return "Already holding; additional buys are disabled"
-                    if not item.buy_allowed and item.source_context:
+                    if (not item.buy_allowed and item.source_context and item.source_context.get('news_required', True)
+                            and not item.source_context.get('buy_supported', False)):
                         return "News blocks new buys: " + (", ".join(item.source_context['risk_terms']) or item.source_context['coverage'])
                     if item.action == "buy":
                         if paper and Decimal(paper['cash']) < Decimal(paper['trade_cash']):
                             return "Insufficient virtual cash for another buy"
                         return "BUY signal; waiting for a later eligible quote" if paper else "BUY proposal; research does not simulate fills"
-                    return "HOLD: " + item.reason.split(" · Sources:", 1)[0][:160] if settings_ai else "HOLD: no entry or exit signal"
+                    return "HOLD: " + item.reason.split(" · Sources:", 1)[0][:200]
 
                 reasons = []
                 for key, name in (("equity", "Stocks"), ("crypto", "Crypto")):
@@ -743,7 +770,7 @@ class AgentWidget(QScrollArea):
                     reasons.append(f"{name}: {reason}")
                 detail = "\n".join(reasons)
             if snapshot.sources_loading:
-                detail += "\nNews refreshing in the background."
+                detail += "\nResearch sources refreshing in the background."
             if snapshot.analysis_status:
                 detail += "\nAI · " + " · ".join(f"{key}: {value}" for key, value in snapshot.analysis_status.items())
         self.run_status.setText(text)
@@ -885,6 +912,7 @@ class AgentWidget(QScrollArea):
             research_brief=self.briefs["team"].text(), equity_brief=self.briefs["equity"].text(),
             crypto_brief=self.briefs["crypto"].text(),
             news_enabled=self.news_enabled.isChecked(), social_enabled=self.social_enabled.isChecked(),
+            twitter_enabled=self.twitter_enabled.isChecked(),
         )
 
     def _save_settings(self) -> None:
@@ -920,6 +948,7 @@ class AgentWidget(QScrollArea):
         self.model.setText(settings.local_ai_model)
         self.news_enabled.setChecked(settings.news_enabled)
         self.social_enabled.setChecked(settings.social_enabled)
+        self.twitter_enabled.setChecked(settings.twitter_enabled)
 
     def _apply_briefs(self) -> None:
         values = {market: editor.text() for market, editor in self.briefs.items()}
@@ -1060,8 +1089,9 @@ class AgentWidget(QScrollArea):
         enabled = self._connected and not self.controller.shadow_only_runtime
         self.save_budget.setEnabled(enabled and not running)
         self.budget_box.setEnabled(enabled and not running)
-        self.start.setEnabled(enabled and not running)
+        self.start.setEnabled(enabled and not running and not self.x_connection.busy)
         self.paper_start.setEnabled(not running and not self.controller.shadow_only_runtime
+                                    and not self.x_connection.busy
                                     and (self.paper_source.currentData() == "demo" or enabled))
         self.paper_start.setText("Start offline demo" if self.paper_source.currentData() == "demo" else "Start continuous paper trading")
         self.paper_start.setToolTip("Connect Robinhood to use current quotes with virtual funds."
@@ -1069,6 +1099,9 @@ class AgentWidget(QScrollArea):
         self.repeat_demo.setEnabled(not running and self.paper_source.currentData() == "demo")
         self.news_enabled.setEnabled(not running and not self.controller.shadow_only_runtime)
         self.social_enabled.setEnabled(not running and self.news_enabled.isChecked() and not self.controller.shadow_only_runtime)
+        self.twitter_enabled.setEnabled(not running and not self.controller.shadow_only_runtime)
+        self.connect_x.setEnabled(not running and not self.controller.shadow_only_runtime)
+        self.x_connection.setEnabled(not running and not self.controller.shadow_only_runtime)
         for editor in (self.paper_source, self.paper_cash, self.paper_trade_cash):
             editor.setEnabled(not running)
         self.export_contracts.setEnabled(enabled and not running)
@@ -1161,6 +1194,7 @@ class AgentWidget(QScrollArea):
 
     def shutdown(self) -> None:
         self._clock_timer.stop()
+        self.x_connection.shutdown()
         for card in self.stage_cards:
             card.stop_motion()
         if self._scan_task is not None:

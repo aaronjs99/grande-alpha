@@ -53,9 +53,10 @@ class AgentSettings:
     crypto_max_spread_bps: float = 100.0
     news_enabled: bool = False
     social_enabled: bool = False
+    twitter_enabled: bool = False
 
     def validate(self) -> None:
-        if type(self.news_enabled) is not bool or type(self.social_enabled) is not bool:
+        if any(type(value) is not bool for value in (self.news_enabled, self.social_enabled, self.twitter_enabled)):
             raise ValueError("News and social settings must be true or false")
         if self.social_enabled and not self.news_enabled:
             raise ValueError("Enable news research before adding social context")

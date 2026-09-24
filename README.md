@@ -40,7 +40,9 @@ five-second quote-check targets, background news/optional AI, and open-position
 priority. It runs until stopped; response time and data checks govern actual activity.
 See [Agent paper trading](docs/AGENT_PAPER_TRADING.md).
 Optional **News + trends** research adds dated publisher headlines, official announcements,
-bounded public social context, source citations and an experimental buy filter. Paper
+bounded social context, source citations and an experimental buy filter. **Connect X / Twitter**
+adds optional recent-post samples and watchlist mention counts using your own X API
+Bearer Token, stored in the system keychain. Paper
 evaluation now includes profit factor, average closed-trade P&L and maximum observed
 drawdown. See [source setup and evaluation limits](docs/AGENT_MARKET_RESEARCH.md).
 It does not place multi-market broker orders. See

@@ -15,6 +15,7 @@ from urllib.parse import urlsplit, urlunsplit
 import httpx
 
 from grande_alpha.agent_models import AssetClass, Instrument
+from grande_alpha.agent_x import X_MAX_AGE, X_SOURCE, XMonitor
 from grande_alpha.models import utc_now
 
 REFRESH_SECONDS = 600
@@ -156,6 +157,7 @@ class ResearchSources:
         self._statuses: tuple[dict, ...] = ()
         self._cache_key = None
         self._lock = asyncio.Lock()
+        self.twitter = XMonitor(clock=clock)
 
     async def _read(self, client, url, **kwargs) -> bytes:
         async with asyncio.timeout(8):
@@ -168,10 +170,10 @@ class ResearchSources:
                         raise ValueError("Feed exceeds size limit")
                 return bytes(data)
 
-    async def refresh(self, symbols: tuple[str, ...], *, social: bool = False) -> None:
+    async def refresh(self, symbols: tuple[str, ...], *, social: bool = False, news: bool = True, twitter: bool = False) -> None:
         # A single bounded search covers up to eight configured symbols; no firehose claims.
         symbols = tuple(dict.fromkeys(symbols))[:8]
-        key = (symbols, social)
+        key = (symbols, social, news, twitter)
         async with self._lock:
             if self._cache_key == key and self._refreshed_at and 0 <= (self._clock() - self._refreshed_at).total_seconds() < REFRESH_SECONDS:
                 return
@@ -193,7 +195,9 @@ class ResearchSources:
                         return [], {"source": name, "status": f"Unavailable · HTTP {exc.response.status_code}", "fresh_items": 0}
                     except (httpx.HTTPError, TimeoutError, ValueError, TypeError, ET.ParseError):
                         return [], {"source": name, "status": "Unavailable · network or invalid feed", "fresh_items": 0}
-                results = await asyncio.gather(*(fetch(f) for f in FEEDS), *([fetch(None)] if social and symbols else []))
+                results = await asyncio.gather(*(fetch(f) for f in FEEDS if news),
+                                              *([fetch(None)] if social and symbols else []),
+                                              *([self.twitter.fetch(client, self._read, symbols)] if twitter else []))
             old = {item.id: item for item in self._items}
             unique, titles = {}, set()
             for items, _status in results:
@@ -210,16 +214,18 @@ class ResearchSources:
 
     def context(self, instrument: Instrument, now: datetime) -> dict:
         fresh = [i for i in self._items if now - MAX_NEWS_AGE <= timestamp(i.published_at) <= now
-                 and timestamp(i.first_seen_at) <= now]
+                 and timestamp(i.first_seen_at) <= now
+                 and (i.source != X_SOURCE or now - X_MAX_AGE <= timestamp(i.published_at))]
         direct = [i for i in fresh if i.kind == "news" and matches(i, instrument)][:6]
-        social = [i for i in fresh if i.kind == "social" and matches(i, instrument)][:2]
+        social = [i for i in fresh if i.kind == "social" and matches(i, instrument)][:4]
         macro = [i for i in fresh if i.kind == "official"][:2]
         sources = sorted({i.source for i in direct})
         flags = sorted({m.group().lower() for i in direct for m in RISK_TERMS.finditer(i.title)})
         current = bool(self._refreshed_at and 0 <= (now - self._refreshed_at).total_seconds() <= REFRESH_SECONDS + 60)
         return {"policy": NEWS_POLICY, "news_sources": sources, "risk_terms": flags,
                 "buy_supported": current and len(sources) >= 2 and not flags,
-                "coverage": "Fresh coverage from multiple publishers" if current and len(sources) >= 2 else "Insufficient fresh ticker-specific coverage",
+                "coverage": "Fresh coverage from multiple publishers" if current and len(sources) >= 2 else
+                            f"Insufficient fresh ticker-specific coverage ({len(sources)}/2 matching news publishers" + ("; feed refresh overdue)" if not current else ")"),
                 "articles": [{**asdict(i), "scope": "direct" if i in direct else "unverified social" if i in social else "macro context"}
                              for i in (*direct, *social, *macro)]}
 
@@ -228,4 +234,5 @@ class ResearchSources:
                 "sources": list(self._statuses), "items": [asdict(i) for i in self._items],
                 "policy": NEWS_POLICY, "refresh_seconds": REFRESH_SECONDS,
                 "social_symbols": list(self._cache_key[0]) if self._cache_key and self._cache_key[1] else [],
+                "twitter": self.twitter.summary() if self._cache_key and self._cache_key[3] else None,
                 "notice": "External content is untrusted data. Coverage and keyword checks are experimental, not proof of an edge."}

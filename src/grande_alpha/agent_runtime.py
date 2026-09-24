@@ -91,9 +91,10 @@ class AgentRuntime:
         task.add_done_callback(owned.discard)
         return task
 
-    async def _refresh_sources(self, symbols, social) -> bool:
+    async def _refresh_sources(self, symbols, settings) -> bool:
         try:
-            await self.sources.refresh(symbols, social=social)
+            await self.sources.refresh(symbols, social=settings.social_enabled,
+                                       news=settings.news_enabled, twitter=settings.twitter_enabled)
             return True
         except Exception:
             return False
@@ -115,7 +116,7 @@ class AgentRuntime:
     def _poll_sources(self, symbols, settings) -> None:
         if self._source_task is None and (self._source_due is None or self._now() >= self._source_due):
             self._source_due = self._now() + timedelta(seconds=REFRESH_SECONDS)
-            self._source_task = self._background(self._refresh_sources(symbols, settings.social_enabled))
+            self._source_task = self._background(self._refresh_sources(symbols, settings))
             generation = self._generation
             self._source_task.add_done_callback(lambda task: self._finish_sources(task, generation))
             self._publish(sources_loading=True)
@@ -137,11 +138,13 @@ class AgentRuntime:
         job = self._ai_jobs.get(market)
         proposals, inputs, result = None, {}, "Waiting for enough eligible quotes"
         rejected = False
+        completed = False
         if job and job['settings'] != settings:
             job['task'].cancel()
             self._ai_jobs.pop(market)
             job = None
         if job and job['task'].done():
+            completed = True
             proposals = None if job['task'].cancelled() else job['task'].result()
             inputs = {o['key']: o for o in job['observations']}
             rejected = proposals is None
@@ -168,7 +171,9 @@ class AgentRuntime:
                     buy_allowed = False
                     reason = "AI result expired or source context changed; requesting a fresh analysis"
             output.append(replace(item, action=action, reason=reason, buy_allowed=buy_allowed))
-        if job is None and eligible:
+        # Rotate discovery after consuming this batch; immediately re-analyzing
+        # the same follow-up quotes would pin the scan to these symbols forever.
+        if job is None and eligible and not completed:
             task = self._background(self._ask_analyst(settings, observations, prompts))
             self._ai_jobs[market] = {'task': task, 'settings': settings, 'observations': observations}
             result = "Analyzing latest quotes" + (" · previous response unavailable" if rejected else "")
@@ -223,6 +228,7 @@ class AgentRuntime:
             self.paper.set_strategy({"policy": NEWS_POLICY if settings.news_enabled and source != "demo" else "price-only",
                                      "model": settings.local_ai_model if settings.local_ai_enabled and source != "demo" else "rules",
                                      "social_context": settings.social_enabled and source != "demo",
+                                     "twitter_context": settings.twitter_enabled and source != "demo",
                                      "quote_interval_seconds": settings.interval_seconds,
                                      "continuous": source == "broker_quotes"})
         self.paper_source = source
@@ -355,8 +361,11 @@ class AgentRuntime:
         state = self.paper.state or {}
         keys = set(state.get('positions', {})) | set(state.get('pending', {}))
         priority = self._batch([i for i in items if i.key in keys], cycle)
-        candidates = self._batch([i for i in items if i.key not in keys], cycle)
-        return (priority + candidates)[:20]
+        job = self._ai_jobs.get(items[0].asset_class) if items else None
+        analyzing = {o['key'] for o in job['observations']} if job else set()
+        followup = [i for i in items if i.key in analyzing and i.key not in keys]
+        candidates = self._batch([i for i in items if i.key not in keys | analyzing], cycle)
+        return (priority + followup + candidates)[:20]
 
     def _inspect(
         self, instrument: Instrument, quote: Quote | None, now: datetime, settings: AgentSettings | None = None
@@ -499,8 +508,9 @@ class AgentRuntime:
         self._handoff(name, "VELA", f"{len(quotes)} {asset_class.value} quotes ready")
         now = self._now()
         decisions = [self._inspect(item, quotes.get(item.symbol), now, settings) for item in batch]
-        if settings.news_enabled and self.paper_source != "demo":
-            decisions = [replace(item, source_context=self.sources.context(item.instrument, now)) for item in decisions]
+        if (settings.news_enabled or settings.twitter_enabled) and self.paper_source != "demo":
+            decisions = [replace(item, source_context={**self.sources.context(item.instrument, now),
+                                                       'news_required': settings.news_enabled}) for item in decisions]
         progress("Analyzing")
         eligible = [item for item in decisions if item.risk_status == "Data checks passed"]
         if settings.local_ai_enabled and (eligible or self.continuous_paper) and self.paper_source != "demo":
@@ -554,11 +564,11 @@ class AgentRuntime:
                     item = replace(item, action="hold", risk_status="Blocked", reason="Quote expired during analysis")
                 elif item.instrument.asset_class == AssetClass.EQUITY and not market_session_allowed(now, 0, 0, "regular_hours"):
                     item = replace(item, action="hold", risk_status="Blocked", reason="Equity session closed during analysis")
-            if settings.news_enabled and self.paper_source != "demo":
-                context = self.sources.context(item.instrument, now)
-                if self.continuous_paper and self._source_failed:
+            if (settings.news_enabled or settings.twitter_enabled) and self.paper_source != "demo":
+                context = {**self.sources.context(item.instrument, now), 'news_required': settings.news_enabled}
+                if settings.news_enabled and self.continuous_paper and self._source_failed:
                     context.update(buy_supported=False, coverage="News refresh unavailable")
-                supported = context["buy_supported"]
+                supported = not settings.news_enabled or context["buy_supported"]
                 reason = item.reason
                 if not supported and item.action == "buy":
                     reason = "News filter: " + ("headline risk terms: " + ", ".join(context["risk_terms"])
@@ -599,13 +609,14 @@ class AgentRuntime:
             def current():
                 return generation == self._generation and self._available()
 
-            if settings.news_enabled and self.paper_source != "demo":
+            if (settings.news_enabled or settings.twitter_enabled) and self.paper_source != "demo":
                 symbols = settings.equity_symbols + tuple(s.split("-")[0].split("/")[0] for s in (settings.crypto_symbols or ("BTC", "ETH")))
                 if self.continuous_paper:
                     self._poll_sources(symbols, settings)
                 else:
                     self._publish(team_status={**self.snapshot.team_status, "VELA": "Reading news sources"})
-                    await self.sources.refresh(symbols, social=settings.social_enabled)
+                    await self.sources.refresh(symbols, social=settings.social_enabled,
+                                               news=settings.news_enabled, twitter=settings.twitter_enabled)
                     if not current():
                         return
                     source_report = self.sources.summary()
