@@ -42,7 +42,7 @@ class AgentSettings:
     # Empty means discover Robinhood's supported USD pairs, then rotate bounded batches.
     crypto_symbols: tuple[str, ...] = ()
     scan_id: str = ""
-    interval_seconds: int = 30
+    interval_seconds: int = 5
     local_ai_model: str = ""
     local_ai_enabled: bool = False
     research_brief: str = ""
@@ -62,8 +62,8 @@ class AgentSettings:
         for brief in (self.research_brief, self.equity_brief, self.crypto_brief):
             if not isinstance(brief, str) or len(brief) > 2000 or "\x00" in brief:
                 raise ValueError("Each research prompt must be at most 2,000 characters without NUL")
-        if type(self.interval_seconds) is not int or not 15 <= self.interval_seconds <= 300:
-            raise ValueError("Agent cycles must be 15–300 seconds apart")
+        if type(self.interval_seconds) is not int or not 5 <= self.interval_seconds <= 300:
+            raise ValueError("Quote checks must be 5–300 seconds apart")
         for symbols in (self.equity_symbols, self.crypto_symbols):
             if parse_symbols(",".join(symbols)) != symbols:
                 raise ValueError("Agent symbols must be unique uppercase tickers")
@@ -111,3 +111,5 @@ class AgentSnapshot:
     research_sources: dict | None = None
     next_cycle_at: datetime | None = None
     error: str = ""
+    analysis_status: dict[str, str] = field(default_factory=dict)
+    sources_loading: bool = False

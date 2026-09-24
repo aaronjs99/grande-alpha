@@ -25,12 +25,13 @@ from grande_alpha.agent_models import (
     Instrument,
 )
 from grande_alpha.agent_paper import DEMO_CYCLES, PaperLedger, demo_market, demo_time, validate_paper_settings
-from grande_alpha.agent_sources import NEWS_POLICY, ResearchSources
+from grande_alpha.agent_sources import NEWS_POLICY, REFRESH_SECONDS, ResearchSources
 from grande_alpha.models import Quote, utc_now
 from grande_alpha.policy import market_session_allowed
 
 MARKET_WORKER_TIMEOUT_SECONDS = 35.0
 DEMO_INTERVAL_SECONDS = 1.0
+AI_TIMEOUT_SECONDS = 25.0
 
 
 class AgentRuntime:
@@ -72,7 +73,109 @@ class AgentRuntime:
         self.paper_source: str | None = None
         self.loop_demo = False
         self._event_sequence = 0
+        self._background_tasks: set[asyncio.Task] = set()
+        self._ai_jobs: dict[AssetClass, dict] = {}
+        self._source_task: asyncio.Task | None = None
+        self._source_due: datetime | None = None
+        self._source_failed = False
         self.snapshot = AgentSnapshot(paper=self.paper.summary())
+
+    @property
+    def continuous_paper(self) -> bool:
+        return self.paper_source == "broker_quotes"
+
+    def _background(self, coroutine) -> asyncio.Task:
+        task = asyncio.create_task(coroutine)
+        owned = self._background_tasks
+        owned.add(task)
+        task.add_done_callback(owned.discard)
+        return task
+
+    async def _refresh_sources(self, symbols, social) -> bool:
+        try:
+            await self.sources.refresh(symbols, social=social)
+            return True
+        except Exception:
+            return False
+
+    def _finish_sources(self, task, generation) -> None:
+        if generation != self._generation or task is not self._source_task or not self.snapshot.running or not self._available():
+            return
+        self._source_failed = task.cancelled() or not task.result()
+        self._source_task = None
+        report = self.sources.summary()
+        refreshed = datetime.fromisoformat(report['refreshed_at']) if report.get('refreshed_at') and not self._source_failed else self._now()
+        self._source_due = max(refreshed + timedelta(seconds=REFRESH_SECONDS), self._now() + timedelta(seconds=1))
+        if self._source_failed:
+            report = {**report, "items": [], "sources": [{"source": "Research reader", "status": "Unavailable", "fresh_items": 0}]}
+        self._publish(research_sources=report, sources_loading=False)
+        self._handoff("VELA", "KADE", f"{len(report['items'])} dated items · "
+                      f"{sum(s['status'] == 'OK' for s in report['sources'])}/{len(report['sources'])} feeds available", "NEWS")
+
+    def _poll_sources(self, symbols, settings) -> None:
+        if self._source_task is None and (self._source_due is None or self._now() >= self._source_due):
+            self._source_due = self._now() + timedelta(seconds=REFRESH_SECONDS)
+            self._source_task = self._background(self._refresh_sources(symbols, settings.social_enabled))
+            generation = self._generation
+            self._source_task.add_done_callback(lambda task: self._finish_sources(task, generation))
+            self._publish(sources_loading=True)
+
+    async def _ask_analyst(self, settings, observations, prompts):
+        try:
+            async with asyncio.timeout(AI_TIMEOUT_SECONDS):
+                proposals = await self._analyst.analyze(settings.local_ai_model, observations, **prompts)
+            if set(proposals) != {o['key'] for o in observations} or any(
+                not isinstance(p, (tuple, list)) or len(p) != 2 or p[0] not in {'buy', 'hold', 'exit'}
+                or not isinstance(p[1], str) or not p[1].strip() for p in proposals.values()
+            ):
+                raise ValueError("Unexpected model proposals")
+            return proposals
+        except Exception:
+            return None
+
+    def _continuous_analysis(self, market, decisions, eligible, settings, observations, prompts):
+        job = self._ai_jobs.get(market)
+        proposals, inputs, result = None, {}, "Waiting for enough eligible quotes"
+        rejected = False
+        if job and job['settings'] != settings:
+            job['task'].cancel()
+            self._ai_jobs.pop(market)
+            job = None
+        if job and job['task'].done():
+            proposals = None if job['task'].cancelled() else job['task'].result()
+            inputs = {o['key']: o for o in job['observations']}
+            rejected = proposals is None
+            result = "AI unavailable or invalid response" if rejected else "AI result received"
+            self._ai_jobs.pop(market)
+            job = None
+        output = []
+        for item in decisions:
+            if item not in eligible:
+                output.append(item)
+                continue
+            original = inputs.get(item.instrument.key)
+            action, reason, buy_allowed = "hold", "AI is analyzing; quote monitoring continues", not rejected
+            if rejected:
+                reason = "AI unavailable or invalid response; quote monitoring continues"
+            if proposals is not None and original:
+                age = (self._now() - datetime.fromisoformat(original['observations'][-1]['at'])).total_seconds()
+                input_ids = {a['id'] for a in (original.get('source_context') or {}).get('articles', [])}
+                current_ids = {a['id'] for a in (item.source_context or {}).get('articles', [])}
+                if 0 <= age <= settings.max_quote_age_seconds and input_ids <= current_ids:
+                    action, reason = proposals[item.instrument.key]
+                    reason += " · Analysis quote: " + original['observations'][-1]['at']
+                else:
+                    buy_allowed = False
+                    reason = "AI result expired or source context changed; requesting a fresh analysis"
+            output.append(replace(item, action=action, reason=reason, buy_allowed=buy_allowed))
+        if job is None and eligible:
+            task = self._background(self._ask_analyst(settings, observations, prompts))
+            self._ai_jobs[market] = {'task': task, 'settings': settings, 'observations': observations}
+            result = "Analyzing latest quotes" + (" · previous response unavailable" if rejected else "")
+        elif job:
+            result = "Analyzing latest quotes"
+        self._publish(analysis_status={**self.snapshot.analysis_status, market.value: result})
+        return output
 
     def _now(self) -> datetime:
         return demo_time(self.snapshot.cycle) if self.paper_source == "demo" else self._clock()
@@ -119,8 +222,15 @@ class AgentRuntime:
             self.paper.start(source, initial_cash, trade_cash)
             self.paper.set_strategy({"policy": NEWS_POLICY if settings.news_enabled and source != "demo" else "price-only",
                                      "model": settings.local_ai_model if settings.local_ai_enabled and source != "demo" else "rules",
-                                     "social_context": settings.social_enabled and source != "demo"})
+                                     "social_context": settings.social_enabled and source != "demo",
+                                     "quote_interval_seconds": settings.interval_seconds,
+                                     "continuous": source == "broker_quotes"})
         self.paper_source = source
+        self._background_tasks = set()
+        self._ai_jobs = {}
+        self._source_task = None
+        self._source_due = None
+        self._source_failed = False
         self.loop_demo = loop_demo
         self._event_sequence = 0
         self._generation += 1
@@ -147,9 +257,12 @@ class AgentRuntime:
         self._task = None
         if task is not None and not task.done():
             task.cancel()
+        for background in tuple(self._background_tasks):
+            background.cancel()
         self._discard_paper_intents()
         if self.snapshot.running:
             self._publish(running=False, phase="Stopped", decisions=(), observed_at=None, next_cycle_at=None,
+                          analysis_status={}, sources_loading=False,
                           worker_status={"equity": "Stopped", "crypto": "Stopped"},
                           team_status={name: "Stopped" for name in self.snapshot.team_status})
             self._log(reason, category="agent_session")
@@ -161,13 +274,23 @@ class AgentRuntime:
             # Paper storage must never obstruct the app's broker STOP/Disconnect.
             self._log("Paper simulation stopped; pending-intent cleanup could not be saved", "warning", "agent_session")
 
+    def _poll_delay(self, elapsed: float, failures: int) -> float:
+        delay = max(1.0, self.settings.interval_seconds - elapsed)
+        if failures:
+            delay = max(delay, min(60, self.settings.interval_seconds * 2 ** min(failures, 4)))
+        return delay
+
     async def _run(self) -> None:
+        owned_background = self._background_tasks
+        failures = 0
         try:
             while self.snapshot.running:
                 if not self._available():
                     self._discard_paper_intents()
-                    self._publish(running=False, phase="Disconnected", next_cycle_at=None)
+                    self._publish(running=False, phase="Disconnected", next_cycle_at=None,
+                                  analysis_status={}, sources_loading=False)
                     break
+                started = asyncio.get_running_loop().time()
                 await self.cycle()
                 if not self.snapshot.running:
                     break
@@ -178,6 +301,11 @@ class AgentRuntime:
                                   team_status={name: "Demo complete" for name in self.snapshot.team_status})
                     break
                 interval = DEMO_INTERVAL_SECONDS if self.paper_source == "demo" else self.settings.interval_seconds
+                if self.continuous_paper:
+                    failures = failures + 1 if self.snapshot.market_status and all(
+                        s.startswith('Unavailable') for s in self.snapshot.market_status.values()) else 0
+                    # Skip missed polls; never queue catch-up scans or overlap a market request.
+                    interval = self._poll_delay(asyncio.get_running_loop().time() - started, failures)
                 self._publish(next_cycle_at=utc_now() + timedelta(seconds=interval))
                 await asyncio.sleep(interval)
         except asyncio.CancelledError:
@@ -187,8 +315,15 @@ class AgentRuntime:
             error = ("Could not save session results. Check available disk space and access to the app's data folder."
                      if isinstance(exc, sqlite3.Error) else
                      f"Agent stopped ({type(exc).__name__}). Open Receipts to inspect the last completed step.")
-            self._publish(running=False, phase="Error", next_cycle_at=None, error=error)
+            self._publish(running=False, phase="Error", next_cycle_at=None, error=error,
+                          analysis_status={}, sources_loading=False)
             self._log(f"Agent stopped: {type(exc).__name__}", "error", "agent_session")
+        finally:
+            tasks = tuple(owned_background)
+            for background in tasks:
+                background.cancel()
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
 
     @staticmethod
     def _batch(items: list[Instrument], cycle: int) -> list[Instrument]:
@@ -197,6 +332,13 @@ class AgentRuntime:
         start = ((cycle - 1) * 20) % len(items)
         return (items + items)[start : start + min(20, len(items))]
 
+    def _paper_batch(self, items: list[Instrument], cycle: int) -> list[Instrument]:
+        state = self.paper.state or {}
+        keys = set(state.get('positions', {})) | set(state.get('pending', {}))
+        priority = self._batch([i for i in items if i.key in keys], cycle)
+        candidates = self._batch([i for i in items if i.key not in keys], cycle)
+        return (priority + candidates)[:20]
+
     def _inspect(
         self, instrument: Instrument, quote: Quote | None, now: datetime, settings: AgentSettings | None = None
     ) -> AgentDecision:
@@ -204,7 +346,9 @@ class AgentRuntime:
         if instrument.key not in self._history and len(self._history) >= 400:
             # Discovery universes can change on every scan; cap long-running memory.
             del self._history[next(iter(self._history))]
-        history = self._history.setdefault(instrument.key, deque(maxlen=12))
+        # Keep enough distinct quotes to span 60s even at the fastest supported cadence.
+        history_size = 12 if self.paper_source == "demo" else max(12, math.ceil(120 / settings.interval_seconds) + 1)
+        history = self._history.setdefault(instrument.key, deque(maxlen=history_size))
         reason = ""
         if instrument.crypto_rules is not None:
             # A research buy proposal cannot override current pair restrictions.
@@ -321,7 +465,7 @@ class AgentRuntime:
                 raise ValueError("Pairs not returned by Robinhood: " + ", ".join(sorted(missing)))
         if any(item.asset_class != asset_class for item in instruments):
             raise ValueError("Discovery returned a different asset class")
-        batch = self._batch(instruments, cycle)
+        batch = self._paper_batch(instruments, cycle) if self.continuous_paper else self._batch(instruments, cycle)
         quotes = quotes if self.paper_source == "demo" else (
             await self._equity_quotes([item.symbol for item in batch])
             if asset_class == AssetClass.EQUITY and batch
@@ -337,7 +481,7 @@ class AgentRuntime:
             decisions = [replace(item, source_context=self.sources.context(item.instrument, now)) for item in decisions]
         progress("Analyzing")
         eligible = [item for item in decisions if item.risk_status == "Data checks passed"]
-        if settings.local_ai_enabled and eligible and self.paper_source != "demo":
+        if settings.local_ai_enabled and (eligible or self.continuous_paper) and self.paper_source != "demo":
             observations = [
                 {
                     "key": item.instrument.key,
@@ -354,16 +498,19 @@ class AgentRuntime:
                 }
                 for item in eligible
             ]
+            prompts = {}
+            market_brief = settings.equity_brief if asset_class == AssetClass.EQUITY else settings.crypto_brief
+            if settings.research_brief or market_brief:
+                prompts = {"research_brief": settings.research_brief, "market_brief": market_brief}
             try:
-                prompts = {}
-                market_brief = settings.equity_brief if asset_class == AssetClass.EQUITY else settings.crypto_brief
-                if settings.research_brief or market_brief:
-                    prompts = {"research_brief": settings.research_brief, "market_brief": market_brief}
-                proposals = await self._analyst.analyze(settings.local_ai_model, observations, **prompts)
-                decisions = [
-                    replace(item, action=proposals[item.instrument.key][0], reason=proposals[item.instrument.key][1])
-                    if item in eligible else item for item in decisions
-                ]
+                if self.continuous_paper:
+                    decisions = self._continuous_analysis(asset_class, decisions, eligible, settings, observations, prompts)
+                else:
+                    proposals = await self._analyst.analyze(settings.local_ai_model, observations, **prompts)
+                    decisions = [
+                        replace(item, action=proposals[item.instrument.key][0], reason=proposals[item.instrument.key][1])
+                        if item in eligible else item for item in decisions
+                    ]
             except Exception:
                 decisions = [
                     replace(item, action="hold", reason="Local AI unavailable or invalid response; no proposal accepted", risk_status="Blocked")
@@ -387,15 +534,25 @@ class AgentRuntime:
                     item = replace(item, action="hold", risk_status="Blocked", reason="Equity session closed during analysis")
             if settings.news_enabled and self.paper_source != "demo":
                 context = self.sources.context(item.instrument, now)
+                if self.continuous_paper and self._source_failed:
+                    context.update(buy_supported=False, coverage="News refresh unavailable")
                 supported = context["buy_supported"]
                 reason = item.reason
                 if not supported and item.action == "buy":
                     reason = "News filter: " + ("headline risk terms: " + ", ".join(context["risk_terms"])
                                                if context["risk_terms"] else context["coverage"])
-                item = replace(item, buy_allowed=supported, source_context=context,
+                item = replace(item, buy_allowed=item.buy_allowed and supported, source_context=context,
                                action="hold" if item.action == "buy" and not supported else item.action, reason=reason)
             result.append(item)
         return result
+
+    def _consume_paper(self, decisions, settings):
+        before = self.paper.state['fill_count']
+        self.paper.consume(decisions, self._now(), settings.max_quote_age_seconds)
+        for fill in self.paper.state['fills']:
+            if fill['number'] > before:
+                self._handoff("RUNE", "ZARA", f"PAPER {fill['side'].upper()} {fill['key']} · "
+                              f"{float(fill['quantity']):.6g} units @ ${float(fill['price']):,.6g}", "FILL")
 
     async def cycle(self) -> None:
         """Two concurrent market workers; cycles coalesce and cancellation joins both."""
@@ -407,6 +564,7 @@ class AgentRuntime:
             generation = self._generation
             settings = self.settings  # Prompt changes apply to the next complete cycle.
             cycle = self.snapshot.cycle + 1
+            fills_before = self.paper.state['fill_count'] if self.paper.state else 0
             results = {}
             status = {}
             workers = {"equity": "Queued", "crypto": "Queued"}
@@ -421,14 +579,17 @@ class AgentRuntime:
 
             if settings.news_enabled and self.paper_source != "demo":
                 symbols = settings.equity_symbols + tuple(s.split("-")[0].split("/")[0] for s in (settings.crypto_symbols or ("BTC", "ETH")))
-                self._publish(team_status={**self.snapshot.team_status, "VELA": "Reading news sources"})
-                await self.sources.refresh(symbols, social=settings.social_enabled)
-                if not current():
-                    return
-                source_report = self.sources.summary()
-                self._publish(research_sources=source_report)
-                self._handoff("VELA", "KADE", f"{len(source_report['items'])} dated source items · "
-                              f"{sum(s['status'] == 'OK' for s in source_report['sources'])}/{len(source_report['sources'])} feeds available", "NEWS")
+                if self.continuous_paper:
+                    self._poll_sources(symbols, settings)
+                else:
+                    self._publish(team_status={**self.snapshot.team_status, "VELA": "Reading news sources"})
+                    await self.sources.refresh(symbols, social=settings.social_enabled)
+                    if not current():
+                        return
+                    source_report = self.sources.summary()
+                    self._publish(research_sources=source_report)
+                    self._handoff("VELA", "KADE", f"{len(source_report['items'])} dated source items · "
+                                  f"{sum(s['status'] == 'OK' for s in source_report['sources'])}/{len(source_report['sources'])} feeds available", "NEWS")
 
             def combined():
                 return self._recheck([item for market in AssetClass for item in results.get(market, [])], settings)
@@ -453,6 +614,9 @@ class AgentRuntime:
                 except Exception as exc:
                     if not current():
                         return
+                    if self.continuous_paper and market in self._ai_jobs:
+                        self._ai_jobs.pop(market)['task'].cancel()
+                        self._publish(analysis_status={**self.snapshot.analysis_status, market.value: "Paused: quotes unavailable"})
                     for key in list(self._history):
                         if key.startswith(f"{market.value}:"):
                             del self._history[key]
@@ -461,6 +625,8 @@ class AgentRuntime:
                     self._handoff("NOVA" if market == AssetClass.EQUITY else "ORIN", "ZARA",
                                   f"{market.value} worker unavailable; inspect local status", "WARN")
                 if current():
+                    if self.continuous_paper and self.snapshot.running and market in results:
+                        self._consume_paper(self._recheck(results[market], settings), settings)
                     self._publish(decisions=tuple(combined()), market_status=dict(status))
 
             async with asyncio.TaskGroup() as group:
@@ -470,19 +636,16 @@ class AgentRuntime:
                 return
             if not self._available():
                 self._discard_paper_intents()
-                self._publish(running=False, phase="Disconnected", decisions=(), next_cycle_at=None)
+                self._publish(running=False, phase="Disconnected", decisions=(), next_cycle_at=None,
+                              analysis_status={}, sources_loading=False)
                 return
             decisions = combined()
             eligible = sum(item.risk_status == "Data checks passed" for item in decisions)
             self._handoff("KADE", "RUNE", f"{eligible} of {len(decisions)} candidates passed data checks", "RISK")
-            fills_before = self.paper.state["fill_count"] if self.paper.state else 0
             if self.paper_source and self.snapshot.running:
-                self.paper.consume(decisions, self._now(), settings.max_quote_age_seconds)
+                if not self.continuous_paper:
+                    self._consume_paper(decisions, settings)
                 report = self.paper_context()
-                for fill in report["fills"]:
-                    if fill["number"] > fills_before:
-                        self._handoff("RUNE", "ZARA", f"PAPER {fill['side'].upper()} {fill['key']} · "
-                                      f"{float(fill['quantity']):.6g} units @ ${float(fill['price']):,.6g}", "FILL")
                 self._handoff("ZARA", "NOVA + ORIN", f"Virtual equity ${float(report['equity']):,.2f} · "
                               f"P&L ${float(report['total_pnl']):+,.2f} · {report['pending_count']} pending", "BOOK")
             else:

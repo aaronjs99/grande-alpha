@@ -13,7 +13,7 @@ a model automatically, or enable live stock/crypto orders.
    **Include public social context · Bluesky, when available**. These options start off;
    no news-provider key is required. Stop the current run before changing settings.
 3. Set your stock/crypto watchlists in **Configure universe and AI**, then click
-   **Start paper trading**. Cash and fills are virtual. Scroll to **News + trends**
+   **Start continuous paper trading**. Cash and fills are virtual. Scroll to **News + trends**
    for feed status and articles; double-click a headline to open its publisher page.
 
 The offline demo skips all external sources, even when these options are checked.
@@ -36,6 +36,11 @@ published within 48 hours are used. Future-dated, undated, off-domain, malformed
 oversized entries are rejected. Links, publication times, first-seen times, short
 excerpts and content-derived IDs accompany the data. Article pages are not scraped.
 The panel shows up to 60 headlines; it is not exhaustive market coverage.
+
+In continuous paper mode, collection happens in the background so slow feeds do not
+stall quote checks. News-enabled buys still need qualifying current coverage. Optional
+AI also runs in the background; expired replies are rejected and cannot replace current
+quote checks. See [continuous monitoring and timing limits](AGENT_PAPER_TRADING.md).
 
 Social search covers at most eight unique configured symbols in one bounded query,
 equities first. A blank crypto watchlist supplies BTC and ETH for this search, not

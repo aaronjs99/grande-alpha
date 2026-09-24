@@ -35,6 +35,9 @@ cash. **Paper trading** offers an offline demo or Robinhood quotes, simulated fi
 and realized/unrealized P&L. Its dashboard shows virtual equity history, closed-trade
 win rate, fills, and six named workflow cards with actual handoffs. An optional
 repeat setting keeps the offline demo running until stopped.
+The desktop now defaults to **continuous paper trading with Robinhood quotes**:
+five-second quote-check targets, background news/optional AI, and open-position
+priority. It runs until stopped; response time and data checks govern actual activity.
 See [Agent paper trading](docs/AGENT_PAPER_TRADING.md).
 Optional **News + trends** research adds dated publisher headlines, official announcements,
 bounded public social context, source citations and an experimental buy filter. Paper

@@ -126,7 +126,7 @@ class AgentWidget(QScrollArea):
         title = label("GRANDE / AGENT DESK")
         title.setObjectName("dashboardTitle")
         self.header_layout.addWidget(title, 1)
-        self.clock_label = label("ELAPSED 00:00  ·  CYCLE 0")
+        self.clock_label = label("ELAPSED 00:00  ·  UPDATE 0")
         self.clock_label.setObjectName("eyebrow")
         self.header_layout.addWidget(self.clock_label)
         self.mode = label("IDLE · PROPOSALS ONLY")
@@ -230,10 +230,10 @@ class AgentWidget(QScrollArea):
         self.export_contracts.setToolTip("Save tool definitions without account data or order calls")
         form.addRow(self.export_contracts)
         self.interval = QSpinBox()
-        self.interval.setRange(15, 300)
-        self.interval.setValue(30)
-        self.interval.setSuffix(" seconds after each completed cycle")
-        form.addRow("Cadence", self.interval)
+        self.interval.setRange(5, 300)
+        self.interval.setValue(5)
+        self.interval.setSuffix(" seconds (target)")
+        form.addRow("Quote checks", self.interval)
         self.local_ai = QCheckBox("Use a local Ollama model for analysis")
         self.model = QLineEdit()
         self.model.setPlaceholderText("Installed model name")
@@ -365,7 +365,7 @@ class AgentWidget(QScrollArea):
         activity_title = label("// ACTIVITY LOG")
         activity_title.setObjectName("sectionTitle")
         activity_layout.addWidget(activity_title)
-        self.activity = self._table(["Time (Pacific)", "Cycle", "Activity"])
+        self.activity = self._table(["Time (Pacific)", "Update", "Activity"])
         self.activity.setMinimumHeight(245)
         self.activity.setMaximumHeight(290)
         self.activity.setColumnWidth(0, 170)
@@ -488,7 +488,8 @@ class AgentWidget(QScrollArea):
         form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
         self.paper_source = QComboBox()
         self.paper_source.addItem("Offline demo · made-up prices · about 24 seconds", "demo")
-        self.paper_source.addItem("Robinhood quotes · existing market and data checks", "broker_quotes")
+        self.paper_source.addItem("Robinhood quotes · continuous monitoring · virtual money", "broker_quotes")
+        self.paper_source.setCurrentIndex(1)
         self.paper_source.setMinimumWidth(0)
         self.paper_source.currentIndexChanged.connect(lambda: self._set_controls())
         form.addRow("Price source", self.paper_source)
@@ -519,7 +520,10 @@ class AgentWidget(QScrollArea):
         self.paper_start.clicked.connect(self._start_paper)
         form.addRow(label(
             "Demo runs both workers on a fixed up/down price path without Robinhood or AI calls. "
-            "Robinhood quotes may produce only HOLD decisions. Each new session starts a fresh virtual "
+            "Robinhood paper trading runs until Stop, targeting quote checks every 5 seconds by default. "
+            "News and optional AI run in the background; provider response times can slow checks. "
+            "It monitors your configured/discovered candidates, prioritizes open positions, and may produce only HOLD. "
+            "Each new session starts a fresh virtual "
             "portfolio; older sessions stay archived locally. Stop agent ends either run."
         ))
         self.paper_status = label("No paper session yet · no real funds used")
@@ -566,17 +570,19 @@ class AgentWidget(QScrollArea):
 
     def _update_sources(self, snapshot: AgentSnapshot) -> None:
         report = snapshot.research_sources
-        signature = (json.dumps(report, sort_keys=True), self.controller.agent.paper_source)
+        signature = (json.dumps(report, sort_keys=True), self.controller.agent.paper_source, snapshot.sources_loading)
         if signature == self._sources_render_key:
             return
         self._sources_render_key = signature
         items = (report or {}).get("items", [])[:60]
         if not report:
-            self.sources_status.setText("Offline demo skips external feeds." if self.controller.agent.paper_source == "demo"
+            self.sources_status.setText("Loading news sources; quote checks continue." if snapshot.sources_loading else
+                                        "Offline demo skips external feeds." if self.controller.agent.paper_source == "demo"
                                         else "News research is off or has not fetched yet. Enable it in Session setup.")
         else:
             health = " · ".join(f"{s['source']}: {s['status']} ({s['fresh_items']})" for s in report["sources"])
-            self.sources_status.setText(f"Last source check {report['refreshed_at']} · publication window 48 hours\n{health}")
+            self.sources_status.setText(f"Last source check {report['refreshed_at']} · publication window 48 hours\n{health}"
+                                       + ("\nRefreshing in the background; quote checks continue." if snapshot.sources_loading else ""))
         self.sources_table.setRowCount(len(items))
         for row, source in enumerate(items):
             for column, value in enumerate((source["source"], source["published_at"][:16].replace("T", " "), source["title"])):
@@ -657,7 +663,7 @@ class AgentWidget(QScrollArea):
         if snapshot.running and snapshot.started_at:
             elapsed = max(0, (utc_now() - snapshot.started_at).total_seconds())
         minutes, seconds = divmod(int(elapsed), 60)
-        self.clock_label.setText(f"ELAPSED {minutes:02d}:{seconds:02d}  ·  CYCLE {snapshot.cycle}")
+        self.clock_label.setText(f"ELAPSED {minutes:02d}:{seconds:02d}  ·  UPDATE {snapshot.cycle}")
         self._update_run_status()
 
     def _update_run_status(self) -> None:
@@ -671,7 +677,7 @@ class AgentWidget(QScrollArea):
             text = snapshot.error
         elif not snapshot.running:
             if self.paper_source.currentData() == "broker_quotes":
-                text = ("Ready for paper trading with Robinhood quotes. Click Start paper trading; funds stay virtual."
+                text = ("Ready for continuous paper trading. Click Start continuous paper trading; funds stay virtual."
                         if self._connected else
                         "Connect Robinhood to start paper trading with current quotes. No real orders will be placed.")
             elif snapshot.phase == "Demo complete":
@@ -680,12 +686,12 @@ class AgentWidget(QScrollArea):
                 text = "Offline demo selected. Click Start offline demo, or choose Robinhood quotes in Session setup."
         else:
             mode = "Offline demo" if self.controller.agent.paper_source == "demo" else (
-                "Paper trading · Robinhood quotes" if self.controller.agent.paper_source else "Research only")
+                "Continuous paper trading · Robinhood quotes" if self.controller.agent.paper_source else "Research only")
             prefix = f"{mode} · {snapshot.analyst}"
             if snapshot.phase == "Starting":
                 text = prefix + " · Starting workers…"
             elif snapshot.phase == "Working":
-                text = prefix + f" · Cycle {snapshot.cycle} in progress"
+                text = prefix + f" · Checking quotes · update {snapshot.cycle}"
                 detail = ("Reading news sources…" if snapshot.team_status.get("VELA") == "Reading news sources" else
                           " · ".join(f"{name}: {snapshot.worker_status.get(key, 'Queued')}"
                                      for key, name in (("equity", "Stocks"), ("crypto", "Crypto"))))
@@ -694,10 +700,11 @@ class AgentWidget(QScrollArea):
                 paper = snapshot.paper if self.controller.agent.paper_source else None
                 fills = f" · {paper['fill_count']} simulated fills · {paper['pending_count']} pending" if paper else ""
                 remaining = max(0, math.ceil((snapshot.next_cycle_at - utc_now()).total_seconds())) if snapshot.next_cycle_at else None
-                wait = f" · Next cycle in {remaining}s" if remaining is not None else ""
-                text = (f"{prefix} · Cycle {snapshot.cycle} complete · {signals['buy']} BUY / {signals['exit']} EXIT / "
+                wait = f" · Next quote check in {remaining}s" if remaining is not None else ""
+                text = (f"{prefix} · Update {snapshot.cycle} · {signals['buy']} BUY / {signals['exit']} EXIT / "
                         f"{signals['hold']} HOLD{fills}{wait}")
                 held = {p['key'] for p in paper['positions']} if paper else set()
+                settings_ai = self.controller.agent.settings.local_ai_enabled
 
                 def signal_reason(item):
                     if item.risk_status != "Data checks passed":
@@ -713,7 +720,7 @@ class AgentWidget(QScrollArea):
                         if paper and Decimal(paper['cash']) < Decimal(paper['trade_cash']):
                             return "Insufficient virtual cash for another buy"
                         return "BUY signal; waiting for a later eligible quote" if paper else "BUY proposal; research does not simulate fills"
-                    return "HOLD: no entry or exit signal"
+                    return "HOLD: " + item.reason.split(" · Sources:", 1)[0][:160] if settings_ai else "HOLD: no entry or exit signal"
 
                 reasons = []
                 for key, name in (("equity", "Stocks"), ("crypto", "Crypto")):
@@ -728,6 +735,10 @@ class AgentWidget(QScrollArea):
                         reason = "; ".join(f"{count}/{len(items)} {message}" for message, count in counts.most_common(2))
                     reasons.append(f"{name}: {reason}")
                 detail = "\n".join(reasons)
+            if snapshot.sources_loading:
+                detail += "\nNews refreshing in the background."
+            if snapshot.analysis_status:
+                detail += "\nAI · " + " · ".join(f"{key}: {value}" for key, value in snapshot.analysis_status.items())
         self.run_status.setText(text)
         self.run_detail.setText(detail)
         self.run_detail.setVisible(bool(detail))
@@ -778,6 +789,9 @@ class AgentWidget(QScrollArea):
         for name, (card, status, _accent) in self.team_cards.items():
             if name in snapshot.team_status:
                 status.setText(snapshot.team_status[name])
+            ai_working = any(s.startswith("Analyzing") for s in snapshot.analysis_status.values())
+            if name == "VELA" and snapshot.analysis_status:
+                status.setText("AI analyzing · quotes continue" if ai_working else "Waiting for eligible quotes")
             status.setToolTip(status.text())
             if not snapshot.running:
                 card.stop_motion()
@@ -787,6 +801,7 @@ class AgentWidget(QScrollArea):
                     stage in {"Scanning", "Analyzing", "Checking data", "Checking quotes and limits", "Reading news sources"}
                     or name == "VELA" and "Analyzing" in snapshot.worker_status.values()
                 )
+                working = working or name == "VELA" and ai_working
                 card.set_activity(working, handoff=name in handoffs)
 
     def apply_theme(self) -> None:
@@ -1040,7 +1055,7 @@ class AgentWidget(QScrollArea):
         self.start.setEnabled(enabled and not running)
         self.paper_start.setEnabled(not running and not self.controller.shadow_only_runtime
                                     and (self.paper_source.currentData() == "demo" or enabled))
-        self.paper_start.setText("Start offline demo" if self.paper_source.currentData() == "demo" else "Start paper trading")
+        self.paper_start.setText("Start offline demo" if self.paper_source.currentData() == "demo" else "Start continuous paper trading")
         self.paper_start.setToolTip("Connect Robinhood to use current quotes with virtual funds."
                                    if self.paper_source.currentData() == "broker_quotes" and not enabled else "")
         self.repeat_demo.setEnabled(not running and self.paper_source.currentData() == "demo")
@@ -1077,7 +1092,9 @@ class AgentWidget(QScrollArea):
             self.paper_toggle.setChecked(False)
         paper_mode = bool(snapshot.paper and (self.controller.agent.paper_source or not snapshot.running))
         mode = ("DEMO · VIRTUAL MONEY" if snapshot.paper["source"] == "demo" else "PAPER · VIRTUAL MONEY") if paper_mode else "PROPOSALS ONLY"
-        self.mode.setText(f"{snapshot.phase.upper()} · CYCLE {snapshot.cycle} · {mode}")
+        continuous = snapshot.running and self.controller.agent.continuous_paper
+        phase = "WATCHING" if continuous and snapshot.phase == "Waiting" else snapshot.phase.upper()
+        self.mode.setText(f"{'CONTINUOUS · ' if continuous else ''}{phase} · UPDATE {snapshot.cycle} · {mode}")
         self._update_paper(snapshot.paper)
         self._update_sources(snapshot)
         self.equity_status.setText(snapshot.worker_status.get("equity", "Idle") + " · " + snapshot.market_status.get("equity", "Waiting for stock observations"))

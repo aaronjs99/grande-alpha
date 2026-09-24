@@ -186,6 +186,9 @@ class PaperLedger:
         history = state["equity_history"]
         if not history or now > datetime.fromisoformat(history[-1]["at"]):
             history.append({"at": now.isoformat(), "equity": str(equity)})
+        elif now == datetime.fromisoformat(history[-1]["at"]):
+            # Independent market workers may update the same observation instant.
+            history[-1] = {"at": now.isoformat(), "equity": str(equity)}
         state["equity_history"] = history[-500:]
         peak = max(money(state["equity_peak"]), equity)
         state["equity_peak"] = str(peak)

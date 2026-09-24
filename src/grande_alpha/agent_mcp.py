@@ -50,13 +50,15 @@ def create_server(bridge: AgentBridge) -> FastMCP:
         return await bridge.request("start")
 
     @server.tool(annotations=write)
-    async def start_paper_trading(source: str = "demo", initial_cash: float = 1000, trade_cash: float = 100,
+    async def start_paper_trading(source: str = "broker_quotes", initial_cash: float = 1000, trade_cash: float = 100,
                                   loop_demo: bool = False) -> dict:
         """Start a NEW virtual session while stopped; never places broker orders.
 
         source=demo: 24 accelerated synthetic cycles, no broker or model calls.
         With loop_demo=true, repeat synthetic paths until stopped; never real market prices.
-        source=broker_quotes: use connected broker quotes and existing research guards.
+        source=broker_quotes (default): continuous paper monitoring until Stop, using
+        connected broker quotes. Target quote interval defaults to 5s; provider speed
+        and existing research checks still apply. News/optional AI run in background.
         $1–$1,000,000 initial virtual cash; $1–initial_cash per buy. Prior sessions
         remain archived locally. Read paper results in get_research_context;
         stop_research stops simulation and discards pending simulated orders.

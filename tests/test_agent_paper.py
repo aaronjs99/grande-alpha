@@ -347,6 +347,9 @@ async def test_ui_paper_demo_button_works_disconnected_and_results_survive_stop(
     monkeypatch.setattr("grande_alpha.agent_runtime.DEMO_INTERVAL_SECONDS", 0)
     widget = AgentWidget(controller)
     widget.update_account(controller.snapshot)
+    assert widget.paper_source.currentData() == 'broker_quotes'
+    assert not widget.paper_start.isEnabled()
+    widget.paper_source.setCurrentIndex(0)
     assert widget.paper_start.isEnabled()
     widget.paper_source.setCurrentIndex(1)
     assert not widget.paper_start.isEnabled()

@@ -230,7 +230,7 @@ def test_top_status_explains_start_failure_waiting_and_missing_news(tmp_path, ap
     snapshot = AgentSnapshot(running=True, cycle=1, phase='Waiting', observed_at=NOW,
                              decisions=(warming,), next_cycle_at=NOW + timedelta(seconds=15))
     widget.update_agent(snapshot)
-    assert 'Next cycle in 15s' in widget.run_status.text()
+    assert 'Next quote check in 15s' in widget.run_status.text()
     assert 'Collecting at least 4 distinct quotes' in widget.run_detail.text()
     no_news = replace(decision(), action='hold', buy_allowed=False, source_context={
         'risk_terms': [], 'coverage': 'Insufficient fresh ticker-specific coverage'})

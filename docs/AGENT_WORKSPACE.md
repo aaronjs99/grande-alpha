@@ -48,13 +48,17 @@ budget, and authority behavior is unchanged.
 4. Leave crypto blank to discover supported USD pairs, or enter symbols such as
    `BTC, ETH`. The catalog establishes supported pair identity, not account-specific
    permission to trade. Unsupported requested pairs produce a visible error.
-5. Choose the cycle interval and optional local model, then **Start agent analysis**.
+5. Choose the quote-check interval and optional local model, then **Start agent analysis**.
    Settings apply to this run only. Nothing starts automatically on launch.
 
 Each cycle runs Equities and Crypto concurrently and reads up to 20 candidates per market.
 Each worker has a 35-second deadline; broker session calls remain serialized. Larger universes rotate through
 batches. The next cycle starts only after the prior cycle completes plus the configured
-interval; slow responses cannot queue overlapping scans. One market's provider error
+interval for research-only runs; slow responses cannot queue overlapping scans.
+**Continuous paper trading** uses a five-second target by default, counts processing
+time toward the interval, runs news/AI in the background, prioritizes held instruments,
+and processes each market's virtual fills on arrival. See [paper monitoring](AGENT_PAPER_TRADING.md).
+One market's provider error
 does not erase the other market's results. Stop, disconnect, broker-permission revocation,
 application exit, and STOP + CANCEL stop the research agent. Stopping this analysis
 does not cancel broker orders or close positions.

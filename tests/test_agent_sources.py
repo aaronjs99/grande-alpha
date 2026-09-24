@@ -252,10 +252,18 @@ async def test_news_analyst_receives_sources_as_data_and_requires_citations(monk
 
 
 @pytest.mark.asyncio
-async def test_stop_cancels_news_fetch_and_never_starts_quotes(monkeypatch):
+async def test_news_fetch_does_not_block_quotes_and_stop_cancels_it(monkeypatch):
     market = ReadMarket()
     agent = market.runtime()
-    entered, cancelled = asyncio.Event(), asyncio.Event()
+    entered, cancelled, observed = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    original_changed = agent._changed
+
+    def changed(snapshot):
+        original_changed(snapshot)
+        if snapshot.observed_at:
+            observed.set()
+
+    agent._changed = changed
 
     async def fetch(*args, **kwargs):
         entered.set()
@@ -268,9 +276,10 @@ async def test_stop_cancels_news_fetch_and_never_starts_quotes(monkeypatch):
     agent.start_paper(AgentSettings(news_enabled=True), source='broker_quotes')
     task = agent._task
     await asyncio.wait_for(entered.wait(), 2)
+    await asyncio.wait_for(observed.wait(), 2)
     agent.stop()
     await asyncio.wait_for(task, 2)
-    assert cancelled.is_set() and not market.calls
+    assert cancelled.is_set() and market.calls
     assert not agent.snapshot.running and not agent.snapshot.research_sources
     assert agent.paper_context()['fill_count'] == 0
 
