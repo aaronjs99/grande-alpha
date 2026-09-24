@@ -159,9 +159,9 @@ async def test_real_stdio_process_exposes_tools_and_reads_enabled_desktop(deskto
     _, controller = desktop
     controller.set_agent_mcp_enabled(True)
     params = StdioServerParameters(command=sys.executable, args=['-m', 'grande_alpha.agent_mcp', '--bridge', str(controller.agent_bridge.path)])
-    # Explicitly pass the test dependency path; stdio clients sanitize inherited env.
+    # Preserve optional test dependency paths; installed environments need no override.
     import os
-    params.env = {'PYTHONPATH': os.environ['PYTHONPATH']}
+    params.env = {'PYTHONPATH': os.environ['PYTHONPATH']} if 'PYTHONPATH' in os.environ else None
     task = asyncio.create_task(pump(controller))
     try:
         async with stdio_client(params) as (read, write), ClientSession(read, write) as client:
