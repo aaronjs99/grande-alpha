@@ -48,6 +48,8 @@ from grande_alpha.policy import market_session_allowed
 MARKET_WORKER_TIMEOUT_SECONDS = 35.0
 DEMO_INTERVAL_SECONDS = 1.0
 AI_TIMEOUT_SECONDS = AI_REQUEST_TIMEOUT_SECONDS
+PAPER_FOCUS_SECONDS = 120
+PAPER_SAMPLING_POLICY = "focused-quotes-v1"
 
 
 class AgentRuntime:
@@ -81,6 +83,8 @@ class AgentRuntime:
         self._task: asyncio.Task | None = None
         self._cycle_lock = asyncio.Lock()
         self._history: dict[str, deque[tuple[datetime, float]]] = {}
+        self._paper_focus: dict[AssetClass, tuple[datetime, tuple[str, ...]]] = {}
+        self._paper_scan_after: dict[AssetClass, str] = {}
         self._pairs: list[Instrument] | None = None
         self._session_id = ""
         self._generation = 0
@@ -340,6 +344,7 @@ class AgentRuntime:
                                      "social_context": settings.social_enabled and source != "demo",
                                      "twitter_context": settings.twitter_enabled and source != "demo",
                                      "quote_interval_seconds": settings.interval_seconds,
+                                     "sampling_policy": PAPER_SAMPLING_POLICY if adaptive else "rotating-quotes-v1",
                                      "paper_max_positions": settings.paper_max_positions,
                                      "paper_max_exposure_pct": settings.paper_max_exposure_pct,
                                      "paper_entries_paused": settings.paper_entries_paused,
@@ -356,6 +361,8 @@ class AgentRuntime:
         self._generation += 1
         self.settings = settings
         self._history.clear()
+        self._paper_focus.clear()
+        self._paper_scan_after.clear()
         self._pairs = None
         self._session_id = str(uuid.uuid4())
         self.snapshot = AgentSnapshot(session_id=self._session_id, started_at=utc_now())
@@ -474,6 +481,8 @@ class AgentRuntime:
         return (items + items)[start : start + min(20, len(items))]
 
     def _paper_batch(self, items: list[Instrument], cycle: int) -> list[Instrument]:
+        if self.adaptive_paper:
+            return self._adaptive_batch(items, cycle)
         state = self.paper.state or {}
         keys = set(state.get('positions', {})) | set(state.get('pending', {}))
         priority = self._batch([i for i in items if i.key in keys], cycle)
@@ -482,6 +491,35 @@ class AgentRuntime:
         followup = [i for i in items if i.key in analyzing and i.key not in keys]
         candidates = self._batch([i for i in items if i.key not in keys | analyzing], cycle)
         return (priority + followup + candidates)[:20]
+
+    def _adaptive_batch(self, items: list[Instrument], cycle: int) -> list[Instrument]:
+        """Keep a bounded group on every poll long enough to observe a price signal.
+
+        Rotating 20 names every poll can leave each name more than 30 seconds
+        between observations, making the adaptive breakout condition impossible.
+        Holdings and pending intents always take precedence over discovery.
+        """
+        if not items:
+            return []
+        market, now = items[0].asset_class, self._now()
+        by_key = {item.key: item for item in items}
+        state = self.paper.state or {}
+        held = set(state.get("positions", {})) | set(state.get("pending", {}))
+        priority = self._batch([item for key, item in by_key.items() if key in held], cycle)
+        slots = max(0, 20 - len(priority))
+        started, previous = self._paper_focus.get(market, (now, ()))
+        focus = [key for key in previous if key in by_key and key not in held]
+        if not focus or not 0 <= (now - started).total_seconds() < PAPER_FOCUS_SECONDS:
+            candidates = [key for key in sorted(by_key) if key not in held]
+            after = self._paper_scan_after.get(market, "")
+            start = next((i for i, key in enumerate(candidates) if key > after), 0)
+            focus = (candidates[start:] + candidates[:start])[:slots]
+            self._paper_focus[market] = (now, tuple(focus))
+            if focus:
+                self._paper_scan_after[market] = focus[-1]
+        # Resolve the saved names to this poll's metadata so new halts or
+        # restrictions are still checked, including for a pending virtual buy.
+        return priority + [by_key[key] for key in focus[:slots]]
 
     def _inspect(
         self, instrument: Instrument, quote: Quote | None, now: datetime, settings: AgentSettings | None = None
@@ -680,7 +718,10 @@ class AgentRuntime:
         progress("Checking data")
         self._handoff("VELA", "KADE", f"{asset_class.value}: {sum(d.risk_status == 'Blocked' for d in decisions)} blocked, "
                       f"{sum(d.risk_status == 'Warming up' for d in decisions)} warming up", "RISK")
-        return decisions, f"Observed {len(batch)} of {len(instruments)} candidates"
+        description = f"Observed {len(batch)} of {len(instruments)} candidates"
+        if self.adaptive_paper and len(instruments) > 20:
+            description += " · focused quote group; discovery rotates every 120s; holdings checked each poll"
+        return decisions, description
 
     def _recheck(self, decisions, settings):
         now = self._now()

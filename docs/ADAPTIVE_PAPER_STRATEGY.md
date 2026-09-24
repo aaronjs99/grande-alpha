@@ -24,6 +24,21 @@ of consecutive midpoint returns, multiplied by the square root of the return cou
 These are experimental heuristics, not forecasts of profit. Costs consuming the 1%
 stop budget block entry. A pending entry must still qualify on its later fill quote.
 
+Large discovery lists use **focused quote groups**: up to 20 instruments per market
+are revisited on each poll for 120 seconds before moving to the next group. Open
+holdings and pending intents take priority on every poll. The remaining names rotate
+in a stable order, so later candidates still receive observation time. Current pair
+metadata is resolved again every poll; a saved group does not preserve old permissions.
+The paper session records this sampling policy as `focused-quotes-v1`.
+
+Previously, rotating all names every update could make the breakout condition
+impossible: 160 names in batches of 20 at five-second intervals meant each name was
+seen only every 40 seconds, outside the required 30-second window. Focused sampling
+fixes this scheduling conflict. It does not reduce the entry threshold or make a
+flat, stale, expensive or restricted candidate eligible. Configured intervals over
+30 seconds and slow provider responses can still leave no preceding quote in the
+window; diagnostics now report that gap explicitly.
+
 | Control | Adaptive paper behavior |
 | --- | --- |
 | News enabled | Read headlines and block new entries on configured risk terms. Missing coverage does not itself block a price signal. |
@@ -57,3 +72,7 @@ Forward paper observations are needed to assess whether this policy improves on 
 baseline. More trades are not evidence of a better strategy. The paper ledger still
 omits fees, liquidity limits and settlement constraints, so its results can overstate
 real execution performance. No strategy parameters were fitted to user trade outcomes.
+
+Regression tests reproduce the former zero-fill condition with 160 discovered
+instruments, verify eligible synthetic entries with focused sampling, and verify
+that flat prices still produce no trades while every candidate gets visited.

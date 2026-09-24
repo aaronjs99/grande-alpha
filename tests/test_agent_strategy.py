@@ -20,6 +20,98 @@ async def quiet_sources(*_args, **_kwargs):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("asset_class", list(AssetClass))
+async def test_large_discovery_universe_keeps_recent_quotes_for_adaptive_entries(asset_class):
+    class DiscoveryMarket(ReadMarket):
+        async def pairs(self):
+            return [Instrument(asset_class, f"C{i:03d}-USD") for i in range(160)] if asset_class == AssetClass.CRYPTO else []
+
+        async def scan(self, _scan_id):
+            return [Instrument(asset_class, f"S{i:03d}") for i in range(160)]
+
+    market = DiscoveryMarket()
+    agent = await manual_agent(market, AgentSettings(equity_symbols=(), crypto_symbols=(), paper_strategy="adaptive",
+                                                   scan_id="fixture" if asset_class == AssetClass.EQUITY else ""))
+    try:
+        for index in range(64):
+            market.now = NOW + timedelta(seconds=5 * index)
+            market.price = 100 + index * .03
+            await agent.cycle()
+        assert agent.paper_context()["fill_count"] > 0
+        assert all(fill["key"].startswith(asset_class.value + ":") for fill in agent.paper.state["fills"])
+        assert len(agent.paper.state["positions"]) <= 4
+        assert all(len(symbols) <= 20 for kind, symbols in market.calls if kind in {"equity", "crypto"})
+        assert agent.paper.state["strategy"]["sampling_policy"] == "focused-quotes-v1"
+        assert "focused quote group" in agent.snapshot.market_status[asset_class.value]
+    finally:
+        await shutdown(agent)
+
+
+@pytest.mark.asyncio
+async def test_focused_scanning_rotates_every_candidate_without_forcing_flat_price_trades():
+    class DiscoveryMarket(ReadMarket):
+        async def pairs(self):
+            return [Instrument(AssetClass.CRYPTO, f"C{i:03d}-USD") for i in range(160)]
+
+    market = DiscoveryMarket()
+    agent = await manual_agent(market, AgentSettings(equity_symbols=(), crypto_symbols=(), paper_strategy="adaptive"))
+    try:
+        for index in range(193):
+            market.now = NOW + timedelta(seconds=5 * index)
+            await agent.cycle()
+        seen = {symbol for kind, symbols in market.calls if kind == "crypto" for symbol in symbols}
+        assert len(seen) == 160
+        assert agent.paper_context()["fill_count"] == agent.paper_context()["pending_count"] == 0
+    finally:
+        await shutdown(agent)
+
+
+@pytest.mark.asyncio
+async def test_focus_preserves_pending_priority_and_uses_current_instrument_metadata():
+    market = ReadMarket()
+    agent = await manual_agent(market, AgentSettings(equity_symbols=(), crypto_symbols=(), paper_strategy="adaptive"))
+    items = [Instrument(AssetClass.EQUITY, f"S{i:03d}") for i in range(45)]
+    try:
+        first = agent._paper_batch(items, 1)
+        agent.paper.consume([decision(at=market.now, key="S044", ask=100.02)], market.now, 15)
+        market.now += timedelta(seconds=5)
+        agent.paper.consume([decision(at=market.now, key="S044", ask=100.02),
+                             decision(at=market.now, key="S043", ask=100.02)], market.now, 15)
+        items[0] = replace(items[0], provider_id="UPDATED")
+        batch = agent._paper_batch(items, 2)
+        assert len(batch) == len({item.key for item in batch}) == 20
+        assert {item.symbol for item in batch[:2]} == {"S043", "S044"}
+        assert next(item for item in batch if item.symbol == "S000").provider_id == "UPDATED"
+        assert {item.key for item in batch[2:]} <= {item.key for item in first}
+        market.now += timedelta(seconds=120)
+        rotated = agent._paper_batch(items, 3)
+        assert {item.symbol for item in rotated[:2]} == {"S043", "S044"}
+        assert {item.key for item in rotated[2:]} != {item.key for item in batch[2:]}
+        # An instrument disappearing from discovery is not reconstructed from an old focus group.
+        removed = rotated[2]
+        assert removed.key not in {item.key for item in agent._paper_batch([i for i in items if i.key != removed.key], 4)}
+    finally:
+        await shutdown(agent)
+
+
+@pytest.mark.asyncio
+async def test_slow_quote_cadence_explains_missing_breakout_observations():
+    market = ReadMarket()
+    agent = await manual_agent(market, AgentSettings(equity_symbols=(), crypto_symbols=("BTC",),
+                                                   paper_strategy="adaptive", interval_seconds=60))
+    try:
+        for index in range(8):
+            market.now = NOW + timedelta(seconds=60 * index)
+            market.price = 100 + index * .2
+            await agent.cycle()
+        assert agent.paper_context()["fill_count"] == 0
+        assert "No preceding quote inside the 30s breakout window" in agent.snapshot.diagnostics
+        assert "last observation gap 60.0s" in agent.snapshot.diagnostics
+    finally:
+        await shutdown(agent)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('ai', ['off', 'pending', 'invalid', 'hold'])
 async def test_adaptive_entries_and_exits_continue_without_headlines_or_ai_permission(ai):
     market = ReadMarket()

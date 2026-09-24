@@ -67,6 +67,8 @@ def completed_check_report(*, cycle, at, decisions, settings, source, paper, mar
               '', 'Observed candidates (this batch only):']
     if adaptive:
         lines[-2:-2] = ['Adaptive exits: 1% net stop, 0.75% observed trailing decline, 2% net target, trend reversal or 30 minutes.',
+                        'Quote sampling: focused-quotes-v1; a bounded group is checked every poll for 120s before discovery rotates. Holdings and pending intents have priority.',
+                        'A preceding valid quote must be within 30s for a breakout; longer configured intervals or provider delays can prevent entries.',
                         f'Limits: {settings.paper_max_positions} positions; {settings.paper_max_exposure_pct}% starting virtual capital; '
                         'one QQQ/TQQQ/SQQQ exposure; 60s re-entry cooldown.',
                         'New entries pause at 3% session drawdown. Exits and stops require eligible quotes; fills may exceed these levels.']

@@ -65,11 +65,14 @@ Stock and crypto reads run concurrently. Each market's eligible paper fills and
 valuations are processed as soon as its observations arrive; a slow peer no longer
 holds up those fills. Up to 20 instruments per market are checked per update.
 Open virtual positions and pending intents receive priority, with remaining capacity
-rotating through other candidates. If more than 20 held/pending instruments exist
+rotating through other candidates. Adaptive sessions keep each discovery group on
+every poll for 120 seconds before rotating, to collect the recent observations needed
+by the price strategy. Legacy sessions retain their earlier per-update rotation.
+If more than 20 held/pending instruments exist
 in one market, that priority group itself rotates. This does not scan every traded
 asset at once, and unsupported or absent quotes cannot be invented.
 
-When local AI is enabled, the next quote batch also prioritizes the instruments in
+In Legacy mode with local AI enabled, the next quote batch also prioritizes the instruments in
 its outstanding analysis, after holdings and pending intents. A completed answer is
 matched to fresh observations for those instruments before discovery moves on. After
 consuming the answer, the scan rotates before starting another analysis. This fixes

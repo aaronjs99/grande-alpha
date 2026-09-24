@@ -90,6 +90,11 @@ def adaptive_decision(item: AgentDecision, history, state: dict, now: datetime) 
     recent = [mid for at, mid in history[:-1] if (history[-1][0] - at).total_seconds() <= 30]
     breakout = bool(recent and quote.mid > max(recent))
     metrics["breakout"] = breakout
+    if not recent:
+        gap = (history[-1][0] - history[-2][0]).total_seconds() if len(history) >= 2 else None
+        return result("hold", "No preceding quote inside the 30s breakout window" +
+                      (f" · last observation gap {gap:.1f}s" if gap is not None else "") +
+                      "; check quote cadence and provider delays")
     if movement > threshold and fast > slow and quote.mid > fast and breakout:
         return result("buy", f"Paper trend breakout · move {movement / 100:+.3f}% > "
                       f"cost/noise threshold {threshold / 100:.3f}% · round-trip estimate {cost_bps / 100:.3f}%")
