@@ -55,7 +55,10 @@ Six named cards expose stages in the workflow, not six independent AI models:
 | ZARA | Shared virtual portfolio and cycle summaries |
 
 Agent comms and card highlights follow emitted runtime events; highlights turn
-off when stopped. Research-only analysis remains available below the dashboard.
+off when stopped. Card glows ease in and out, and active avatars gently breathe.
+Brief handoffs remain visible before fading; ordinary refreshes do not restart
+the motion. Animations pause on hidden pages without queuing old events or
+changing the trading cadence. Research-only analysis remains available below the dashboard.
 The page does not have token-launch, mempool, wallet, or social-media scanners.
 Connecting ChatGPT through MCP does not turn these stages into autonomous LLMs.
 

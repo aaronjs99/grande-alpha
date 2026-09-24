@@ -9,8 +9,8 @@ from decimal import Decimal
 from pathlib import Path
 
 import pyqtgraph as pg
-from PySide6.QtCore import QRectF, Qt, QTimer
-from PySide6.QtGui import QColor, QPainter, QPen
+from PySide6.QtCore import Qt, QTimer
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -39,6 +39,7 @@ from PySide6.QtWidgets import (
 from grande_alpha.agent_ledger import AgentBudget
 from grande_alpha.agent_models import AgentSettings, AgentSnapshot, parse_symbols
 from grande_alpha.models import utc_now
+from grande_alpha.ui.agent_card import AgentCard
 from grande_alpha.ui.chatgpt_setup import ChatGPTSetupDialog
 from grande_alpha.ui.table_layout import configure_adjustable_columns
 from grande_alpha.ui.themes import color, set_item_foreground, theme_css
@@ -49,29 +50,6 @@ def label(text: str) -> QLabel:
     result.setTextFormat(Qt.TextFormat.PlainText)
     result.setWordWrap(True)
     return result
-
-
-class AgentAvatar(QWidget):
-    """Small code-drawn status avatar; no external assets or network requests."""
-
-    def __init__(self, accent: str) -> None:
-        super().__init__()
-        self.accent = QColor(accent)
-        self.setFixedSize(56, 56)
-        self.setAccessibleName("Agent module icon")
-
-    def paintEvent(self, event) -> None:
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.setPen(QPen(QColor(color("#e7ebee", base="light")), 1))
-        painter.setBrush(QColor(color("#ffffff", base="light")))
-        painter.drawEllipse(QRectF(3, 3, 50, 50))
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QColor(color("#25323a", base="light")))
-        painter.drawRoundedRect(QRectF(19, 18, 5, 14), 2.5, 2.5)
-        painter.drawRoundedRect(QRectF(31, 18, 5, 14), 2.5, 2.5)
-        painter.setPen(QPen(self.accent, 2.5))
-        painter.drawLine(23, 39, 32, 39)
 
 
 DASHBOARD_STYLE = """
@@ -408,19 +386,18 @@ class AgentWidget(QScrollArea):
             ("RUNE", "PAPER FILLS", "#be72a2", self.execution_status),
             ("ZARA", "PORTFOLIO", "#9273c8", self.scout_status),
         )):
-            card, card_layout = self._panel()
-            card.setStyleSheet(f"QFrame#dashboardPanel {{ border-top: 3px solid {accent}; }}")
+            card, card_layout = self._panel(accent)
             number = label(f"{index + 1:02d}  /  {role}")
             number.setObjectName("metricCaption")
             card_layout.addWidget(number)
-            card_layout.addWidget(AgentAvatar(accent), 0, Qt.AlignmentFlag.AlignHCenter)
+            card_layout.addWidget(card.avatar, 0, Qt.AlignmentFlag.AlignHCenter)
             heading = label(name)
             heading.setObjectName("eyebrow")
             heading.setAlignment(Qt.AlignmentFlag.AlignCenter)
             card_layout.addWidget(heading)
             status.setAlignment(Qt.AlignmentFlag.AlignCenter)
             status.setObjectName("metricCaption")
-            status.setMaximumHeight(72)
+            status.setFixedHeight(44)
             card_layout.addWidget(status)
             card_layout.addStretch()
             self.stage_cards.append(card)
@@ -603,11 +580,14 @@ class AgentWidget(QScrollArea):
             self.activity.removeRow(200)
 
     def _update_handoffs(self, snapshot: AgentSnapshot) -> None:
+        handoffs = set()
         session = snapshot.session_id or (snapshot.paper or {}).get("session_id", "")
         if session != self._display_session:
             self._display_session = session
             self._last_cycle = self._last_event_id = 0
             self.activity.setRowCount(0)
+            for card in self.stage_cards:
+                card.stop_motion()
             self.comms.setText("Waiting for worker handoffs.")
             # Persisted fills remain inspectable after reopening; do not invent handoffs.
             if not snapshot.team_events and not snapshot.running and snapshot.paper:
@@ -618,6 +598,7 @@ class AgentWidget(QScrollArea):
             if event["id"] <= self._last_event_id:
                 continue
             self._last_event_id = event["id"]
+            handoffs.update((event["from"], *event["to"].split(" + ")))
             summary = f"[{event['kind']}] {event['from']} → {event['to']} · {event['message']}"
             self._add_activity(datetime.fromisoformat(event["at"]).astimezone(UTC).strftime("%H:%M:%S"), str(event["cycle"]), summary, event["kind"])
         latest = snapshot.team_events[-1] if snapshot.team_events else None
@@ -627,11 +608,19 @@ class AgentWidget(QScrollArea):
                                ("  ·  last handoff, session stopped" if not snapshot.running else ""))
             if snapshot.running:
                 self._highlighted = {latest["from"], *latest["to"].split(" + ")}
-        for name, (card, status, accent) in self.team_cards.items():
+        for name, (card, status, _accent) in self.team_cards.items():
             if name in snapshot.team_status:
                 status.setText(snapshot.team_status[name])
-            card.setStyleSheet(f"QFrame#dashboardPanel {{ border-top: 3px solid {accent}; " +
-                              (f"border: 2px solid {accent};" if name in self._highlighted else "") + " }")
+            status.setToolTip(status.text())
+            if not snapshot.running:
+                card.stop_motion()
+            else:
+                stage = snapshot.team_status.get(name, "")
+                working = snapshot.phase == "Working" and (
+                    stage in {"Scanning", "Analyzing", "Checking data", "Checking quotes and limits"}
+                    or name == "VELA" and "Analyzing" in snapshot.worker_status.values()
+                )
+                card.set_activity(working, handoff=name in handoffs)
 
     def apply_theme(self) -> None:
         self.setStyleSheet(theme_css(DASHBOARD_STYLE, base="light"))
@@ -645,8 +634,9 @@ class AgentWidget(QScrollArea):
         self.curve.setSymbolBrush(accent)
         accent.setAlpha(22)
         self.curve.setBrush(pg.mkBrush(accent))
-        for avatar in self.findChildren(AgentAvatar):
-            avatar.update()
+        for card in self.stage_cards:
+            card.update()
+            card.avatar.update()
         self._update_paper(self._dashboard_snapshot.paper)
 
     def resizeEvent(self, event) -> None:
@@ -657,6 +647,8 @@ class AgentWidget(QScrollArea):
         self.header_layout.setDirection(QBoxLayout.Direction.LeftToRight if wide else QBoxLayout.Direction.TopToBottom)
         self.tools_layout.setDirection(QBoxLayout.Direction.LeftToRight if wide else QBoxLayout.Direction.TopToBottom)
         stage_columns = 6 if wide else (3 if self.viewport().width() >= 700 else 2)
+        for column in range(6):
+            self.stages.setColumnStretch(column, 1 if column < stage_columns else 0)
         for card in self.stage_cards:
             self.stages.removeWidget(card)
         for index, card in enumerate(self.stage_cards):
@@ -671,9 +663,10 @@ class AgentWidget(QScrollArea):
         )
 
     @staticmethod
-    def _panel():
-        panel = QFrame()
-        panel.setObjectName("dashboardPanel")
+    def _panel(accent: str | None = None):
+        panel = AgentCard(accent) if accent else QFrame()
+        if not accent:
+            panel.setObjectName("dashboardPanel")
         panel.setMinimumWidth(0)
         box = QVBoxLayout(panel)
         box.setContentsMargins(16, 16, 16, 16)
@@ -960,6 +953,8 @@ class AgentWidget(QScrollArea):
 
     def shutdown(self) -> None:
         self._clock_timer.stop()
+        for card in self.stage_cards:
+            card.stop_motion()
         if self._scan_task is not None:
             self._scan_task.cancel()
         self.controller.stop_agent("Agent stopped when the application closed")
