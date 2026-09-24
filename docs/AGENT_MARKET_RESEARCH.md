@@ -15,7 +15,7 @@ a model automatically, or enable live stock/crypto orders.
    **Include public social context · Bluesky, when available**. These options start off;
    no news-provider key is required. Stop the current run before changing settings.
 3. Set your stock/crypto watchlists in **Configure universe and AI**, then click
-   **Start continuous paper trading**. Cash and fills are virtual. Scroll to **News + trends**
+   **Start paper trading**. Cash and fills are virtual. Open **Positions, sources + observations → News + trends**
    for feed status and articles; double-click a headline to open its publisher page.
 
 The offline demo skips all external sources, even when these options are checked.

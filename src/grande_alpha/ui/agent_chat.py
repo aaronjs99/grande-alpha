@@ -10,7 +10,9 @@ import httpx
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
+    QDialog,
     QFormLayout,
+    QFrame,
     QHBoxLayout,
     QLabel,
     QPlainTextEdit,
@@ -21,6 +23,7 @@ from PySide6.QtWidgets import (
 )
 
 from grande_alpha.agent_chat import LocalAgentChat, chat_context
+from grande_alpha.ui.agent_desk import ChatTranscript
 
 
 def text_label(text):
@@ -32,6 +35,8 @@ def text_label(text):
 
 class AgentChat(QWidget):
     configure_model = Signal()
+    controls_changed = Signal()
+    connections_requested = Signal()
 
     def __init__(self, controller, save_current, parent=None):
         super().__init__(parent)
@@ -43,52 +48,85 @@ class AgentChat(QWidget):
         self._base_settings = None
         self._syncing = False
         self._closed = False
+        self.setObjectName("agentChat")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setMinimumWidth(0)
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.addWidget(text_label(
-            "Talk to the local AI about your paper portfolio and give research directions. "
-            "It uses the current paper results and recent observations; it has no live web search. "
-            "Replies are suggestions. Review the changes below before applying them."
-        ))
+        layout.setContentsMargins(18, 18, 18, 16)
+        layout.setSpacing(10)
+        title = text_label("TALK TO YOUR AI TEAM")
+        title.setObjectName("chatTitle")
+        layout.addWidget(title)
+        model_row = QHBoxLayout()
         self.model_status = text_label("")
-        layout.addWidget(self.model_status)
-        self.choose_model = QPushButton("Choose local AI model")
+        self.model_status.setObjectName("metricCaption")
+        model_row.addWidget(self.model_status, 1)
+        self.choose_model = QPushButton("Model")
+        self.choose_model.setToolTip("Choose your installed local AI model")
         self.choose_model.clicked.connect(self.configure_model.emit)
-        layout.addWidget(self.choose_model)
-        self.transcript = QPlainTextEdit()
-        self.transcript.setReadOnly(True)
-        self.transcript.setMaximumBlockCount(120)
-        self.transcript.setMinimumHeight(190)
-        self.transcript.setMaximumHeight(260)
-        self.transcript.setPlaceholderText("Ask: Why is this paper session losing money? What should we examine?")
-        layout.addWidget(self.transcript)
+        model_row.addWidget(self.choose_model)
+        layout.addLayout(model_row)
+        self.transcript = ChatTranscript()
+        layout.addWidget(self.transcript, 1)
+        self.review_box = QFrame()
+        self.review_box.setObjectName("chatProposal")
+        review = QVBoxLayout(self.review_box)
+        review.setContentsMargins(12, 12, 12, 12)
+        review.addWidget(text_label("PROPOSED CHANGES"))
+        self.preview = text_label("No suggested changes to apply.")
+        self.preview.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        review.addWidget(self.preview)
+        self.apply = QPushButton("Apply changes")
+        self.apply.setObjectName("primary")
+        self.apply.setEnabled(False)
+        self.apply.clicked.connect(self._apply)
+        review.addWidget(self.apply)
+        self.transcript.attach_review(self.review_box)
+        self.review_box.hide()
+        self.status = text_label("Paper research · replies use your latest snapshot. Applied directions are saved.")
+        self.status.setObjectName("metricCaption")
+        layout.addWidget(self.status)
+        quick = QHBoxLayout()
+        self.explain = QPushButton("Explain last trade")
+        self.explain.clicked.connect(lambda: self._prompt("Explain the latest paper trade, including costs and why it was entered or exited."))
+        self.review_risk = QPushButton("Review risk")
+        self.review_risk.clicked.connect(lambda: self._prompt("Review our current paper losses and exposure. What do the observations support changing?"))
+        quick.addWidget(self.explain)
+        quick.addWidget(self.review_risk)
+        layout.addLayout(quick)
         self.input = QPlainTextEdit()
-        self.input.setPlaceholderText("Give directions or ask a question…")
-        self.input.setFixedHeight(80)
+        self.input.setPlaceholderText("Give your team directions…")
+        self.input.setFixedHeight(76)
         layout.addWidget(self.input)
         actions = QHBoxLayout()
-        self.send = QPushButton("Send to local AI")
+        self.send = QPushButton("Send")
+        self.send.setToolTip("Send your question and current paper snapshot to the selected local model")
         self.send.setObjectName("primary")
         self.send.clicked.connect(self._send)
-        self.cancel = QPushButton("Cancel reply")
+        self.cancel = QPushButton("Cancel")
         self.cancel.clicked.connect(self.cancel_reply)
         self.cancel.setEnabled(False)
-        self.clear = QPushButton("Clear chat")
+        self.clear = QPushButton("Clear")
         self.clear.clicked.connect(self._clear)
         for button in (self.send, self.cancel, self.clear):
             actions.addWidget(button)
         layout.addLayout(actions)
-        self.status = text_label("Conversation lasts until you close the app. Applied directions and controls are saved.")
-        layout.addWidget(self.status)
-        self.preview = text_label("No suggested changes to apply.")
-        layout.addWidget(self.preview)
-        self.apply = QPushButton("Apply suggested changes")
-        self.apply.setEnabled(False)
-        self.apply.clicked.connect(self._apply)
-        layout.addWidget(self.apply)
-
-        controls = QFormLayout()
-        self.paused = QCheckBox("Pause new paper buys · continue managing exits")
+        footer = QHBoxLayout()
+        self.controls_toggle = QPushButton("Paper controls")
+        self.connections = QPushButton("AI connections")
+        self.connections.clicked.connect(self.connections_requested.emit)
+        footer.addWidget(self.controls_toggle)
+        footer.addWidget(self.connections)
+        layout.addLayout(footer)
+        self.controls_box = QDialog(self)
+        self.controls_box.setWindowTitle("Paper controls · saved automatically")
+        self.controls_box.setMinimumWidth(330)
+        self.controls_toggle.clicked.connect(self.controls_box.show)
+        controls = QFormLayout(self.controls_box)
+        controls.setContentsMargins(18, 18, 18, 18)
+        controls.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
+        self.paused = QCheckBox("Pause new paper buys")
+        self.paused.setToolTip("Continue managing existing holdings with their normal exit rules")
         self.paused.setStyleSheet("QCheckBox::indicator { width: 16px; height: 16px; border: 1px solid #8ea3af; "
                                  "border-radius: 3px; } QCheckBox::indicator:checked { background: #159e7b; }")
         controls.addRow(self.paused)
@@ -99,13 +137,10 @@ class AgentChat(QWidget):
         self.max_exposure.setRange(5, 40)
         self.max_exposure.setSuffix("%")
         self.max_exposure.setMaximumWidth(180)
-        controls.addRow("Adaptive: maximum positions", self.max_positions)
-        controls.addRow("Adaptive: maximum virtual exposure", self.max_exposure)
-        layout.addLayout(controls)
-        layout.addWidget(text_label(
-            "These controls save automatically and affect new entries. Lower limits do not sell existing holdings. "
-            "Exposure is measured against starting virtual cash. Research prompts guide the AI; "
-            "adaptive trades still follow the price rules. No setting guarantees a profit."
+        controls.addRow("Max positions", self.max_positions)
+        controls.addRow("Max virtual exposure", self.max_exposure)
+        controls.addRow(text_label(
+            "Limits apply to adaptive new entries and save automatically. Existing holdings retain their exit rules."
         ))
         self.paused.toggled.connect(self._save_controls)
         self.max_positions.valueChanged.connect(self._save_controls)
@@ -117,14 +152,19 @@ class AgentChat(QWidget):
         self._timer.timeout.connect(self._tick)
         self.sync_settings()
 
+    def _prompt(self, message):
+        self.input.setPlainText(message)
+        self.input.setFocus()
+
     def sync_settings(self):
         self._syncing = True
         settings = self.controller.agent.settings
         self.paused.setChecked(settings.paper_entries_paused)
         self.max_positions.setValue(settings.paper_max_positions)
         self.max_exposure.setValue(settings.paper_max_exposure_pct)
-        self.model_status.setText("Local Ollama model: " + (settings.local_ai_model or "Choose an installed model to chat"))
+        self.model_status.setText((settings.local_ai_model + " · Local AI") if settings.local_ai_model else "No local model selected")
         self._syncing = False
+        self.controls_changed.emit()
 
     def _save_controls(self):
         if self._syncing or self._closed:
@@ -163,6 +203,7 @@ class AgentChat(QWidget):
             self.status.setText("The app event loop is unavailable. Restart GRANDE to use chat.")
             return
         self._proposal = None
+        self.review_box.hide()
         self.apply.setEnabled(False)
         self.preview.setText("Waiting for a reply. No changes applied.")
         self._base_settings = self.controller.agent.settings
@@ -192,6 +233,8 @@ class AgentChat(QWidget):
                 f"{labels[key]}: {getattr(self._base_settings, key)} → {value}" for key, value in response.changes.items()
             ) if response.changes else "The AI did not propose any setting changes.")
             self.apply.setEnabled(bool(response.changes))
+            self.review_box.setVisible(bool(response.changes))
+            QTimer.singleShot(0, self.transcript._scroll_to_latest)
             self.status.setText("Reply received. Review any proposed changes, then click Apply.")
         except asyncio.CancelledError:
             pass
@@ -233,6 +276,7 @@ class AgentChat(QWidget):
             self.status.setText("Reply canceled. No suggested changes applied.")
         self._timer.stop()
         self._proposal = None
+        self.review_box.hide()
         self.apply.setEnabled(False)
         self.preview.setText("No suggested changes to apply.")
 
@@ -244,4 +288,5 @@ class AgentChat(QWidget):
 
     def shutdown(self):
         self.cancel_reply()
+        self.controls_box.close()
         self._closed = True

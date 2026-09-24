@@ -29,7 +29,7 @@ stop budget block entry. A pending entry must still qualify on its later fill qu
 | News enabled | Read headlines and block new entries on configured risk terms. Missing coverage does not itself block a price signal. |
 | Optional local AI | At most one request per market; starts at least 60 seconds apart. Rechecked replies are advisory context and cannot force or veto trades. Pending/failed replies do not suspend price decisions. |
 | Capacity | Defaults to four held or pending entries across stocks and crypto and at most 40% of starting virtual cash committed at entry cost. Saved user controls can reduce these caps to 1–4 positions and 5–40% exposure. |
-| User pause | Saved pause blocks new virtual buys and cancels pending virtual buys; holdings keep their normal exits. Available in Chat + AI connections. |
+| User pause | Saved pause blocks new virtual buys and cancels pending virtual buys; holdings keep their normal exits. Available through Pause new buys on the dashboard or Paper controls in AI chat. |
 | ETF overlap | Hold or queue only one of QQQ, TQQQ and SQQQ at a time. |
 | Stop / target | Request an exit at -1% or +2% estimated net liquidation return after sell slippage. |
 | Other exits | 0.75% decline from the observed bid high, downward trend reversal, or 30 minutes in the position. |

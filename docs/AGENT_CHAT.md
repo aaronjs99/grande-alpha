@@ -1,10 +1,16 @@
 # Local AI chat and saved Agent configuration
 
-Open **Agent · Stocks + Crypto → Chat + AI connections**. With Ollama running and
-an installed model selected (for example `qwen2.5:3b`), type a question and click
-**Send to local AI**. No tunnel, API key or research MCP permission is needed for
-this local chat. **Choose local AI model** opens the existing setup controls. The
+Open **Agent · Stocks + Crypto**. The **Talk to your AI team** panel stays beside
+the dashboard on wide windows, with its own conversation scroll. On smaller
+windows, switch between **Agent desk** and **AI chat** at the top of the page.
+With Ollama running and an installed model selected (for example `qwen2.5:3b`),
+type a question and click **Send**. No tunnel, API key or research MCP permission
+is needed for this local chat. **Model** opens the existing setup controls. The
 background-analysis checkbox can remain off when using chat by itself.
+
+**Explain last trade** and **Review risk** fill the message box; review or edit
+the question before sending. **AI connections** opens the saved team prompts and
+optional MCP setup.
 
 Examples:
 
@@ -22,7 +28,7 @@ tools are not included in the chat context. User-entered messages and research
 prompts are included; do not put secrets in them.
 
 The reply appears as plain text. If the model proposes settings, GRANDE displays
-the old and proposed values separately. Only **Apply suggested changes** applies
+the old and proposed values separately. Only **Apply changes** applies
 them. Settings changed since the question invalidate the proposal. Applying a
 proposal preserves the current portfolio and its recorded P&L; it never resets
 losses, starts a new session, or sends a broker order.
@@ -34,7 +40,9 @@ losses, starts a new session, or sends a broker order.
 | Adaptive maximum positions | 1–4 held or pending entries across both market workers. |
 | Adaptive maximum exposure | 5–40% of starting virtual cash at entry cost. This cap may prevent a buy if the configured cash per buy is larger. |
 
-Manual paper controls below the chat apply and save immediately. Position/exposure
+The **Paper controls** button opens a separate control window; edits apply and
+save immediately. **Pause new buys** on the dashboard uses the same saved control.
+Position/exposure
 limits affect adaptive new entries only; reducing them does not sell existing
 holdings. Fixed stop, target, drawdown, quote eligibility and broker permission
 checks cannot be changed by a chat reply. These controls do not guarantee profits.
@@ -43,7 +51,17 @@ Only one chat request runs at a time. A cancel button and elapsed timer stay
 available; requests have a 60-second overall deadline. An unavailable model,
 timeout, incomplete or invalid JSON response produces a visible error and applies
 no proposal. Stop agent, STOP + CANCEL, Disconnect and Exit cancel an active reply.
-The six cards, charts and activity log retain their dashboard layout.
+The dashboard keeps the six circular bot faces, colored borders and smooth
+activity animations. Metrics and activity come from the current account or
+paper ledger, with the mode labeled. News, X and quote badges report available,
+missing or overdue observations; they do not indicate profitability. **Why no
+trades?** opens detailed diagnostics, while **Positions, sources + observations**
+opens the underlying records.
+
+The balance chart and activity log use Pacific time, including daylight saving
+changes. **1H / 1D / ALL** filters the retained chart samples; it does not fetch
+additional history or change the ledger. The selected range persists alongside
+appearance preferences. The layout follows the existing dark/light mode toggle.
 
 ## Configuration persistence
 

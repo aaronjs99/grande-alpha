@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import math
 import tempfile
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -16,13 +17,13 @@ from grande_alpha.agent_ledger import AgentBudget
 from grande_alpha.agent_models import AgentDecision, AgentSnapshot, AssetClass, Instrument
 from grande_alpha.config import AppConfig
 from grande_alpha.controller import TradingController, TradingSnapshot
-from grande_alpha.models import Account, Portfolio, Quote
+from grande_alpha.models import Account, Portfolio, Quote, utc_now
 from grande_alpha.storage import AuditStore
 from grande_alpha.ui.main_window import MainWindow
 from grande_alpha.ui.themes import apply_application_theme
 
 
-def capture(path: Path, width: int = 1366, height: int = 900, *, budget: bool = False, prompts: bool = False, chatgpt_help: bool = False, chatgpt_step: int = 1, theme: str = "light") -> None:
+def capture(path: Path, width: int = 1366, height: int = 900, *, budget: bool = False, prompts: bool = False, chatgpt_help: bool = False, chatgpt_step: int = 1, theme: str = "light", paper: bool = False, compact_chat: bool = False) -> None:
     app = QApplication.instance() or QApplication([])
     with tempfile.TemporaryDirectory() as directory:
         store = AuditStore(Path(directory) / "synthetic.db")
@@ -84,6 +85,42 @@ def capture(path: Path, width: int = 1366, height: int = 900, *, budget: bool = 
             )
         )
         widget.mode.setText("SYNTHETIC UI VERIFICATION · PROPOSALS ONLY · NO REAL TRADES")
+        if paper:
+            from test_agent_paper import decision
+
+            now = utc_now()
+            controller.save_agent_preferences(replace(controller.agent.settings, local_ai_model="qwen2.5:3b"))
+            book = controller.agent.paper
+            book.start("broker_quotes", 1000, 100)
+            controller.agent.paper_source = "broker_quotes"
+            for index in range(90):
+                at = now - timedelta(seconds=(89 - index) * 10)
+                price = 100 + math.sin(index / 14) * 2 - index * .015
+                action = "buy" if index in (2, 3, 38, 39) else "exit" if index in (30, 31, 80, 81) else "hold"
+                book.consume([decision(action, at, price, price + .02)], at, 15)
+            report = book.summary(active=True, now=now)
+            events = tuple({"id": i + 1, "at": (now - timedelta(seconds=(5 - i) * 2)).isoformat(), "cycle": 90,
+                            "from": sender, "to": to, "kind": kind, "message": message}
+                           for i, (sender, to, kind, message) in enumerate((
+                               ("ZARA", "NOVA", "BOOK", "Paper portfolio updated"),
+                               ("ORIN", "VELA", "SCAN", "Checking selected crypto pairs"),
+                               ("RUNE", "ZARA", "FILL", "Latest simulated exit recorded"),
+                               ("KADE", "RUNE", "RISK", "Trading costs checked"),
+                               ("VELA", "KADE", "RISK", "Reviewing the price signal"),
+                               ("NOVA", "VELA", "SCAN", "Scanning stock watchlist"),
+                           )))
+            controller.agent.snapshot = AgentSnapshot(
+                running=True, cycle=90, phase="Waiting", observed_at=now, paper=report, session_id=report["session_id"],
+                analyst="Adaptive trend", decisions=(decision("hold", now, 99, 99.02),), team_events=events,
+                team_status={"NOVA": "Scanning stocks", "ORIN": "Loading crypto pairs", "VELA": "Reading observations",
+                             "KADE": "Checking quotes and limits", "RUNE": "Waiting for eligible signals", "ZARA": "Tracking paper P&L"})
+            widget.update_agent(controller.agent.snapshot)
+            widget.mode.setText("SYNTHETIC UI PREVIEW")
+            widget.chat.transcript.appendPlainText("You: Why are we losing money? Reduce our exposure.")
+            widget.chat.transcript.appendPlainText("Local AI: The latest paper exits recorded losses. We can reduce exposure while reviewing the trades and their costs.")
+            widget.chat.preview.setText("Max positions: 4 → 2\nVirtual exposure: 40% → 20%\nExisting exit rules stay active.")
+            widget.chat.review_box.show()
+            widget.chat.apply.setEnabled(True)
         widget.budget_toggle.setChecked(budget)
         widget.prompts_toggle.setChecked(prompts)
         if prompts:
@@ -92,6 +129,13 @@ def capture(path: Path, width: int = 1366, height: int = 900, *, budget: bool = 
             widget.briefs["crypto"].setText("Focus on crypto volatility and spread changes")
         window.show()
         app.processEvents()
+        if compact_chat:
+            widget._show_compact_chat(True)
+            app.processEvents()
+        if paper:
+            for name in ("NOVA", "ORIN", "VELA", "KADE"):
+                widget.team_cards[name][0]._set_level(.8)
+            app.processEvents()
         if prompts:
             widget.ensureWidgetVisible(widget.prompt_box)
             app.processEvents()
@@ -128,5 +172,7 @@ if __name__ == "__main__":
     parser.add_argument("--chatgpt-help", action="store_true")
     parser.add_argument("--chatgpt-step", type=int, choices=(1, 2, 3), default=1)
     parser.add_argument("--theme", choices=("light", "dark"), default="light")
+    parser.add_argument("--paper", action="store_true", help="Preview actual simulated ledger results and a sample chat; no network")
+    parser.add_argument("--compact-chat", action="store_true")
     args = parser.parse_args()
-    capture(args.output, args.width, args.height, budget=args.budget, prompts=args.prompts, chatgpt_help=args.chatgpt_help, chatgpt_step=args.chatgpt_step, theme=args.theme)
+    capture(args.output, args.width, args.height, budget=args.budget, prompts=args.prompts, chatgpt_help=args.chatgpt_help, chatgpt_step=args.chatgpt_step, theme=args.theme, paper=args.paper, compact_chat=args.compact_chat)

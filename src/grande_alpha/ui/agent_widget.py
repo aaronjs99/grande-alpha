@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
     QBoxLayout,
+    QButtonGroup,
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
@@ -28,12 +29,14 @@ from PySide6.QtWidgets import (
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
     QLineEdit,
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QSpinBox,
     QTableWidget,
     QTableWidgetItem,
@@ -44,13 +47,14 @@ from PySide6.QtWidgets import (
 from grande_alpha.agent_ledger import AgentBudget
 from grande_alpha.agent_models import AgentSettings, AgentSnapshot, parse_symbols
 from grande_alpha.agent_preferences import PaperSetup
-from grande_alpha.agent_sources import FEEDS, safe_url
+from grande_alpha.agent_sources import FEEDS, REFRESH_SECONDS, safe_url
 from grande_alpha.models import utc_now
 from grande_alpha.ui.agent_card import AgentCard
 from grande_alpha.ui.agent_chat import AgentChat
+from grande_alpha.ui.agent_desk import ActivityDelegate, PacificAxis
 from grande_alpha.ui.chatgpt_setup import ChatGPTSetupDialog
 from grande_alpha.ui.table_layout import configure_adjustable_columns
-from grande_alpha.ui.themes import color, set_item_foreground, theme_css
+from grande_alpha.ui.themes import appearance_settings, color, set_item_foreground, theme_css
 from grande_alpha.ui.x_connection import XConnection
 
 PACIFIC_TIME = ZoneInfo("America/Los_Angeles")
@@ -71,12 +75,12 @@ QComboBox QAbstractItemView { background: #ffffff; color: #27343e; selection-bac
 QToolTip { background: #ffffff; color: #27343e; border: 1px solid #d4dfe4; }
 QWidget { color: #27343e; font-family: 'Inter', 'Arial'; font-size: 10pt; }
 QLabel { background: transparent; border: none; }
-QLabel#dashboardTitle { font-family: 'Menlo', 'Consolas', monospace; font-size: 23pt; font-weight: 800; color: #19252e; }
+QLabel#dashboardTitle { font-family: 'Menlo', 'Consolas', monospace; font-size: 20pt; font-weight: 800; color: #19252e; }
 QLabel#eyebrow { color: #63747f; font-family: 'Menlo', 'Consolas', monospace; font-size: 9pt; letter-spacing: 2px; }
 QLabel#modeBadge { color: #98651b; background: #fff7e6; border: 1px solid #eddfbc; border-radius: 6px; padding: 8px 12px; font-size: 9pt; font-weight: 700; }
 QLabel#dashboardNotice { color: #677780; font-size: 9pt; }
 QFrame#dashboardPanel { background: #ffffff; border: 1px solid #e1e6e9; border-radius: 8px; }
-QLabel#metricValue { font-family: 'Menlo', 'Consolas', monospace; font-size: 28pt; font-weight: 700; color: #17242c; }
+QLabel#metricValue { font-family: 'Menlo', 'Consolas', monospace; font-size: 25pt; font-weight: 700; color: #17242c; }
 QLabel#metricCaption { color: #627580; font-size: 9pt; }
 QLabel#sectionTitle { color: #7a878f; font-family: 'Menlo', 'Consolas', monospace; font-size: 10pt; font-weight: 600; letter-spacing: 2px; }
 QLabel#chartValue { color: #1ca97a; font-family: 'Menlo', 'Consolas', monospace; font-size: 17pt; font-weight: 700; }
@@ -97,6 +101,21 @@ QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
 QScrollBar:horizontal { background: #edf1f3; height: 8px; margin: 0; }
 QScrollBar::handle:horizontal { background: #bcc9cf; min-width: 30px; border-radius: 4px; }
 QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { width: 0; }
+QWidget#agentChat { background: #ffffff; border: 1px solid #e1e6e9; border-radius: 10px; }
+QWidget#chatMessages, QWidget#chatMessageRow, QScrollArea#chatTranscript { background: transparent; border: none; }
+QLabel#chatTitle { font-size: 16pt; font-weight: 750; letter-spacing: 1px; }
+QLabel#chatSpeaker { font-size: 8pt; font-weight: 650; color: #657782; }
+QLabel#chatEmpty { color: #657782; padding: 12px; }
+QFrame#chatBubble { background: #f8fafb; border: 1px solid #e1e6e9; border-radius: 12px; }
+QFrame#chatBubble[speaker="user"] { background: #e0f2eb; border-color: #87c9ae; }
+QFrame#chatProposal { background: #f8fafb; border: 1px solid #d4dfe4; border-radius: 8px; }
+QPushButton#stopAgent { border-color: #b74b63; color: #b74b63; }
+QPushButton#stopAgent:disabled { border-color: #e2e7eb; color: #929da4; }
+QLabel#deskHeartbeat { color: #16845e; font-weight: 600; }
+QLabel#deskHeartbeat[attention="true"] { color: #b74b63; }
+QLabel#sourcePill { background: #f8fafb; border: 1px solid #d4dfe4; border-radius: 6px; padding: 6px 9px; font-size: 8pt; }
+QLabel#deskClock { color: #627580; font-size: 8pt; }
+QPushButton#rangeButton { padding: 3px 8px; min-height: 15px; font-size: 8pt; }
 """
 
 
@@ -120,30 +139,42 @@ class AgentWidget(QScrollArea):
         self._balances: deque[float] = deque(maxlen=500)
         self._scan_task: asyncio.Task | None = None
         self._chatgpt_help: ChatGPTSetupDialog | None = None
+        self._chart_times, self._chart_values = [], []
+        self._chart_range = appearance_settings().value("agent_chart_range", "all")
+        if self._chart_range not in {"1h", "1d", "all"}:
+            self._chart_range = "all"
+        self._compact_chat = False
         self.setWidgetResizable(True)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.setStyleSheet(theme_css(DASHBOARD_STYLE, base="light"))
         content = QWidget()
         content.setObjectName("agentCanvas")
         layout = QVBoxLayout(content)
-        layout.setContentsMargins(18, 18, 18, 18)
-        layout.setSpacing(12)
+        layout.setContentsMargins(0, 0, 8, 0)
+        layout.setSpacing(10)
         self.header_layout = QBoxLayout(QBoxLayout.Direction.LeftToRight)
         title = label("GRANDE / AGENT DESK")
         title.setObjectName("dashboardTitle")
         self.header_layout.addWidget(title, 1)
         self.clock_label = label("ELAPSED 00:00  ·  UPDATE 0")
-        self.clock_label.setObjectName("eyebrow")
-        self.header_layout.addWidget(self.clock_label)
+        self.clock_label.setObjectName("deskClock")
         self.mode = label("IDLE · PROPOSALS ONLY")
         self.mode.setObjectName("modeBadge")
         self.header_layout.addWidget(self.mode)
         layout.addLayout(self.header_layout)
-        notice = label("STOCKS + CRYPTO  /  Research + paper trading · simulations use virtual money · live execution is unavailable")
+        notice = label("Your AI team. One clear view.  ·  Research + paper trading with virtual money")
         notice.setObjectName("dashboardNotice")
         layout.addWidget(notice)
+        meta = QHBoxLayout()
+        self.settings_status = label(controller.agent_preferences_error or "Agent settings save automatically on this Mac.")
+        self.settings_status.setObjectName("metricCaption")
+        meta.addWidget(self.settings_status, 1)
+        meta.addWidget(self.clock_label)
+        layout.addLayout(meta)
 
         self.metrics = QGridLayout()
-        self.metrics.setSpacing(16)
+        self.metrics.setSpacing(10)
         self.metric_cards = []
         self.balance = label("—")
         self.buying_power = label("—")
@@ -169,6 +200,9 @@ class AgentWidget(QScrollArea):
             card_layout.addWidget(value)
             card_layout.addWidget(detail)
             self.metric_cards.append(card)
+            card_layout.setContentsMargins(14, 12, 14, 12)
+            card_layout.setSpacing(5)
+            card.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
             self.metric_details.append(detail)
             self.metrics.addWidget(card, index // 2, index % 2)
         layout.addLayout(self.metrics)
@@ -258,15 +292,16 @@ class AgentWidget(QScrollArea):
         self.save_setup.clicked.connect(self._save_settings)
         form.addRow(self.save_setup)
 
-        self.prompts_toggle = QPushButton("Chat + AI connections")
+        self.prompts_toggle = QPushButton("Prompts + AI connections")
         self.prompts_toggle.setCheckable(True)
-        self.prompt_box = QGroupBox("Chat + AI connections")
+        self.prompt_box = QGroupBox("Research prompts + AI connections")
         self.prompt_box.setVisible(False)
         self.prompts_toggle.toggled.connect(self.prompt_box.setVisible)
         prompt_form = QFormLayout(self.prompt_box)
         self.chat = AgentChat(controller, self._save_preferences)
         self.chat.configure_model.connect(self._show_model_setup)
-        prompt_form.addRow(self.chat)
+        self.chat.connections_requested.connect(self._show_connections)
+        self.chat.controls_changed.connect(self._sync_pause_button)
         prompt_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
         self.briefs = {}
         for key, title, placeholder in (
@@ -312,47 +347,57 @@ class AgentWidget(QScrollArea):
         self.paper_toggle = QPushButton("Session setup")
         self.paper_toggle.setCheckable(True)
         self.paper_toggle.toggled.connect(self.paper_box.setVisible)
-        controls = QHBoxLayout()
+        self.controls = QBoxLayout(QBoxLayout.Direction.LeftToRight)
+        controls = self.controls
         self.start = QPushButton("Start agent analysis")
         self.start.setObjectName("primary")
         self.start.clicked.connect(self._start)
         self.stop = QPushButton("Stop agent")
+        self.stop.setObjectName("stopAgent")
         self.stop.clicked.connect(lambda: controller.stop_agent())
+        self.pause_buys = QPushButton("Pause new buys")
+        self.pause_buys.setCheckable(True)
+        self.pause_buys.toggled.connect(self.chat.paused.setChecked)
+        self.pause_buys.setToolTip("Pause virtual entries; existing holdings retain their exit rules")
+        self._sync_pause_button()
         controls.addWidget(self.paper_start)
+        controls.addWidget(self.pause_buys)
         controls.addWidget(self.stop)
         controls.addWidget(self.paper_toggle)
-        controls.addWidget(self.prompts_toggle)
+        heartbeat_row = QHBoxLayout()
+        self.heartbeat = label("○ Ready when you are")
+        self.heartbeat.setObjectName("deskHeartbeat")
+        heartbeat_row.addWidget(self.heartbeat, 1)
+        self.diagnostics_toggle = QPushButton('Why no trades?')
+        self.diagnostics_toggle.setCheckable(True)
+        heartbeat_row.addWidget(self.diagnostics_toggle)
+        layout.addLayout(heartbeat_row)
         layout.addLayout(controls)
         self.run_status = label("Choose a price source in Session setup to begin.")
         self.run_status.setObjectName("modeBadge")
         self.run_detail = label("")
         self.run_detail.setObjectName("metricCaption")
-        layout.addWidget(self.run_status)
-        layout.addWidget(self.run_detail)
-        self.settings_status = label(controller.agent_preferences_error or "Agent settings save automatically on this Mac.")
-        self.settings_status.setObjectName("metricCaption")
-        layout.addWidget(self.settings_status)
+        self.diagnostics_box = QGroupBox("Monitoring details")
+        diagnostic_layout = QVBoxLayout(self.diagnostics_box)
+        diagnostic_layout.addWidget(self.run_status)
+        diagnostic_layout.addWidget(self.run_detail)
+        self.diagnostics_box.hide()
+        self.diagnostics_toggle.toggled.connect(self.diagnostics_box.setVisible)
         diagnostic_controls = QHBoxLayout()
-        self.diagnostics_toggle = QPushButton('Why no trades?')
-        self.diagnostics_toggle.setCheckable(True)
         self.copy_diagnostics = QPushButton('Copy trading diagnostics')
         self.copy_diagnostics.clicked.connect(self._copy_diagnostics)
-        diagnostic_controls.addWidget(self.diagnostics_toggle)
         diagnostic_controls.addWidget(self.copy_diagnostics)
-        layout.addLayout(diagnostic_controls)
+        diagnostic_layout.addLayout(diagnostic_controls)
         self.diagnostics_summary = label('No completed quote check yet.')
         self.diagnostics_summary.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        layout.addWidget(self.diagnostics_summary)
+        diagnostic_layout.addWidget(self.diagnostics_summary)
         self.diagnostics_text = QPlainTextEdit()
         self.diagnostics_text.setReadOnly(True)
         self.diagnostics_text.setMinimumHeight(180)
         self.diagnostics_text.setMaximumHeight(280)
-        self.diagnostics_text.hide()
-        self.diagnostics_toggle.toggled.connect(self.diagnostics_text.setVisible)
-        layout.addWidget(self.diagnostics_text)
+        diagnostic_layout.addWidget(self.diagnostics_text)
         self._diagnostics_render_key = None
-        layout.addWidget(self.paper_box)
-        layout.addWidget(self.prompt_box)
+        layout.addWidget(self.diagnostics_box)
 
         self.scout_status = label("Waiting for discovery")
         self.analyst_status = label("Rules baseline")
@@ -363,23 +408,34 @@ class AgentWidget(QScrollArea):
         self.market_status = label("Connect Robinhood, choose your universe, then start analysis.")
 
         self.observations_layout = QBoxLayout(QBoxLayout.Direction.LeftToRight)
-        self.observations_layout.setSpacing(18)
+        self.observations_layout.setSpacing(10)
         chart_panel, chart_layout = self._panel()
-        chart_title = label("// BALANCE HISTORY")
+        chart_title = label("BALANCE HISTORY")
         chart_title.setObjectName("sectionTitle")
-        chart_layout.addWidget(chart_title)
+        chart_header = QHBoxLayout()
+        chart_header.addWidget(chart_title, 1)
+        self.chart_ranges = QButtonGroup(self)
+        for text, key in (("1H", "1h"), ("1D", "1d"), ("ALL", "all")):
+            button = QPushButton(text)
+            button.setObjectName("rangeButton")
+            button.setCheckable(True)
+            button.setChecked(key == self._chart_range)
+            button.clicked.connect(lambda _checked=False, selected=key: self._set_chart_range(selected))
+            self.chart_ranges.addButton(button)
+            chart_header.addWidget(button)
+        chart_layout.addLayout(chart_header)
         self.chart_value = label("Awaiting account data")
         self.chart_value.setObjectName("chartValue")
         chart_layout.addWidget(self.chart_value)
-        self.chart = pg.PlotWidget(axisItems={"bottom": pg.DateAxisItem(utcOffset=0)})
+        self.chart = pg.PlotWidget(axisItems={"bottom": PacificAxis(orientation="bottom")})
         self.chart.setBackground("#ffffff")
-        self.chart.setMinimumSize(0, 200)
-        self.chart.setMaximumHeight(260)
+        self.chart.setMinimumSize(0, 170)
+        self.chart.setMaximumHeight(215)
         self.chart.setMouseEnabled(x=False, y=False)
         self.chart.setMenuEnabled(False)
         self.chart.hideButtons()
         self.chart.getAxis("left").enableAutoSIPrefix(False)
-        self.chart.getAxis("left").setWidth(76)
+        self.chart.getAxis("left").setWidth(60)
         self.chart.showGrid(x=False, y=True, alpha=0.08)
         for name in ("left", "bottom"):
             axis = self.chart.getAxis(name)
@@ -387,37 +443,45 @@ class AgentWidget(QScrollArea):
             axis.setTextPen(pg.mkPen("#657782"))
         self.curve = self.chart.plot(pen=pg.mkPen("#1ca97a", width=2), brush=pg.mkBrush(28, 169, 122, 18))
         chart_layout.addWidget(self.chart)
-        self.chart_detail = label("Broker account value · UTC · includes deposits and withdrawals; not trading P&L")
+        self.chart_detail = label("Broker account value · Pacific time · includes cash transfers")
         self.chart_detail.setObjectName("metricCaption")
         chart_layout.addWidget(self.chart_detail)
         activity_panel, activity_layout = self._panel()
-        activity_title = label("// ACTIVITY LOG")
+        activity_title = label("LIVE ACTIVITY")
         activity_title.setObjectName("sectionTitle")
         activity_layout.addWidget(activity_title)
         self.activity = self._table(["Time (Pacific)", "Update", "Activity"])
-        self.activity.setMinimumHeight(245)
-        self.activity.setMaximumHeight(290)
-        self.activity.setColumnWidth(0, 170)
+        self.activity.setMinimumHeight(215)
+        self.activity.setMaximumHeight(255)
+        self.activity.setColumnWidth(0, 145)
         self.activity.setColumnWidth(1, 48)
         self.activity.setColumnWidth(2, 360)
-        self.activity.setWordWrap(True)
+        self.activity.setColumnHidden(1, True)
+        self.activity.setWordWrap(False)
+        self.activity.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        self.activity.setItemDelegateForColumn(2, ActivityDelegate(self.activity))
+        self.activity.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.activity.horizontalHeader().hide()
         activity_layout.addWidget(self.activity)
         self.activity_hint = label("Waiting for the first completed analysis cycle. Full details appear in Receipts.")
         self.activity_hint.setObjectName("metricCaption")
         activity_layout.addWidget(self.activity_hint)
-        self.observations_layout.addWidget(chart_panel, 1)
-        self.observations_layout.addWidget(activity_panel, 1)
+        self.observations_layout.addWidget(chart_panel, 5)
+        self.observations_layout.addWidget(activity_panel, 4)
         layout.addLayout(self.observations_layout)
 
-        status_panel, status_layout = self._panel()
-        status_title = label("// AGENT COMMS")
+        status_panel = QFrame()
+        status_panel.setObjectName("dashboardPanel")
+        status_layout = QHBoxLayout(status_panel)
+        status_layout.setContentsMargins(12, 10, 12, 10)
+        status_title = label("TEAM COMMS")
         status_title.setObjectName("sectionTitle")
         status_layout.addWidget(status_title)
         self.comms = label("Start a session to see worker handoffs.")
-        status_layout.addWidget(self.comms)
+        status_layout.addWidget(self.comms, 1)
         layout.addWidget(status_panel)
         self.stages = QGridLayout()
-        self.stages.setSpacing(12)
+        self.stages.setSpacing(6)
         self.stage_cards = []
         self.team_cards = {}
         for index, (name, role, accent, status) in enumerate((
@@ -429,6 +493,9 @@ class AgentWidget(QScrollArea):
             ("ZARA", "PORTFOLIO", "#9273c8", self.scout_status),
         )):
             card, card_layout = self._panel(accent)
+            card_layout.setContentsMargins(12, 12, 12, 10)
+            card_layout.setSpacing(7)
+            card.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
             number = label(f"{index + 1:02d}  /  {role}")
             number.setObjectName("metricCaption")
             card_layout.addWidget(number)
@@ -441,14 +508,35 @@ class AgentWidget(QScrollArea):
             status.setObjectName("metricCaption")
             status.setFixedHeight(44)
             card_layout.addWidget(status)
-            card_layout.addStretch()
+            card.setMinimumHeight(172)
             self.stage_cards.append(card)
             self.team_cards[name] = (card, status, accent)
             self.stages.addWidget(card, index // 3, index % 3)
         layout.addLayout(self.stages)
         detail = label("NOVA and ORIN scan concurrently. VELA analyzes, KADE checks data, RUNE simulates fills, and ZARA tracks the portfolio. VELA uses rules or your configured local model.")
         detail.setObjectName("metricCaption")
-        layout.addWidget(detail)
+        detail.setToolTip(detail.text())
+        detail.hide()
+        self.stage_details = detail
+        source_bar, source_bar_layout = self._panel()
+        source_bar_layout.setContentsMargins(12, 8, 12, 8)
+        self.source_pills = QBoxLayout(QBoxLayout.Direction.LeftToRight)
+        self.news_pill = label("News · Off")
+        self.x_pill = label("X / Twitter · Off")
+        self.quotes_pill = label("Market quotes · Waiting")
+        for pill in (self.news_pill, self.x_pill, self.quotes_pill):
+            pill.setObjectName("sourcePill")
+            self.source_pills.addWidget(pill, 1)
+        source_bar_layout.addLayout(self.source_pills)
+        layout.addWidget(source_bar)
+        self.detail_toggle = QPushButton("Positions, sources + observations")
+        self.detail_toggle.setCheckable(True)
+        layout.addWidget(self.detail_toggle)
+        self.detail_box = QWidget()
+        detail_layout = QVBoxLayout(self.detail_box)
+        detail_layout.setContentsMargins(0, 0, 0, 0)
+        self.detail_box.hide()
+        self.detail_toggle.toggled.connect(self.detail_box.setVisible)
         paper_details = QGroupBox("Paper positions and fill history")
         paper_details_layout = QVBoxLayout(paper_details)
         paper_details_layout.addWidget(self.paper_status)
@@ -457,7 +545,7 @@ class AgentWidget(QScrollArea):
         paper_details_layout.addWidget(self.paper_evaluation)
         paper_details_layout.addWidget(self.paper_positions)
         paper_details_layout.addWidget(self.paper_fills)
-        layout.addWidget(paper_details)
+        detail_layout.addWidget(paper_details)
 
         sources_box = QGroupBox("News + trends · sources behind the analysis")
         sources_layout = QVBoxLayout(sources_box)
@@ -479,7 +567,7 @@ class AgentWidget(QScrollArea):
             "The legacy strategy requires two matching publishers when news is enabled. Local AI can analyze "
             "the excerpts. Social posts remain unverified context; headlines do not establish profitability."
         ))
-        layout.addWidget(sources_box)
+        detail_layout.addWidget(sources_box)
         self._sources_render_key = None
 
         candidates_panel, candidates_layout = self._panel()
@@ -490,18 +578,53 @@ class AgentWidget(QScrollArea):
         self.table.setMinimumHeight(210)
         self.table.setMaximumHeight(340)
         candidates_layout.addWidget(self.table)
-        layout.addWidget(candidates_panel)
-        layout.addWidget(self.market_status)
-        layout.addWidget(self.crypto_funds)
-        layout.addWidget(self.journal_status)
+        detail_layout.addWidget(candidates_panel)
+        detail_layout.addWidget(self.market_status)
+        detail_layout.addWidget(self.crypto_funds)
+        detail_layout.addWidget(self.journal_status)
+        layout.addWidget(self.detail_box)
         self.tools_layout = QBoxLayout(QBoxLayout.Direction.LeftToRight)
         self.tools_layout.addWidget(self.configure)
+        self.tools_layout.addWidget(self.prompts_toggle)
         self.tools_layout.addWidget(self.budget_toggle)
         self.tools_layout.addWidget(self.start)
         layout.addLayout(self.tools_layout)
+        layout.addWidget(self.paper_box)
+        layout.addWidget(self.prompt_box)
         layout.addWidget(self.settings_box)
         layout.addWidget(self.budget_box)
-        self.setWidget(content)
+        layout.addStretch()
+        self.dashboard_scroll = QScrollArea()
+        self.dashboard_scroll.setWidgetResizable(True)
+        self.dashboard_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.dashboard_scroll.setWidget(content)
+        self.dashboard_scroll.setMinimumWidth(0)
+        self.dashboard_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        shell = QWidget()
+        shell_layout = QVBoxLayout(shell)
+        shell_layout.setContentsMargins(12, 12, 12, 12)
+        shell_layout.setSpacing(10)
+        self.compact_tabs = QWidget()
+        compact_buttons = QHBoxLayout(self.compact_tabs)
+        compact_buttons.setContentsMargins(0, 0, 0, 0)
+        self.desk_tab = QPushButton("Agent desk")
+        self.chat_tab = QPushButton("AI chat")
+        self.desk_tab.setCheckable(True)
+        self.chat_tab.setCheckable(True)
+        self.desk_tab.clicked.connect(lambda: self._show_compact_chat(False))
+        self.chat_tab.clicked.connect(lambda: self._show_compact_chat(True))
+        compact_buttons.addWidget(self.desk_tab)
+        compact_buttons.addWidget(self.chat_tab)
+        shell_layout.addWidget(self.compact_tabs)
+        self.desk_columns = QHBoxLayout()
+        self.desk_columns.setSpacing(12)
+        self.desk_columns.addWidget(self.dashboard_scroll, 7)
+        self.desk_columns.addWidget(self.chat, 3)
+        shell_layout.addLayout(self.desk_columns, 1)
+        self.setWidget(shell)
+        self.paper_toggle.toggled.connect(lambda shown: self._reveal_setup(self.paper_box, shown))
+        self.prompts_toggle.toggled.connect(lambda shown: self._reveal_setup(self.prompt_box, shown))
+        self.configure.toggled.connect(lambda shown: self._reveal_setup(self.settings_box, shown))
         controller.agent_changed.connect(self.update_agent)
         controller.agent_mcp_changed.connect(self._mcp_changed)
         controller.agent_settings_changed.connect(self._sync_agent_settings)
@@ -699,15 +822,12 @@ class AgentWidget(QScrollArea):
         history = paper.get("equity_history", [])
         times = [datetime.fromisoformat(point["at"]).timestamp() for point in history]
         values = [float(point["equity"]) for point in history]
-        if values:
-            self.curve.setFillLevel(min(values) - max(0.01, (max(values) - min(values)) * 0.1))
-        self.curve.setData(times, values, symbol="o" if len(values) == 1 else None,
-                           symbolSize=5, symbolBrush=color("#1ca97a", base="light"))
+        self._plot_history(times, values)
         self.chart_value.setText(f"${float(paper['equity']):,.2f} · virtual portfolio")
         old_marks = any(p["stale"] for p in paper["positions"])
         self.chart_detail.setText(
             f"{source} · {'running' if paper['active'] else 'saved session'} · "
-            f"{'simulated clock' if paper['source'] == 'demo' else 'market clock'} (UTC) · "
+            f"{'simulated clock' if paper['source'] == 'demo' else 'market clock'} (Pacific time) · "
             f"last {len(history)} observations · last eligible bid valuations"
             + (" · includes old marks" if old_marks else "")
         )
@@ -765,13 +885,13 @@ class AgentWidget(QScrollArea):
             text = snapshot.error
         elif not snapshot.running:
             if self.paper_source.currentData() == "broker_quotes":
-                text = ("Ready for continuous paper trading. Click Start continuous paper trading; funds stay virtual."
+                text = ("Ready for continuous paper trading. Click Start paper trading; funds stay virtual."
                         if self._connected else
                         "Connect Robinhood to start paper trading with current quotes. No real orders will be placed.")
             elif snapshot.phase == "Demo complete":
                 text = "Offline demo complete. It repeats fixed prices; select Robinhood quotes in Session setup for current data."
             else:
-                text = "Offline demo selected. Click Start offline demo, or choose Robinhood quotes in Session setup."
+                text = "Offline demo selected. Click Start demo, or choose Robinhood quotes in Session setup."
         else:
             mode = "Offline demo" if self.controller.agent.paper_source == "demo" else (
                 "Continuous paper trading · Robinhood quotes" if self.controller.agent.paper_source else "Research only")
@@ -840,6 +960,7 @@ class AgentWidget(QScrollArea):
         self.run_status.setText(text)
         self.run_detail.setText(detail)
         self.run_detail.setVisible(bool(detail))
+        self._update_desk_status()
 
     def _add_activity(self, at: datetime, cycle: str, summary: str, kind: str) -> None:
         pacific = at.astimezone(PACIFIC_TIME)
@@ -922,26 +1043,145 @@ class AgentWidget(QScrollArea):
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
-        if not hasattr(self, "metrics"):
+        if not hasattr(self, "desk_columns"):
             return
-        wide = self.viewport().width() >= 1100
-        self.header_layout.setDirection(QBoxLayout.Direction.LeftToRight if wide else QBoxLayout.Direction.TopToBottom)
-        self.tools_layout.setDirection(QBoxLayout.Direction.LeftToRight if wide else QBoxLayout.Direction.TopToBottom)
-        stage_columns = 6 if wide else (3 if self.viewport().width() >= 700 else 2)
+        self._reflow_desk()
+
+    def _reflow_desk(self):
+        available = max(0, self.viewport().width() - 24)
+        compact = available < 1170
+        self.compact_tabs.setVisible(compact)
+        self.desk_tab.setChecked(not self._compact_chat)
+        self.chat_tab.setChecked(self._compact_chat)
+        self.chat.setVisible(not compact or self._compact_chat)
+        self.dashboard_scroll.setVisible(not compact or not self._compact_chat)
+        self.chat.setMinimumWidth(0)
+        self.chat.setMaximumWidth(16777215 if compact else max(340, min(420, int(available * .29))))
+        self.chat.setMinimumWidth(0 if compact else self.chat.maximumWidth())
+        width = available if compact else available - self.chat.maximumWidth() - 20
+        self.header_layout.setDirection(QBoxLayout.Direction.LeftToRight if width >= 740 else QBoxLayout.Direction.TopToBottom)
+        self.tools_layout.setDirection(QBoxLayout.Direction.LeftToRight if width >= 900 else QBoxLayout.Direction.TopToBottom)
+        self.controls.setDirection(QBoxLayout.Direction.LeftToRight if width >= 700 else QBoxLayout.Direction.TopToBottom)
+        self.source_pills.setDirection(QBoxLayout.Direction.LeftToRight if width >= 700 else QBoxLayout.Direction.TopToBottom)
+        stage_columns = 6 if width >= 900 else (3 if width >= 700 else 2)
         for column in range(6):
             self.stages.setColumnStretch(column, 1 if column < stage_columns else 0)
         for card in self.stage_cards:
             self.stages.removeWidget(card)
         for index, card in enumerate(self.stage_cards):
             self.stages.addWidget(card, index // stage_columns, index % stage_columns)
-        columns = 4 if wide else 2
+        columns = 4 if width >= 850 else 2
+        for column in range(4):
+            self.metrics.setColumnStretch(column, 1 if column < columns else 0)
         for card in self.metric_cards:
             self.metrics.removeWidget(card)
         for index, card in enumerate(self.metric_cards):
             self.metrics.addWidget(card, index // columns, index % columns)
         self.observations_layout.setDirection(
-            QBoxLayout.Direction.LeftToRight if wide else QBoxLayout.Direction.TopToBottom
+            QBoxLayout.Direction.LeftToRight if width >= 900 else QBoxLayout.Direction.TopToBottom
         )
+
+    def _show_compact_chat(self, shown):
+        self._compact_chat = shown
+        self._reflow_desk()
+        if shown:
+            self.chat.input.setFocus()
+
+    def ensureWidgetVisible(self, child, xMargin=50, yMargin=50):
+        if self.chat.isAncestorOf(child):
+            self._show_compact_chat(True)
+        else:
+            self._show_compact_chat(False)
+            self.dashboard_scroll.ensureWidgetVisible(child, xMargin, yMargin)
+
+    def _reveal_setup(self, target, shown):
+        if shown:
+            first = {self.paper_box: self.paper_source, self.prompt_box: self.briefs["team"],
+                     self.settings_box: self.equities}.get(target, target)
+            QTimer.singleShot(0, lambda: self.ensureWidgetVisible(first))
+
+    def _show_connections(self):
+        self.prompts_toggle.setChecked(True)
+        self._reveal_setup(self.prompt_box, True)
+
+    def _sync_pause_button(self):
+        if not hasattr(self, "pause_buys"):
+            return
+        with QSignalBlocker(self.pause_buys):
+            self.pause_buys.setChecked(self.controller.agent.settings.paper_entries_paused)
+        self.pause_buys.setText("Resume new buys" if self.pause_buys.isChecked() else "Pause new buys")
+
+    def _set_chart_range(self, selected):
+        if selected not in {"1h", "1d", "all"}:
+            return
+        self._chart_range = selected
+        appearance_settings().setValue("agent_chart_range", selected)
+        self._render_history()
+
+    def _plot_history(self, times, values):
+        self._chart_times, self._chart_values = list(times), list(values)
+        self._render_history()
+
+    def _render_history(self):
+        times, values = self._chart_times, self._chart_values
+        if times and self._chart_range != "all":
+            start = times[-1] - (3600 if self._chart_range == "1h" else 86400)
+            pairs = [(t, v) for t, v in zip(times, values, strict=True) if t >= start]
+            times, values = [p[0] for p in pairs], [p[1] for p in pairs]
+        if values:
+            self.curve.setFillLevel(min(values) - max(.01, (max(values) - min(values)) * .1))
+        self.curve.setData(times, values, symbol="o" if len(values) == 1 else None,
+                           symbolSize=5, symbolBrush=color("#1ca97a", base="light"))
+
+    def _update_desk_status(self):
+        if not hasattr(self, "news_pill"):
+            return
+        snapshot, settings = self._dashboard_snapshot, self.controller.agent.settings
+        at = snapshot.observed_at
+        age = max(0, int((utc_now() - at).total_seconds())) if at else None
+        paused = settings.paper_entries_paused
+        error = self._run_error or snapshot.error
+        if self.heartbeat.property("attention") != bool(error):
+            self.heartbeat.setProperty("attention", bool(error))
+            self.heartbeat.style().unpolish(self.heartbeat)
+            self.heartbeat.style().polish(self.heartbeat)
+        if error:
+            self.heartbeat.setText("Attention · " + error[:200])
+        elif snapshot.running:
+            text = "New buys paused" if paused else "Monitoring"
+            text += f" · last check {age}s ago" if age is not None else " · first check pending"
+            if snapshot.phase == "Working":
+                text += " · scanning"
+            self.heartbeat.setText("● " + text)
+        else:
+            self.heartbeat.setText("○ Agent stopped" if snapshot.cycle else "○ Ready when you are")
+        self.heartbeat.setToolTip(self.run_status.text())
+        demo = self.controller.agent.paper_source == "demo"
+        report = snapshot.research_sources or {}
+        health = report.get("sources", [])
+        ready = sum(s.get("status") == "OK" and s.get("source") in {feed.name for feed in FEEDS} for s in health)
+        try:
+            checked_at = datetime.fromisoformat(report.get("refreshed_at") or "")
+            current = 0 <= (utc_now() - checked_at).total_seconds() <= REFRESH_SECONDS + 60
+        except (TypeError, ValueError):
+            current = False
+        news = ("Demo" if demo else "Off" if not settings.news_enabled else "Refreshing" if snapshot.sources_loading else
+                "Refresh overdue" if health and not current else
+                f"{ready} {'feed' if ready == 1 else 'feeds'} available" if ready else "Unavailable" if health else "Pending")
+        self.news_pill.setText("News · " + news)
+        self.news_pill.setToolTip(self.sources_status.text())
+        twitter = report.get("twitter") or {}
+        status = "Demo" if demo else "Off" if not settings.twitter_enabled else str(twitter.get("status", "Pending"))
+        if not demo and settings.twitter_enabled and twitter and not current:
+            status = "Refresh overdue"
+        self.x_pill.setText("X / Twitter · " + status[:26])
+        self.x_pill.setToolTip(status)
+        quotes = [d.quote for d in snapshot.decisions if d.quote is not None]
+        now = utc_now()
+        fresh = sum(-2 <= q.age_seconds(now) <= settings.max_quote_age_seconds for q in quotes)
+        quote_status = ("Synthetic demo" if demo else "Stopped" if not snapshot.running else
+                        f"{fresh}/{len(quotes)} fresh" if quotes else "Waiting")
+        self.quotes_pill.setText("Quotes · " + quote_status)
 
     @staticmethod
     def _panel(accent: str | None = None):
@@ -1174,7 +1414,7 @@ class AgentWidget(QScrollArea):
         if account != self._balance_account:
             self._balance_times.clear()
             self._balances.clear()
-            self.curve.setData([], [])
+            self._plot_history([], [])
             self._balance_account = account
         portfolio = snapshot.portfolio if self._connected else None
         self.balance.setText(f"${portfolio.total_value:,.2f}" if portfolio else "—")
@@ -1193,8 +1433,7 @@ class AgentWidget(QScrollArea):
         ):
             self._balance_times.append(timestamp.timestamp())
             self._balances.append(portfolio.total_value)
-            self.curve.setFillLevel(min(self._balances) - max(0.01, (max(self._balances) - min(self._balances)) * 0.1))
-            self.curve.setData(list(self._balance_times), list(self._balances), symbol="o" if len(self._balances) == 1 else None, symbolSize=5, symbolBrush=color("#1ca97a", base="light"))
+            self._plot_history(self._balance_times, self._balances)
         if was_connected and not self._connected:
             if self._scan_task is not None:
                 self._scan_task.cancel()
@@ -1211,7 +1450,7 @@ class AgentWidget(QScrollArea):
         self.paper_start.setEnabled(not running and not self.controller.shadow_only_runtime
                                     and not self.x_connection.busy
                                     and (self.paper_source.currentData() == "demo" or enabled))
-        self.paper_start.setText("Start offline demo" if self.paper_source.currentData() == "demo" else "Start continuous paper trading")
+        self.paper_start.setText("Start demo" if self.paper_source.currentData() == "demo" else "Start paper trading")
         self.paper_start.setToolTip("Connect Robinhood to use current quotes with virtual funds."
                                    if self.paper_source.currentData() == "broker_quotes" and not enabled else "")
         self.repeat_demo.setEnabled(not running and self.paper_source.currentData() == "demo")
@@ -1260,19 +1499,21 @@ class AgentWidget(QScrollArea):
         mode = ("DEMO · VIRTUAL MONEY" if snapshot.paper["source"] == "demo" else "PAPER · VIRTUAL MONEY") if paper_mode else "PROPOSALS ONLY"
         continuous = snapshot.running and self.controller.agent.continuous_paper
         phase = "WATCHING" if continuous and snapshot.phase == "Waiting" else snapshot.phase.upper()
-        self.mode.setText(f"{'CONTINUOUS · ' if continuous else ''}{phase} · UPDATE {snapshot.cycle} · {mode}")
+        self.mode.setText(mode)
+        self.mode.setToolTip(f"{'CONTINUOUS · ' if continuous else ''}{phase} · UPDATE {snapshot.cycle} · {mode}")
         self._update_paper(snapshot.paper)
         self._update_sources(snapshot)
-        self.equity_status.setText(snapshot.worker_status.get("equity", "Idle") + " · " + snapshot.market_status.get("equity", "Waiting for stock observations"))
-        self.crypto_status.setText(snapshot.worker_status.get("crypto", "Idle") + " · " + snapshot.market_status.get("crypto", "Waiting for crypto observations"))
+        self.equity_status.setText(snapshot.worker_status.get("equity", "Waiting for stock quotes"))
+        self.crypto_status.setText(snapshot.worker_status.get("crypto", "Waiting for crypto quotes"))
         self.candidates.setText(str(len(snapshot.decisions)))
         self.proposals.setText(str(sum(item.action != "hold" for item in snapshot.decisions)))
-        self.scout_status.setText(f"Scout · {snapshot.phase}")
-        self.analyst_status.setText(f"Analyst · {snapshot.analyst}")
+        self.scout_status.setText("Tracking paper portfolio" if snapshot.paper else "Waiting for a session")
+        self.analyst_status.setText(snapshot.analyst)
         self.risk_status.setText(
             f"Risk · {sum(item.risk_status == 'Blocked' for item in snapshot.decisions)} candidates blocked by data checks"
         )
-        self.execution_status.setText(f"Execution · {snapshot.execution_status}")
+        self.execution_status.setText("Waiting for eligible signals" if snapshot.paper else "Live trading not available")
+        self.execution_status.setToolTip(snapshot.execution_status)
         if snapshot.market_status:
             self.market_status.setText(
                 "\n".join(f"{market.upper()} · {state}" for market, state in snapshot.market_status.items())
@@ -1314,7 +1555,7 @@ class AgentWidget(QScrollArea):
         self.activity_hint.setText(f"{self.activity.rowCount()} events shown · Pacific time (PST/PDT) · " +
                                    ("simulated demo clock · " if demo else "") +
                                    ("paper fills use virtual money" if snapshot.paper else "research proposals only"))
-        self.activity.resizeRowsToContents()
+        self.activity.verticalHeader().setDefaultSectionSize(42)
         self._set_controls()
 
     def _copy_diagnostics(self) -> None:
