@@ -55,7 +55,9 @@ class SessionWorker:
                 raise ValueError("Review requires exact candidate, permit, data and interval fields")
             if self.control.current().running:
                 raise RuntimeError("Stop trading before reviewing another candidate")
-            if hasattr(self.runtime, "disable_research"):
+            if hasattr(self.runtime, "stop_research"):
+                await self.runtime.stop_research()
+            elif hasattr(self.runtime, "disable_research"):
                 self.runtime.disable_research()
             summary = await self.runtime.review(payload)
             state = self.control.review(
@@ -90,6 +92,8 @@ class SessionWorker:
                 raise RuntimeError("Worker control changed since review; review and approve again")
             if self.runtime.permit(state) is not True:
                 raise RuntimeError("Exact user permit was not verified")
+            if hasattr(self.runtime, "stop_research"):
+                await self.runtime.stop_research()
             state = self.control.start(state.scope_digest, expected_generation=payload["expected_generation"])
             self._launch(state, recover=False)
             return self.status()
@@ -117,7 +121,21 @@ class SessionWorker:
         if operation == "research_disable":
             if payload:
                 raise ValueError("Research disable does not accept extra fields")
+            if hasattr(self.runtime, "stop_research"):
+                return await self.runtime.stop_research()
             return self.runtime.disable_research()
+        if operation == "research_paper_start":
+            required = {
+                "source", "initial_cash", "trade_cash", "loop_demo", "news_enabled",
+                "social_enabled", "local_ai_enabled", "local_ai_model",
+            }
+            if set(payload) != required:
+                raise ValueError("Paper start requires source and explicit virtual cash values")
+            return await self.runtime.start_paper_research(self.control.current(), payload)
+        if operation == "research_paper_stop":
+            if payload:
+                raise ValueError("Paper stop does not accept extra fields")
+            return await self.runtime.stop_paper_research()
         if operation == "shutdown":
             if payload:
                 raise ValueError("Shutdown does not accept extra fields")
@@ -174,7 +192,10 @@ class SessionWorker:
 
     async def stop(self) -> dict:
         self.control.stop()
-        if hasattr(self.runtime, "disable_research"):
+        if hasattr(self.runtime, "stop_research"):
+            with contextlib.suppress(Exception):
+                await self.runtime.stop_research()
+        elif hasattr(self.runtime, "disable_research"):
             with contextlib.suppress(Exception):
                 self.runtime.disable_research()
         self._phase = "Stopped"

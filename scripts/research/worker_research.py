@@ -11,19 +11,48 @@ from grande_alpha.domain.models import utc_now
 from grande_alpha.research.agent_bridge import AgentBridge
 from grande_alpha.research.agent_models import AgentSettings
 from grande_alpha.research.agent_runtime import AgentRuntime
+from grande_alpha.research.paper.ledger import PaperLedger
 
 
 class WorkerResearch:
     """Keep AI prompts and research commands outside the execution path."""
 
-    def __init__(self, broker, bridge_path: Path, *, log) -> None:
+    def __init__(self, broker, bridge_path: Path, *, log, execution_active=lambda: False) -> None:
         self.broker = broker
         self.bridge = AgentBridge(bridge_path)
         self.log = log
+        self.execution_active = execution_active
         self.account = None
         self.agent: AgentRuntime | None = None
         self._poll_task: asyncio.Task | None = None
         self._revision = 0
+
+    async def close(self) -> None:
+        """Revoke the mailbox and wait for research tasks before closing their ledger."""
+        poll_task = self._poll_task
+        self.disable()
+        if poll_task is not None and poll_task is not asyncio.current_task():
+            await asyncio.gather(poll_task, return_exceptions=True)
+        if self.agent is not None:
+            await self.agent.close()
+            self.agent = None
+        self.account = None
+
+    async def stop(self) -> dict:
+        """Stop research work before another operation uses the broker transport."""
+        poll_task = self._poll_task
+        self.disable()
+        if poll_task is not None and poll_task is not asyncio.current_task():
+            await asyncio.gather(poll_task, return_exceptions=True)
+        if self.agent is not None:
+            await self.agent.stop_and_wait("Research stopped")
+        return self.status()
+
+    async def stop_agent(self) -> dict:
+        """Stop the paper/research loop while leaving an enabled MCP bridge available."""
+        if self.agent is not None:
+            await self.agent.stop_and_wait("Paper research stopped")
+        return self.status()
 
     async def enable(self, account_number: str) -> dict:
         if not self.broker or not self.broker.connected:
@@ -37,27 +66,79 @@ class WorkerResearch:
             raise RuntimeError("Research enable was cancelled by Stop or Revoke")
         if len(accounts) != 1:
             raise RuntimeError("The reviewed Agentic account is unavailable for research")
-        self.account = accounts[0]
+        self.prepare(accounts[0])
+        self.bridge.enable()
+        self._poll_task = asyncio.create_task(self._poll(), name="grande-research-mcp")
+        return self.status()
+
+    def prepare(self, account) -> None:
+        """Prepare read-only research for a reconciled account without enabling MCP."""
+        self.account = account
+        if self.agent is not None:
+            return
+        broker = self.broker
+
+        async def no_equity_quotes(_symbols):
+            return {}
+
+        async def no_crypto_pairs():
+            return []
+
+        async def no_crypto_quotes(_instruments):
+            return {}
+
+        async def no_equity_scan(_scan_id):
+            return []
 
         async def crypto_quotes(instruments):
-            if not self.account.rhs_account_number or not self.account.rhc_account_number:
+            if not broker or not broker.connected or not self.account or not self.account.rhs_account_number:
                 raise RuntimeError("Linked crypto research account is unavailable")
-            return await self.broker.get_crypto_quotes(
+            return await broker.get_crypto_quotes(
                 instruments, rhs_account_number=self.account.rhs_account_number,
             )
 
+        self.bridge.path.parent.mkdir(parents=True, exist_ok=True)
         self.agent = AgentRuntime(
-            equity_quotes=self.broker.get_quotes,
-            crypto_pairs=self.broker.discover_crypto,
-            crypto_quotes=crypto_quotes,
-            equity_scan=self.broker.discover_equities,
-            connected=lambda: bool(self.broker.connected),
+            equity_quotes=broker.get_quotes if broker else no_equity_quotes,
+            crypto_pairs=broker.discover_crypto if broker else no_crypto_pairs,
+            crypto_quotes=crypto_quotes if broker else no_crypto_quotes,
+            equity_scan=broker.discover_equities if broker else no_equity_scan,
+            connected=lambda: bool(broker and broker.connected),
             changed=lambda _snapshot: None,
             log=self.log,
             crypto_account_type=lambda: self.account.brokerage_account_type if self.account else "",
+            paper=PaperLedger(self.bridge.path.with_name("agent-paper.db")),
         )
-        self.bridge.enable()
-        self._poll_task = asyncio.create_task(self._poll(), name="grande-research-mcp")
+
+    def start_paper(self, payload: dict) -> dict:
+        if self.agent is None:
+            raise RuntimeError("Start the research service before starting paper research")
+        if payload["source"] == "broker_quotes" and (
+            self.account is None or not self.broker or not self.broker.connected
+        ):
+            raise RuntimeError("Review a connected account before using broker quotes")
+        if self.execution_active():
+            raise RuntimeError("Paper research cannot run alongside the live trading session")
+        if payload["source"] == "demo" and any(
+            payload[name] for name in ("news_enabled", "social_enabled", "local_ai_enabled")
+        ):
+            raise ValueError("The synthetic demo does not use news, social feeds, or local AI")
+        settings = replace(
+            self.agent.settings,
+            news_enabled=payload["news_enabled"],
+            social_enabled=payload["social_enabled"],
+            local_ai_enabled=payload["local_ai_enabled"],
+            local_ai_model=payload["local_ai_model"],
+        )
+        settings.validate()
+        self.agent.settings = settings
+        self.agent.start_paper(
+            settings,
+            source=payload["source"],
+            initial_cash=payload["initial_cash"],
+            trade_cash=payload["trade_cash"],
+            loop_demo=payload["loop_demo"],
+        )
         return self.status()
 
     def disable(self) -> dict:
@@ -78,6 +159,7 @@ class WorkerResearch:
             "phase": snapshot.phase if snapshot else "Off",
             "bridge_path": str(self.bridge.path) if self.bridge.session else None,
             "orders_available": False,
+            "paper": self.agent.paper_context() if self.agent is not None else None,
         }
 
     async def _poll(self) -> None:
@@ -97,6 +179,10 @@ class WorkerResearch:
             "context": set(), "start": set(), "stop": set(),
             "brief": {"market", "brief"},
             "universe": {"equity_symbols", "crypto_symbols"},
+            "paper_start": {
+                "source", "initial_cash", "trade_cash", "loop_demo", "news_enabled",
+                "social_enabled", "local_ai_enabled", "local_ai_model",
+            },
         }
         if command not in fields or set(payload) != fields[command]:
             raise ValueError("Invalid research command fields")
@@ -119,8 +205,12 @@ class WorkerResearch:
             self.agent.settings = settings
             return {"status": "Research universe saved; trading scope unchanged"}
         if command == "start":
+            if self.execution_active():
+                raise RuntimeError("Research scans are paused during the live trading session")
             self.agent.start(self.agent.settings)
             return {"status": "Research workers started; no orders authorized"}
+        if command == "paper_start":
+            return self.start_paper(payload)
         if command == "stop":
             self.agent.stop("Research workers stopped from MCP")
             return {"status": "Research workers stopped; trading state unchanged"}
@@ -160,5 +250,6 @@ class WorkerResearch:
             "local_ai_enabled": settings.local_ai_enabled,
             "universe": {"equity": settings.equity_symbols,
                          "crypto": settings.crypto_symbols},
+            "paper": self.agent.paper_context(),
             "observations": observations,
         }

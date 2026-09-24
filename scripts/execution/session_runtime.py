@@ -75,7 +75,7 @@ class BrokerSessionRuntime:
     async def _connect_once(self, authenticate: bool) -> dict:
         if self.connected:
             return {"connected": True, "accounts": await self._accounts()}
-        self.disable_research()
+        await self._close_research()
         self.broker = self._broker_factory(authenticate)
         try:
             async with asyncio.timeout(300 if authenticate else 30):
@@ -143,7 +143,7 @@ class BrokerSessionRuntime:
     def research_status(self) -> dict:
         return self.research.status() if self.research is not None else {
             "enabled": False, "running": False, "phase": "Off",
-            "bridge_path": None, "orders_available": False,
+            "bridge_path": None, "orders_available": False, "paper": None,
         }
 
     async def enable_research(self, state: WorkerState) -> dict:
@@ -151,8 +151,13 @@ class BrokerSessionRuntime:
             return await self._enable_research_once(state)
 
     async def _enable_research_once(self, state: WorkerState) -> dict:
+        if self._running or bool(self.control and self.control.current().running):
+            raise RuntimeError("Research connections are unavailable during a live trading session")
         if not state.account or not self.connected:
             raise RuntimeError("Review a connected Agentic account before enabling research")
+        return await self._research_service().enable(state.account)
+
+    def _research_service(self) -> WorkerResearch:
         if self.research is None:
             def record(summary: str, severity: str = "info", category: str = "agent_research",
                        payload=None) -> None:
@@ -164,15 +169,41 @@ class BrokerSessionRuntime:
 
             self.research = WorkerResearch(
                 self.broker, self.data_dir / "agent-mcp.db", log=record,
+                execution_active=lambda: self._running or bool(self.control and self.control.current().running),
             )
-        return await self.research.enable(state.account)
+        return self.research
+
+    async def start_paper_research(self, state: WorkerState, payload: dict) -> dict:
+        if self._running or bool(self.control and self.control.current().running):
+            raise RuntimeError("Paper research cannot run alongside the live trading session")
+        research = self._research_service()
+        if payload["source"] == "demo":
+            research.prepare(None)
+            return research.start_paper(payload)
+        if not state.account or not self.connected:
+            raise RuntimeError("Connect and review an account before using broker quotes")
+        accounts = [
+            account for account in await read_with_backoff(self.broker.get_accounts)
+            if account.account_number == state.account
+        ]
+        if len(accounts) != 1:
+            raise RuntimeError("The reviewed account could not be freshly reconciled")
+        research.prepare(accounts[0])
+        return research.start_paper(payload)
+
+    async def stop_paper_research(self) -> dict:
+        return await self.research.stop_agent() if self.research is not None else self.research_status()
 
     def disable_research(self) -> dict:
-        if self.research is None:
-            return self.research_status()
-        result = self.research.disable()
-        self.research = None
-        return result
+        return self.research.disable() if self.research is not None else self.research_status()
+
+    async def stop_research(self) -> dict:
+        return await self.research.stop() if self.research is not None else self.research_status()
+
+    async def _close_research(self) -> None:
+        research, self.research = self.research, None
+        if research is not None:
+            await research.close()
 
     def recovery_ack(self, state: WorkerState) -> dict:
         if not state.account:
@@ -246,6 +277,7 @@ class BrokerSessionRuntime:
     async def run(self, state: WorkerState, *, recover: bool) -> None:
         if self.control is None:
             raise RuntimeError("The worker runtime requires a durable control store")
+        await self.stop_research()
         if not self.connected:
             await self.connect(False if recover else True)
         self.permit(state)
@@ -302,7 +334,7 @@ class BrokerSessionRuntime:
                 self._running = False
 
     async def close(self) -> None:
-        self.disable_research()
+        await self._close_research()
         if self.broker is not None:
             with contextlib.suppress(Exception):
                 async with asyncio.timeout(8):

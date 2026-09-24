@@ -19,6 +19,8 @@ from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QAction, QCloseEvent, QColor, QFont, QResizeEvent
 from PySide6.QtWidgets import (
     QApplication,
+    QCheckBox,
+    QComboBox,
     QDialog,
     QDialogButtonBox,
     QDoubleSpinBox,
@@ -208,6 +210,7 @@ class SessionWindow(QMainWindow):
         self._stop_requested = False
         self._exit_in_flight = False
         self._research_busy = False
+        self._paper_busy = False
         self._status_in_flight = False
         self._worker_seen = False
         self._launch_in_progress = False
@@ -449,7 +452,7 @@ class SessionWindow(QMainWindow):
         start_layout.addWidget(self.start_button)
         layout.addWidget(self.start_group)
 
-        self.research_disclosure = QPushButton("Optional research MCP  ▸")
+        self.research_disclosure = QPushButton("Optional research & paper  ▸")
         self.research_disclosure.setCheckable(True)
         self.research_disclosure.setToolTip(
             "Show controls for the worker-hosted research-only MCP bridge"
@@ -474,6 +477,60 @@ class SessionWindow(QMainWindow):
         research_layout.addWidget(research_note)
         research_layout.addWidget(self.research_status)
         research_layout.addWidget(self.research_button)
+
+        paper_note = QLabel(
+            "Virtual paper only · no broker orders. Choose the amounts yourself; current quotes require a reviewed account."
+        )
+        paper_note.setObjectName("settingsDescription")
+        paper_note.setWordWrap(True)
+        research_layout.addWidget(paper_note)
+        paper_form = QFormLayout()
+        self.paper_source = QComboBox()
+        self.paper_source.addItem("Synthetic demo", "demo")
+        self.paper_source.addItem("Current broker quotes", "broker_quotes")
+        self.paper_initial_cash = QLineEdit()
+        self.paper_initial_cash.setPlaceholderText("Virtual starting cash")
+        self.paper_trade_cash = QLineEdit()
+        self.paper_trade_cash.setPlaceholderText("Virtual cash per entry")
+        self.paper_loop_demo = QCheckBox("Repeat the synthetic demo until stopped")
+        self.paper_news = QCheckBox("Include public news headlines")
+        self.paper_social = QCheckBox("Include unverified public Bluesky posts")
+        self.paper_social.setEnabled(False)
+        self.paper_local_ai = QCheckBox("Use a local Ollama model for advisory context")
+        self.paper_ai_model = QLineEdit()
+        self.paper_ai_model.setPlaceholderText("Installed local model name")
+        self.paper_ai_model.setEnabled(False)
+        paper_form.addRow("Price source", self.paper_source)
+        paper_form.addRow("Starting amount", self.paper_initial_cash)
+        paper_form.addRow("Amount per entry", self.paper_trade_cash)
+        paper_form.addRow("Demo", self.paper_loop_demo)
+        paper_form.addRow("Research", self.paper_news)
+        paper_form.addRow("Social", self.paper_social)
+        paper_form.addRow("Local AI", self.paper_local_ai)
+        paper_form.addRow("Ollama model", self.paper_ai_model)
+        research_layout.addLayout(paper_form)
+        paper_buttons = QHBoxLayout()
+        self.paper_start_button = QPushButton("Start virtual paper")
+        self.paper_start_button.clicked.connect(lambda: self._spawn(self._start_paper()))
+        self.paper_stop_button = QPushButton("Stop paper")
+        self.paper_stop_button.clicked.connect(lambda: self._spawn(self._stop_paper()))
+        self.paper_stop_button.setEnabled(False)
+        paper_buttons.addWidget(self.paper_start_button)
+        paper_buttons.addWidget(self.paper_stop_button)
+        research_layout.addLayout(paper_buttons)
+        self.paper_initial_cash.textChanged.connect(self._refresh_controls)
+        self.paper_trade_cash.textChanged.connect(self._refresh_controls)
+        self.paper_source.currentIndexChanged.connect(self._refresh_controls)
+        self.paper_source.currentIndexChanged.connect(self._update_paper_options)
+        self.paper_loop_demo.toggled.connect(self._refresh_controls)
+        self.paper_news.toggled.connect(self.paper_social.setEnabled)
+        self.paper_news.toggled.connect(
+            lambda enabled: self.paper_social.setChecked(False) if not enabled else None
+        )
+        self.paper_local_ai.toggled.connect(self.paper_ai_model.setEnabled)
+        self.paper_local_ai.toggled.connect(self._refresh_controls)
+        self.paper_ai_model.textChanged.connect(self._refresh_controls)
+        self._update_paper_options()
         self.research_panel.setVisible(False)
         layout.addWidget(self.research_panel)
         layout.addStretch()
@@ -482,8 +539,20 @@ class SessionWindow(QMainWindow):
     def _toggle_research_panel(self, expanded: bool) -> None:
         self.research_panel.setVisible(expanded)
         self.research_disclosure.setText(
-            "Optional research MCP  ▾" if expanded else "Optional research MCP  ▸"
+            "Optional research & paper  ▾" if expanded else "Optional research & paper  ▸"
         )
+
+    def _update_paper_options(self) -> None:
+        current_quotes = self.paper_source.currentData() == "broker_quotes"
+        self.paper_news.setEnabled(current_quotes)
+        if not current_quotes:
+            self.paper_news.setChecked(False)
+            self.paper_social.setChecked(False)
+            self.paper_local_ai.setChecked(False)
+        self.paper_social.setEnabled(current_quotes and self.paper_news.isChecked())
+        self.paper_local_ai.setEnabled(current_quotes)
+        self.paper_ai_model.setEnabled(current_quotes and self.paper_local_ai.isChecked())
+        self._refresh_controls()
 
     @staticmethod
     def _path_row(line_edit: QLineEdit, callback: Callable[[], None]) -> QWidget:
@@ -980,6 +1049,58 @@ class SessionWindow(QMainWindow):
             self._research_busy = False
             self._refresh_controls()
 
+    async def _start_paper(self) -> None:
+        if self._paper_busy or self._exit_in_flight:
+            return
+        initial_cash = self.paper_initial_cash.text().strip()
+        trade_cash = self.paper_trade_cash.text().strip()
+        if not initial_cash or not trade_cash:
+            self._show_error("Enter virtual starting cash and virtual cash per entry.")
+            return
+        self._paper_busy = True
+        self._refresh_controls()
+        try:
+            result = await self._request(
+                "research_paper_start",
+                {
+                    "source": self.paper_source.currentData(),
+                    "initial_cash": initial_cash,
+                    "trade_cash": trade_cash,
+                    "loop_demo": self.paper_loop_demo.isChecked(),
+                    "news_enabled": self.paper_news.isChecked(),
+                    "social_enabled": self.paper_social.isChecked(),
+                    "local_ai_enabled": self.paper_local_ai.isChecked(),
+                    "local_ai_model": self.paper_ai_model.text().strip(),
+                },
+                timeout_seconds=10,
+            )
+            self._status["research"] = result
+            self._render_research_status(result)
+            self._log("info", "Virtual paper session started; no broker orders are available.")
+            await self._refresh_status(show_errors=False)
+        except Exception as error:
+            self._show_error(f"Paper session could not start: {error}")
+        finally:
+            self._paper_busy = False
+            self._refresh_controls()
+
+    async def _stop_paper(self) -> None:
+        if self._paper_busy or self._exit_in_flight:
+            return
+        self._paper_busy = True
+        self._refresh_controls()
+        try:
+            result = await self._request("research_paper_stop", {}, timeout_seconds=10)
+            self._status["research"] = result
+            self._render_research_status(result)
+            self._log("info", "Virtual paper session stopped; recorded fills and holdings remain saved.")
+            await self._refresh_status(show_errors=False)
+        except Exception as error:
+            self._show_error(f"Paper session could not stop: {error}")
+        finally:
+            self._paper_busy = False
+            self._refresh_controls()
+
     def _schedule_status(self) -> None:
         if self._status_in_flight or self._closing:
             return
@@ -1098,20 +1219,46 @@ class SessionWindow(QMainWindow):
         self.start_button.setText("Approve and start" if reviewed_scope else "Review first")
         self.research_button.setEnabled(
             connected and bool(self._status.get("account")) and not transition_busy
-            and not self._research_busy
+            and not self._research_busy and not self._status.get("running")
         )
+        research = self._status.get("research")
+        paper = research.get("paper") if isinstance(research, dict) else None
+        paper_active = isinstance(paper, dict) and paper.get("active") is True
+        broker_quotes = self.paper_source.currentData() == "broker_quotes"
+        account_ready = connected and bool(self._status.get("account"))
+        can_start_paper = (
+            (account_ready if broker_quotes else True) and not self._status.get("running")
+            and not transition_busy and not self._paper_busy and not paper_active
+            and bool(self.paper_initial_cash.text().strip()) and bool(self.paper_trade_cash.text().strip())
+            and (not self.paper_local_ai.isChecked() or bool(self.paper_ai_model.text().strip()))
+        )
+        self.paper_start_button.setEnabled(can_start_paper)
+        self.paper_stop_button.setEnabled(paper_active and not self._paper_busy and not transition_busy)
         # Stop remains visible and actionable even when status probing failed. It never starts a worker.
         self.stop_button.setEnabled(not self._stop_in_flight and not self._exit_in_flight)
 
     def _render_research_status(self, research: Any) -> None:
-        if not isinstance(research, dict) or research.get("enabled") is not True:
-            self.research_status.setText("Off · orders unavailable")
+        if not isinstance(research, dict):
+            self.research_status.setText("Research MCP off · broker orders unavailable")
             self.research_button.setText("Enable research MCP")
             return
-        phase = research.get("phase") or ("Running" if research.get("running") else "Enabled")
-        bridge = research.get("bridge_path") or "local bridge path pending"
-        self.research_status.setText(f"{phase} · orders unavailable\n{bridge}")
-        self.research_button.setText("Disable research MCP")
+        enabled = research.get("enabled") is True
+        phase = research.get("phase") or ("Running" if research.get("running") else "Stopped")
+        bridge = research.get("bridge_path") or ("MCP connection off" if not enabled else "Local bridge path pending")
+        paper = research.get("paper")
+        paper_status = "Paper session: not started"
+        if isinstance(paper, dict):
+            state = "running" if paper.get("active") else "saved"
+            paper_status = (
+                f"Paper {state} · {paper.get('source', 'unknown source')} · "
+                f"virtual equity ${paper.get('equity', '—')} · "
+                f"P&L ${paper.get('total_pnl', '—')} · "
+                f"{len(paper.get('positions', []))} virtual holdings"
+            )
+        self.research_status.setText(
+            f"Research: {phase} · broker orders unavailable\n{paper_status}\n{bridge}"
+        )
+        self.research_button.setText("Disable research MCP" if enabled else "Enable research MCP")
 
     def _set_busy(self, busy: bool) -> None:
         self._busy = busy

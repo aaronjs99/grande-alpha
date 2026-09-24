@@ -18,7 +18,7 @@ async def test_mcp_exposes_research_tools_only_and_needs_opt_in(tmp_path):
         tools = await client.list_tools()
         assert {tool.name for tool in tools.tools} == {
             "get_research_context", "set_research_brief", "configure_research_universe",
-            "start_research", "stop_research",
+            "start_research", "start_paper_trading", "stop_research",
         }
         assert (await client.call_tool("get_research_context")).isError
         bridge.enable()

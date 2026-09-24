@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- Integrated Antonio's multi-market research runtime, adaptive virtual-paper strategy and durable
+  paper journal into the existing single worker. The desktop can start a paper session with
+  user-entered virtual amounts; research MCP exposes the same paper-only operations.
+- Prevented research and paper quote loops from running alongside a live session. Paper history
+  persists locally but never resumes automatically; neither the simulator nor MCP has broker-order
+  tools.
+- Kept the compact session UI and five-guide documentation structure. Removed the disconnected
+  legacy Agent desk, duplicate background supervisor, paid X connector and Codex-specific setup
+  wizard rather than maintaining a second process or client-specific control surface.
+- No combined-branch test run, installed-Windows acceptance, provider-observed execution, or
+  profitability result is claimed for this integration.
+
 ## 0.19.0 - 2026-09-24
 
 - Retired the attended ETF and live-shadow order/session routes. The mixed stock/ETF worker is
