@@ -14,7 +14,7 @@ import uuid
 from collections import deque
 from collections.abc import Awaitable, Callable
 from dataclasses import asdict, replace
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from grande_alpha.agent_analyst import OllamaAnalyst
 from grande_alpha.agent_models import (
@@ -149,7 +149,7 @@ class AgentRuntime:
             task.cancel()
         self._discard_paper_intents()
         if self.snapshot.running:
-            self._publish(running=False, phase="Stopped", decisions=(), observed_at=None,
+            self._publish(running=False, phase="Stopped", decisions=(), observed_at=None, next_cycle_at=None,
                           worker_status={"equity": "Stopped", "crypto": "Stopped"},
                           team_status={name: "Stopped" for name in self.snapshot.team_status})
             self._log(reason, category="agent_session")
@@ -166,21 +166,28 @@ class AgentRuntime:
             while self.snapshot.running:
                 if not self._available():
                     self._discard_paper_intents()
-                    self._publish(running=False, phase="Disconnected")
+                    self._publish(running=False, phase="Disconnected", next_cycle_at=None)
                     break
                 await self.cycle()
+                if not self.snapshot.running:
+                    break
                 if self.paper_source == "demo" and not self.loop_demo and self.snapshot.cycle >= DEMO_CYCLES:
                     self._discard_paper_intents()
-                    self._publish(running=False, phase="Demo complete",
+                    self._publish(running=False, phase="Demo complete", next_cycle_at=None,
                                   worker_status={"equity": "Demo complete", "crypto": "Demo complete"},
                                   team_status={name: "Demo complete" for name in self.snapshot.team_status})
                     break
-                await asyncio.sleep(DEMO_INTERVAL_SECONDS if self.paper_source == "demo" else self.settings.interval_seconds)
+                interval = DEMO_INTERVAL_SECONDS if self.paper_source == "demo" else self.settings.interval_seconds
+                self._publish(next_cycle_at=utc_now() + timedelta(seconds=interval))
+                await asyncio.sleep(interval)
         except asyncio.CancelledError:
             pass
         except Exception as exc:
             self._discard_paper_intents()
-            self._publish(running=False, phase="Error")
+            error = ("Could not save session results. Check available disk space and access to the app's data folder."
+                     if isinstance(exc, sqlite3.Error) else
+                     f"Agent stopped ({type(exc).__name__}). Open Receipts to inspect the last completed step.")
+            self._publish(running=False, phase="Error", next_cycle_at=None, error=error)
             self._log(f"Agent stopped: {type(exc).__name__}", "error", "agent_session")
 
     @staticmethod
@@ -403,7 +410,7 @@ class AgentRuntime:
             results = {}
             status = {}
             workers = {"equity": "Queued", "crypto": "Queued"}
-            self._publish(phase="Working", cycle=cycle, decisions=(), observed_at=None,
+            self._publish(phase="Working", cycle=cycle, decisions=(), observed_at=None, next_cycle_at=None,
                           market_status={}, worker_status=dict(workers),
                           team_status={"NOVA": "Queued", "ORIN": "Queued", "VELA": "Waiting for quotes",
                                        "KADE": "Waiting for analysis", "RUNE": "Waiting for eligible signals",
@@ -463,7 +470,7 @@ class AgentRuntime:
                 return
             if not self._available():
                 self._discard_paper_intents()
-                self._publish(running=False, phase="Disconnected", decisions=())
+                self._publish(running=False, phase="Disconnected", decisions=(), next_cycle_at=None)
                 return
             decisions = combined()
             eligible = sum(item.risk_status == "Data checks passed" for item in decisions)

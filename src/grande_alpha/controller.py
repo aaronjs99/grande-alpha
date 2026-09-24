@@ -359,6 +359,8 @@ class TradingController(QObject):
         return {
             "mode": "research_only", "orders_available": False,
             "running": snapshot.running, "cycle": snapshot.cycle, "phase": snapshot.phase,
+            "next_cycle_at": snapshot.next_cycle_at.isoformat() if snapshot.next_cycle_at else None,
+            "error": snapshot.error,
             "workers": snapshot.worker_status,
             "observed_at": snapshot.observed_at.isoformat() if snapshot.observed_at else None,
             "briefs": {"team": settings.research_brief, "equity": settings.equity_brief, "crypto": settings.crypto_brief},

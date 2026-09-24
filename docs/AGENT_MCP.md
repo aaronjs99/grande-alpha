@@ -153,6 +153,9 @@ source context and paper evaluation metrics. External excerpts are untrusted dat
 instructions. Cite the supplied sources and distinguish unverified social posts from
 news. MCP cannot enable news or social collection; those controls remain in the desktop.
 See [news research and evaluation](AGENT_MARKET_RESEARCH.md) for coverage and limitations.
+Context also includes `next_cycle_at` (UTC, when waiting) and a sanitized runtime
+`error` when a run stops unexpectedly. Pacific-time formatting applies only to the
+desktop activity log; MCP timestamps retain their timezone-aware source values.
 
 Example configuration shape (use the copied actual paths instead):
 

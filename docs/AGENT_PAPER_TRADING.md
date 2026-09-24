@@ -42,6 +42,19 @@ time measures actual session duration. Quote refreshes cannot substitute the
 real account's balance for virtual equity. The activity log includes actual
 worker handoffs, data checks, proposals, simulated fills and portfolio updates.
 It keeps the latest 200 rows and identifies saved fills after reopening.
+The activity log displays **Pacific time**, using `America/Los_Angeles` and explicit
+PST/PDT labels. Hover over a time for its full local date and UTC offset. This changes
+display only: saved events, decision clocks and market-hour checks remain in UTC.
+Demo activity remains labeled as a simulated clock.
+
+The status directly below the session buttons explains whether the run started, is
+fetching data, is collecting its initial quote history, or is waiting for the next
+cycle. It also summarizes closed-session/stale-quote restrictions, missing news
+coverage, market-provider errors, and signals that have no virtual holding to exit.
+The next-cycle countdown measures the wait after the prior cycle completes; network
+and model processing take additional time. A running session can legitimately have
+zero fills. Startup errors now appear beside the controls, and a disabled paper
+button explains when a Robinhood connection is required.
 
 Six named cards expose stages in the workflow, not six independent AI models:
 

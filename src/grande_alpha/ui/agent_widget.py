@@ -3,11 +3,13 @@ from __future__ import annotations
 import asyncio
 import html
 import json
+import math
 import sys
-from collections import deque
-from datetime import UTC, datetime
+from collections import Counter, deque
+from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pyqtgraph as pg
 from PySide6.QtCore import Qt, QTimer, QUrl
@@ -45,6 +47,8 @@ from grande_alpha.ui.agent_card import AgentCard
 from grande_alpha.ui.chatgpt_setup import ChatGPTSetupDialog
 from grande_alpha.ui.table_layout import configure_adjustable_columns
 from grande_alpha.ui.themes import color, set_item_foreground, theme_css
+
+PACIFIC_TIME = ZoneInfo("America/Los_Angeles")
 
 
 def label(text: str) -> QLabel:
@@ -104,6 +108,7 @@ class AgentWidget(QScrollArea):
         self._last_event_id = 0
         self._highlighted = set()
         self._dashboard_snapshot = controller.agent.snapshot
+        self._run_error = ""
         self._balance_account: str | None = None
         self._budget_account: str | None = None
         self._balance_times: deque[float] = deque(maxlen=500)
@@ -311,6 +316,12 @@ class AgentWidget(QScrollArea):
         controls.addWidget(self.paper_toggle)
         controls.addWidget(self.prompts_toggle)
         layout.addLayout(controls)
+        self.run_status = label("Choose a price source in Session setup to begin.")
+        self.run_status.setObjectName("modeBadge")
+        self.run_detail = label("")
+        self.run_detail.setObjectName("metricCaption")
+        layout.addWidget(self.run_status)
+        layout.addWidget(self.run_detail)
         layout.addWidget(self.paper_box)
         layout.addWidget(self.prompt_box)
 
@@ -354,10 +365,10 @@ class AgentWidget(QScrollArea):
         activity_title = label("// ACTIVITY LOG")
         activity_title.setObjectName("sectionTitle")
         activity_layout.addWidget(activity_title)
-        self.activity = self._table(["Time (UTC)", "Cycle", "Activity"])
+        self.activity = self._table(["Time (Pacific)", "Cycle", "Activity"])
         self.activity.setMinimumHeight(245)
         self.activity.setMaximumHeight(290)
-        self.activity.setColumnWidth(0, 80)
+        self.activity.setColumnWidth(0, 170)
         self.activity.setColumnWidth(1, 48)
         self.activity.setColumnWidth(2, 360)
         self.activity.setWordWrap(True)
@@ -529,12 +540,15 @@ class AgentWidget(QScrollArea):
         ))
 
     def _start_paper(self) -> None:
+        self._run_error = ""
         try:
             self.controller.start_agent_paper(self._read_settings(), self.paper_source.currentData(),
                                               self.paper_cash.value(), self.paper_trade_cash.value(),
                                               self.repeat_demo.isChecked() and self.paper_source.currentData() == "demo")
         except Exception as exc:
-            self.paper_status.setText(f"Paper session did not start: {exc}")
+            self._run_error = f"Paper session did not start: {exc}"
+            self.paper_status.setText(self._run_error)
+        self._update_run_status()
 
     def _news_toggled(self, enabled: bool) -> None:
         if not enabled:
@@ -644,12 +658,86 @@ class AgentWidget(QScrollArea):
             elapsed = max(0, (utc_now() - snapshot.started_at).total_seconds())
         minutes, seconds = divmod(int(elapsed), 60)
         self.clock_label.setText(f"ELAPSED {minutes:02d}:{seconds:02d}  ·  CYCLE {snapshot.cycle}")
+        self._update_run_status()
 
-    def _add_activity(self, at: str, cycle: str, summary: str, kind: str) -> None:
+    def _update_run_status(self) -> None:
+        snapshot = self._dashboard_snapshot
+        detail = ""
+        if self._run_error:
+            text = self._run_error
+        elif self.controller.shadow_only_runtime:
+            text = "Scheduled shadow does not run the stock/crypto agent. Open a normal GRANDE session."
+        elif snapshot.error:
+            text = snapshot.error
+        elif not snapshot.running:
+            if self.paper_source.currentData() == "broker_quotes":
+                text = ("Ready for paper trading with Robinhood quotes. Click Start paper trading; funds stay virtual."
+                        if self._connected else
+                        "Connect Robinhood to start paper trading with current quotes. No real orders will be placed.")
+            elif snapshot.phase == "Demo complete":
+                text = "Offline demo complete. It repeats fixed prices; select Robinhood quotes in Session setup for current data."
+            else:
+                text = "Offline demo selected. Click Start offline demo, or choose Robinhood quotes in Session setup."
+        else:
+            mode = "Offline demo" if self.controller.agent.paper_source == "demo" else (
+                "Paper trading · Robinhood quotes" if self.controller.agent.paper_source else "Research only")
+            prefix = f"{mode} · {snapshot.analyst}"
+            if snapshot.phase == "Starting":
+                text = prefix + " · Starting workers…"
+            elif snapshot.phase == "Working":
+                text = prefix + f" · Cycle {snapshot.cycle} in progress"
+                detail = ("Reading news sources…" if snapshot.team_status.get("VELA") == "Reading news sources" else
+                          " · ".join(f"{name}: {snapshot.worker_status.get(key, 'Queued')}"
+                                     for key, name in (("equity", "Stocks"), ("crypto", "Crypto"))))
+            else:
+                signals = Counter(d.action for d in snapshot.decisions)
+                paper = snapshot.paper if self.controller.agent.paper_source else None
+                fills = f" · {paper['fill_count']} simulated fills · {paper['pending_count']} pending" if paper else ""
+                remaining = max(0, math.ceil((snapshot.next_cycle_at - utc_now()).total_seconds())) if snapshot.next_cycle_at else None
+                wait = f" · Next cycle in {remaining}s" if remaining is not None else ""
+                text = (f"{prefix} · Cycle {snapshot.cycle} complete · {signals['buy']} BUY / {signals['exit']} EXIT / "
+                        f"{signals['hold']} HOLD{fills}{wait}")
+                held = {p['key'] for p in paper['positions']} if paper else set()
+
+                def signal_reason(item):
+                    if item.risk_status != "Data checks passed":
+                        return item.reason
+                    if item.action == "exit":
+                        return ("EXIT signal; no virtual holding to sell" if paper and item.instrument.key not in held else
+                                "EXIT signal; waiting for a later eligible quote" if paper else "EXIT proposal; research does not simulate fills")
+                    if item.action == "buy" and paper and item.instrument.key in held:
+                        return "Already holding; additional buys are disabled"
+                    if not item.buy_allowed and item.source_context:
+                        return "News blocks new buys: " + (", ".join(item.source_context['risk_terms']) or item.source_context['coverage'])
+                    if item.action == "buy":
+                        if paper and Decimal(paper['cash']) < Decimal(paper['trade_cash']):
+                            return "Insufficient virtual cash for another buy"
+                        return "BUY signal; waiting for a later eligible quote" if paper else "BUY proposal; research does not simulate fills"
+                    return "HOLD: no entry or exit signal"
+
+                reasons = []
+                for key, name in (("equity", "Stocks"), ("crypto", "Crypto")):
+                    status = snapshot.market_status.get(key, "")
+                    items = [d for d in snapshot.decisions if d.instrument.asset_class.value == key]
+                    if status.startswith("Unavailable"):
+                        reason = status
+                    elif not items:
+                        reason = "No candidates returned. Check the watchlist and available broker data."
+                    else:
+                        counts = Counter(signal_reason(d) for d in items)
+                        reason = "; ".join(f"{count}/{len(items)} {message}" for message, count in counts.most_common(2))
+                    reasons.append(f"{name}: {reason}")
+                detail = "\n".join(reasons)
+        self.run_status.setText(text)
+        self.run_detail.setText(detail)
+        self.run_detail.setVisible(bool(detail))
+
+    def _add_activity(self, at: datetime, cycle: str, summary: str, kind: str) -> None:
+        pacific = at.astimezone(PACIFIC_TIME)
         self.activity.insertRow(0)
-        for column, value in enumerate((at, cycle, summary)):
+        for column, value in enumerate((pacific.strftime("%I:%M:%S %p %Z"), cycle, summary)):
             item = QTableWidgetItem(value)
-            item.setToolTip(value)
+            item.setToolTip(pacific.strftime("%Y-%m-%d %I:%M:%S %p %Z (UTC%z)") if column == 0 else value)
             if column == 2:
                 shade = {"RISK": "#a77924", "WARN": "#b74b63", "FILL": "#16845e",
                          "IDEA": "#16845e", "BOOK": "#9273c8"}.get(kind, "#566e7c")
@@ -671,7 +759,7 @@ class AgentWidget(QScrollArea):
             # Persisted fills remain inspectable after reopening; do not invent handoffs.
             if not snapshot.team_events and not snapshot.running and snapshot.paper:
                 for fill in snapshot.paper["fills"]:
-                    self._add_activity(datetime.fromisoformat(fill["filled_at"]).astimezone(UTC).strftime("%H:%M:%S"), "—",
+                    self._add_activity(datetime.fromisoformat(fill["filled_at"]), "—",
                                        f"[FILL] Saved PAPER {fill['side'].upper()} {fill['key']} @ ${float(fill['price']):,.6g}", "FILL")
         for event in snapshot.team_events:
             if event["id"] <= self._last_event_id:
@@ -679,7 +767,7 @@ class AgentWidget(QScrollArea):
             self._last_event_id = event["id"]
             handoffs.update((event["from"], *event["to"].split(" + ")))
             summary = f"[{event['kind']}] {event['from']} → {event['to']} · {event['message']}"
-            self._add_activity(datetime.fromisoformat(event["at"]).astimezone(UTC).strftime("%H:%M:%S"), str(event["cycle"]), summary, event["kind"])
+            self._add_activity(datetime.fromisoformat(event["at"]), str(event["cycle"]), summary, event["kind"])
         latest = snapshot.team_events[-1] if snapshot.team_events else None
         self._highlighted = set()
         if latest:
@@ -789,10 +877,13 @@ class AgentWidget(QScrollArea):
             self.market_status.setText(str(exc))
 
     def _start(self) -> None:
+        self._run_error = ""
         try:
             self.controller.start_agent(self._read_settings())
         except Exception as exc:
+            self._run_error = f"Research did not start: {exc}"
             QMessageBox.warning(self, "Agent could not start", str(exc))
+        self._update_run_status()
 
     def _sync_agent_settings(self) -> None:
         settings = self.controller.agent.settings
@@ -950,6 +1041,8 @@ class AgentWidget(QScrollArea):
         self.paper_start.setEnabled(not running and not self.controller.shadow_only_runtime
                                     and (self.paper_source.currentData() == "demo" or enabled))
         self.paper_start.setText("Start offline demo" if self.paper_source.currentData() == "demo" else "Start paper trading")
+        self.paper_start.setToolTip("Connect Robinhood to use current quotes with virtual funds."
+                                   if self.paper_source.currentData() == "broker_quotes" and not enabled else "")
         self.repeat_demo.setEnabled(not running and self.paper_source.currentData() == "demo")
         self.news_enabled.setEnabled(not running and not self.controller.shadow_only_runtime)
         self.social_enabled.setEnabled(not running and self.news_enabled.isChecked() and not self.controller.shadow_only_runtime)
@@ -963,6 +1056,7 @@ class AgentWidget(QScrollArea):
         self.load_scans.setEnabled(
             enabled and not running and (self._scan_task is None or self._scan_task.done())
         )
+        self._update_run_status()
 
     def _save_budget(self) -> None:
         try:
@@ -974,6 +1068,8 @@ class AgentWidget(QScrollArea):
 
     def update_agent(self, snapshot: AgentSnapshot) -> None:
         self._dashboard_snapshot = snapshot
+        if snapshot.running:
+            self._run_error = ""
         self._update_clock()
         if snapshot.running and self.configure.isChecked():
             self.configure.setChecked(False)
@@ -1028,10 +1124,12 @@ class AgentWidget(QScrollArea):
                 if status.startswith("Unavailable")
             ]
             for summary in summaries or ["No candidates returned"]:
-                self._add_activity(snapshot.observed_at.astimezone(UTC).strftime("%H:%M:%S"), str(snapshot.cycle),
+                self._add_activity(snapshot.observed_at, str(snapshot.cycle),
                                    summary, "RISK" if summary.startswith("[RISK]") else "IDEA" if summary.startswith("[IDEA]") else "SCAN")
         self._update_handoffs(snapshot)
-        self.activity_hint.setText(f"{self.activity.rowCount()} events shown · " +
+        demo = bool(snapshot.paper and snapshot.paper["source"] == "demo")
+        self.activity_hint.setText(f"{self.activity.rowCount()} events shown · Pacific time (PST/PDT) · " +
+                                   ("simulated demo clock · " if demo else "") +
                                    ("paper fills use virtual money" if snapshot.paper else "research proposals only"))
         self.activity.resizeRowsToContents()
         self._set_controls()

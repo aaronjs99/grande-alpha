@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from datetime import datetime, timedelta
 from decimal import Decimal
 
 import pytest
@@ -183,5 +184,67 @@ def test_dashboard_reflows_and_saved_limit_controls_remain_reachable(tmp_path, a
     position = widget.save_budget.mapTo(widget.viewport(), widget.save_budget.rect().center())
     assert widget.viewport().rect().contains(position)
     assert not widget.save_budget.isEnabled()
+    window.close()
+    store.close()
+
+
+@pytest.mark.parametrize('timestamp,expected,date', [
+    ('2026-09-24T04:30:12+00:00', '09:30:12 PM PDT', '2026-09-23'),
+    ('2026-01-24T04:30:12+00:00', '08:30:12 PM PST', '2026-01-23'),
+    ('2026-11-01T08:30:00+00:00', '01:30:00 AM PDT', '2026-11-01'),
+    ('2026-11-01T09:30:00+00:00', '01:30:00 AM PST', '2026-11-01'),
+])
+def test_activity_uses_pacific_offset_and_date_without_changing_event_time(tmp_path, app, timestamp, expected, date):
+    store = AuditStore(tmp_path / 'pacific.db')
+    controller = TradingController(DisabledBroker(), AppConfig(), store)
+    window = MainWindow(controller, controller.config)
+    widget = window.agent_widget
+    event = {'id': 1, 'from': 'NOVA', 'to': 'VELA', 'message': 'Fixture quote',
+             'kind': 'SCAN', 'cycle': 1, 'at': timestamp}
+    widget.update_agent(AgentSnapshot(session_id='test', team_events=(event,)))
+    assert widget.activity.horizontalHeaderItem(0).text() == 'Time (Pacific)'
+    assert widget.activity.item(0, 0).text() == expected
+    assert date in widget.activity.item(0, 0).toolTip()
+    assert 'Pacific time' in widget.activity_hint.text()
+    assert event['at'] == timestamp
+    assert datetime.fromisoformat(event['at']).utcoffset() == timedelta(0)
+    window.close()
+    store.close()
+
+
+def test_top_status_explains_start_failure_waiting_and_missing_news(tmp_path, app, monkeypatch):
+    from test_agent_paper import decision
+    from test_agent_runtime import NOW
+
+    store = AuditStore(tmp_path / 'status.db')
+    controller = TradingController(DisabledBroker(), AppConfig(broker_connection_enabled=True), store)
+    window = MainWindow(controller, controller.config)
+    widget = window.agent_widget
+    widget.paper_source.setCurrentIndex(1)
+    assert not widget.paper_start.isEnabled()
+    assert 'Connect Robinhood' in widget.run_status.text()
+    widget._start_paper()
+    assert 'did not start' in widget.run_status.text()
+    monkeypatch.setattr('grande_alpha.ui.agent_widget.utc_now', lambda: NOW)
+    warming = replace(decision(), action='hold', risk_status='Warming up', reason='Collecting at least 4 distinct quotes spanning 60 seconds')
+    snapshot = AgentSnapshot(running=True, cycle=1, phase='Waiting', observed_at=NOW,
+                             decisions=(warming,), next_cycle_at=NOW + timedelta(seconds=15))
+    widget.update_agent(snapshot)
+    assert 'Next cycle in 15s' in widget.run_status.text()
+    assert 'Collecting at least 4 distinct quotes' in widget.run_detail.text()
+    no_news = replace(decision(), action='hold', buy_allowed=False, source_context={
+        'risk_terms': [], 'coverage': 'Insufficient fresh ticker-specific coverage'})
+    snapshot = replace(snapshot, decisions=(no_news,), market_status={'crypto': 'Unavailable: Missing crypto capability'})
+    widget.update_agent(snapshot)
+    assert 'News blocks new buys' in widget.run_detail.text()
+    assert 'Missing crypto capability' in widget.run_detail.text()
+    assert '0 BUY' in widget.run_status.text()
+    controller.agent.paper.start('broker_quotes', 1000, 100)
+    controller.agent.paper_source = 'broker_quotes'
+    snapshot = replace(snapshot, decisions=(replace(no_news, action='exit'),), paper=controller.agent.paper_context())
+    widget.update_agent(snapshot)
+    assert 'EXIT signal; no virtual holding to sell' in widget.run_detail.text()
+    widget.update_agent(replace(snapshot, running=False, phase='Error', error='Could not save paper results.'))
+    assert widget.run_status.text() == 'Could not save paper results.'
     window.close()
     store.close()

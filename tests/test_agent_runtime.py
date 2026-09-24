@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sqlite3
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
@@ -102,6 +103,39 @@ class ReadMarket:
             clock=lambda: self.now,
             analyst=analyst,
         )
+
+
+@pytest.mark.asyncio
+async def test_cycle_countdown_clears_on_stop_and_journal_error_is_visible(monkeypatch):
+    market = ReadMarket()
+    agent = market.runtime()
+    waiting = asyncio.Event()
+    original_changed = agent._changed
+
+    def changed(snapshot):
+        original_changed(snapshot)
+        if snapshot.next_cycle_at:
+            waiting.set()
+
+    agent._changed = changed
+    agent.start(AgentSettings(equity_symbols=('AAPL',)))
+    task = agent._task
+    await asyncio.wait_for(waiting.wait(), 2)
+    assert agent.snapshot.running and agent.snapshot.phase == 'Waiting'
+    agent.stop()
+    await task
+    assert agent.snapshot.next_cycle_at is None and not agent.snapshot.error
+
+    async def journal_failure():
+        raise sqlite3.OperationalError('Private filesystem path must not appear in status')
+
+    monkeypatch.setattr(agent, 'cycle', journal_failure)
+    agent.start(AgentSettings())
+    await agent._task
+    assert agent.snapshot.phase == 'Error' and not agent.snapshot.running
+    assert agent.snapshot.next_cycle_at is None
+    assert 'Could not save session results' in agent.snapshot.error
+    assert 'Private filesystem' not in agent.snapshot.error
 
 
 @pytest.mark.asyncio

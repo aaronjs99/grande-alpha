@@ -109,3 +109,5 @@ class AgentSnapshot:
     team_status: dict[str, str] = field(default_factory=dict)
     team_events: tuple[dict, ...] = ()
     research_sources: dict | None = None
+    next_cycle_at: datetime | None = None
+    error: str = ""
