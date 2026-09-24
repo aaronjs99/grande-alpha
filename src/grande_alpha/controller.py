@@ -24,6 +24,7 @@ from grande_alpha.agent_bridge import AgentBridge
 from grande_alpha.agent_execution import AgentExecutor
 from grande_alpha.agent_ledger import AgentBudget
 from grande_alpha.agent_models import AgentSettings
+from grande_alpha.agent_preferences import AgentPreferences, PaperSetup, load_preferences
 from grande_alpha.agent_runtime import AgentRuntime
 from grande_alpha.broker.base import (
     Broker,
@@ -176,6 +177,7 @@ class CancelPlan:
 
 
 class TradingController(QObject):
+    agent_chat_cancel_requested = Signal()
     snapshot_changed = Signal(object)
     agent_changed = Signal(object)
     agent_mcp_changed = Signal(bool)
@@ -263,6 +265,9 @@ class TradingController(QObject):
             paper=store.agent_paper,
         )
 
+        self._agent_preferences_path = store.path.with_name(store.path.stem + "-agent-settings.json")
+        self.agent_preferences, self.agent_preferences_error = load_preferences(self._agent_preferences_path)
+        self.agent.settings = self.agent_preferences.settings
         self.agent_bridge = AgentBridge(store.path.parent / "agent-mcp.db")
         self._agent_mcp_timer = QTimer(self)
         self._agent_mcp_timer.setInterval(250)
@@ -282,13 +287,47 @@ class TradingController(QObject):
         self.agent_mcp_changed.emit(enabled)
 
     def stop_agent(self, reason: str = "Agent stopped") -> None:
+        self.agent_chat_cancel_requested.emit()
         # Revoke remote restart permission before stopping local work.
         self.set_agent_mcp_enabled(False)
         self.agent.stop(reason)
 
     def set_agent_brief(self, market: str, brief: str) -> None:
-        self.agent.set_brief(market, brief)
-        self.agent_settings_changed.emit()
+        field = {"team": "research_brief", "equity": "equity_brief", "crypto": "crypto_brief"}.get(market)
+        if field is None:
+            raise ValueError("Choose team, equity, or crypto")
+        self.save_agent_preferences(replace(self.agent.settings, **{field: brief}))
+
+    def save_agent_preferences(self, settings: AgentSettings, paper: PaperSetup | None = None,
+                               *, notify: bool = True) -> None:
+        settings.validate()
+        if self.shadow_only_runtime:
+            raise RuntimeError("Scheduled shadow cannot configure the Agent desktop")
+        if self.agent.snapshot.running:
+            live_fields = ("research_brief", "equity_brief", "crypto_brief", "paper_entries_paused",
+                           "paper_max_positions", "paper_max_exposure_pct")
+            unchanged = replace(settings, **{name: getattr(self.agent.settings, name) for name in live_fields})
+            if unchanged != self.agent.settings:
+                raise ValueError("Stop the agent before changing its universe, model or session setup")
+        preferences = AgentPreferences(settings, paper or self.agent_preferences.paper)
+        preferences.save(self._agent_preferences_path)
+        old = self.agent.settings
+        self.agent_preferences = preferences
+        self.agent_preferences_error = ""
+        self.agent.settings = settings
+        if settings.paper_entries_paused:
+            try:
+                self.agent.paper.cancel_pending_buys()
+            except Exception:
+                self.event.emit("warning", "New paper buys are paused, but virtual pending-buy cleanup could not be saved")
+        if self.agent.paper_source and any(getattr(old, name) != getattr(settings, name) for name in
+                                          ("paper_entries_paused", "paper_max_positions", "paper_max_exposure_pct")):
+            self.agent._handoff("YOU", "KADE", "Paper controls saved · new buys " +
+                                ("paused" if settings.paper_entries_paused else "enabled") +
+                                f" · adaptive limits {settings.paper_max_positions} positions / {settings.paper_max_exposure_pct}% exposure",
+                                "RISK")
+        if notify:
+            self.agent_settings_changed.emit()
 
     def _poll_agent_mcp(self) -> None:
         try:
@@ -319,8 +358,7 @@ class TradingController(QObject):
                 raise ValueError("Research symbols must be lists of strings")
             settings = replace(self.agent.settings, **{key: tuple(value) for key, value in payload.items()}, scan_id="")
             settings.validate()
-            self.agent.settings = settings
-            self.agent_settings_changed.emit()
+            self.save_agent_preferences(settings)
             return {"status": "Research universe saved; no broker settings changed"}
         if command == "start":
             self.start_agent(self.agent.settings)
@@ -367,6 +405,9 @@ class TradingController(QObject):
             "error": snapshot.error,
             "continuous_paper": self.agent.continuous_paper,
             "paper_strategy": settings.paper_strategy if self.agent.continuous_paper else "legacy",
+            "paper_controls": {"entries_paused": settings.paper_entries_paused,
+                               "adaptive_max_positions": settings.paper_max_positions,
+                               "adaptive_max_exposure_pct": settings.paper_max_exposure_pct},
             "ai_role": ("advisory" if self.agent.adaptive_paper else "decision") if local_ai_active else "off",
             "quote_interval_seconds": settings.interval_seconds,
             "analysis_status": snapshot.analysis_status,
@@ -396,12 +437,15 @@ class TradingController(QObject):
     def start_agent(self, settings: AgentSettings) -> None:
         if self.shadow_only_runtime:
             raise RuntimeError("Scheduled ETF shadow does not start the multi-market agent")
+        self.save_agent_preferences(settings)
         self.agent.start(settings)
 
     def start_agent_paper(self, settings: AgentSettings, source: str = "demo", initial_cash: float = 1000,
                           trade_cash: float = 100, loop_demo: bool = False) -> None:
         if self.shadow_only_runtime:
             raise RuntimeError("Scheduled ETF shadow does not start agent paper trading")
+        repeat_preference = loop_demo if source == "demo" else self.agent_preferences.paper.loop_demo
+        self.save_agent_preferences(settings, PaperSetup(source, initial_cash, trade_cash, repeat_preference))
         self.agent.start_paper(settings, source, initial_cash, trade_cash, loop_demo)
 
     async def _agent_crypto_quotes(self, instruments):

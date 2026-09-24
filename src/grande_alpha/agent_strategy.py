@@ -98,7 +98,7 @@ def adaptive_decision(item: AgentDecision, history, state: dict, now: datetime) 
                   (" · virtual entry awaiting confirmation" if key in occupied else ""))
 
 
-def limit_entries(decisions, state):
+def limit_entries(decisions, state, settings=None):
     """Reserve capacity within a batch as well as across both market workers."""
     occupied = set(state["positions"]) | {k for k, v in state["pending"].items() if v["side"] == "buy"}
     costs = {k: float(p["cost"]) for k, p in state["positions"].items()}
@@ -106,18 +106,20 @@ def limit_entries(decisions, state):
     costs.update({k: trade_cash for k in occupied if k not in costs})
     family = {"equity:QQQ", "equity:TQQQ", "equity:SQQQ"}
     result = []
+    max_positions = settings.paper_max_positions if settings else MAX_POSITIONS
+    max_exposure = settings.paper_max_exposure_pct / 100 if settings else MAX_EXPOSURE_FRACTION
     for item in decisions:
         key, reason = item.instrument.key, ""
         if item.action == "buy" and item.buy_allowed:
             others = occupied - {key}
             if float(state["max_drawdown_pct"]) >= MAX_DRAWDOWN_PCT:
                 reason = "Paper session drawdown reached 3%; new entries paused until a new session"
-            elif len(others) >= MAX_POSITIONS:
-                reason = "Paper position limit: four held or pending entries"
+            elif len(others) >= max_positions:
+                reason = f"Paper position limit: {max_positions} held or pending entries"
             elif key in family and others & family:
                 reason = "Paper exposure limit: only one of QQQ, TQQQ or SQQQ at a time"
-            elif sum(costs[k] for k in others) + trade_cash > float(state["initial_cash"]) * MAX_EXPOSURE_FRACTION:
-                reason = "Paper exposure limit: entries use at most 40% of starting virtual cash"
+            elif sum(costs[k] for k in others) + trade_cash > float(state["initial_cash"]) * max_exposure:
+                reason = f"Paper exposure limit: entries use at most {max_exposure:.0%} of starting virtual cash"
             else:
                 occupied.add(key)
                 costs[key] = trade_cash
@@ -125,3 +127,12 @@ def limit_entries(decisions, state):
                 item = replace(item, action="hold", buy_allowed=False, reason=reason)
         result.append(item)
     return result
+
+
+def pause_entries(decisions, paused):
+    """Also revoke eligibility on HOLD so an earlier pending buy cannot fill."""
+    if not paused:
+        return decisions
+    return [replace(item, action="hold" if item.action == "buy" else item.action, buy_allowed=False,
+                    reason="New paper buys paused by your directions" if item.action == "buy" else item.reason)
+            for item in decisions]

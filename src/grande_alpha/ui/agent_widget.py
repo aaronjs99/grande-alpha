@@ -6,13 +6,14 @@ import json
 import math
 import sys
 from collections import Counter, deque
+from dataclasses import replace
 from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import pyqtgraph as pg
-from PySide6.QtCore import Qt, QTimer, QUrl
+from PySide6.QtCore import QSignalBlocker, Qt, QTimer, QUrl
 from PySide6.QtGui import QColor, QDesktopServices
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -42,9 +43,11 @@ from PySide6.QtWidgets import (
 
 from grande_alpha.agent_ledger import AgentBudget
 from grande_alpha.agent_models import AgentSettings, AgentSnapshot, parse_symbols
+from grande_alpha.agent_preferences import PaperSetup
 from grande_alpha.agent_sources import FEEDS, safe_url
 from grande_alpha.models import utc_now
 from grande_alpha.ui.agent_card import AgentCard
+from grande_alpha.ui.agent_chat import AgentChat
 from grande_alpha.ui.chatgpt_setup import ChatGPTSetupDialog
 from grande_alpha.ui.table_layout import configure_adjustable_columns
 from grande_alpha.ui.themes import color, set_item_foreground, theme_css
@@ -239,8 +242,7 @@ class AgentWidget(QScrollArea):
         self.local_ai = QCheckBox("Use a local Ollama model for analysis")
         self.model = QLineEdit()
         self.model.setPlaceholderText("Installed model name")
-        self.model.setEnabled(False)
-        self.local_ai.toggled.connect(self.model.setEnabled)
+        self.model.setToolTip("Installed Ollama model for chat and optional background analysis")
         form.addRow(self.local_ai)
         form.addRow("Local model", self.model)
         form.addRow(
@@ -256,12 +258,15 @@ class AgentWidget(QScrollArea):
         self.save_setup.clicked.connect(self._save_settings)
         form.addRow(self.save_setup)
 
-        self.prompts_toggle = QPushButton("Prompts + AI connections")
+        self.prompts_toggle = QPushButton("Chat + AI connections")
         self.prompts_toggle.setCheckable(True)
-        self.prompt_box = QGroupBox("Prompts + AI connections")
+        self.prompt_box = QGroupBox("Chat + AI connections")
         self.prompt_box.setVisible(False)
         self.prompts_toggle.toggled.connect(self.prompt_box.setVisible)
         prompt_form = QFormLayout(self.prompt_box)
+        self.chat = AgentChat(controller, self._save_preferences)
+        self.chat.configure_model.connect(self._show_model_setup)
+        prompt_form.addRow(self.chat)
         prompt_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
         self.briefs = {}
         for key, title, placeholder in (
@@ -324,6 +329,9 @@ class AgentWidget(QScrollArea):
         self.run_detail.setObjectName("metricCaption")
         layout.addWidget(self.run_status)
         layout.addWidget(self.run_detail)
+        self.settings_status = label(controller.agent_preferences_error or "Agent settings save automatically on this Mac.")
+        self.settings_status.setObjectName("metricCaption")
+        layout.addWidget(self.settings_status)
         diagnostic_controls = QHBoxLayout()
         self.diagnostics_toggle = QPushButton('Why no trades?')
         self.diagnostics_toggle.setCheckable(True)
@@ -497,6 +505,14 @@ class AgentWidget(QScrollArea):
         controller.agent_changed.connect(self.update_agent)
         controller.agent_mcp_changed.connect(self._mcp_changed)
         controller.agent_settings_changed.connect(self._sync_agent_settings)
+        self._preferences_timer = QTimer(self)
+        self._preferences_timer.setSingleShot(True)
+        self._preferences_timer.setInterval(500)
+        self._preferences_timer.timeout.connect(self._save_preferences)
+        self._preferences_dirty = False
+        self._syncing_settings = False
+        self._sync_agent_settings()
+        self._wire_preferences()
         self.update_agent(controller.agent.snapshot)
         self._clock_timer = QTimer(self)
         self._clock_timer.setInterval(1000)
@@ -601,6 +617,9 @@ class AgentWidget(QScrollArea):
 
     def _start_paper(self) -> None:
         self._run_error = ""
+        if not self._save_preferences():
+            self.paper_status.setText(self.settings_status.text())
+            return
         try:
             self.controller.start_agent_paper(self._read_settings(), self.paper_source.currentData(),
                                               self.paper_cash.value(), self.paper_trade_cash.value(),
@@ -948,7 +967,7 @@ class AgentWidget(QScrollArea):
         return table
 
     def _read_settings(self) -> AgentSettings:
-        return AgentSettings(
+        return replace(self.controller.agent.settings,
             equity_symbols=parse_symbols(self.equities.text()),
             crypto_symbols=parse_symbols(self.crypto.text()),
             scan_id=str(self.scans.currentData() or ""),
@@ -962,16 +981,52 @@ class AgentWidget(QScrollArea):
         )
 
     def _save_settings(self) -> None:
+        self._preferences_dirty = True
+        if self._save_preferences():
+            self.market_status.setText("Agent settings saved on this Mac and restored on the next launch.")
+
+    def _wire_preferences(self):
+        for editor in (self.equities, self.crypto, self.model, *self.briefs.values()):
+            editor.textChanged.connect(self._queue_preferences)
+        for combo in (self.scans, self.paper_source, self.paper_strategy):
+            combo.currentIndexChanged.connect(self._queue_preferences)
+        for spin in (self.interval, self.paper_cash, self.paper_trade_cash):
+            spin.valueChanged.connect(self._queue_preferences)
+        for check in (self.local_ai, self.news_enabled, self.social_enabled, self.twitter_enabled, self.repeat_demo):
+            check.toggled.connect(self._queue_preferences)
+
+    def _queue_preferences(self):
+        if self._syncing_settings:
+            return
+        self._preferences_dirty = True
+        self.settings_status.setText("Saving Agent settings…")
+        self._preferences_timer.start()
+
+    def _save_preferences(self):
+        self._preferences_timer.stop()
         try:
             settings = self._read_settings()
-            settings.validate()
-            if self.controller.agent.snapshot.running:
-                raise ValueError("Stop research before changing its setup")
-            self.controller.agent.settings = settings
-            self.controller.agent_settings_changed.emit()
-            self.market_status.setText("Research setup saved for this app session. Analysis starts only when requested.")
-        except (ValueError, RuntimeError) as exc:
-            self.market_status.setText(str(exc))
+            paper = PaperSetup(self.paper_source.currentData(), self.paper_cash.value(), self.paper_trade_cash.value(),
+                               self.repeat_demo.isChecked())
+            if (self._preferences_dirty or settings != self.controller.agent_preferences.settings
+                    or paper != self.controller.agent_preferences.paper):
+                self.controller.save_agent_preferences(settings, paper, notify=False)
+            self._preferences_dirty = False
+            self.chat.sync_settings()
+            self.settings_status.setText(self.controller.agent_preferences_error or "Agent settings saved automatically on this Mac.")
+            return True
+        except (ValueError, RuntimeError, OSError) as exc:
+            self.settings_status.setText(f"Settings not saved: {exc}")
+            self.market_status.setText(self.settings_status.text())
+            return False
+
+    def _show_model_setup(self):
+        if self.controller.agent.snapshot.running:
+            self.chat.status.setText("Stop the agent to choose or change the local model, then return to chat.")
+            return
+        self.configure.setChecked(True)
+        self.ensureWidgetVisible(self.model)
+        self.model.setFocus()
 
     def _start(self) -> None:
         self._run_error = ""
@@ -983,11 +1038,20 @@ class AgentWidget(QScrollArea):
         self._update_run_status()
 
     def _sync_agent_settings(self) -> None:
+        self._syncing_settings = True
+        try:
+            self._restore_agent_settings()
+        finally:
+            self._syncing_settings = False
+
+    def _restore_agent_settings(self) -> None:
         settings = self.controller.agent.settings
         for market, value in (("team", settings.research_brief), ("equity", settings.equity_brief), ("crypto", settings.crypto_brief)):
             self.briefs[market].setText(value)
         self.equities.setText(", ".join(settings.equity_symbols))
         self.crypto.setText(", ".join(settings.crypto_symbols))
+        if settings.scan_id and self.scans.findData(settings.scan_id) < 0:
+            self.scans.addItem("Saved scan · " + settings.scan_id, settings.scan_id)
         self.scans.setCurrentIndex(max(0, self.scans.findData(settings.scan_id)))
         self.interval.setValue(settings.interval_seconds)
         self.local_ai.setChecked(settings.local_ai_enabled)
@@ -996,15 +1060,17 @@ class AgentWidget(QScrollArea):
         self.social_enabled.setChecked(settings.social_enabled)
         self.twitter_enabled.setChecked(settings.twitter_enabled)
         self.paper_strategy.setCurrentIndex(max(0, self.paper_strategy.findData(settings.paper_strategy)))
+        paper = self.controller.agent_preferences.paper
+        self.paper_source.setCurrentIndex(self.paper_source.findData(paper.source))
+        self.paper_cash.setValue(paper.initial_cash)
+        self.paper_trade_cash.setValue(paper.trade_cash)
+        self.repeat_demo.setChecked(paper.loop_demo)
+        # A model can be selected for chat without enabling background trade analysis.
+        self.model.setEnabled(True)
 
     def _apply_briefs(self) -> None:
-        values = {market: editor.text() for market, editor in self.briefs.items()}
-        try:
-            for market, value in values.items():
-                self.controller.set_agent_brief(market, value)
-            self.mcp_status.setText("Prompts applied for the next cycle; Rules baseline ignores prompts when local AI is off.")
-        except (ValueError, RuntimeError) as exc:
-            self.mcp_status.setText(str(exc))
+        if self._save_preferences():
+            self.mcp_status.setText("Prompts saved for future AI analysis. Adaptive price rules remain in control of paper trades.")
 
     def _toggle_mcp(self, enabled: bool) -> None:
         try:
@@ -1070,12 +1136,17 @@ class AgentWidget(QScrollArea):
         try:
             scans = await self.controller.broker.get_scans()
             current = self.scans.currentData()
+            blocker = QSignalBlocker(self.scans)
             self.scans.clear()
             self.scans.addItem("Watchlist only", "")
             for scan_id, title in scans:
                 self.scans.addItem(title, scan_id)
             index = self.scans.findData(current)
+            if current and index < 0:
+                self.scans.addItem("Saved scan · " + current, current)
+                index = self.scans.findData(current)
             self.scans.setCurrentIndex(max(index, 0))
+            del blocker
         except Exception as exc:
             self.market_status.setText(f"Saved scans unavailable: {exc}")
         finally:
@@ -1254,6 +1325,10 @@ class AgentWidget(QScrollArea):
             self.copy_diagnostics.setText('Copied · paste into chat')
 
     def shutdown(self) -> None:
+        self._preferences_timer.stop()
+        if self._preferences_dirty:
+            self._save_preferences()
+        self.chat.shutdown()
         self._clock_timer.stop()
         self.x_connection.shutdown()
         for card in self.stage_cards:

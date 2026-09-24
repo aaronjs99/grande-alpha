@@ -134,6 +134,13 @@ class PaperLedger:
             self.state = state
             self._save(state)
 
+    def cancel_pending_buys(self) -> None:
+        if self.state and any(p["side"] == "buy" for p in self.state["pending"].values()):
+            state = deepcopy(self.state)
+            state["pending"] = {k: p for k, p in state["pending"].items() if p["side"] != "buy"}
+            self.state = state
+            self._save(state)
+
     @staticmethod
     def _timestamp(item: AgentDecision) -> datetime:
         quote = item.quote

@@ -56,6 +56,7 @@ def completed_check_report(*, cycle, at, decisions, settings, source, paper, mar
     news_label = ('CONTEXT + headline-risk checks; missing coverage does not block entries' if adaptive else
                   'ON (two matching news publishers required)') if news else 'OFF'
     lines += [f'News entry filter: {news_label}',
+              f'User pause on new paper buys: {"ON" if settings.paper_entries_paused else "OFF"}',
               f'X monitoring: {"ON" if settings.twitter_enabled and source != "demo" else "OFF"}',
               f'Quote checks: {settings.interval_seconds}s target · maximum quote age: {settings.max_quote_age_seconds:g}s',
               ('Adaptive entry: rising 30s/120s trends, a 30s breakout, and movement above spread/slippage and noise costs.'
@@ -66,7 +67,8 @@ def completed_check_report(*, cycle, at, decisions, settings, source, paper, mar
               '', 'Observed candidates (this batch only):']
     if adaptive:
         lines[-2:-2] = ['Adaptive exits: 1% net stop, 0.75% observed trailing decline, 2% net target, trend reversal or 30 minutes.',
-                        'Limits: four positions; 40% starting virtual capital; one QQQ/TQQQ/SQQQ exposure; 60s re-entry cooldown.',
+                        f'Limits: {settings.paper_max_positions} positions; {settings.paper_max_exposure_pct}% starting virtual capital; '
+                        'one QQQ/TQQQ/SQQQ exposure; 60s re-entry cooldown.',
                         'New entries pause at 3% session drawdown. Exits and stops require eligible quotes; fills may exceed these levels.']
     for item in decisions[:40]:
         lines += [f'{item.instrument.key}: {item.action.upper()} · {item.risk_status}', f'  Reason: {item.reason[:700]}']

@@ -35,7 +35,13 @@ from grande_alpha.agent_models import (
 )
 from grande_alpha.agent_paper import DEMO_CYCLES, PaperLedger, demo_market, demo_time, validate_paper_settings
 from grande_alpha.agent_sources import NEWS_POLICY, REFRESH_SECONDS, ResearchSources
-from grande_alpha.agent_strategy import ADAPTIVE_POLICY, HISTORY_SECONDS, adaptive_decision, limit_entries
+from grande_alpha.agent_strategy import (
+    ADAPTIVE_POLICY,
+    HISTORY_SECONDS,
+    adaptive_decision,
+    limit_entries,
+    pause_entries,
+)
 from grande_alpha.models import Quote, utc_now
 from grande_alpha.policy import market_session_allowed
 
@@ -334,6 +340,9 @@ class AgentRuntime:
                                      "social_context": settings.social_enabled and source != "demo",
                                      "twitter_context": settings.twitter_enabled and source != "demo",
                                      "quote_interval_seconds": settings.interval_seconds,
+                                     "paper_max_positions": settings.paper_max_positions,
+                                     "paper_max_exposure_pct": settings.paper_max_exposure_pct,
+                                     "paper_entries_paused": settings.paper_entries_paused,
                                      "continuous": source == "broker_quotes"})
         self.paper_source = source
         self._background_tasks = set()
@@ -694,9 +703,14 @@ class AgentRuntime:
                 item = replace(item, buy_allowed=item.buy_allowed and supported, source_context=context,
                                action="hold" if item.action == "buy" and not supported else item.action, reason=reason)
             result.append(item)
-        return limit_entries(result, self.paper.state) if self.adaptive_paper else result
+        result = limit_entries(result, self.paper.state, self.settings) if self.adaptive_paper else result
+        return pause_entries(result, self.settings.paper_entries_paused) if self.paper_source else result
 
     def _consume_paper(self, decisions, settings):
+        # Use current controls even if this quote cycle started before the user applied them.
+        if self.adaptive_paper:
+            decisions = limit_entries(decisions, self.paper.state, self.settings)
+        decisions = pause_entries(decisions, self.settings.paper_entries_paused)
         before = self.paper.state['fill_count']
         self.paper.consume(decisions, self._now(), settings.max_quote_age_seconds)
         for fill in self.paper.state['fills']:

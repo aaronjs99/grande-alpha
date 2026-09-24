@@ -47,11 +47,15 @@ evaluation now includes profit factor, average closed-trade P&L and maximum obse
 drawdown. See [source setup and evaluation limits](docs/AGENT_MARKET_RESEARCH.md).
 It does not place multi-market broker orders. See
 [Agent workspace setup and current execution limits](docs/AGENT_WORKSPACE.md).
-Equities and Crypto run as concurrent research workers. **Prompts + AI connections**
-adds editable team/worker prompts and a default-off local MCP connection for compatible
+Equities and Crypto run as concurrent research workers. **Chat + AI connections**
+adds an in-app conversation with your installed Ollama model, editable team/worker prompts,
+reviewable paper-control suggestions, and a default-off local MCP connection for compatible
 AI clients. **ChatGPT Astra setup** guides you through adding the desktop connection, allowing
 research access, and testing Astra. The desktop route needs no Terminal, tunnel or API key;
 advanced browser instructions are available separately. See [MCP setup and research controls](docs/AGENT_MCP.md).
+Agent configuration now saves automatically and restores on launch, including watchlists,
+model, prompts, paper setup, news choices and paper controls. Sessions and research MCP
+permissions never resume automatically. See [local chat and saved settings](docs/AGENT_CHAT.md).
 The Agent page also saves shared stock/crypto cash-limit plans and displays durable order
 recovery status. Saving a budget does not enable trading; see the
 [execution journal and remaining live-integration work](docs/AGENT_EXECUTION_JOURNAL.md).
