@@ -2,6 +2,9 @@
 
 Start with:
 
+- [$100 background paper experiment](BACKGROUND_PAPER.md) — independent local worker,
+  cost accounting, a persistent loss budget, and the net-profit dashboard.
+
 - [Stocks and crypto agent workspace](AGENT_WORKSPACE.md) — continuous discovery, optional local AI,
   activity and account observations, and the explicit remaining multi-market execution work.
 

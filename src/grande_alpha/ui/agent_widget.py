@@ -373,6 +373,9 @@ class AgentWidget(QScrollArea):
         heartbeat_row.addWidget(self.diagnostics_toggle)
         layout.addLayout(heartbeat_row)
         layout.addLayout(controls)
+        from grande_alpha.ui.paper_worker_panel import PaperWorkerPanel
+        self.background_paper = PaperWorkerPanel(blocked=controller.shadow_only_runtime)
+        layout.addWidget(self.background_paper)
         self.run_status = label("Choose a price source in Session setup to begin.")
         self.run_status.setObjectName("modeBadge")
         self.run_detail = label("")

@@ -95,6 +95,19 @@ class PaperLedger:
     def close(self) -> None:
         self._db.close()
 
+    @staticmethod
+    def mark_value(state: dict, key: str, holding: dict) -> Decimal:
+        return money(holding["quantity"]) * money(holding["bid"])
+
+    @staticmethod
+    def unsettled_value(state: dict) -> Decimal:
+        return Decimal(0)
+
+    @classmethod
+    def equity_value(cls, state: dict) -> Decimal:
+        return money(state["cash"]) + cls.unsettled_value(state) + sum(
+            (cls.mark_value(state, key, p) for key, p in state["positions"].items()), Decimal(0))
+
     def _save(self, state: dict) -> None:
         payload = json.dumps(state, allow_nan=False)
         with self._db:
@@ -189,8 +202,7 @@ class PaperLedger:
                     pending[key] = {"side": side, "signal_at": timestamp.isoformat(),
                                     "source_ids": [a["id"] for a in (item.source_context or {}).get("articles", [])]}
         state["observed_at"] = now.isoformat()
-        equity = money(state["cash"]) + sum(
-            (money(p["quantity"]) * money(p["bid"]) for p in positions.values()), Decimal(0))
+        equity = self.equity_value(state)
         history = state["equity_history"]
         if not history or now > datetime.fromisoformat(history[-1]["at"]):
             history.append({"at": now.isoformat(), "equity": str(equity)})
@@ -252,7 +264,7 @@ class PaperLedger:
         state = self.state
         positions, value, cost = [], Decimal(0), Decimal(0)
         for key, holding in state["positions"].items():
-            market_value = money(holding["quantity"]) * money(holding["bid"])
+            market_value = self.mark_value(state, key, holding)
             basis = money(holding["cost"])
             age = (now - datetime.fromisoformat(holding["marked_at"])).total_seconds() if now else None
             positions.append({"key": key, **holding, "value": str(market_value),
@@ -260,7 +272,7 @@ class PaperLedger:
                               "stale": age is None or age > max_age or age < -2})
             value += market_value
             cost += basis
-        equity = money(state["cash"]) + value
+        equity = money(state["cash"]) + self.unsettled_value(state) + value
         closed = state["wins"] + state["losses"] + state["breakeven"]
         gross_profit, gross_loss = money(state["gross_profit"]), money(state["gross_loss"])
         return {

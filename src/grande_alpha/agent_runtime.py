@@ -325,14 +325,14 @@ class AgentRuntime:
         self._start(settings, source, initial_cash, trade_cash, loop_demo)
 
     def _start(self, settings: AgentSettings, source: str | None = None, initial_cash=1000, trade_cash=100,
-               loop_demo: bool = False) -> None:
+               loop_demo: bool = False, *, resume: bool = False) -> None:
         settings.validate()
         if source != "demo" and not self._connected():
             raise ValueError("Connect the consented Robinhood account before starting the agent")
         if self.snapshot.running:
             raise ValueError("Stop the current agent run before changing its settings")
         loop = asyncio.get_running_loop()
-        if source:
+        if source and not resume:
             self.paper.start(source, initial_cash, trade_cash)
             adaptive = source == "broker_quotes" and settings.paper_strategy == "adaptive"
             self.paper.set_strategy({"policy": ADAPTIVE_POLICY if adaptive else NEWS_POLICY if settings.news_enabled and source != "demo" else "price-only",
@@ -381,6 +381,15 @@ class AgentRuntime:
         self._task = loop.create_task(self._run(), name="grande-multi-market-agent")
         generation = self._generation
         self._task.add_done_callback(lambda task: self._run_finished(task, generation))
+
+    def resume_paper(self, settings: AgentSettings) -> None:
+        """Explicit background-worker resume; retain money, holdings, costs and risk history."""
+        if not self.paper.state or self.paper.state.get("source") != "broker_quotes":
+            raise ValueError("A saved broker-quote paper experiment is required")
+        if self.snapshot.running:
+            raise ValueError("Stop the running paper worker before resuming")
+        self.paper.cancel_pending()  # Never replay pre-interruption intents.
+        self._start(settings, "broker_quotes", resume=True)
 
     def _run_finished(self, task: asyncio.Task, generation: int) -> None:
         # Cancellation can occur before _run enters its try/finally. Always

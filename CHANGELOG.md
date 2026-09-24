@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Added an independent $100 background paper experiment with a persistent $10
+  all-in loss budget, modeled trading fees and exit costs, equity cash settlement,
+  manually recorded operating expenses, and a local net-profit dashboard. Desktop
+  Start/Open/Stop controls manage the separate service. A detached supervisor
+  restores crashed workers; optional macOS login startup respects the saved stop
+  state. Restarts preserve holdings, expenses and loss locks and discard old intents.
+  Broker calls are restricted to quote/discovery/account-identity reads; no real
+  orders or paid services are activated. See [the setup guide](docs/BACKGROUND_PAPER.md).
+
 - Fixed ChatGPT setup getting stuck on step 2: replaced the small checkbox and disabled
   Next button with **Allow research access and continue**, which advances only after
   access is enabled. File-access failures show retry instructions beside the button.

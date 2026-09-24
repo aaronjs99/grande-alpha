@@ -38,12 +38,13 @@ dev = [
 grande-alpha = "grande_alpha.app:main"
 grande-alpha-cli = "grande_alpha.cli:main"
 grande-alpha-mcp = "grande_alpha.agent_mcp:main"
+grande-alpha-paper = "grande_alpha.paper_worker:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.setuptools.package-data]
-grande_alpha = ["assets/*.png"]
+grande_alpha = ["assets/*.png", "assets/*.html"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

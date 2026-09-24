@@ -36,7 +36,8 @@ def adaptive_decision(item: AgentDecision, history, state: dict, now: datetime) 
     quote, key = item.quote, item.instrument.key
     history = list(history)
     slippage = float(state["slippage_bps"]) / 10_000
-    cost_bps = (quote.ask * (1 + slippage) / (quote.bid * (1 - slippage)) - 1) * 10_000
+    fee = float(state.get("costs", {}).get(f"{item.instrument.asset_class.value}_fee_bps", 0)) / 10_000
+    cost_bps = (quote.ask * (1 + slippage) * (1 + fee) / (quote.bid * (1 - slippage) * (1 - fee)) - 1) * 10_000
     fast = _ema(history, 30) if history else quote.mid
     slow = _ema(history, 120) if history else quote.mid
     returns = [(b[1] / a[1] - 1) * 10_000 for a, b in zip(history, history[1:], strict=False)]
@@ -55,7 +56,7 @@ def adaptive_decision(item: AgentDecision, history, state: dict, now: datetime) 
     holding = state["positions"].get(key)
     if holding:
         entry = float(holding["cost"]) / float(holding["quantity"])
-        net_bps = (quote.bid * (1 - slippage) / entry - 1) * 10_000
+        net_bps = (quote.bid * (1 - slippage) * (1 - fee) / entry - 1) * 10_000
         peak = max(float(holding.get("peak_bid", holding["bid"])), quote.bid)
         retracement = (1 - quote.bid / peak) * 10_000
         opened = datetime.fromisoformat(holding.get("opened_at", holding["marked_at"]))
