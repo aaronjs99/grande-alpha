@@ -367,6 +367,7 @@ class TradingController(QObject):
             "continuous_paper": self.agent.continuous_paper,
             "quote_interval_seconds": settings.interval_seconds,
             "analysis_status": snapshot.analysis_status,
+            "analysis_last_result": snapshot.analysis_last_result if observations_allowed else {},
             "sources_loading": snapshot.sources_loading,
             "completed_check_diagnostics": snapshot.diagnostics if observations_allowed else "",
             "workers": snapshot.worker_status,

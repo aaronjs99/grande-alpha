@@ -161,10 +161,15 @@ Context also includes `next_cycle_at` (UTC, when waiting), `cycle_started_at` (U
 start of the current/last quote update), and a sanitized runtime
 `error` when a run stops unexpectedly. Pacific-time formatting applies only to the
 desktop activity log; MCP timestamps retain their timezone-aware source values.
-`continuous_paper`, `quote_interval_seconds`, `analysis_status` and `sources_loading`
+`continuous_paper`, `quote_interval_seconds`, `analysis_status`, `analysis_last_result` and `sources_loading`
 describe continuous paper operation and independent research progress. The default
 `start_paper_trading` source is now `broker_quotes`; specify `source="demo"` for the
 offline demonstration. Neither path creates broker orders.
+`analysis_last_result` retains the last model outcome and duration while the next
+analysis is pending; proposal counts are before final news/fill checks. Raw model
+responses, prompts and provider error bodies are excluded from this field. Like
+copied diagnostics, it is omitted from shared context when broker observations are
+unavailable (except the explicitly synthetic demo).
 
 Example configuration shape (use the copied actual paths instead):
 

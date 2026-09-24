@@ -9,6 +9,7 @@ from test_agent_paper import decision
 from test_agent_runtime import NOW, ReadMarket
 
 from grande_alpha.agent_models import AgentSettings, AssetClass, Instrument
+from grande_alpha.models import Quote
 
 
 async def manual_agent(market, settings=None, analyst=None):
@@ -111,6 +112,45 @@ async def test_quote_checks_continue_while_one_analysis_per_market_is_pending():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('latency', [19, 23, 30])
+async def test_slow_ai_reply_uses_fresh_quotes_before_a_later_paper_fill(latency):
+    market = ReadMarket()
+    release = asyncio.Event()
+
+    class Analyst:
+        async def analyze(self, _model, observations):
+            await release.wait()
+            return {o['key']: ('buy', 'Fixture price analysis') for o in observations}
+
+    agent = await manual_agent(market, AgentSettings(equity_symbols=('AAPL',), crypto_symbols=('BTC',),
+                                                   local_ai_enabled=True, local_ai_model='fixture'), Analyst())
+    try:
+        for index in range(5):
+            market.now = NOW + timedelta(seconds=15 * index)
+            await agent.cycle()
+            await asyncio.sleep(0)
+        market.now += timedelta(seconds=latency)
+        release.set()
+        await asyncio.sleep(0)
+        await agent.cycle()
+        assert all(d.action == 'buy' for d in agent.snapshot.decisions)
+        assert all(d.quote.timestamp == market.now for d in agent.snapshot.decisions)
+        assert agent.paper_context()['fill_count'] == 0
+        assert agent.paper_context()['pending_count'] == 2
+        assert all('1/1 usable proposals' in value for value in agent.snapshot.analysis_last_result.values())
+        previous = dict(agent.snapshot.analysis_last_result)
+        market.now += timedelta(seconds=5)
+        await agent.cycle()
+        assert agent.paper_context()['fill_count'] == 2
+        assert all(value.startswith('Analyzing') for value in agent.snapshot.analysis_status.values())
+        assert agent.snapshot.analysis_last_result == previous
+        assert 'Last AI result (equity)' in agent.snapshot.diagnostics
+        assert 'current quotes must still pass the 15s freshness limit' in agent.snapshot.diagnostics
+    finally:
+        await shutdown(agent)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('expired', [False, True])
 async def test_invalid_or_expired_background_analysis_cannot_create_buys(expired):
     market = ReadMarket()
@@ -129,7 +169,7 @@ async def test_invalid_or_expired_background_analysis_cannot_create_buys(expired
         market.now = NOW + timedelta(seconds=15 * index)
         await agent.cycle()
         await asyncio.sleep(0)
-    market.now += timedelta(seconds=20 if expired else 5)
+    market.now += timedelta(seconds=61 if expired else 5)
     release.set()
     await asyncio.sleep(0)
     await agent.cycle()
@@ -138,6 +178,116 @@ async def test_invalid_or_expired_background_analysis_cannot_create_buys(expired
     assert all('expired' in d.reason if expired else 'unavailable' in d.reason for d in agent.snapshot.decisions)
     assert agent.paper_context()['fill_count'] == 0
     await shutdown(agent)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('blocker', ['stale', 'wide', 'move', 'excursion', 'gap', 'sources', 'identity', 'news'])
+async def test_slow_ai_reply_cannot_bypass_current_market_or_news_checks(blocker):
+    market = ReadMarket()
+    release = asyncio.Event()
+
+    class Analyst:
+        async def analyze(self, _model, observations):
+            await release.wait()
+            return {o['key']: ('buy', 'Fixture proposal') for o in observations}
+
+    agent = await manual_agent(market, AgentSettings(equity_symbols=('AAPL',), crypto_symbols=('BTC',),
+                                                   local_ai_enabled=True, local_ai_model='fixture',
+                                                   news_enabled=blocker == 'news', twitter_enabled=blocker == 'sources'), Analyst())
+    context = {'articles': [{'id': 'fixture', 'kind': 'news', 'scope': 'direct'}],
+               'buy_supported': True, 'risk_terms': [], 'coverage': 'Fixture coverage'}
+    agent._poll_sources = lambda *_: None
+    agent.sources.context = lambda *_: dict(context)
+    try:
+        for index in range(5):
+            market.now = NOW + timedelta(seconds=15 * index)
+            await agent.cycle()
+            await asyncio.sleep(0)
+        if blocker in {'excursion', 'gap'}:
+            market.now += timedelta(seconds=5)
+            market.price = 101 if blocker == 'excursion' else 100
+            market.spread = 2 if blocker == 'gap' else 0.02
+            await agent.cycle()
+            market.price, market.spread = 100, 0.02
+        market.now = NOW + timedelta(seconds=83)
+        if blocker == 'stale':
+            market.quote = lambda symbol, timestamp=None: Quote(symbol, 100, 100.02, 100,
+                                                               market.now - timedelta(seconds=16))
+        elif blocker == 'wide':
+            market.spread = 2
+        elif blocker == 'move':
+            market.price = 101
+        elif blocker == 'sources':
+            context['articles'] = []
+        elif blocker == 'identity':
+            # The provider changes identity even though the symbol stays the same.
+            for job in agent._ai_jobs.values():
+                job['instruments'] = {key: replace(value, provider_id='old-provider')
+                                      for key, value in job['instruments'].items()}
+        elif blocker == 'news':
+            context.update(buy_supported=False, coverage='0/2 matching news publishers')
+        release.set()
+        await asyncio.sleep(0)
+        await agent.cycle()
+        assert len(agent.snapshot.decisions) == 2
+        assert all(value == 'Cycle complete' for value in agent.snapshot.worker_status.values())
+        assert all(d.action == 'hold' for d in agent.snapshot.decisions)
+        assert agent.paper_context()['pending_count'] == 0
+        assert agent.paper_context()['fill_count'] == 0
+        if blocker == 'news':
+            assert all(not d.buy_allowed and 'News filter' in d.reason for d in agent.snapshot.decisions)
+        if blocker in {'move', 'excursion'}:
+            assert all('Price moved' in d.reason for d in agent.snapshot.decisions)
+        if blocker == 'sources':
+            assert all('Source context changed' in d.reason for d in agent.snapshot.decisions)
+        if blocker == 'stale':
+            assert all('stale' in d.reason and d.risk_status == 'Blocked' for d in agent.snapshot.decisions)
+    finally:
+        await shutdown(agent)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('failure', ['timeout', 'http', 'invalid', 'connect'])
+async def test_last_ai_failure_survives_next_request_without_exporting_raw_errors(monkeypatch, failure):
+    import httpx
+
+    import grande_alpha.agent_runtime as runtime
+
+    market = ReadMarket()
+
+    class Analyst:
+        async def analyze(self, _model, observations):
+            if failure == 'timeout':
+                await asyncio.Event().wait()
+            if failure == 'http':
+                response = httpx.Response(500, request=httpx.Request('POST', 'http://127.0.0.1:11434/api/chat'))
+                raise httpx.HTTPStatusError('PRIVATE_BODY', request=response.request, response=response)
+            if failure == 'connect':
+                raise httpx.ConnectError('PRIVATE_ENDPOINT')
+            raise ValueError('PRIVATE_MODEL_RESPONSE')
+
+    monkeypatch.setattr(runtime, 'AI_TIMEOUT_SECONDS', 0.01)
+    agent = await manual_agent(market, AgentSettings(equity_symbols=('AAPL',), crypto_symbols=('BTC',),
+                                                   local_ai_enabled=True, local_ai_model='fixture'), Analyst())
+    try:
+        for index in range(5):
+            market.now = NOW + timedelta(seconds=15 * index)
+            await agent.cycle()
+            await asyncio.sleep(0)
+        await asyncio.sleep(0.02)
+        market.now += timedelta(seconds=5)
+        await agent.cycle()
+        expected = {'timeout': 'timed out', 'http': 'HTTP 500', 'invalid': 'invalid decision', 'connect': 'unreachable'}[failure]
+        previous = dict(agent.snapshot.analysis_last_result)
+        assert all(expected in value for value in previous.values())
+        assert all(d.action == 'hold' and not d.buy_allowed for d in agent.snapshot.decisions)
+        market.now += timedelta(seconds=5)
+        await agent.cycle()
+        assert agent.snapshot.analysis_last_result == previous
+        assert expected in agent.snapshot.diagnostics and 'PRIVATE_' not in agent.snapshot.diagnostics
+        assert agent.paper_context()['fill_count'] == 0
+    finally:
+        await shutdown(agent)
 
 
 @pytest.mark.asyncio

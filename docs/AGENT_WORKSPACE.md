@@ -90,7 +90,11 @@ Independent checks reject invalid, stale, future-dated, repeated, or excessively
 quotes. Equity proposals are restricted to the regular equity session, including the
 existing exchange holiday/early-close calendar. Crypto observations are not stopped by
 the equity calendar. Research spread limits are 20 bps for equities and 100 bps for crypto;
-the maximum observation age is 15 seconds. Freshness is checked again after model inference.
+the maximum current-quote age is 15 seconds. Freshness is checked again after model inference.
+Continuous paper trading separately permits analysis inputs up to 60 seconds old,
+with a 45-second request deadline, a newer eligible current quote, uninterrupted quote
+history and a maximum 20 bps observed price movement from the analysis input. See
+[continuous paper timing and revalidation](AGENT_PAPER_TRADING.md) for the full policy.
 Crypto freshness includes `updated_at` and every available bid/ask clock; a missing side
 does not erase a known stale or future-dated clock. Crypto `updated_at` alone is provider
 quote time, not certified executable-book provenance. Quotes use the selected account's

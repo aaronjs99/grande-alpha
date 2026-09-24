@@ -113,6 +113,7 @@ class AgentSnapshot:
     next_cycle_at: datetime | None = None
     error: str = ""
     analysis_status: dict[str, str] = field(default_factory=dict)
+    analysis_last_result: dict[str, str] = field(default_factory=dict)
     sources_loading: bool = False
     cycle_started_at: datetime | None = None
     diagnostics: str = ""

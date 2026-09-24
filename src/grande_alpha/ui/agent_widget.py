@@ -793,6 +793,9 @@ class AgentWidget(QScrollArea):
                 detail += "\nResearch sources refreshing in the background."
             if snapshot.analysis_status:
                 detail += "\nAI · " + " · ".join(f"{key}: {value}" for key, value in snapshot.analysis_status.items())
+        if snapshot.analysis_last_result:
+            detail += "\nLast AI result · " + " · ".join(
+                f"{key}: {value}" for key, value in snapshot.analysis_last_result.items())
         self.run_status.setText(text)
         self.run_detail.setText(detail)
         self.run_detail.setVisible(bool(detail))

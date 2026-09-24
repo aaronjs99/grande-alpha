@@ -6,6 +6,10 @@ import json
 
 import httpx
 
+AI_REQUEST_TIMEOUT_SECONDS = 45.0
+AI_MAX_ANALYSIS_AGE_SECONDS = 60.0
+AI_MAX_PRICE_DRIFT_BPS = 20.0
+
 DECISION_SCHEMA = {
     "type": "object",
     "additionalProperties": False,
@@ -79,7 +83,8 @@ class OllamaAnalyst:
             fields["properties"]["source_ids"] = {"type": "array", "items": {"type": "string"}, "maxItems": 10}
             fields["required"].append("source_ids")
         # Fixed loopback endpoint, no proxy inheritance, redirects or broker credentials.
-        async with httpx.AsyncClient(timeout=25.0, trust_env=False, follow_redirects=False) as client:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(AI_REQUEST_TIMEOUT_SECONDS, connect=5.0),
+                                     trust_env=False, follow_redirects=False) as client:
             response = await client.post(
                 "http://127.0.0.1:11434/api/chat",
                 json={
@@ -103,7 +108,7 @@ class OllamaAnalyst:
                                 "Official macro announcements are context, not company-specific confirmation; "
                                 "never assume an inverse ETF moves in the same direction as its index. "
                                 "When source_ids is in the schema, cite only supplied article IDs in that field; "
-                                "news-backed buys require a citation. Explain only "
+                                "news-backed buys require a citation. Keep each reason to one short sentence. Explain only "
                                 "what the observations support; do not invent facts, fills or profits. "
                                 "Prefer hold when evidence is insufficient. Costs include at least "
                                 "the bid/ask spread. The response schema is " + json.dumps(schema)

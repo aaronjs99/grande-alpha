@@ -5,10 +5,16 @@ import math
 from collections import Counter
 from zoneinfo import ZoneInfo
 
+from grande_alpha.agent_analyst import (
+    AI_MAX_ANALYSIS_AGE_SECONDS,
+    AI_MAX_PRICE_DRIFT_BPS,
+    AI_REQUEST_TIMEOUT_SECONDS,
+)
 from grande_alpha.agent_models import AssetClass
 
 
-def completed_check_report(*, cycle, at, decisions, settings, source, paper, markets, analysis, history):
+def completed_check_report(*, cycle, at, decisions, settings, source, paper, markets, analysis, history,
+                           last_analysis=None):
     """Select public observations and virtual counts, never serialize account/settings objects."""
     stamp = at.astimezone(ZoneInfo('America/Los_Angeles')).strftime('%Y-%m-%d %I:%M:%S %p %Z')
     lines = [f'Last completed check {cycle} · {stamp}']
@@ -35,6 +41,13 @@ def completed_check_report(*, cycle, at, decisions, settings, source, paper, mar
                  'Analyst: rules baseline · continuous AI is OFF. A connected ChatGPT chat is not a background analyst.')
     if ai:
         lines.extend(f'AI {market.value}: {analysis.get(market.value, "Waiting for eligible observations")}' for market in AssetClass)
+        lines.extend(f'Last AI result ({market}): {result}' for market, result in (last_analysis or {}).items())
+        if source == 'broker_quotes':
+            lines.append(f'AI timing: {AI_REQUEST_TIMEOUT_SECONDS:g}s request maximum; analysis inputs at most '
+                         f'{AI_MAX_ANALYSIS_AGE_SECONDS:g}s old; current quotes must still pass the '
+                         f'{settings.max_quote_age_seconds:g}s freshness limit.')
+            lines.append(f'AI replies require continuous valid quote history and at most '
+                         f'{AI_MAX_PRICE_DRIFT_BPS / 100:.2f}% observed price movement during analysis.')
     news = settings.news_enabled and source != 'demo'
     lines += [f'News entry filter: {"ON (two matching news publishers required)" if news else "OFF"}',
               f'X monitoring: {"ON" if settings.twitter_enabled and source != "demo" else "OFF"}',

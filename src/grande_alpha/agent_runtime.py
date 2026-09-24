@@ -16,7 +16,14 @@ from collections.abc import Awaitable, Callable
 from dataclasses import asdict, replace
 from datetime import datetime, timedelta
 
-from grande_alpha.agent_analyst import OllamaAnalyst
+import httpx
+
+from grande_alpha.agent_analyst import (
+    AI_MAX_ANALYSIS_AGE_SECONDS,
+    AI_MAX_PRICE_DRIFT_BPS,
+    AI_REQUEST_TIMEOUT_SECONDS,
+    OllamaAnalyst,
+)
 from grande_alpha.agent_diagnostics import completed_check_report
 from grande_alpha.agent_models import (
     AgentDecision,
@@ -32,7 +39,7 @@ from grande_alpha.policy import market_session_allowed
 
 MARKET_WORKER_TIMEOUT_SECONDS = 35.0
 DEMO_INTERVAL_SECONDS = 1.0
-AI_TIMEOUT_SECONDS = 25.0
+AI_TIMEOUT_SECONDS = AI_REQUEST_TIMEOUT_SECONDS
 
 
 class AgentRuntime:
@@ -123,6 +130,8 @@ class AgentRuntime:
             self._publish(sources_loading=True)
 
     async def _ask_analyst(self, settings, observations, prompts):
+        started = asyncio.get_running_loop().time()
+        proposals, error = None, ""
         try:
             async with asyncio.timeout(AI_TIMEOUT_SECONDS):
                 proposals = await self._analyst.analyze(settings.local_ai_model, observations, **prompts)
@@ -131,55 +140,116 @@ class AgentRuntime:
                 or not isinstance(p[1], str) or not p[1].strip() for p in proposals.values()
             ):
                 raise ValueError("Unexpected model proposals")
-            return proposals
+        except (TimeoutError, httpx.TimeoutException):
+            error = f"AI request timed out ({AI_TIMEOUT_SECONDS:g}s maximum)"
+        except httpx.ConnectError:
+            error = "Ollama is unreachable; open the Ollama app"
+        except httpx.HTTPStatusError as exc:
+            error = f"Ollama returned HTTP {exc.response.status_code}; check the model and Ollama server log"
+        except (ValueError, TypeError, KeyError):
+            error = "AI returned an invalid decision format or source citation"
         except Exception:
-            return None
+            error = "AI request failed; check the Ollama server log"
+        return {"proposals": None if error else proposals, "error": error,
+                "seconds": asyncio.get_running_loop().time() - started}
+
+    def _analysis_blocker(self, original, item, job, settings):
+        """Revalidate a bounded, older analysis against the independently checked live book."""
+        now = self._now()
+        anchor = datetime.fromisoformat(original['observations'][-1]['at'])
+        age = (now - anchor).total_seconds()
+        elapsed = (now - job['started_at']).total_seconds()
+        if not 0 <= age <= AI_MAX_ANALYSIS_AGE_SECONDS or not 0 <= elapsed <= AI_MAX_ANALYSIS_AGE_SECONDS:
+            return f"AI result expired (analysis limit {AI_MAX_ANALYSIS_AGE_SECONDS:g}s)"
+        if item.instrument != job['instruments'].get(item.instrument.key):
+            return "Instrument details changed during analysis"
+        if item.quote is None or item.quote.age_seconds(now) > settings.max_quote_age_seconds:
+            return "Current quote is stale; analysis cannot be used"
+        # The current candidate already passed _inspect, including halts, spread,
+        # all book clocks and market hours. Require continuity and a newer book.
+        history = self._history.get(item.instrument.key, ())
+        if not any(at == anchor for at, _ in history) or history[-1][0] <= anchor:
+            return "Quote history changed during analysis; fresh analysis required"
+        input_ids = {a['id'] for a in (original.get('source_context') or {}).get('articles', [])}
+        current_ids = {a['id'] for a in (item.source_context or {}).get('articles', [])}
+        if not input_ids <= current_ids:
+            return "Source context changed during analysis; fresh analysis required"
+        mid = original['observations'][-1]['mid']
+        moves = [abs(value / mid - 1) * 10_000 for at, value in history if at >= anchor]
+        moves += [abs(item.quote.bid / original['bid'] - 1) * 10_000,
+                  abs(item.quote.ask / original['ask'] - 1) * 10_000]
+        drift = max(moves)
+        if not math.isfinite(drift) or drift > AI_MAX_PRICE_DRIFT_BPS:
+            return (f"Price moved {drift:.1f} bps during analysis "
+                    f"(limit {AI_MAX_PRICE_DRIFT_BPS:g} bps); fresh analysis required")
+        return ""
 
     def _continuous_analysis(self, market, decisions, eligible, settings, observations, prompts):
         job = self._ai_jobs.get(market)
         proposals, inputs, result = None, {}, "Waiting for enough eligible quotes"
-        rejected = False
+        rejected, failure = False, ""
         completed = False
+        outcome = None
+        accepted = []
+        blockers = []
         if job and job['settings'] != settings:
             job['task'].cancel()
             self._ai_jobs.pop(market)
             job = None
         if job and job['task'].done():
             completed = True
-            proposals = None if job['task'].cancelled() else job['task'].result()
+            outcome = ({'proposals': None, 'error': 'AI request cancelled', 'seconds': 0.0}
+                       if job['task'].cancelled() else job['task'].result())
+            proposals, failure = outcome['proposals'], outcome['error']
             inputs = {o['key']: o for o in job['observations']}
             rejected = proposals is None
-            result = "AI unavailable or invalid response" if rejected else "AI result received"
+            result = failure if rejected else "AI result received"
             self._ai_jobs.pop(market)
-            job = None
         output = []
         for item in decisions:
             if item not in eligible:
+                if completed and item.instrument.key in inputs:
+                    blockers.append(item.reason)
                 output.append(item)
                 continue
             original = inputs.get(item.instrument.key)
             action, reason, buy_allowed = "hold", "AI is analyzing; quote monitoring continues", not rejected
             if rejected:
-                reason = "AI unavailable or invalid response; quote monitoring continues"
+                reason = f"AI unavailable: {failure}; quote monitoring continues"
             if proposals is not None and original:
-                age = (self._now() - datetime.fromisoformat(original['observations'][-1]['at'])).total_seconds()
-                input_ids = {a['id'] for a in (original.get('source_context') or {}).get('articles', [])}
-                current_ids = {a['id'] for a in (item.source_context or {}).get('articles', [])}
-                if 0 <= age <= settings.max_quote_age_seconds and input_ids <= current_ids:
+                blocker = self._analysis_blocker(original, item, job, settings)
+                if not blocker:
                     action, reason = proposals[item.instrument.key]
-                    reason += " · Analysis quote: " + original['observations'][-1]['at']
+                    accepted.append(action)
+                    reason += (" · Analysis quote: " + original['observations'][-1]['at']
+                               + " · Rechecked against current quote: " + item.quote.timestamp.isoformat())
                 else:
                     buy_allowed = False
-                    reason = "AI result expired or source context changed; requesting a fresh analysis"
+                    reason = blocker
+                    blockers.append(blocker)
             output.append(replace(item, action=action, reason=reason, buy_allowed=buy_allowed))
+        if completed:
+            if not rejected:
+                result = (f"AI reply rechecked: {len(accepted)}/{len(inputs)} usable proposals "
+                          f"({accepted.count('buy')} buy, {accepted.count('hold')} hold, {accepted.count('exit')} exit); "
+                          "news and paper-fill checks still apply")
+                if blockers:
+                    result += " · " + blockers[0]
+            last = (f"{self._now().isoformat()} · {settings.local_ai_model} · "
+                    f"request {outcome['seconds']:.1f}s · {result}")
+            self._publish(analysis_last_result={**self.snapshot.analysis_last_result, market.value: last})
+            job = None
         # Rotate discovery after consuming this batch; immediately re-analyzing
         # the same follow-up quotes would pin the scan to these symbols forever.
         if job is None and eligible and not completed:
             task = self._background(self._ask_analyst(settings, observations, prompts))
-            self._ai_jobs[market] = {'task': task, 'settings': settings, 'observations': observations}
-            result = "Analyzing latest quotes" + (" · previous response unavailable" if rejected else "")
+            self._ai_jobs[market] = {'task': task, 'settings': settings, 'observations': observations,
+                                    'started_at': self._now(),
+                                    'instruments': {item.instrument.key: item.instrument for item in eligible}}
+            result = f"Analyzing latest quotes · 0s / {AI_TIMEOUT_SECONDS:g}s maximum"
         elif job:
-            result = "Analyzing latest quotes"
+            elapsed = max(0, (self._now() - job['started_at']).total_seconds())
+            result = f"Analyzing latest quotes · {elapsed:.0f}s / {AI_TIMEOUT_SECONDS:g}s maximum"
         self._publish(analysis_status={**self.snapshot.analysis_status, market.value: result})
         return output
 
@@ -695,7 +765,8 @@ class AgentRuntime:
             observed_at = self._now()
             diagnostics = completed_check_report(cycle=cycle, at=observed_at, decisions=decisions, settings=settings,
                                                  source=self.paper_source, paper=self.paper_context() if self.paper_source else None,
-                                                 markets=status, analysis=self.snapshot.analysis_status, history=self._history)
+                                                 markets=status, analysis=self.snapshot.analysis_status, history=self._history,
+                                                 last_analysis=self.snapshot.analysis_last_result)
             self._publish(phase="Waiting", observed_at=observed_at, decisions=tuple(decisions),
                           market_status=status, worker_status=workers, team_status=team, diagnostics=diagnostics)
             self._log(

@@ -68,16 +68,34 @@ its outstanding analysis, after holdings and pending intents. A completed answer
 matched to fresh observations for those instruments before discovery moves on. After
 consuming the answer, the scan rotates before starting another analysis. This fixes
 AI answers being discarded because each update had already switched to a different
-crypto batch. The batch limit and input-quote freshness checks still apply.
+crypto batch. The batch limit and current-quote freshness checks still apply.
 
 News collection runs in the background on its existing ten-minute cadence. Optional
 AI analysis also runs in the background with at most one request per market in flight.
 Fresh quote checks and valuations continue while it works. No rules-based buys replace
 a pending or failed AI response. Each result is used once, only with eligible current
-quotes, unchanged research settings, still-available input source IDs, and input quote
-age within the existing 15-second maximum. Expired or invalid responses produce HOLD
-and cannot approve a new buy. Model requests time out after 25 seconds; models that
-cannot respond within the freshness window may never produce an accepted proposal.
+quotes, unchanged research settings and instrument identity, and still-available input
+source IDs. Continuous paper analysis has a separate lifetime: a request may run for
+45 seconds, and its newest input observation and request start must be no more than
+60 seconds old when the reply is used. The **current** quote must still pass the
+existing 15-second freshness limit, spread checks, pair restrictions and market hours.
+The input observation must remain in the uninterrupted valid quote history, with a
+newer quote now available. Any observed midpoint excursion, or current bid/ask change,
+greater than 20 bps (0.20%) from the corresponding input price rejects the reply and
+requires a fresh analysis. This checks observed updates; it cannot certify price moves
+between updates. Source and news checks run again before any simulated entry.
+
+This separates inference latency from executable quote age: a 19–23-second reply no
+longer expires solely because inference exceeded 15 seconds. Invalid, expired or
+changed-market replies still produce HOLD. Acceptance queues a paper intent only;
+a later eligible quote is still required for a fill. No rules-based buys replace a
+failed model response. These are simulation controls, not validated real-order authority.
+
+The live status shows current request elapsed time. **Last AI result** persists while
+the next request runs and reports its model, completion time, request duration, usable
+proposal counts or a sanitized timeout/connection/HTTP/format failure. Usable proposal
+counts precede the news and paper-fill checks and are not trade counts. The report is
+also available through **Copy trading diagnostics** and the research MCP context.
 
 The initial four-distinct-quotes / 60-second warm-up still applies. The history buffer
 now retains enough samples at five-second cadence to satisfy it; the demo keeps its

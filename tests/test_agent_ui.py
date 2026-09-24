@@ -84,17 +84,20 @@ def test_trading_diagnostics_remain_visible_and_copy_as_plain_text_during_scan(t
     assert not widget.copy_diagnostics.isEnabled()
     report = ('Last completed check 38 · fixture time\nStocks: session closed\n'
               'Crypto: 2/2 spread exceeds limit\n\nBid 100 · ask 102 · spread 1.980% · limit 1.000%')
-    snapshot = AgentSnapshot(running=True, cycle=38, phase='Waiting', diagnostics=report)
+    snapshot = AgentSnapshot(running=True, cycle=38, phase='Waiting', diagnostics=report,
+                             analysis_last_result={'equity': 'request 21.2s · AI reply rechecked'})
     widget.update_agent(snapshot)
     widget.update_agent(replace(snapshot, cycle=39, phase='Working', decisions=()))
     assert 'Last completed check 38' in widget.diagnostics_summary.text()
     assert widget.diagnostics_text.toPlainText() == report
+    assert 'request 21.2s' in widget.run_detail.text()
     widget.copy_diagnostics.click()
     assert QApplication.clipboard().text().startswith('Current monitor state: Working · running: True\n')
     assert QApplication.clipboard().text().endswith(report)
     widget.update_agent(AgentSnapshot(phase='Starting', running=True))
     assert not widget.copy_diagnostics.isEnabled()
     assert 'No completed quote check yet' in widget.diagnostics_summary.text()
+    assert 'request 21.2s' not in widget.run_detail.text()
     window._closing_after_cleanup = True
     window.close()
     store.close()

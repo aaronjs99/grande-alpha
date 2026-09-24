@@ -49,12 +49,16 @@ async def test_completed_diagnostics_follow_broker_observation_consent(desktop):
     controller.set_agent_mcp_enabled(True)
     controller.agent = ReadMarket().runtime()
     await controller.agent.cycle()
+    controller.agent.snapshot = replace(controller.agent.snapshot,
+                                        analysis_last_result={'equity': 'request 21.2s · AI reply rechecked'})
     context = controller._agent_mcp_command('context', {})
     assert 'Last completed check 1' in context['completed_check_diagnostics']
     assert context['observations'][0]['reason']
+    assert 'request 21.2s' in context['analysis_last_result']['equity']
     controller.snapshot.connected = False
     context = controller._agent_mcp_command('context', {})
     assert not context['observations'] and not context['completed_check_diagnostics']
+    assert not context['analysis_last_result']
 
 
 @pytest.mark.asyncio
