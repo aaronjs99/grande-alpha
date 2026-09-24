@@ -37,6 +37,7 @@ from PySide6.QtWidgets import (
 
 from grande_alpha.agent_ledger import AgentBudget
 from grande_alpha.agent_models import AgentSettings, AgentSnapshot, parse_symbols
+from grande_alpha.ui.chatgpt_setup import ChatGPTSetupDialog
 from grande_alpha.ui.table_layout import configure_adjustable_columns
 from grande_alpha.ui.themes import color, set_item_foreground, theme_css
 
@@ -121,6 +122,7 @@ class AgentWidget(QScrollArea):
         self._balance_times: deque[float] = deque(maxlen=500)
         self._balances: deque[float] = deque(maxlen=500)
         self._scan_task: asyncio.Task | None = None
+        self._chatgpt_help: ChatGPTSetupDialog | None = None
         self.setWidgetResizable(True)
         self.setStyleSheet(theme_css(DASHBOARD_STYLE, base="light"))
         content = QWidget()
@@ -291,6 +293,10 @@ class AgentWidget(QScrollArea):
         self.copy_mcp.clicked.connect(self._copy_mcp_config)
         self.copy_mcp.setEnabled(not getattr(sys, "frozen", False))
         prompt_form.addRow(self.copy_mcp)
+        self.chatgpt_setup = QPushButton("ChatGPT Astra setup")
+        self.chatgpt_setup.setToolTip("Open connection instructions, official links, and a test prompt")
+        self.chatgpt_setup.clicked.connect(self._show_chatgpt_setup)
+        prompt_form.addRow(self.chatgpt_setup)
         self.mcp_status = label("MCP is off · supports local stdio clients · live orders unavailable")
         prompt_form.addRow(self.mcp_status)
 
@@ -542,6 +548,13 @@ class AgentWidget(QScrollArea):
         self.mcp_enabled.blockSignals(False)
         self.mcp_status.setText("MCP enabled · research access only" if enabled else "MCP is off · enable it again to allow AI access")
         self._set_controls()
+
+    def _show_chatgpt_setup(self) -> None:
+        if self._chatgpt_help is None:
+            self._chatgpt_help = ChatGPTSetupDialog(self.controller.agent_bridge.path, self)
+        self._chatgpt_help.show()
+        self._chatgpt_help.raise_()
+        self._chatgpt_help.activateWindow()
 
     def _copy_mcp_config(self) -> None:
         config = {"mcpServers": {"grande-alpha": {

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Added **ChatGPT Astra setup** beside the Agent MCP controls: a modeless help window
+  with official connection/model links, tunnel prerequisites, an installation-specific
+  server command and a read-only test prompt. Opening help changes no permissions and
+  starts no connection; ChatGPT account setup remains an external step.
+
 - Added concurrent Equities/Crypto research workers with independent progress, bounded
   cycle deadlines, cancellation of both workers, and separate local-model prompts.
 - Added **Prompts + AI connections** and a local stdio MCP research server with copied

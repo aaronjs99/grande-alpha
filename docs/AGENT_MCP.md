@@ -33,12 +33,39 @@ Applied prompts are recorded with local research receipts; do not include secret
 
 ![Synthetic prompt controls, no real account information](images/agent-mcp-prompts.png)
 
+## ChatGPT Astra setup button
+
+Open **Prompts + AI connections → ChatGPT Astra setup** for an offline, scrollable guide.
+It includes official OpenAI links and buttons to copy instructions, this installation's
+server command, and a read-only verification prompt. Opening the guide does not enable
+MCP, install software, collect API keys, create a tunnel, or connect an account.
+
+The guide describes OpenAI's **Secure MCP Tunnel** route for ChatGPT, including the
+separate developer-mode and Platform tunnel prerequisites, followed by selecting Astra
+when available. A tunnel must run on the same computer as GRANDE and be associated with
+the intended ChatGPT workspace. Setup and model availability depend on your OpenAI
+account. This route has not been authenticated or tested against your account.
+
+The copied local-client JSON is not a ChatGPT server URL. The server command uses the
+running Python interpreter and the absolute bridge path, so install GRANDE in that
+environment first. Packaged executables show a source-installation note instead of an
+invalid Python command. The copy buttons only change the clipboard.
+
+![Offline ChatGPT Astra setup guide, with synthetic example paths](images/chatgpt-astra-setup.png)
+
+Official sources reviewed September 24, 2026:
+
+- [Secure MCP Tunnel](https://developers.openai.com/api/docs/guides/secure-mcp-tunnels)
+- [Connect and test a ChatGPT plugin](https://developers.openai.com/plugins/deploy/connect-chatgpt)
+- [Model availability and selection](https://learn.chatgpt.com/docs/models)
+
 ## Connect a compatible AI application
 
 MCP means **Model Context Protocol**. This build exposes a **local stdio MCP server**.
 Use a client that can launch a local executable and configure stdio servers. It does not
 connect universally to every AI product: clients requiring a hosted HTTPS MCP URL cannot
-use this local configuration directly. No public endpoint, tunneling service, or cloud
+use this local configuration directly; the ChatGPT setup guide explains the separate
+Secure MCP Tunnel option. No public endpoint, tunneling service, or cloud
 account is created, and the app does not install an AI client or download a model.
 
 From a source checkout, install the updated entry points once:

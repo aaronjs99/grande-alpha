@@ -22,7 +22,7 @@ from grande_alpha.ui.main_window import MainWindow
 from grande_alpha.ui.themes import apply_application_theme
 
 
-def capture(path: Path, width: int = 1366, height: int = 900, *, budget: bool = False, prompts: bool = False, theme: str = "light") -> None:
+def capture(path: Path, width: int = 1366, height: int = 900, *, budget: bool = False, prompts: bool = False, chatgpt_help: bool = False, theme: str = "light") -> None:
     app = QApplication.instance() or QApplication([])
     with tempfile.TemporaryDirectory() as directory:
         store = AuditStore(Path(directory) / "synthetic.db")
@@ -99,7 +99,17 @@ def capture(path: Path, width: int = 1366, height: int = 900, *, budget: bool = 
             widget.ensureWidgetVisible(widget.save_budget)
             app.processEvents()
         path.parent.mkdir(parents=True, exist_ok=True)
-        if not window.grab().save(str(path)):
+        target = window
+        if chatgpt_help:
+            widget.chatgpt_setup.click()
+            app.processEvents()
+            target = widget._chatgpt_help
+            # Captures show a synthetic path instead of this machine's environment.
+            target.command.setPlainText("/example/grande-alpha/.venv/bin/python -m grande_alpha.agent_mcp --bridge /example/data/agent-mcp.db")
+            assert not controller.agent_bridge.session
+            assert not controller.agent.snapshot.running
+            assert controller.risk.grant is None
+        if not target.grab().save(str(path)):
             raise RuntimeError("Could not save agent screenshot")
         window.close()
         store.close()
@@ -112,6 +122,7 @@ if __name__ == "__main__":
     parser.add_argument("--height", type=int, default=1200)
     parser.add_argument("--budget", action="store_true")
     parser.add_argument("--prompts", action="store_true")
+    parser.add_argument("--chatgpt-help", action="store_true")
     parser.add_argument("--theme", choices=("light", "dark"), default="light")
     args = parser.parse_args()
-    capture(args.output, args.width, args.height, budget=args.budget, prompts=args.prompts, theme=args.theme)
+    capture(args.output, args.width, args.height, budget=args.budget, prompts=args.prompts, chatgpt_help=args.chatgpt_help, theme=args.theme)
