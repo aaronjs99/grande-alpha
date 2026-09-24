@@ -691,10 +691,17 @@ class AgentWidget(QScrollArea):
             if snapshot.phase == "Starting":
                 text = prefix + " · Starting workers…"
             elif snapshot.phase == "Working":
-                text = prefix + f" · Checking quotes · update {snapshot.cycle}"
+                elapsed = max(0, int((utc_now() - snapshot.cycle_started_at).total_seconds())) if snapshot.cycle_started_at else 0
+                text = prefix + f" · Checking quotes · update {snapshot.cycle} · {elapsed}s elapsed"
                 detail = ("Reading news sources…" if snapshot.team_status.get("VELA") == "Reading news sources" else
                           " · ".join(f"{name}: {snapshot.worker_status.get(key, 'Queued')}"
                                      for key, name in (("equity", "Stocks"), ("crypto", "Crypto"))))
+                waiting = any(s in {"Loading stock scan", "Loading crypto pairs", "Requesting quotes"}
+                              for s in snapshot.worker_status.values())
+                if elapsed >= 10 and waiting:
+                    detail += "\nRobinhood data is delayed. Slow reads will time out and monitoring will try again."
+                if elapsed >= 40:
+                    detail += "\nThis update is overdue. If it does not resume, press Stop agent, then reconnect Robinhood."
             else:
                 signals = Counter(d.action for d in snapshot.decisions)
                 paper = snapshot.paper if self.controller.agent.paper_source else None
@@ -798,7 +805,8 @@ class AgentWidget(QScrollArea):
             else:
                 stage = snapshot.team_status.get(name, "")
                 working = snapshot.phase == "Working" and (
-                    stage in {"Scanning", "Analyzing", "Checking data", "Checking quotes and limits", "Reading news sources"}
+                    stage in {"Scanning", "Loading stock scan", "Loading crypto pairs", "Requesting quotes",
+                              "Analyzing", "Checking data", "Checking quotes and limits", "Reading news sources"}
                     or name == "VELA" and "Analyzing" in snapshot.worker_status.values()
                 )
                 working = working or name == "VELA" and ai_working

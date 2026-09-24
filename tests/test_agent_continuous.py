@@ -14,8 +14,9 @@ from grande_alpha.agent_models import AgentSettings, AssetClass, Instrument
 async def manual_agent(market, settings=None, analyst=None):
     agent = market.runtime(analyst)
     agent.start_paper(settings or AgentSettings(equity_symbols=('AAPL',), crypto_symbols=('BTC',)), 'broker_quotes')
-    agent._task.cancel()  # Advance provider clocks explicitly; do not wait for wall time.
-    await asyncio.gather(agent._task, return_exceptions=True)
+    task, agent._task = agent._task, None  # Take ownership to advance provider clocks explicitly.
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
     return agent
 
 
@@ -253,3 +254,56 @@ async def test_background_refresh_uses_cached_feed_expiry_instead_of_delaying_an
     assert agent._source_due == NOW + timedelta(minutes=10)
     assert agent.snapshot.research_sources['items'] and not agent.snapshot.sources_loading
     await shutdown(agent)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('before_start', [True, False])
+async def test_unexpected_task_exit_clears_running_state_and_pending_paper_orders(before_start):
+    market = ReadMarket()
+    agent = market.runtime()
+    entered = asyncio.Event()
+
+    async def blocked():
+        entered.set()
+        await asyncio.Event().wait()
+
+    agent.cycle = blocked
+    agent.start_paper(AgentSettings(), 'broker_quotes')
+    agent.paper.consume([decision()], NOW, 15)
+    assert agent.paper_context()['pending_count'] == 1
+    task = agent._task
+    if not before_start:
+        await entered.wait()
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
+    await asyncio.sleep(0)
+    assert not agent.snapshot.running and agent.snapshot.phase == 'Error'
+    assert 'Monitoring was interrupted' in agent.snapshot.error
+    assert agent.paper_context()['pending_count'] == 0
+    assert agent.paper.state['pending'] == {}
+    assert agent.paper_context()['fill_count'] == 0
+    assert agent.snapshot.next_cycle_at is None
+
+
+@pytest.mark.asyncio
+async def test_old_worker_cleanup_cannot_stop_a_restarted_session():
+    agent = ReadMarket().runtime()
+    entered = asyncio.Event()
+
+    async def blocked():
+        entered.set()
+        await asyncio.Event().wait()
+
+    agent.cycle = blocked
+    agent.start_paper(AgentSettings(), 'broker_quotes')
+    await entered.wait()
+    old = agent._task
+    agent.stop()
+    agent.start_paper(AgentSettings(), 'broker_quotes')
+    new = agent._task
+    await asyncio.gather(old, return_exceptions=True)
+    await asyncio.sleep(0)
+    assert agent.snapshot.running and not agent.snapshot.error and agent._task is new
+    agent.stop()
+    await asyncio.gather(new, return_exceptions=True)
+    assert agent.snapshot.phase == 'Stopped' and not agent.snapshot.error

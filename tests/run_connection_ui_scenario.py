@@ -8,6 +8,7 @@ import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
+from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QApplication, QMessageBox
 from qasync import QEventLoop
 from test_robinhood_mcp import FakeCallback, FakeSession, TaskBoundContext
@@ -60,6 +61,34 @@ async def scenario(app, output):
             window.show()
             try:
                 await broker.connect()
+                # Verify timeout recovery and real Qt responsiveness before the
+                # disconnect scenario. These are synthetic reads, never orders.
+                ticks = []
+                heartbeat = QTimer(window)
+                heartbeat.setInterval(5)
+                heartbeat.timeout.connect(lambda: ticks.append(True))
+                heartbeat.start()
+                calls = []
+                healthy = FakeSession()
+
+                async def one_stalled_send(name, arguments, **kwargs):
+                    calls.append(name)
+                    if len(calls) == 1:
+                        await asyncio.Event().wait()
+                    return await healthy.call_tool(name, arguments, **kwargs)
+
+                session.call_tool = one_stalled_send
+                with patch.object(robinhood_mcp, 'DEFAULT_TOOL_TIMEOUT_SECONDS', 0.05):
+                    try:
+                        await broker.get_accounts()
+                    except BrokerError as exc:
+                        assert 'timed out' in str(exc)
+                    else:
+                        raise AssertionError('A stalled send did not time out')
+                    assert await broker.get_accounts() == []
+                heartbeat.stop()
+                assert ticks and calls == ['get_accounts', 'get_accounts']
+                session.call_tool = stalled_read
                 controller.snapshot.connected = True
                 controller.snapshot.account = Account("synthetic-0000", "Synthetic", "cash", True, "active")
                 controller.snapshot.portfolio = Portfolio(100, 100, 100)

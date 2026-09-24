@@ -92,6 +92,19 @@ take additional time. Background AI and news progress are displayed separately.
 A running session can legitimately have zero fills. Startup errors appear beside the controls, and a disabled paper
 button explains when a Robinhood connection is required.
 
+While a quote update is in progress, its elapsed time keeps updating independently
+of broker responses. Worker labels distinguish stock scanning, crypto-pair loading
+and quote requests. After ten seconds waiting on broker data, the dashboard explains
+the delay; an overdue update also gives Stop/reconnect instructions. A closed stock
+session blocks stock fills, not the monitoring loop or crypto worker.
+
+The broker's per-request deadline now covers transport sending as well as waiting
+for a response. A blocked send can no longer bypass the ten-second read deadline
+and hold later requests indefinitely. Timed-out requests are reported as unavailable;
+subsequent monitoring polls may try reading again. Order writes are never automatically
+resubmitted. An unexpectedly exited agent task clears its running state and pending
+virtual intents and shows an interruption message; it does not restart itself.
+
 Six named cards expose stages in the workflow, not six independent AI models:
 
 | Card | Work |

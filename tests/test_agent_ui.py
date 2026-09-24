@@ -248,3 +248,32 @@ def test_top_status_explains_start_failure_waiting_and_missing_news(tmp_path, ap
     assert widget.run_status.text() == 'Could not save paper results.'
     window.close()
     store.close()
+
+
+def test_delayed_quote_status_updates_with_the_clock_and_recovers(tmp_path, app, monkeypatch):
+    from test_agent_runtime import NOW
+
+    store = AuditStore(tmp_path / 'delayed-status.db')
+    controller = TradingController(DisabledBroker(), AppConfig(), store)
+    window = MainWindow(controller, controller.config)
+    widget = window.agent_widget
+    current = NOW
+    monkeypatch.setattr('grande_alpha.ui.agent_widget.utc_now', lambda: current)
+    snapshot = AgentSnapshot(running=True, cycle=1, phase='Working', started_at=NOW, cycle_started_at=NOW,
+                             worker_status={'equity': 'Requesting quotes', 'crypto': 'Loading crypto pairs'})
+    widget.update_agent(snapshot)
+    assert '0s elapsed' in widget.run_status.text()
+    current += timedelta(seconds=12)
+    widget._update_clock()  # A slow provider does not need to publish another snapshot.
+    assert '12s elapsed' in widget.run_status.text()
+    assert 'Robinhood data is delayed' in widget.run_detail.text()
+    assert 'Loading crypto pairs' in widget.run_detail.text()
+    current += timedelta(seconds=30)
+    widget._update_clock()
+    assert 'Stop agent' in widget.run_detail.text()
+    widget.update_agent(replace(snapshot, phase='Waiting', observed_at=current,
+                                next_cycle_at=current + timedelta(seconds=5)))
+    assert 'Next quote check in 5s' in widget.run_status.text()
+    assert 'delayed' not in widget.run_detail.text()
+    window.close()
+    store.close()

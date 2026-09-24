@@ -282,7 +282,7 @@ async def test_broker_paper_preserves_market_guards_then_fills_eligible_signals(
     market = ReadMarket()
     agent = market.runtime()
     agent.start_paper(AgentSettings(), "broker_quotes")
-    task = agent._task
+    task, agent._task = agent._task, None  # Transfer loop ownership to this deterministic driver.
     task.cancel()  # Drive cycles deterministically instead of waiting for real time.
     await asyncio.gather(task, return_exceptions=True)
     market.now = NOW.replace(hour=23)

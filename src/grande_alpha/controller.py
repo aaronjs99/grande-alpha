@@ -360,6 +360,7 @@ class TradingController(QObject):
             "mode": "research_only", "orders_available": False,
             "running": snapshot.running, "cycle": snapshot.cycle, "phase": snapshot.phase,
             "next_cycle_at": snapshot.next_cycle_at.isoformat() if snapshot.next_cycle_at else None,
+            "cycle_started_at": snapshot.cycle_started_at.isoformat() if snapshot.cycle_started_at else None,
             "error": snapshot.error,
             "continuous_paper": self.agent.continuous_paper,
             "quote_interval_seconds": settings.interval_seconds,

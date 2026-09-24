@@ -250,6 +250,25 @@ class AgentRuntime:
             self._publish(execution_status="Paper simulation only · virtual cash · no broker orders")
         self._log(f"Agent started: stocks/ETFs + crypto; {'paper simulation · ' + source if source else 'proposals only'}", category="agent_session")
         self._task = loop.create_task(self._run(), name="grande-multi-market-agent")
+        generation = self._generation
+        self._task.add_done_callback(lambda task: self._run_finished(task, generation))
+
+    def _run_finished(self, task: asyncio.Task, generation: int) -> None:
+        # Cancellation can occur before _run enters its try/finally. Always
+        # retrieve errors, but never let cleanup from an older run stop a new one.
+        if not task.cancelled():
+            task.exception()
+        if task is not self._task or generation != self._generation or not self.snapshot.running:
+            return
+        self._task = None
+        for background in tuple(self._background_tasks):
+            background.cancel()
+        self._discard_paper_intents()
+        self._publish(running=False, phase="Error", next_cycle_at=None, decisions=(),
+                      analysis_status={}, sources_loading=False,
+                      error="Monitoring was interrupted. Restart monitoring, or reconnect Robinhood if data is unavailable.",
+                      worker_status={"equity": "Stopped", "crypto": "Stopped"},
+                      team_status={name: "Stopped" for name in self.snapshot.team_status})
 
     def stop(self, reason: str = "Agent stopped") -> None:
         self._generation += 1
@@ -450,10 +469,12 @@ class AgentRuntime:
         elif asset_class == AssetClass.EQUITY:
             instruments = [Instrument(asset_class, symbol) for symbol in settings.equity_symbols]
             if settings.scan_id:
+                progress("Loading stock scan")
                 instruments += await self._equity_scan(settings.scan_id)
             instruments = list({item.key: item for item in instruments}.values())
         else:
             # Pair halts and restrictions are refreshed on every cycle.
+            progress("Loading crypto pairs")
             pairs = await self._crypto_pairs()
             wanted = {
                 s.replace("/", "-") if "-" in s or "/" in s else f"{s}-USD"
@@ -466,6 +487,7 @@ class AgentRuntime:
         if any(item.asset_class != asset_class for item in instruments):
             raise ValueError("Discovery returned a different asset class")
         batch = self._paper_batch(instruments, cycle) if self.continuous_paper else self._batch(instruments, cycle)
+        progress("Requesting quotes")
         quotes = quotes if self.paper_source == "demo" else (
             await self._equity_quotes([item.symbol for item in batch])
             if asset_class == AssetClass.EQUITY and batch
@@ -568,7 +590,7 @@ class AgentRuntime:
             results = {}
             status = {}
             workers = {"equity": "Queued", "crypto": "Queued"}
-            self._publish(phase="Working", cycle=cycle, decisions=(), observed_at=None, next_cycle_at=None,
+            self._publish(phase="Working", cycle=cycle, cycle_started_at=utc_now(), decisions=(), observed_at=None, next_cycle_at=None,
                           market_status={}, worker_status=dict(workers),
                           team_status={"NOVA": "Queued", "ORIN": "Queued", "VELA": "Waiting for quotes",
                                        "KADE": "Waiting for analysis", "RUNE": "Waiting for eligible signals",

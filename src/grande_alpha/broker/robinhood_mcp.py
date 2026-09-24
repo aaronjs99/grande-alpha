@@ -432,11 +432,16 @@ class RobinhoodMCPBroker(Broker):
             if request.future.cancelled():
                 continue
             try:
-                result = await session.call_tool(
-                    request.name,
-                    request.arguments,
-                    read_timeout_seconds=timedelta(seconds=request.timeout_seconds),
-                )
+                # The SDK read timeout starts only after sending to the transport.
+                # Bound the entire call so a blocked send cannot hold this queue
+                # forever. Keep the call and cancellation in the context owner;
+                # wait_for() would create a different task. Never retry a write.
+                async with asyncio.timeout(request.timeout_seconds):
+                    result = await session.call_tool(
+                        request.name,
+                        request.arguments,
+                        read_timeout_seconds=timedelta(seconds=request.timeout_seconds),
+                    )
             except TimeoutError:
                 if not request.future.done():
                     request.future.set_exception(
