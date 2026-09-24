@@ -9,17 +9,28 @@ development launcher; the command line and desktop entrypoints are `grande-alpha
 
 | Responsibility | Main modules | Boundary |
 |---|---|---|
-| Broker transport | `broker/robinhood_mcp.py`, `broker_permissions.py` | One MCP session owner; typed account, quote, review, order, and cancellation operations |
-| Market and earnings inputs | `live_data.py`, `earnings_feed.py`, `market_calendar.py` | Fresh broker observations and timestamped earnings facts; missing facts do not become inferred trades |
-| Strategy and replay | `strategy.py`, `earnings.py`, `sandbox.py`, `evidence.py` | Deterministic signals and simulation; research results do not authorize orders |
-| Mixed execution | `mixed_engine.py`, `equity_execution.py`, `equity_ledger.py` | Exact-scope permit, limits, one durable reference per intent, fill reconciliation, and stop state |
-| Persistence | `storage.py`, `agent_ledger.py`, `authorization.py` | Local SQLite records and credential-store-backed approval; unresolved records survive restart |
-| Interfaces | `cli.py`, `autonomous_cli.py`, `controller.py`, `ui/` | The CLI runs the mixed engine; the desktop still runs its older attended ETF controller |
+| Broker transport | `broker/robinhood_mcp.py`, `broker/permissions.py` | One MCP session owner; typed account, quote, review, order, and cancellation operations |
+| Market and earnings inputs | `data/live_data.py`, `data/earnings_feed.py`, `domain/market_calendar.py` | Fresh broker observations and timestamped earnings facts; missing facts do not become inferred trades |
+| Strategy and replay | `strategy/`, `data/earnings.py`, `research/` | Deterministic signals and simulation; research results do not authorize orders |
+| Mixed execution | `execution/mixed_engine.py`, `execution/equity_execution.py`, `execution/equity_ledger.py` | Exact-scope permit, limits, one durable reference per intent, fill reconciliation, and stop state |
+| Persistence | `persistence/`, `execution/authorization.py` | Local SQLite records and credential-store-backed approval; unresolved records survive restart |
+| Research agent | `research/agent_runtime.py`, `research/agent_analyst.py`, `research/agent_bridge.py`, `research/agent_mcp.py` | Concurrent equity/crypto research, optional local AI, and a separate per-session MCP mailbox; no broker-write tools |
+| Local worker controls | `execution/session_worker.py`, `execution/worker_control.py`, `execution/worker_ipc.py`, `execution/worker_process.py` | User-started hidden mixed worker and authenticated local controls; tested with substitutes, not a live-deployment certificate |
+| Interfaces | `cli.py`, `interfaces/cli/`, `app.py`, `ui/session_window.py` | Desktop and mixed CLI control one worker; attended/shadow CLI routes remain foreground |
 
-The desktop and mixed runner do **not** yet share a background worker. The controller is still
-large, and persistence has not been divided into repositories. Those are remaining refactors,
-not properties of the current release. Headless code must not import Qt; the desktop dependency
-set is optional.
+The desktop and autonomous mixed CLI use one user-owned hidden worker; attended and shadow CLI
+modes remain foreground paths. Worker, IPC, and persistence seams are tested locally with
+substitutes but are not an installed, provider-validated shared trading service. In particular,
+the research MCP and the broker's trading MCP are separate protocols and permissions.
+The research bridge cannot inherit a trading grant, and its prompts and proposals cannot reach
+an order path. Headless code must not import Qt; the desktop dependency set is optional.
+
+The research MCP starts disabled each worker session. An explicit desktop or CLI opt-in creates a
+new local mailbox lease; a compatible AI client starts a stdio server and can exchange only bounded
+research commands with the worker. Stop, Revoke, or shutdown revokes the lease and discards queued
+work; expired commands cannot become later broker actions.
+The bridge has no public listener, account export, or broker credentials. See
+[research and setup](RESEARCH.md#agent-research-prompts-and-local-mcp).
 
 ## Order lifecycle
 
@@ -48,7 +59,9 @@ loss. Alpha Vantage requests are reserved in a local rolling daily budget before
 
 Application data belongs to the current user and must not be deleted during upgrades. Broker
 OAuth and data-provider keys belong in the operating-system credential store, not the repository.
-Configuration uses named saved sections and an explicit backed-up upgrade. The planned
-authenticated, current-user-only worker and backed-up database migration are not yet implemented.
+Configuration uses named saved sections and an explicit backed-up upgrade. Worker control and
+execution-store migration code need targeted integration and installed-Windows acceptance before
+they can be treated as operational guarantees. The execution-store upgrade is explicit and offline;
+startup does not silently replace historical journals.
 See the [capability matrix](USER_GUIDE.md#what-is-implemented-tested-and-still-pending)
 for the current state and [development and release](DEVELOPMENT_RELEASE.md) for verification.

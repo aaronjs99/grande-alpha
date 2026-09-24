@@ -5,13 +5,13 @@ from types import SimpleNamespace
 
 import pytest
 
-from grande_alpha.authorization import (
+from grande_alpha.execution.authorization import (
     UserAuthorizationGate,
     create_authorization,
     revoke_authorization,
 )
-from grande_alpha.equity_execution import EquityScope
-from grande_alpha.standing import REQUIRED_TOOL_ARGUMENTS, ROBINHOOD_URL, validate_contract
+from grande_alpha.execution.equity_execution import EquityScope
+from grande_alpha.execution.standing import REQUIRED_TOOL_ARGUMENTS, ROBINHOOD_URL, validate_contract
 
 NOW = datetime(2026, 9, 23, 18, 0, tzinfo=UTC)
 

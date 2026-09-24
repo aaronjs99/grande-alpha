@@ -12,7 +12,7 @@ from grande_alpha.broker.base import BrokerError
 from grande_alpha.broker.crypto import CryptoOutcomeUnknown, parse_order
 from grande_alpha.broker.discovery import RobinhoodDiscovery
 from grande_alpha.broker.robinhood_mcp import RobinhoodMCPBroker
-from grande_alpha.crypto_models import CryptoOrderIntent, decimal_amount
+from grande_alpha.domain.crypto_models import CryptoOrderIntent, decimal_amount
 
 
 @pytest.mark.parametrize("value", [True, 1.5, "NaN", "Infinity", "-1", "1e100", "1e-30"])

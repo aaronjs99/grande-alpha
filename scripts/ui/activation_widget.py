@@ -21,7 +21,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from grande_alpha.activation_guidance import (
+from grande_alpha.application.activation_guidance import (
     ExternalGuidanceLink,
     activation_summary,
     decorate_readiness,

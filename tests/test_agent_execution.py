@@ -9,10 +9,14 @@ from decimal import Decimal
 import pytest
 
 from crypto_fixtures import ACCOUNT, EXECUTION, INTENT, NOW, POSITION, FakeCryptoServer
-from grande_alpha.agent_execution import AgentExecutor, crypto_ticket, equity_ticket, observe_crypto
-from grande_alpha.agent_ledger import AgentBudget
+from grande_alpha.application.agent_execution import (
+    AgentExecutor,
+    crypto_ticket,
+    equity_ticket,
+    observe_crypto,
+)
 from grande_alpha.broker.crypto import CryptoOutcomeUnknown
-from grande_alpha.models import (
+from grande_alpha.domain.models import (
     BrokerExecution,
     BrokerOrder,
     OrderIntent,
@@ -21,7 +25,8 @@ from grande_alpha.models import (
     Position,
     Quote,
 )
-from grande_alpha.storage import AuditStore
+from grande_alpha.persistence.agent_ledger import AgentBudget
+from grande_alpha.persistence.store import AuditStore
 
 D = Decimal
 

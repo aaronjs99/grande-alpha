@@ -12,16 +12,10 @@ from typing import Any
 from platformdirs import user_data_path
 
 from grande_alpha import __version__
-from grande_alpha.activation_guidance import decorate_readiness
-from grande_alpha.candidate_execution import contract_from_app_and_sandbox, runtime_parity_assessment
-from grande_alpha.cli_table import format_table
-from grande_alpha.config import APP_NAME, load_config
-from grande_alpha.config_cli import (
-    command_config_import_legacy,
-    command_config_show,
-    command_config_upgrade,
-)
-from grande_alpha.data_readiness import (
+from grande_alpha.application.activation_guidance import decorate_readiness
+from grande_alpha.application.gate_guidance import GATE_GUIDANCE, gate_detail, promotion_overview
+from grande_alpha.configuration.config import APP_NAME, load_config
+from grande_alpha.data.data_readiness import (
     DatasetReadinessReport,
     audit_cache_directory,
     audit_csv_dataset,
@@ -29,14 +23,29 @@ from grande_alpha.data_readiness import (
     load_audited_csv_dataset,
     manifest_template,
 )
-from grande_alpha.evidence import (
+from grande_alpha.domain.market_calendar import regular_session_times
+from grande_alpha.domain.policy import session_key
+from grande_alpha.domain.product import PRODUCT_PLANS, configured_upgrade_url, current_entitlement
+from grande_alpha.domain.terminology import TERM_HELP
+from grande_alpha.execution.candidate_execution import (
+    contract_from_app_and_sandbox,
+    runtime_parity_assessment,
+)
+from grande_alpha.interfaces.cli.cli_table import format_table
+from grande_alpha.interfaces.cli.config_cli import (
+    command_config_import_legacy,
+    command_config_show,
+    command_config_upgrade,
+    command_execution_store_upgrade,
+)
+from grande_alpha.persistence.store import AuditStore
+from grande_alpha.research.evidence import (
     EVIDENCE_POLICY_VERSION,
     RUNTIME_SIZING_PARITY_CERTIFIED,
     STRATEGY_FINGERPRINT_FIELDS,
     strategy_fingerprint,
 )
-from grande_alpha.gate_guidance import GATE_GUIDANCE, gate_detail, promotion_overview
-from grande_alpha.historical import (
+from grande_alpha.research.historical import (
     RUNTIME_ANALYSIS_PRICE_SEMANTICS,
     RUNTIME_EXECUTION_PRICE_SEMANTICS,
     RUNTIME_OBSERVATION_SCHEMA,
@@ -48,14 +57,9 @@ from grande_alpha.historical import (
     load_runtime_quote_trace_with_row_count,
     runtime_trace_manifest_template,
 )
-from grande_alpha.market_calendar import regular_session_times
-from grande_alpha.policy import session_key
-from grande_alpha.product import PRODUCT_PLANS, configured_upgrade_url, current_entitlement
-from grande_alpha.research_service import run_evidence_lab
-from grande_alpha.sandbox import SandboxConfig, SandboxReplayEngine, load_sandbox_config
-from grande_alpha.storage import AuditStore
-from grande_alpha.strategy import STRATEGY_NAMES
-from grande_alpha.terminology import TERM_HELP
+from grande_alpha.research.research_service import run_evidence_lab
+from grande_alpha.research.sandbox import SandboxConfig, SandboxReplayEngine, load_sandbox_config
+from grande_alpha.strategy.core import STRATEGY_NAMES
 
 
 def _json(value: Any) -> None:
@@ -1220,8 +1224,8 @@ def _source_options(
 
 def command_engine_readiness(args: argparse.Namespace) -> int:
     """Offline inventory: local evidence is not broker verification or live authority."""
-    from grande_alpha.live_cli import load_policy
-    from grande_alpha.readiness import missing_requirements, recorded_preferences
+    from grande_alpha.application.readiness import missing_requirements, recorded_preferences
+    from grande_alpha.interfaces.cli.live_cli import load_policy
 
     workflow = getattr(args, "workflow", "current")
     setup_path = getattr(args, "setup", None)
@@ -1287,9 +1291,9 @@ def command_engine_readiness(args: argparse.Namespace) -> int:
 
 def command_session_run(args: argparse.Namespace) -> int:
     """Dispatch one explicit session mode without guessing a strategy or limit file."""
-    from grande_alpha.autonomous_cli import command_run_autonomous
-    from grande_alpha.headless import command_engine_run
-    from grande_alpha.live_cli import command_live
+    from grande_alpha.interfaces.cli.headless import command_engine_run
+    from grande_alpha.interfaces.cli.live_cli import command_live
+    from grande_alpha.interfaces.cli.worker_cli import command_worker_run
 
     files = {"policy": args.policy, "candidate": args.candidate,
              "authorization": args.authorization, "earnings_database": args.earnings_database}
@@ -1310,23 +1314,12 @@ def command_session_run(args: argparse.Namespace) -> int:
             args.duration is not None):
         raise ValueError("Autonomous mixed mode requires --candidate, --authorization and --earnings-database")
     args.poll_seconds = args.poll_seconds or 5.0
-    return command_run_autonomous(args)
+    return command_worker_run(args)
 
 
 def build_parser() -> argparse.ArgumentParser:
-    from grande_alpha.authorization import (
-        command_authorization_check,
-        command_authorization_revoke,
-        command_authorization_template,
-    )
-    from grande_alpha.autonomous_cli import (
-        command_autonomous_readiness,
-        command_candidate_template,
-        command_loss_recovery_ack,
-    )
-    from grande_alpha.device_notifications import command_notifications
-    from grande_alpha.earnings import command_screen, command_template
-    from grande_alpha.earnings_feed import (
+    from grande_alpha.data.earnings import command_screen, command_template
+    from grande_alpha.data.earnings_feed import (
         command_fetch,
         command_import_event,
         command_key_delete,
@@ -1336,21 +1329,36 @@ def build_parser() -> argparse.ArgumentParser:
         command_record_fact,
         command_verify_event,
     )
-    from grande_alpha.headless import command_engine_inspect
-    from grande_alpha.live_cli import (
+    from grande_alpha.desktop.device_notifications import command_notifications
+    from grande_alpha.execution.authorization import (
+        command_authorization_check,
+        command_authorization_revoke,
+        command_authorization_template,
+    )
+    from grande_alpha.interfaces.cli.autonomous_cli import (
+        command_autonomous_readiness,
+        command_candidate_template,
+        command_loss_recovery_ack,
+    )
+    from grande_alpha.interfaces.cli.headless import command_engine_inspect
+    from grande_alpha.interfaces.cli.live_cli import (
         command_policy_check,
         command_policy_template,
-        command_stop,
     )
-    from grande_alpha.mixed_portfolio import command_plan
-    from grande_alpha.mixed_portfolio import command_template as mixed_template
-    from grande_alpha.portfolio_replay import command_replay as command_portfolio_replay
-    from grande_alpha.qualification import command_qualification_check
-    from grande_alpha.qualification_evidence import (
+    from grande_alpha.interfaces.cli.worker_cli import (
+        command_research_mcp,
+        command_worker_control,
+        command_worker_stop,
+    )
+    from grande_alpha.research.portfolio_replay import command_replay as command_portfolio_replay
+    from grande_alpha.research.qualification import command_qualification_check
+    from grande_alpha.research.qualification_evidence import (
         command_forward_append,
         command_forward_report,
         command_replay_report,
     )
+    from grande_alpha.strategy.mixed_portfolio import command_plan
+    from grande_alpha.strategy.mixed_portfolio import command_template as mixed_template
 
     parser = argparse.ArgumentParser(
         prog="grande-alpha-cli",
@@ -1369,10 +1377,27 @@ def build_parser() -> argparse.ArgumentParser:
     data_commands = data.add_subparsers(dest="data_command", required=True)
     research = commands.add_parser("research", help="Replay and evidence tools; no broker orders")
     research_commands = research.add_subparsers(dest="research_command", required=True)
+    research_mcp = research_commands.add_parser(
+        "mcp", help="Opt into the current worker's separate research-only MCP connection"
+    )
+    research_mcp_commands = research_mcp.add_subparsers(dest="research_mcp_command", required=True)
+    for name in ("status", "enable", "disable"):
+        research_mcp_commands.add_parser(name).set_defaults(func=command_research_mcp)
     session = commands.add_parser("session", help="Run or stop an explicit trading session")
     session_commands = session.add_subparsers(dest="session_command", required=True)
     records = commands.add_parser("records", help="Read local activity, notifications and reports")
     records_commands = records.add_subparsers(dest="records_command", required=True)
+    execution_upgrade = records_commands.add_parser(
+        "upgrade-execution-store",
+        help="Offline, backed-up upgrade of existing legacy execution records; stop the worker first",
+    )
+    execution_upgrade.add_argument("--audit", type=Path, required=True, help="Existing audit database")
+    execution_upgrade.add_argument("--legacy-equity", type=Path, required=True,
+                                   help="Existing equity_v1 execution database")
+    execution_upgrade.add_argument("--backup-dir", type=Path, required=True,
+                                   help="Directory to receive durable database snapshots")
+    execution_upgrade.add_argument("--json", action="store_true")
+    execution_upgrade.set_defaults(func=command_execution_store_upgrade)
     config_show = config_commands.add_parser("show", help="Read validated settings without writing files")
     config_show.add_argument("--path", type=Path, help="Configuration file to inspect")
     config_show.add_argument("--json", action="store_true")
@@ -1508,8 +1533,28 @@ def build_parser() -> argparse.ArgumentParser:
     policy_check = engine_commands.add_parser("policy-check", help="Validate explicit limits offline; grants no authority")
     policy_check.add_argument("--policy", required=True)
     policy_check.set_defaults(func=command_policy_check)
-    stop_run = engine_commands.add_parser("stop", help="Revoke all local standing sessions; no cancellation or liquidation")
-    stop_run.set_defaults(func=command_stop)
+    stop_run = engine_commands.add_parser("stop", help="Durably block new worker orders; does not claim broker cancellation")
+    stop_run.set_defaults(func=command_worker_stop)
+    worker_status = engine_commands.add_parser("status", help="Read the shared worker's actual status")
+    worker_status.set_defaults(func=command_worker_control)
+    worker_connect = engine_commands.add_parser("connect", help="Start the hidden worker and connect its broker session")
+    worker_connect.add_argument("--authenticate", action="store_true", help="Permit interactive broker login")
+    worker_connect.set_defaults(func=command_worker_control)
+    worker_review = engine_commands.add_parser("review", help="Review exact autonomous candidate and broker account")
+    worker_review.add_argument("--candidate", required=True)
+    worker_review.add_argument("--authorization", required=True)
+    worker_review.add_argument("--earnings-database", required=True)
+    worker_review.add_argument("--poll-seconds", type=float, default=5.0)
+    worker_review.set_defaults(func=command_worker_control)
+    for name, description in (
+        ("authorize", "Interactively approve the exact reviewed scope"),
+        ("start", "Start an already reviewed and approved worker session"),
+        ("revoke", "Interactively revoke exact account authorization"),
+        ("recovery-ack", "Acknowledge manual loss recovery without resetting daily losses"),
+        ("shutdown", "Stop trading and close the hidden worker"),
+    ):
+        worker_command = engine_commands.add_parser(name, help=description)
+        worker_command.set_defaults(func=command_worker_control)
     engine_inspect = broker_commands.add_parser(
         "inspect", help="Inspect MCP tool schemas and descriptions; no orders or account reads"
     )

@@ -14,7 +14,7 @@ def _set_windows_app_identity() -> None:
     if sys.platform != "win32":
         return
     try:
-        from grande_alpha.windows_shortcut import WINDOWS_APP_USER_MODEL_ID
+        from grande_alpha.desktop.windows_shortcut import WINDOWS_APP_USER_MODEL_ID
 
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(WINDOWS_APP_USER_MODEL_ID)
     except (AttributeError, OSError):
@@ -25,13 +25,19 @@ def main() -> int:
     if "--version" in sys.argv:
         print(f"GRANDE Alpha {__version__}")
         return 0
+    # A frozen windowed build hosts the hidden worker through the same executable.
+    # Dispatch before importing Qt so the worker process never creates desktop UI.
+    if "--worker" in sys.argv:
+        from grande_alpha.execution.worker_process import main as worker_main
+
+        worker_argv = [argument for argument in sys.argv[1:] if argument != "--worker"]
+        return worker_main(worker_argv)
     try:
         from PySide6.QtGui import QIcon
-        from PySide6.QtWidgets import QApplication, QDialog, QMessageBox
+        from PySide6.QtWidgets import QApplication, QMessageBox
         from qasync import QEventLoop
 
-        from grande_alpha.ui.main_window import MainWindow
-        from grande_alpha.ui.onboarding import OnboardingWizard
+        from grande_alpha.ui.session_window import SessionWindow
         from grande_alpha.ui.themes import apply_application_theme, saved_theme
     except ModuleNotFoundError as exc:
         missing_module = exc.name or ""
@@ -43,11 +49,8 @@ def main() -> int:
             )
             return 2
         raise
-    from grande_alpha.broker import RobinhoodMCPBroker
-    from grande_alpha.config import ONBOARDING_VERSION, ensure_data_dir, load_config, save_config
-    from grande_alpha.controller import TradingController
-    from grande_alpha.process_lock import ProcessLock
-    from grande_alpha.storage import AuditStore
+    from grande_alpha.configuration.config import ensure_data_dir
+    from grande_alpha.execution.process_lock import ProcessLock
 
     qt_argv = list(sys.argv)
     runtime_data_dir = ensure_data_dir()
@@ -67,31 +70,20 @@ def main() -> int:
     icon_resource = files("grande_alpha.assets").joinpath("app-icon.png")
     with as_file(icon_resource) as icon_path:
         app.setWindowIcon(QIcon(str(icon_path)))
-    instance_lock = ProcessLock(runtime_data_dir / "app.lock")
+    # The independent worker owns app.lock.  A separate desktop lock prevents
+    # duplicate windows without blocking or impersonating the worker.
+    instance_lock = ProcessLock(runtime_data_dir / "desktop.lock")
     if not instance_lock.acquire(timeout_seconds=0.1):
         logging.warning("A second GRANDE Alpha instance was rejected")
         return 2
     loop = QEventLoop(app)
     asyncio.set_event_loop(loop)
     try:
-        config = load_config()
-        if config.onboarding_version < ONBOARDING_VERSION:
-            onboarding = OnboardingWizard(config)
-            if onboarding.exec() != QDialog.DialogCode.Accepted:
-                logging.info("First-run onboarding was declined; application remained closed")
-                return 0
-            config = onboarding.updated_config()
-            save_config(config)
-        store = AuditStore()
-        store.prune_market_history(config.market_history_retention_days)
-        broker = RobinhoodMCPBroker()
-        controller = TradingController(broker, config, store)
-        window = MainWindow(controller, config)
+        window = SessionWindow(runtime_data_dir)
         window.setWindowIcon(app.windowIcon())
         window.show()
         with loop:
             loop.run_forever()
-        store.close()
         return 0
     except Exception as exc:
         logging.exception("Fatal startup error")

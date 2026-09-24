@@ -14,7 +14,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from grande_alpha.product import (
+from grande_alpha.domain.product import (
     COMMUNITY_PLAN,
     PRO_PLAN,
     FeatureStatus,

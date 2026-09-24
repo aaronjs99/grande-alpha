@@ -9,7 +9,9 @@ replay, live shadow observation, and controlled broker execution. Its mixed stoc
 uses earnings observations and a bounded QQQ/TQQQ/SQQQ allocation. Research works without a
 broker account; external connections and real-order capabilities require separate opt-in.
 
-![Desktop workspace](docs/images/audit/responsive-after-02-main-1366x768.png)
+An optional research-only MCP connection can run equity and crypto research inside the local
+worker. Its tools cannot approve trading or place orders. See the
+[research guide](docs/RESEARCH.md#agent-research-prompts-and-local-mcp).
 
 > [!WARNING]
 > This is experimental software, not investment advice. No included strategy is demonstrated to
@@ -37,8 +39,10 @@ optional research tools, not mandatory waiting periods or profitability certific
 
 ## Current limits
 
-The desktop's attended ETF path and the mixed autonomous command-line runner are not yet one
-background service. The mixed runner is foreground-only, so closing its terminal stops it.
+The desktop and mixed autonomous command line control the same user-started hidden worker;
+attended and shadow CLI sessions remain separate foreground paths. Local substitute tests cover worker controls, but installed
+Windows and provider-observed recovery are still pending. Verify the exact worker state rather
+than assuming a desktop badge proves a broker session is live.
 Provider-specific order schemas, earnings coverage, restart/partial-fill behavior, and installed
 Windows operation still require end-to-end acceptance before this project can claim public live
 autonomous readiness. There is no Windows scheduler, signed public installer, billing system, or

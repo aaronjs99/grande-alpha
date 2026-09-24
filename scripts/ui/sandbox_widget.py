@@ -35,33 +35,33 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from grande_alpha.action_lab import (
-    ALL_PAIR_ACTIONS,
-    OfflineTrainingConfig,
-    evaluate_daily_benchmarks,
-    train_offline_action_policy,
-)
-from grande_alpha.data_readiness import load_audited_csv_dataset
-from grande_alpha.evidence import PromotionGate, PromotionReport, RandomControl, compare_configs
-from grande_alpha.execution import MARKET_HOURS_LABELS, ORDER_TYPE_LABELS, TIME_IN_FORCE_LABELS
-from grande_alpha.gate_guidance import gate_detail, promotion_overview
-from grande_alpha.historical import (
+from grande_alpha.application.gate_guidance import gate_detail, promotion_overview
+from grande_alpha.data.data_readiness import load_audited_csv_dataset
+from grande_alpha.domain.execution_profile import MARKET_HOURS_LABELS, ORDER_TYPE_LABELS, TIME_IN_FORCE_LABELS
+from grande_alpha.persistence.store import AuditStore
+from grande_alpha.research.evidence import PromotionGate, PromotionReport, RandomControl, compare_configs
+from grande_alpha.research.historical import (
     HistoricalBundle,
     HistoricalDataProvider,
     deterministic_demo,
     full_history_calendar_days,
     load_csv_history,
 )
-from grande_alpha.research_service import run_evidence_lab
-from grande_alpha.sandbox import (
+from grande_alpha.research.research_service import run_evidence_lab
+from grande_alpha.research.sandbox import (
     SandboxConfig,
     SandboxReplayEngine,
     SandboxResult,
     load_sandbox_config,
     save_sandbox_config,
 )
-from grande_alpha.storage import AuditStore
-from grande_alpha.strategy import STRATEGY_NAMES
+from grande_alpha.strategy.action_lab import (
+    ALL_PAIR_ACTIONS,
+    OfflineTrainingConfig,
+    evaluate_daily_benchmarks,
+    train_offline_action_policy,
+)
+from grande_alpha.strategy.core import STRATEGY_NAMES
 from grande_alpha.ui.glossary import (
     add_explained_row,
     apply_help,

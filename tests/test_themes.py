@@ -7,9 +7,9 @@ from PySide6.QtCore import QSettings
 from PySide6.QtWidgets import QApplication, QTableWidgetItem
 
 from fake_broker import DisabledBroker
-from grande_alpha.config import AppConfig
-from grande_alpha.controller import TradingController
-from grande_alpha.storage import AuditStore
+from grande_alpha.configuration.config import AppConfig
+from grande_alpha.desktop.controller import TradingController
+from grande_alpha.persistence.store import AuditStore
 from grande_alpha.ui import main_window, themes
 from grande_alpha.ui.main_window import MainWindow
 from grande_alpha.ui.settings_dialog import SettingsDialog

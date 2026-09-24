@@ -18,6 +18,9 @@ $IconPng = Join-Path $ProjectRoot 'scripts\assets\app-icon.png'
     --icon $IconIco --add-data "${IconPng};grande_alpha/assets" `
     --collect-all keyring `
     --collect-data rfc3987_syntax `
+    --exclude-module pyqtgraph --exclude-module matplotlib `
+    --exclude-module IPython --exclude-module pytest --exclude-module black `
+    --exclude-module nbformat --exclude-module tkinter `
     --hidden-import mcp.client.auth.oauth2 --hidden-import mcp.client.streamable_http `
     --hidden-import mcp.shared.auth `
     (Join-Path $ProjectRoot 'scripts\app.py')

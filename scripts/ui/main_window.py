@@ -31,19 +31,19 @@ from PySide6.QtWidgets import (
 )
 
 from grande_alpha import __version__
-from grande_alpha.activation_guidance import activation_guidance
-from grande_alpha.config import AppConfig, save_config
-from grande_alpha.controller import ShadowRecoveryRequired, TradingController, TradingSnapshot
-from grande_alpha.models import (
+from grande_alpha.application.activation_guidance import activation_guidance
+from grande_alpha.configuration.config import AppConfig, save_config
+from grande_alpha.configuration.privacy import export_diagnostics
+from grande_alpha.desktop.controller import ShadowRecoveryRequired, TradingController, TradingSnapshot
+from grande_alpha.domain.models import (
     LiveGrant,
     OrderConfirmationDecision,
     OrderConfirmationRequest,
     Regime,
     utc_now,
 )
-from grande_alpha.privacy import export_diagnostics
-from grande_alpha.strategy import STRATEGY_NAMES
-from grande_alpha.terminology import term_help
+from grande_alpha.domain.terminology import term_help
+from grande_alpha.strategy.core import STRATEGY_NAMES
 from grande_alpha.ui.activation_widget import ActivationChecklistWidget
 from grande_alpha.ui.agent_widget import AgentWidget
 from grande_alpha.ui.dialogs import (
@@ -158,6 +158,10 @@ class MainWindow(QMainWindow):
         self.reconcile_timer = QTimer(self)
         self.reconcile_timer.setInterval(int(config.reconcile_seconds * 1000))
         self.reconcile_timer.timeout.connect(self._schedule_reconcile)
+        self.research_mcp_timer = QTimer(self)
+        self.research_mcp_timer.setInterval(250)
+        self.research_mcp_timer.timeout.connect(controller.poll_agent_mcp)
+        self.research_mcp_timer.start()
 
     def _apply_theme_widgets(self) -> None:
         dark = current_theme() == "dark"
@@ -1800,6 +1804,7 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event: QCloseEvent) -> None:
         if self._closing_after_cleanup:
             self.agent_widget.shutdown()
+            self.research_mcp_timer.stop()
             self.timer.stop()
             self.reconcile_timer.stop()
             if self._tray_icon is not None:
@@ -1816,6 +1821,7 @@ class MainWindow(QMainWindow):
             self.timer.stop()
             self.reconcile_timer.stop()
             self.agent_widget.shutdown()
+            self.research_mcp_timer.stop()
             self.controller.stop_for_exit()
             self._closing_after_cleanup = True
             if self._tray_icon is not None:

@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from grande_alpha.terminology import TERM_HELP
+from grande_alpha.domain.terminology import TERM_HELP
 from grande_alpha.ui.themes import set_widget_style
 
 TABLE_HEADER_HELP: dict[str, str] = {

@@ -3,9 +3,9 @@ from __future__ import annotations
 import pytest
 
 from crypto_fixtures import NOW, PAIR, PAIR_ID, QUOTE, SCHEMAS
-from grande_alpha.agent_models import AssetClass, Instrument
 from grande_alpha.broker.base import BrokerError
 from grande_alpha.broker.discovery import RobinhoodDiscovery
+from grande_alpha.research.agent_models import AssetClass, Instrument
 
 
 @pytest.mark.asyncio

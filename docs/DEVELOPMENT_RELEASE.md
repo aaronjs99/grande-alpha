@@ -22,6 +22,16 @@ and disconnected exit. Replay/accounting regression checks detect changes in str
 An offscreen Qt check is useful for narrow, portrait, and landscape layouts, but it is not a
 substitute for an installed Windows acceptance test.
 
+For the 0.18.0 integration, also verify the current-user worker's ownership and authentication,
+stop fencing, stalled/ambiguous operations, restart recovery, and explicit offline execution-store
+upgrade against disposable databases. Test that desktop and CLI agree on the same session without
+silently widening a reviewed scope. Separately exercise the research MCP with a real local stdio
+client: default-off access, fresh session on each opt-in, bounded queue, prompt snapshot,
+revocation/timeout, no account fields, and no broker-write tool. A fake-broker or local protocol
+pass is software evidence only. It is not provider-observed execution or installed-product
+acceptance. See the [architecture boundaries](ARCHITECTURE.md) and
+[research MCP guide](RESEARCH.md#agent-research-prompts-and-local-mcp).
+
 ## Packaging and distribution
 
 Build a clean wheel outside the checkout, install it in a disposable location, and exercise the
@@ -31,8 +41,9 @@ test output, local databases, or research datasets. A release also needs current
 links, a dependency and secret audit, and a check that all command examples still parse.
 
 Version information comes from `scripts/_version.py` through package metadata. A version bump is
-not proof of production readiness. The proposed breaking cleanup is `0.18.0` only after its
-integrated checks pass; `1.0.0` requires a stable public contract, provider-observed execution
+not proof of production readiness. The 0.18.0 source release records the modular cleanup and
+local verification; installed and provider-observed acceptance remain separate work.
+`1.0.0` requires a stable public contract, provider-observed execution
 and recovery results, signed/distributed artifacts, and support/compliance decisions. It does
 not certify profitability.
 

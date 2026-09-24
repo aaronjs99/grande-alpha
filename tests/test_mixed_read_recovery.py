@@ -2,7 +2,7 @@ from datetime import UTC, datetime, time
 
 import pytest
 
-import grande_alpha.mixed_engine as mixed_engine
+import grande_alpha.execution.mixed_engine as mixed_engine
 
 
 @pytest.mark.asyncio

@@ -10,15 +10,14 @@ import pytest
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import QApplication
 
-import grande_alpha.controller as controller_module
-import grande_alpha.risk as risk_module
-import grande_alpha.storage as storage_module
+import grande_alpha.desktop.controller as controller_module
+import grande_alpha.execution.risk as risk_module
+import grande_alpha.persistence.store as storage_module
 import grande_alpha.ui.main_window as main_window_module
 from grande_alpha.broker.base import Broker, BrokerError
-from grande_alpha.config import AppConfig
-from grande_alpha.controller import TradingController
-from grande_alpha.historical import HistoricalBundle, ReplayFrame
-from grande_alpha.models import (
+from grande_alpha.configuration.config import AppConfig
+from grande_alpha.desktop.controller import TradingController
+from grande_alpha.domain.models import (
     Account,
     Bar,
     BrokerExecution,
@@ -34,8 +33,9 @@ from grande_alpha.models import (
     Regime,
     Signal,
 )
-from grande_alpha.sandbox import RuntimeObservationReplayEngine, SandboxConfig
-from grande_alpha.storage import AuditStore
+from grande_alpha.persistence.store import AuditStore
+from grande_alpha.research.historical import HistoricalBundle, ReplayFrame
+from grande_alpha.research.sandbox import RuntimeObservationReplayEngine, SandboxConfig
 from grande_alpha.ui.dialogs import OrderConfirmationDialog
 from grande_alpha.ui.main_window import MainWindow
 

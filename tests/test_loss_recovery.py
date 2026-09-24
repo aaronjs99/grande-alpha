@@ -4,10 +4,10 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from grande_alpha.equity_execution import EquityOrderIntent, EquityScope, assess_ticket
-from grande_alpha.loss_recovery import recovery_deadline
-from grande_alpha.models import Account, Portfolio, Position, Quote
-from grande_alpha.storage import AuditStore
+from grande_alpha.domain.loss_recovery import recovery_deadline
+from grande_alpha.domain.models import Account, Portfolio, Position, Quote
+from grande_alpha.execution.equity_execution import EquityOrderIntent, EquityScope, assess_ticket
+from grande_alpha.persistence.store import AuditStore
 
 
 def test_calendar_month_clamps_and_elapsed_hour_crosses_dst():

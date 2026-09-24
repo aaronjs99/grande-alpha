@@ -5,11 +5,11 @@ from datetime import UTC, datetime
 
 import pytest
 
-from grande_alpha.live_reconciliation import (
+from grande_alpha.domain.models import BrokerExecution, BrokerOrder, Position
+from grande_alpha.execution.live_reconciliation import (
     LiveSubmissionReconciliation,
     reconcile_execution,
 )
-from grande_alpha.models import BrokerExecution, BrokerOrder, Position
 
 NOW = datetime(2026, 8, 11, 15, 0, tzinfo=UTC)
 

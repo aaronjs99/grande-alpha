@@ -5,7 +5,7 @@ import json
 import httpx
 import pytest
 
-from grande_alpha.agent_analyst import OllamaAnalyst
+from grande_alpha.research.agent_analyst import OllamaAnalyst
 
 
 @pytest.mark.asyncio
@@ -21,6 +21,10 @@ async def test_optional_local_ai_uses_loopback_structured_output_without_credent
         assert body["stream"] is False
         assert body["format"]["additionalProperties"] is False
         assert "tools" not in body
+        user_message = json.loads(body["messages"][1]["content"])
+        assert user_message["research_brief"] == "Compare spread costs"
+        assert user_message["market_brief"] == "Stocks only"
+        assert user_message["observations"][0]["key"] == "equity:AAPL"
         return httpx.Response(
             200,
             json={
@@ -43,7 +47,8 @@ async def test_optional_local_ai_uses_loopback_structured_output_without_credent
         return real_client(**kwargs, transport=httpx.MockTransport(handle))
 
     monkeypatch.setattr(httpx, "AsyncClient", client)
-    result = await OllamaAnalyst().analyze("installed-model", [{"key": "equity:AAPL", "samples": 4}])
+    result = await OllamaAnalyst().analyze("installed-model", [{"key": "equity:AAPL", "samples": 4}],
+                                          research_brief="Compare spread costs", market_brief="Stocks only")
     assert result == {"equity:AAPL": ("hold", "Insufficient evidence")}
     assert len(requests) == 1
 

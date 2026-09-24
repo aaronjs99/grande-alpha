@@ -5,10 +5,10 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from grande_alpha.models import BrokerExecution, BrokerOrder, Quote, Regime, Signal
-from grande_alpha.sandbox import SandboxConfig
-from grande_alpha.shadow import LiveShadowEngine
-from grande_alpha.storage import AuditStore
+from grande_alpha.domain.models import BrokerExecution, BrokerOrder, Quote, Regime, Signal
+from grande_alpha.persistence.store import AuditStore
+from grande_alpha.research.sandbox import SandboxConfig
+from grande_alpha.strategy.shadow import LiveShadowEngine
 
 NOW = datetime(2026, 8, 11, 15, tzinfo=UTC)
 ACCOUNT = "loss-test-account"

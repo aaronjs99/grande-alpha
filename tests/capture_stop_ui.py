@@ -10,10 +10,10 @@ from pathlib import Path
 from PySide6.QtWidgets import QApplication
 
 from fake_broker import DisabledBroker
-from grande_alpha.config import AppConfig
-from grande_alpha.controller import TradingController
-from grande_alpha.models import Account, Portfolio
-from grande_alpha.storage import AuditStore
+from grande_alpha.configuration.config import AppConfig
+from grande_alpha.desktop.controller import TradingController
+from grande_alpha.domain.models import Account, Portfolio
+from grande_alpha.persistence.store import AuditStore
 from grande_alpha.ui.main_window import MainWindow
 
 ACCOUNT = Account("synthetic-0000", "Synthetic", "cash", True, "active")

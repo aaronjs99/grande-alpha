@@ -2,7 +2,11 @@
 
 These dated records describe earlier code, datasets, experiments, or interface captures. They are
 kept for provenance, not as current operating instructions or evidence of profitable live trading.
-Use the five current guides in the parent directory for the product as it exists today.
+Use the five current guides—[user](../USER_GUIDE.md),
+[configuration/CLI](../CONFIGURATION_CLI.md), [architecture](../ARCHITECTURE.md),
+[development/release](../DEVELOPMENT_RELEASE.md), and [research](../RESEARCH.md)—for the
+checkout as it exists today. The research guide includes the session-scoped MCP connection;
+the dated records below do not certify that integration or live execution.
 
 - [Baseline validation, 2026-08-09](BASELINE_VALIDATION_2026-08-09.md)
 - [Research upgrade, 2026-08-09](RESEARCH_UPGRADE_2026-08-09.md)

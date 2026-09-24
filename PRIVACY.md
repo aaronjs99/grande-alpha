@@ -17,11 +17,19 @@ Nothing is sent merely by launching the app or using deterministic/CSV research.
 - Starting **Agent · Stocks + Crypto** reads equity watchlists/saved scans and supported crypto
   quotes through the existing consented broker connection. Cycle observations and proposals are
   stored in local receipts. The workspace does not read positions across crypto accounts.
-- The separately optional **local Ollama analyst** sends symbols and numeric market observations
+- The separately optional **local Ollama analyst** sends research briefs, symbols, and numeric market observations
   to the loopback Ollama service only while an analysis run is active. GRANDE does not send account
   balances, account IDs, positions, or credentials to the model. Ollama's configuration controls
   further processing; use an installed local model for local inference. Stop the agent to revoke
   these requests. Neither broker nor model requests begin just by opening the Agent tab.
+- The optional **research MCP connection** shares research prompts, symbols, timestamped
+  numeric observations, worker status, and proposal labels with a compatible local AI client.
+  That client's provider may process data it receives. The bridge does not expose account
+  identifiers, balances, positions, orders, credentials, or broker-write tools. The client may
+  change research prompts/universes and start or stop analysis; it cannot grant trading authority.
+  Access starts off each app session and must be explicitly enabled again after revocation.
+  Already shared data cannot be recalled. Applied prompts appear in local research receipts;
+  do not include secrets. See [research MCP controls](docs/RESEARCH.md#agent-research-prompts-and-local-mcp).
 - Opening external documentation uses the system browser and is governed by the destination's privacy policy.
 
 ## Diagnostics

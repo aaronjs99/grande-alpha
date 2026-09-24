@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import re
+from importlib import import_module
 
-import pyqtgraph as pg
 from PySide6.QtCore import QSettings, Qt
 from PySide6.QtGui import QBrush, QColor, QPalette, QPen
 from PySide6.QtWidgets import QApplication, QTableWidget
@@ -115,6 +115,9 @@ def apply_application_theme(theme):
 
 
 def theme_plot(plot):
+    # Plotting belongs to the optional legacy research screens, not the
+    # worker control panel or its packaged startup dependency graph.
+    pg = import_module("pyqtgraph")
     plot.setBackground(color("#0e1720"))
     for name in ("left", "right", "top", "bottom"):
         axis = plot.getAxis(name)

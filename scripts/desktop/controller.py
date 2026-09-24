@@ -1,0 +1,3795 @@
+from __future__ import annotations
+
+import asyncio
+import hashlib
+import math
+import uuid
+from collections import deque
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, field, replace
+from datetime import datetime, timedelta
+from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal
+from typing import Any
+
+from grande_alpha.application.agent_execution import AgentExecutor
+from grande_alpha.broker.base import (
+    Broker,
+    BrokerError,
+    ReadOnlyBroker,
+    normalized_order_state,
+    order_is_terminal,
+)
+from grande_alpha.configuration.config import AppConfig
+from grande_alpha.domain.events import EventHook
+from grande_alpha.domain.execution_profile import ExecutionProfile, execution_profile
+from grande_alpha.domain.models import (
+    Account,
+    BrokerOrder,
+    LiveGrant,
+    OrderConfirmationDecision,
+    OrderConfirmationRequest,
+    OrderIntent,
+    OrderReview,
+    Portfolio,
+    Position,
+    Quote,
+    Regime,
+    utc_now,
+)
+from grande_alpha.domain.models import (
+    Signal as TradeSignal,
+)
+from grande_alpha.domain.policy import (
+    EASTERN,
+    DecisionPolicy,
+    PolicyConfig,
+    PolicyPosition,
+    market_session_allowed,
+    session_key,
+)
+from grande_alpha.execution.candidate_execution import (
+    CandidateExecutionContract,
+    annualized_volatility,
+    contract_from_app_and_sandbox,
+    contract_from_config,
+    decision_due,
+    held_minutes,
+    runtime_parity_assessment,
+    size_entry,
+)
+from grande_alpha.execution.live_reconciliation import (
+    LiveSubmissionReconciliation,
+    reconcile_execution,
+)
+from grande_alpha.execution.risk import RiskEngine
+from grande_alpha.persistence.agent_ledger import AgentBudget
+from grande_alpha.persistence.store import EXACT_QUOTE_VALIDATOR_VERSION, AuditStore
+from grande_alpha.research.agent_bridge import AgentBridge
+from grande_alpha.research.agent_models import AgentSettings
+from grande_alpha.research.agent_runtime import AgentRuntime
+from grande_alpha.research.evidence import strategy_fingerprint
+from grande_alpha.research.sandbox import load_sandbox_config
+from grande_alpha.strategy.action_lab import (
+    ALL_PAIR_ACTIONS,
+    PairAction,
+    TradeCommand,
+    live_feasible_action_ids,
+    pair_action_for_target,
+)
+from grande_alpha.strategy.core import BarBuilder, StrategyConfig, build_strategy
+from grande_alpha.strategy.shadow import LiveShadowEngine, shadow_checkpoint_requires_continuity
+
+MAX_REVIEW_PRICE_DRIFT_BPS = 25.0
+AUTHORITY_MODE_EVIDENCE = "evidence_gated"
+AUTHORITY_MODE_SUPERVISED_EXPERIMENTAL = "supervised_experimental"
+SUPERVISED_MAX_ORDER_NOTIONAL = 10.0
+SUPERVISED_MAX_DAILY_NOTIONAL = 50.0
+SUPERVISED_MAX_TOTAL_EXPOSURE = 40.0
+DISCONNECT_TRUTH_TIMEOUT_SECONDS = 15.0
+BROKER_DISCONNECT_TIMEOUT_SECONDS = 8.0
+OrderConfirmer = Callable[[OrderConfirmationRequest], Awaitable[OrderConfirmationDecision]]
+
+
+class ShadowRecoveryRequired(RuntimeError):
+    def __init__(self, run_id: str, reason: str):
+        self.run_id = run_id
+        super().__init__(f"The previous simulation cannot resume: {reason}")
+
+
+def _runtime_strategy_config(config: AppConfig) -> StrategyConfig:
+    return StrategyConfig(
+        strategy_name=config.strategy_name,
+        warmup_bars=config.warmup_bars,
+        fast_ema=config.fast_ema,
+        slow_ema=config.slow_ema,
+        trend_threshold_bps=config.trend_threshold_bps,
+        momentum_bars=config.momentum_bars,
+    )
+
+
+@dataclass
+class TradingSnapshot:
+    connected: bool = False
+    account: Account | None = None
+    portfolio: Portfolio | None = None
+    quotes: dict[str, Quote] = field(default_factory=dict)
+    positions: list[Position] = field(default_factory=list)
+    orders: list[BrokerOrder] = field(default_factory=list)
+    signal: TradeSignal = field(default_factory=lambda: TradeSignal(Regime.FLAT, 0.0, "Not connected"))
+    strategy_running: bool = False
+    live_status: str = "LOCKED"
+    session_expires_at: datetime | None = None
+    drawdown: float = 0.0
+    trades_today: int = 0
+    last_refresh: datetime | None = None
+    last_reconcile_at: datetime | None = None
+    shadow_running: bool = False
+    shadow_equity: float = 0.0
+    shadow_pnl: float = 0.0
+    shadow_position: str | None = None
+    shadow_fills: int = 0
+    pair_action_id: int = 4
+    pair_action_label: str = "(0,0)"
+    last_analysis_at: datetime | None = None
+    last_trade_decision_at: datetime | None = None
+    agent_budget: dict | None = None
+    agent_recovery_status: str = "No managed stock/crypto orders recorded"
+
+
+@dataclass(frozen=True)
+class CancelOrderTarget:
+    order_id: str
+    ref_id: str
+    placed_agent: str
+    symbol: str
+    side: str
+    quantity: float | None
+    dollar_amount: float | None
+    order_type: str
+    market_hours: str
+    time_in_force: str
+    limit_price: float | None
+    created_at: datetime | None
+    reviewed_state: str
+
+    @property
+    def summary(self) -> str:
+        amount = self.quantity if self.quantity is not None else self.dollar_amount
+        unit = "shares" if self.quantity is not None else "dollars"
+        return (
+            f"{self.order_id} • {self.side.upper()} {self.symbol} • "
+            f"{amount:g} {unit} • {self.reviewed_state} • ref {self.ref_id}"
+        )
+
+
+@dataclass(frozen=True)
+class CancelPlan:
+    account_number: str
+    targets: tuple[CancelOrderTarget, ...]
+    unrelated_order_ids: tuple[str, ...]
+    created_at: datetime
+    token: str
+
+    @property
+    def order_ids(self) -> tuple[str, ...]:
+        return tuple(target.order_id for target in self.targets)
+
+    @property
+    def order_summaries(self) -> tuple[str, ...]:
+        return tuple(target.summary for target in self.targets)
+
+
+class TradingController:
+    def __init__(
+        self,
+        broker: Broker,
+        config: AppConfig,
+        store: AuditStore,
+        *,
+        order_confirmer: OrderConfirmer | None = None,
+    ) -> None:
+        config.validate_cadence()
+        self.snapshot_changed: EventHook[TradingSnapshot] = EventHook()
+        self.event: EventHook[tuple[str, str]] = EventHook()
+        self.connection_busy: EventHook[bool] = EventHook()
+        self.agent_changed: EventHook[object] = EventHook()
+        self.agent_mcp_changed: EventHook[bool] = EventHook()
+        self.agent_settings_changed: EventHook[None] = EventHook()
+        self.broker = broker
+        self.config = config
+        self.store = store
+        # Default-deny authorizer: budgets and recovered journal entries do not
+        # inherit the original ETF grant or create new live authority.
+        self.agent_executor = AgentExecutor(broker, store.agent_ledger)
+        self.risk = RiskEngine(config.no_trade_open_minutes, config.no_trade_close_minutes)
+        self._standing = None
+        self.strategy = build_strategy(_runtime_strategy_config(config))
+        self.bar_builder = BarBuilder("QQQ", config.bar_seconds)
+        self.policy = DecisionPolicy(
+            PolicyConfig(
+                hard_stop_pct=config.hard_stop_pct,
+                take_profit_pct=config.take_profit_pct,
+                max_hold_minutes=config.max_hold_minutes,
+                no_trade_open_minutes=config.no_trade_open_minutes,
+                no_trade_close_minutes=config.no_trade_close_minutes,
+                market_hours=config.market_hours,
+            )
+        )
+        self.snapshot = TradingSnapshot()
+        self._quote_lock = asyncio.Lock()
+        self._reconcile_lock = asyncio.Lock()
+        self._safe_read_only_refresh_lock = asyncio.Lock()
+        self._order_submission_lock = asyncio.Lock()
+        self._order_confirmer = order_confirmer
+        self._authority_mode: str | None = None
+        self._last_qqq_timestamp: datetime | None = None
+        self._quote_stream_id = str(uuid.uuid4())
+        self._last_submission_at: datetime | None = None
+        self._submission_reconcile_required: dict[str, str | None] = {}
+        self._uncertain_submission_refs: set[str] = set()
+        self._live_submissions: dict[str, LiveSubmissionReconciliation] = {}
+        self._confirmed_entry_order_ids: set[str] = set()
+        self._prior_entry_upper_bound = 0
+        self._execution_provenance_gaps: set[str] = set()
+        self._cleanup_unresolved = False
+        self._cancel_plans: dict[str, CancelPlan] = {}
+        self._analysis_sequence = 0
+        self._last_trade_decision_sequence = 0
+        self._recent_returns = {"TQQQ": deque(maxlen=30), "SQQQ": deque(maxlen=30)}
+        self._previous_prices: dict[str, float] = {}
+        self._shadow: LiveShadowEngine | None = None
+        self._shadow_checkpoint_sequence = 0
+        self._shadow_checkpoint_digest: str | None = None
+        self._shadow_session_key: str | None = None
+        self._shadow_account_fingerprint: str | None = None
+        self._shadow_strategy_fingerprint: str | None = None
+        self.agent = AgentRuntime(
+            equity_quotes=broker.get_quotes,
+            crypto_pairs=broker.discover_crypto,
+            crypto_quotes=self._agent_crypto_quotes,
+            equity_scan=broker.discover_equities,
+            connected=lambda: bool(
+                self.config.broker_connection_enabled
+                and self.snapshot.connected
+            ),
+            changed=self.agent_changed.emit,
+            log=self.log,
+            crypto_account_type=lambda: self.snapshot.account.brokerage_account_type if self.snapshot.account else "",
+        )
+        self.agent_bridge = AgentBridge(store.path.parent / "agent-mcp.db")
+
+    def set_agent_mcp_enabled(self, enabled: bool) -> None:
+        """Grant or revoke one local research connection for this desktop session."""
+        if enabled:
+            if not self.config.broker_connection_enabled or not self.snapshot.connected:
+                raise RuntimeError("Connect the consented broker before enabling research MCP")
+            if self.agent_bridge.session:
+                return
+            self.agent_bridge.enable()
+        else:
+            self.agent_bridge.disable()
+        self.agent_mcp_changed.emit(enabled)
+
+    def stop_agent(self, reason: str = "Agent stopped") -> None:
+        """Revoke research-client restart access before stopping both researchers."""
+        self.set_agent_mcp_enabled(False)
+        self.agent.stop(reason)
+
+    def set_agent_brief(self, market: str, brief: str) -> None:
+        self.agent.set_brief(market, brief)
+        self.agent_settings_changed.emit()
+
+    def poll_agent_mcp(self) -> None:
+        """Run bounded research commands in the desktop owner process."""
+        if not self.agent_bridge.session:
+            return
+        try:
+            if not self.config.broker_connection_enabled or not self.snapshot.connected:
+                self.set_agent_mcp_enabled(False)
+                return
+            self.agent_bridge.poll(self._agent_mcp_command)
+        except Exception:
+            self.set_agent_mcp_enabled(False)
+            self.event.emit("warning", "Research MCP connection stopped; enable it again to reconnect")
+
+    def _agent_mcp_command(self, command: str, payload: dict) -> dict:
+        if not self.agent_bridge.session or not self.snapshot.connected:
+            raise RuntimeError("Research MCP is not enabled")
+        fields = {"context": set(), "start": set(), "stop": set(),
+                  "brief": {"market", "brief"}, "universe": {"equity_symbols", "crypto_symbols"}}
+        if command not in fields or set(payload) != fields[command]:
+            raise ValueError("Invalid research command fields")
+        if command == "brief":
+            self.set_agent_brief(payload["market"], payload["brief"])
+            return {"status": "Prompt saved for the next cycle; no trading authority changed"}
+        if command == "universe":
+            if self.agent.snapshot.running:
+                raise ValueError("Stop research before changing its universe")
+            if any(not isinstance(value, list) or any(not isinstance(s, str) for s in value)
+                   for value in payload.values()):
+                raise ValueError("Research symbols must be lists of strings")
+            settings = replace(self.agent.settings, **{key: tuple(value) for key, value in payload.items()}, scan_id="")
+            settings.validate()
+            self.agent.settings = settings
+            self.agent_settings_changed.emit()
+            return {"status": "Research universe saved; no broker settings changed"}
+        if command == "start":
+            self.start_agent(self.agent.settings)
+            return {"status": "Research workers started; no orders authorized"}
+        if command == "stop":
+            self.agent.stop("Research workers stopped from MCP")
+            return {"status": "Research stopped; MCP remains enabled; orders and positions unchanged"}
+        snapshot = self.agent.snapshot
+        observations = []
+        if self.config.broker_connection_enabled:
+            for item in snapshot.decisions:
+                quote = item.quote
+                try:
+                    if quote is None:
+                        continue
+                    quote.validate()
+                    numbers = (quote.bid, quote.ask, quote.spread_bps, item.change_bps or 0)
+                    if not all(math.isfinite(n) for n in numbers):
+                        continue
+                    observations.append({
+                        "key": item.instrument.key, "bid": quote.bid, "ask": quote.ask,
+                        "spread_bps": quote.spread_bps, "quote_at": quote.timestamp.isoformat(),
+                        "age_seconds": quote.age_seconds(utc_now()), "samples": item.samples,
+                        "change_bps": item.change_bps, "proposal": item.action,
+                        "data_checks": item.risk_status,
+                    })
+                except (ValueError, TypeError, OverflowError):
+                    continue
+        settings = self.agent.settings
+        return {
+            "mode": "research_only", "orders_available": False,
+            "running": snapshot.running, "cycle": snapshot.cycle, "phase": snapshot.phase,
+            "workers": snapshot.worker_status,
+            "observed_at": snapshot.observed_at.isoformat() if snapshot.observed_at else None,
+            "briefs": {"team": settings.research_brief, "equity": settings.equity_brief, "crypto": settings.crypto_brief},
+            "local_ai_enabled": settings.local_ai_enabled,
+            "prompt_effect": "Local AI uses briefs next cycle" if settings.local_ai_enabled
+            else "Rules are unchanged; briefs are context for the connected AI client",
+            "universe": {"equity": settings.equity_symbols, "crypto": settings.crypto_symbols},
+            "observations": observations,
+        }
+
+    def start_agent(self, settings: AgentSettings) -> None:
+        self.agent.start(settings)
+
+    async def _agent_crypto_quotes(self, instruments):
+        account = self.snapshot.account
+        if not account or not account.rhs_account_number or not account.rhc_account_number:
+            raise BrokerError("The selected Agentic account has no verified linked crypto account")
+        return await self.broker.get_crypto_quotes(instruments, rhs_account_number=account.rhs_account_number)
+
+    def save_agent_budget(self, budget: AgentBudget) -> None:
+        if not self.snapshot.connected or self.snapshot.account is None:
+            raise RuntimeError("Connect the selected Agentic account before saving its budget")
+        account = self.snapshot.account.account_number
+        self.store.agent_ledger.save_budget(account, budget)
+        self.snapshot.agent_budget = self.agent_executor.status_payload(account)
+        self.log("Stock/crypto cash limits saved; no trading authority granted", category="agent_budget")
+        self.snapshot_changed.emit(self.snapshot)
+
+    async def _recover_agent_execution(self) -> None:
+        if self.snapshot.account is None:
+            return
+        account = self.snapshot.account.account_number
+        try:
+            status = self.store.agent_ledger.status(account)
+            recorded = self.store.agent_ledger.records(account)
+            needs_recovery = status.block_reason not in ("", "Trading budget is not configured", "Cumulative realized loss budget reached")
+            if status.pending_orders or status.has_inventory or (recorded and needs_recovery):
+                await self.agent_executor.recover(account)
+                status = self.store.agent_ledger.status(account)
+                self.snapshot.agent_recovery_status = (
+                    f"{status.unresolved_orders} order outcome(s) unresolved; no retries"
+                    if status.unresolved_orders else "Managed orders and inventory reconciled"
+                )
+            else:
+                self.snapshot.agent_recovery_status = "No pending managed stock/crypto orders"
+        except Exception as exc:
+            message = f"Recovery blocked: {exc}"
+            if message != self.snapshot.agent_recovery_status:
+                self.log(message, "error", "agent_recovery")
+            self.snapshot.agent_recovery_status = message
+        self.snapshot.agent_budget = self.agent_executor.status_payload(account)
+
+    def _assert_agent_route_clear(self) -> None:
+        if self.snapshot.account is None:
+            return
+        status = self.store.agent_ledger.status(self.snapshot.account.account_number)
+        if status.pending_orders or status.has_inventory or status.block_reason not in ("", "Trading budget is not configured"):
+            raise RuntimeError("Managed stock/crypto commitments or recovery blocks must be resolved before using the separate ETF route")
+
+    def set_order_confirmer(self, confirmer: OrderConfirmer | None) -> None:
+        """Install the non-persistent UI callback used for each reviewed real-money order."""
+
+        if (
+            self._order_confirmer is not None
+            and self._order_confirmer is not confirmer
+            and (self.risk.grant is not None or self.snapshot.strategy_running)
+        ):
+            raise RuntimeError("Per-order confirmation handling cannot change during a live session")
+        self._order_confirmer = confirmer
+
+    @property
+    def authority_mode(self) -> str | None:
+        return self._authority_mode
+
+    @property
+    def order_confirmation_available(self) -> bool:
+        return self._order_confirmer is not None
+
+    def _require_order_runtime(self, action: str) -> None:
+        if self._safe_read_only_refresh_lock.locked():
+            raise RuntimeError(
+                f"Safe read-only refresh is in progress; wait before attempting to {action}"
+            )
+
+    def _rotate_quote_stream(self) -> None:
+        """Start a new durable identity for one causal signal-pipeline segment."""
+
+        self._quote_stream_id = str(uuid.uuid4())
+
+    def _reset_signal_pipeline(self, reason: str) -> None:
+        self._rotate_quote_stream()
+        self.strategy = build_strategy(_runtime_strategy_config(self.config))
+        self.bar_builder = BarBuilder("QQQ", self.config.bar_seconds)
+        self._last_qqq_timestamp = None
+        self._analysis_sequence = 0
+        self._last_trade_decision_sequence = 0
+        self.snapshot.signal = TradeSignal(Regime.FLAT, 0.0, reason)
+        self.snapshot.last_analysis_at = None
+        self._recent_returns = {"TQQQ": deque(maxlen=30), "SQQQ": deque(maxlen=30)}
+        self._previous_prices.clear()
+
+    def _runtime_candidate_config(self, config: AppConfig | None = None):
+        """Bind the saved research candidate to every runtime-owned behavior field."""
+
+        active = config or self.config
+        return replace(
+            load_sandbox_config(),
+            strategy_name=active.strategy_name,
+            warmup_bars=active.warmup_bars,
+            fast_ema=active.fast_ema,
+            slow_ema=active.slow_ema,
+            trend_threshold_bps=active.trend_threshold_bps,
+            momentum_bars=active.momentum_bars,
+            hard_stop_pct=active.hard_stop_pct,
+            take_profit_pct=active.take_profit_pct,
+            max_hold_minutes=active.max_hold_minutes,
+            no_trade_open_minutes=active.no_trade_open_minutes,
+            no_trade_close_minutes=active.no_trade_close_minutes,
+            decision_stride=active.trade_every_bars,
+            market_hours=active.market_hours,
+            order_type=active.order_type,
+            time_in_force=active.time_in_force,
+            limit_offset_bps=active.limit_offset_bps,
+            settlement_model=active.settlement_model,
+        )
+
+    def runtime_execution_contract(self, config: AppConfig | None = None) -> CandidateExecutionContract:
+        active = config or self.config
+        candidate = self._runtime_candidate_config(active)
+        return contract_from_app_and_sandbox(active, candidate)
+
+    def current_strategy_fingerprint(
+        self,
+        grant: LiveGrant | None = None,
+        config: AppConfig | None = None,
+    ) -> str:
+        active = config or self.config
+        candidate = self._runtime_candidate_config(active)
+        return strategy_fingerprint(candidate, f"{active.bar_seconds}s", execution=grant)
+
+    def _update_risk_portfolio(self, portfolio: Portfolio) -> None:
+        """Commit the daily stop before any subsequent placement may use fresh balances."""
+        grant = self.risk.grant
+        if grant is None:
+            self.risk.update_portfolio(portfolio)
+            return
+        if utc_now().astimezone(EASTERN).date() != grant.starts_at.astimezone(EASTERN).date():
+            self._revoke_live_automation("Trading day changed; fresh authority is required")
+            self.risk.update_portfolio(portfolio)
+            return
+        try:
+            state = self.store.record_daily_risk(
+                grant.account_number, grant.starts_at.astimezone(EASTERN).date().isoformat(),
+                portfolio.total_value, grant.max_daily_loss, require_existing=True,
+            )
+        except Exception:
+            self._revoke_live_automation("Daily loss state could not be persisted; authority revoked")
+            raise
+        self.risk.update_portfolio(portfolio)
+        self.risk.session_peak_value = float(state["peak_value"])
+        self.risk.loss_latched = self.risk.loss_latched or bool(state["loss_latched"])
+
+    def _persist_risk_receipts(self) -> None:
+        for receipt in self.risk.drain_receipts():
+            payload = receipt.as_dict()
+            self.store.receipt(
+                "authority_action",
+                f"{receipt.action}: {receipt.reason}",
+                payload,
+                "warning" if receipt.action in {"authority_granted", "order_submitted"} else "info",
+            )
+
+    @staticmethod
+    def _nonterminal_orders(orders: list[BrokerOrder]) -> list[BrokerOrder]:
+        return [order for order in orders if not order_is_terminal(order)]
+
+    def _update_runtime_returns(self, quotes: dict[str, Quote]) -> None:
+        for symbol in ("TQQQ", "SQQQ"):
+            quote = quotes.get(symbol)
+            if quote is None:
+                continue
+            previous = self._previous_prices.get(symbol)
+            if previous is not None and previous > 0:
+                self._recent_returns[symbol].append(quote.mid / previous - 1.0)
+            self._previous_prices[symbol] = quote.mid
+
+    @staticmethod
+    def _order_ref_id(order: BrokerOrder) -> str:
+        for key in ("ref_id", "client_order_id", "client_id"):
+            value = order.raw.get(key)
+            if value:
+                return str(value)
+        return ""
+
+    def _reconcile_submission_tracking(
+        self,
+        orders: list[BrokerOrder],
+        positions: list[Position] | None = None,
+    ) -> None:
+        by_order_id = {order.order_id: order for order in orders if order.order_id}
+        by_ref_id = {
+            reference: order
+            for order in orders
+            if (reference := self._order_ref_id(order))
+        }
+        unresolved = []
+        reconciled_positions = self.snapshot.positions if positions is None else positions
+        for ref_id, order_id in list(self._submission_reconcile_required.items()):
+            order = by_order_id.get(order_id or "") or by_ref_id.get(ref_id)
+            if order is None:
+                unresolved.append(ref_id)
+                continue
+            self.store.update_intent(ref_id, order.order_id, normalized_order_state(order.state))
+            tracking = self._live_submissions.get(ref_id)
+            submitted_at = (
+                tracking.submitted_at
+                if tracking is not None
+                else self.store.intent_submission_started_at(ref_id)
+            )
+            if submitted_at is not None:
+                earliest_allowed = submitted_at - timedelta(seconds=5)
+                if order.created_at is None or order.created_at < earliest_allowed:
+                    raise BrokerError(
+                        "Broker order creation predates the durable placement invocation"
+                    )
+                if any(
+                    execution.timestamp < earliest_allowed for execution in order.executions
+                ):
+                    raise BrokerError(
+                        "Broker execution predates the durable placement invocation"
+                    )
+            if tracking is not None:
+                try:
+                    order.validate_execution_provenance(require_snapshot=bool(order.executions))
+                    execution = reconcile_execution(tracking, order, reconciled_positions)
+                except ValueError as exc:
+                    self.log(
+                        f"LIVE EXECUTION DEVIATION for {order.side.upper()} {order.symbol}: {exc}",
+                        "critical",
+                        "live_fill_reconciliation",
+                        {
+                            "ref_id": ref_id,
+                            "order_id": order.order_id,
+                            "broker_state": normalized_order_state(order.state),
+                            "authority_locked": True,
+                        },
+                    )
+                    raise BrokerError(str(exc)) from exc
+                if execution.incremental_quantity > 1e-9 or execution.status in {
+                    "awaiting_inventory",
+                    "filled",
+                    "no_fill",
+                }:
+                    self.log(
+                        f"Reconciled {execution.status.replace('_', ' ')} for "
+                        f"{order.side.upper()} {order.symbol}",
+                        "warning" if execution.status == "awaiting_inventory" else "info",
+                        "live_fill_reconciliation",
+                        {
+                            "ref_id": ref_id,
+                            "order_id": order.order_id,
+                            "broker_state": normalized_order_state(order.state),
+                            "cumulative_quantity": execution.cumulative_quantity,
+                            "incremental_quantity": execution.incremental_quantity,
+                            "cumulative_notional": execution.cumulative_notional,
+                            "incremental_notional": execution.incremental_notional,
+                            "average_price": execution.average_price,
+                            "conservative_clock": (
+                                execution.conservative_clock.isoformat()
+                                if execution.conservative_clock is not None
+                                else None
+                            ),
+                            "actual_fill_timestamp_available": bool(order.executions),
+                            "resolved": execution.resolved,
+                            "reason": execution.reason,
+                        },
+                    )
+                if (
+                    order.side.strip().lower() == "buy"
+                    and execution.cumulative_quantity > 1e-9
+                    and order.order_id not in self._confirmed_entry_order_ids
+                ):
+                    self._confirmed_entry_order_ids.add(order.order_id)
+                    self.log(
+                        f"Confirmed live entry #{len(self._confirmed_entry_order_ids)} "
+                        f"from broker inventory for {order.symbol}",
+                        category="live_entry_ledger",
+                        payload={
+                            "order_id": order.order_id,
+                            "ref_id": ref_id,
+                            "confirmed_entries_in_process": len(
+                                self._confirmed_entry_order_ids
+                            ),
+                            "conservative_session_entry_count": (
+                                self._prior_entry_upper_bound
+                                + len(self._confirmed_entry_order_ids)
+                            ),
+                            "durable_fill_timestamp_available": bool(order.executions),
+                        },
+                    )
+                if not execution.resolved:
+                    self._submission_reconcile_required[ref_id] = order.order_id
+                    continue
+            elif order_is_terminal(order) and (
+                self.risk.grant is not None or self.snapshot.strategy_running
+            ):
+                raise BrokerError(
+                    "A terminal tracked order lacks its in-process fill baseline; "
+                    "automatic continuation is locked"
+                )
+            if order_is_terminal(order):
+                self._submission_reconcile_required.pop(ref_id, None)
+                self._uncertain_submission_refs.discard(ref_id)
+                self._live_submissions.pop(ref_id, None)
+            else:
+                self._submission_reconcile_required[ref_id] = order.order_id
+        if unresolved:
+            self._cleanup_unresolved = True
+            joined = ", ".join(reference[:8] for reference in unresolved)
+            raise BrokerError(
+                "Broker reconciliation could not prove the outcome of placement reference(s) "
+                f"{joined}; automation remains locked and no retry is allowed"
+            )
+        self._cleanup_unresolved = False
+
+    def _persist_execution_truth(self, account_number: str, orders: list[BrokerOrder]) -> None:
+        gaps: set[str] = set()
+        for order in orders:
+            if order.symbol.strip().upper() not in {"TQQQ", "SQQQ"}:
+                continue
+            state = normalized_order_state(order.state)
+            requires_provenance = (
+                state in {"filled", "partially_filled"}
+                or bool(order.executions)
+                or bool(order.cumulative_quantity)
+            )
+            if requires_provenance and (
+                order.cumulative_quantity is None
+                or (float(order.cumulative_quantity) > 1e-9 and not order.executions)
+            ):
+                gaps.add(order.order_id or "missing-order-id")
+                continue
+            try:
+                order.validate_execution_provenance(require_snapshot=requires_provenance)
+                self.store.record_broker_order_executions(account_number, order)
+            except ValueError as exc:
+                raise BrokerError(
+                    f"Execution provenance is incomplete for order {order.order_id}: {exc}"
+                ) from exc
+        self._execution_provenance_gaps = gaps
+
+    def _validate_reconciled_live_state(self) -> None:
+        leveraged = self._leveraged_positions()
+        if len(leveraged) > 1:
+            raise BrokerError("Both TQQQ and SQQQ are held; autonomous execution is locked")
+        for position in leveraged:
+            if position.quantity < 0:
+                raise BrokerError(
+                    f"Negative {position.symbol.strip().upper()} inventory cannot be managed "
+                    "by long-only autonomous execution"
+                )
+            if position.sellable_quantity > position.quantity + 1e-9:
+                raise BrokerError(
+                    f"Broker sellable quantity exceeds held {position.symbol.strip().upper()} inventory"
+                )
+        tracked_ids = {
+            order_id for order_id in self._submission_reconcile_required.values() if order_id
+        }
+        tracked_refs = set(self._submission_reconcile_required)
+        external_open = [
+            order
+            for order in self._nonterminal_orders(self.snapshot.orders)
+            if order.order_id not in tracked_ids and self._order_ref_id(order) not in tracked_refs
+        ]
+        if external_open and (self.risk.grant is not None or self.snapshot.strategy_running):
+            raise BrokerError(
+                f"Found {len(external_open)} nonterminal Agentic order(s) outside this live session"
+            )
+
+    @staticmethod
+    def _validate_account_truth(
+        portfolio: Portfolio,
+        positions: list[Position],
+        orders: list[BrokerOrder],
+    ) -> None:
+        portfolio.validate()
+        for position in positions:
+            values = (position.quantity, position.sellable_quantity)
+            if not all(math.isfinite(float(value)) for value in values):
+                raise BrokerError(f"Broker returned non-finite position data for {position.symbol}")
+            if position.sellable_quantity < 0:
+                raise BrokerError(f"Broker returned negative sellable quantity for {position.symbol}")
+            if position.average_price is not None and not math.isfinite(float(position.average_price)):
+                raise BrokerError(f"Broker returned non-finite average price for {position.symbol}")
+        for order in orders:
+            if not order.order_id or not order.symbol or not order.side or not order.state:
+                raise BrokerError("Broker returned an order with incomplete identity or state")
+            for value in (order.quantity, order.dollar_amount, order.average_price):
+                if value is not None and not math.isfinite(float(value)):
+                    raise BrokerError(f"Broker returned non-finite order data for {order.order_id}")
+
+    def _validated_execution_quotes(
+        self,
+        quotes: dict[str, Quote],
+        reference: datetime | None = None,
+        *,
+        max_age_seconds: float | None = None,
+        context: str = "Live execution",
+    ) -> dict[str, Quote]:
+        required = {"QQQ", "TQQQ", "SQQQ"}
+        if set(quotes) != required:
+            missing = ", ".join(sorted(required - set(quotes))) or "none"
+            raise BrokerError(f"{context} requires exact QQQ/TQQQ/SQQQ quotes; missing {missing}")
+        observed = reference or utc_now()
+        age_limit = (
+            float(max_age_seconds)
+            if max_age_seconds is not None
+            else float(self.config.default_max_quote_age_seconds)
+        )
+        if not math.isfinite(age_limit) or age_limit <= 0:
+            raise BrokerError(f"{context} quote-age limit is invalid")
+        book_timestamps: list[datetime] = []
+        for symbol in sorted(required):
+            quote = quotes[symbol]
+            quote.validate()
+            if quote.symbol != symbol:
+                raise BrokerError(f"{context} quote key/symbol mismatch for {symbol}")
+            if quote.bid_timestamp is None or quote.ask_timestamp is None:
+                raise BrokerError(f"{context} {symbol} lacks exact bid/ask venue clocks")
+            for side, timestamp in (
+                ("bid", quote.bid_timestamp),
+                ("ask", quote.ask_timestamp),
+            ):
+                age = (observed - timestamp).total_seconds()
+                if age < -2.0 or age > age_limit:
+                    raise BrokerError(
+                        f"{context} {symbol} venue {side} is not fresh ({age:.1f}s; "
+                        f"limit {age_limit:.1f}s)"
+                    )
+                book_timestamps.append(timestamp)
+        skew = (max(book_timestamps) - min(book_timestamps)).total_seconds()
+        skew_limit = min(5.0, age_limit)
+        if skew > skew_limit:
+            raise BrokerError(
+                f"{context} quote timestamps are misaligned by {skew:.1f}s; "
+                f"limit {skew_limit:.1f}s"
+            )
+        return quotes
+
+    def _emit(self) -> None:
+        self.snapshot.live_status = self.risk.session_status()
+        self.snapshot.drawdown = self.risk.drawdown
+        self.snapshot.trades_today = self.risk.trades_today
+        liquidation_in_progress = bool(
+            self.snapshot.live_status == "LOSS LIMIT"
+            and self.risk.grant is not None
+            and self._leveraged_positions()
+        )
+        self.snapshot.strategy_running = (
+            self.snapshot.strategy_running
+            and (self.snapshot.live_status == "LIVE" or liquidation_in_progress)
+        )
+        if self._shadow is not None:
+            state = self._shadow.state
+            self.snapshot.shadow_running = state.active
+            self.snapshot.shadow_equity = state.equity
+            self.snapshot.shadow_pnl = state.pnl
+            self.snapshot.shadow_position = state.position.symbol if state.position else None
+            self.snapshot.shadow_fills = len(state.fills)
+        self.snapshot_changed.emit(self.snapshot)
+
+    def log(
+        self, summary: str, severity: str = "info", category: str = "runtime", payload: Any = None
+    ) -> None:
+        self.store.receipt(category, summary, payload, severity)
+        self.event.emit(severity, summary)
+
+    async def connect(self) -> None:
+        if not self.config.broker_connection_enabled:
+            raise RuntimeError("Broker connections are disabled. Enable the capability in Settings first")
+        self.connection_busy.emit(True)
+        try:
+            await self.broker.connect()
+            accounts = await self.broker.get_accounts()
+            candidates = [
+                account
+                for account in accounts
+                if account.agentic_allowed and account.state.strip().lower() == "active"
+            ]
+            if not candidates:
+                raise BrokerError("No active Robinhood account is enabled for this agent")
+            if len(candidates) != 1:
+                raise BrokerError(
+                    "GRANDE Alpha requires exactly one active Agentic account; "
+                    f"provider returned {len(candidates)}"
+                )
+            account = candidates[0]
+            self.snapshot.account = account
+            self.snapshot.connected = True
+            durable_unresolved = self.store.unresolved_order_intents(account.account_number)
+            for row in durable_unresolved:
+                reference = str(row["ref_id"])
+                order_id = row.get("broker_order_id")
+                self._submission_reconcile_required[reference] = str(order_id) if order_id else None
+                self._uncertain_submission_refs.add(reference)
+            if durable_unresolved:
+                self.log(
+                    f"Recovered {len(durable_unresolved)} unresolved placement intent(s); "
+                    "new authority stays locked until broker reconciliation proves each outcome",
+                    "critical",
+                    "order_recovery",
+                    {"references": [str(row["ref_id"]) for row in durable_unresolved]},
+                )
+            self.log(
+                f"Connected to {account.nickname} {account.masked} ({account.account_type})",
+                category="connection",
+                payload={"last4": account.account_number[-4:], "type": account.account_type},
+            )
+            await self.refresh(evaluate=False)
+        except Exception as exc:
+            self._revoke_live_automation("Broker connection failed; local authority revoked")
+            self.snapshot = TradingSnapshot()
+            try:
+                await self.broker.disconnect()
+            except Exception as cleanup_exc:
+                self.log(
+                    f"Broker transport cleanup failed after connection error: {cleanup_exc}",
+                    "warning",
+                    "connection",
+                )
+            self.log(f"Connection failed: {exc}", "error", "connection")
+            raise
+        finally:
+            self.connection_busy.emit(False)
+            self._emit()
+
+    def stop_for_exit(self) -> None:
+        """Revoke local execution without asserting any broker order was canceled."""
+        self.stop_agent("Application exiting")
+        self._revoke_live_automation("Application exiting; broker orders are not canceled")
+        self.log(
+            "Local execution stopped for exit. Broker order status may be unknown; "
+            "check Robinhood directly. Durable order records are retained for reconciliation.",
+            "warning", "shutdown", {"broker_write_attempted": False},
+        )
+
+    async def disconnect(self) -> None:
+        self._stop_for_cancel("Disconnected by user")
+        if not self.snapshot.connected or self.snapshot.account is None:
+            await self.disconnect_without_order_cleanup()
+            return
+        if getattr(self.broker, "connected", None) is False:
+            self.log(
+                "Broker transport was already unavailable. Local execution is stopped; "
+                "order status is unverified and must be checked in Robinhood.",
+                "warning",
+                "connection",
+            )
+            await self.disconnect_without_order_cleanup(unverified=True)
+            return
+        account_number = self.snapshot.account.account_number
+        if self._has_recorded_order_activity(account_number):
+            try:
+                async with asyncio.timeout(DISCONNECT_TRUTH_TIMEOUT_SECONDS):
+                    async with self._reconcile_lock:
+                        orders = await self._read_cancel_truth_locked(account_number)
+                        owned_targets, _unrelated = self._cancel_scope(orders, account_number)
+            except Exception as exc:
+                detail = "order check timed out" if isinstance(exc, TimeoutError) else str(exc)
+                raise BrokerError(
+                    f"Disconnect cleanup could not be verified: {detail}. Local automation is stopped."
+                ) from exc
+            managed = self.store.agent_ledger.status(account_number)
+            if (owned_targets or self._submission_reconcile_required
+                    or managed.pending_orders or managed.unresolved_orders):
+                raise BrokerError(
+                    "GRANDE-owned open or unresolved orders remain. Use STOP + CANCEL to review "
+                    "them, or explicitly disconnect without cancellation and manage them in Robinhood."
+                )
+        await self.disconnect_without_order_cleanup()
+
+    def _has_recorded_order_activity(self, account_number: str) -> bool:
+        return bool(
+            self._submission_reconcile_required
+            or self.store.unresolved_order_intents(account_number)
+            or self.store.owned_broker_order_bindings(account_number)
+            or self.store.agent_ledger.records(account_number)
+        )
+
+    async def disconnect_without_order_cleanup(self, *, unverified: bool = False) -> None:
+        """Close transport without broker writes, retaining durable order ownership."""
+
+        self._stop_for_cancel("Local automation stopped for broker disconnect")
+        if unverified:
+            self._cleanup_unresolved = True
+            self.log(
+                "Disconnected without verified order cleanup; check orders and fills in Robinhood. "
+                "Durable order records remain; disconnect sent no cancellation.",
+                "warning", "connection",
+            )
+        await asyncio.wait_for(self.broker.disconnect(), BROKER_DISCONNECT_TIMEOUT_SECONDS)
+        self.snapshot = TradingSnapshot()
+        self._cancel_plans.clear()
+        self._emit()
+
+    def update_config(self, config: AppConfig) -> None:
+        """Apply safe runtime settings; a bar-size change starts a fresh warm-up."""
+        config.validate_cadence()
+        if not config.broker_connection_enabled:
+            self.stop_agent("Agent stopped because broker access was revoked")
+        config_changed = config != self.config
+        bar_changed = config.bar_seconds != self.config.bar_seconds
+        trade_cadence_changed = config.trade_every_bars != self.config.trade_every_bars
+        signal_changed = any(
+            getattr(config, name) != getattr(self.config, name)
+            for name in (
+                "strategy_name",
+                "warmup_bars",
+                "fast_ema",
+                "slow_ema",
+                "trend_threshold_bps",
+                "momentum_bars",
+            )
+        )
+        if config_changed and (self.risk.grant is not None or self.snapshot.strategy_running):
+            self._revoke_live_automation(
+                "Settings changed; the previous live certificate and session grant were revoked"
+            )
+        if config_changed and self._shadow is not None and self._shadow.state.active:
+            self.stop_shadow("Settings changed; the previous live-shadow run was stopped")
+        last_qqq_timestamp = self._last_qqq_timestamp
+        self.config = config
+        self.risk.no_trade_open_minutes = config.no_trade_open_minutes
+        self.risk.no_trade_close_minutes = config.no_trade_close_minutes
+        active_market_hours = (
+            self.risk.grant.market_hours if self.risk.grant is not None else config.market_hours
+        )
+        self.policy = self._policy_for_session(active_market_hours)
+        if bar_changed or signal_changed:
+            reset_reason = (
+                "Settings changed; CASH champion holds no position"
+                if config.strategy_name == "cash"
+                else "Settings changed; warming up"
+            )
+            self._reset_signal_pipeline(reset_reason)
+            # The new builder must not ingest the same provider observation again.
+            # Preserve only the duplicate guard; all partial-bar and strategy state
+            # was discarded by the atomic pipeline reset above.
+            self._last_qqq_timestamp = last_qqq_timestamp
+            self.log(
+                f"Runtime strategy changed/reset to {config.strategy_name}; "
+                f"{config.bar_seconds}s completed-bar pipeline reset",
+                "warning",
+                "cadence",
+            )
+        elif trade_cadence_changed:
+            self._last_trade_decision_sequence = self._analysis_sequence
+            self.log(
+                f"Trade decision cadence changed to every {config.trade_every_bars} analysis bars "
+                f"({config.trade_seconds}s nominal)",
+                "warning",
+                "cadence",
+            )
+
+    async def refresh(self, evaluate: bool = True) -> None:
+        """Compatibility full refresh used at connect and after manual actions."""
+        if not self.snapshot.connected or self.snapshot.account is None:
+            return
+        await self.reconcile()
+        await self.refresh_quotes(evaluate=evaluate)
+
+    async def safe_read_only_refresh(self) -> None:
+        """Atomically refresh readiness inputs through a broker-write-blocking facade.
+
+        Unlike the normal live refresh path, this inspection method never invokes live-state
+        cleanup. Any read, validation, or concurrent-authority failure is reported without review,
+        placement, or cancellation. Normal refresh retains its fail-closed cleanup behavior.
+        """
+
+        if not self.snapshot.connected or self.snapshot.account is None:
+            raise BrokerError("Safe checks require a connected Agentic account")
+        if self.risk.grant is not None or self.snapshot.strategy_running:
+            raise BrokerError("Safe checks require no live grant and a stopped strategy")
+        if self._safe_read_only_refresh_lock.locked():
+            raise BrokerError("A safe read-only refresh is already in progress")
+
+        async with self._safe_read_only_refresh_lock:
+            account_number = self.snapshot.account.account_number
+            read_only = ReadOnlyBroker(self.broker)
+
+            def require_inactive() -> None:
+                if self.risk.grant is not None or self.snapshot.strategy_running:
+                    raise BrokerError(
+                        "Safe checks stopped because live authority or the strategy became active"
+                    )
+
+            try:
+                require_inactive()
+                accounts = await read_only.get_accounts()
+                require_inactive()
+                active = [
+                    account
+                    for account in accounts
+                    if account.agentic_allowed and account.state.strip().lower() == "active"
+                ]
+                if len(active) != 1 or active[0].account_number != account_number:
+                    raise BrokerError(
+                        "Safe checks require the same exact single active Agentic account"
+                    )
+
+                # Sequential reads match the MCP adapter's single-flight contract. Values remain
+                # local until every read, validation, and concurrent-authority check succeeds.
+                portfolio = await read_only.get_portfolio(account_number)
+                require_inactive()
+                positions = await read_only.get_positions(account_number)
+                require_inactive()
+                orders = await read_only.get_orders(account_number)
+                require_inactive()
+                self._validate_account_truth(portfolio, positions, orders)
+                require_inactive()
+
+                # A safe check is also the restart/crash reconciliation boundary.
+                # Durable fill truth and intent state must be current before the
+                # account snapshot can become fresh enough for later authority.
+                self._persist_execution_truth(account_number, orders)
+                if self._execution_provenance_gaps:
+                    raise BrokerError(
+                        "Scoped filled order lacks exact provider execution provenance"
+                    )
+                self._reconcile_submission_tracking(orders, positions)
+                if self._submission_reconcile_required or self._uncertain_submission_refs:
+                    raise BrokerError(
+                        "A prior placement outcome remains unresolved after safe reconciliation"
+                    )
+                self.store.validate_execution_inventory(account_number, positions)
+                require_inactive()
+
+                now = utc_now()
+                self.snapshot.portfolio = portfolio
+                self.snapshot.positions = positions
+                self.snapshot.orders = orders
+                self.snapshot.last_reconcile_at = now
+                self.snapshot.last_refresh = now
+                # Market-data readiness is independent of account reconciliation.
+                # A closed market or failed quote source cannot erase valid account
+                # truth, and a successful account read cannot make quotes executable.
+                self.snapshot.quotes = {}
+                try:
+                    quotes = await read_only.get_quotes(["QQQ", "TQQQ", "SQQQ"])
+                    require_inactive()
+                    self.snapshot.quotes = quotes
+                    self._validated_execution_quotes(
+                        quotes,
+                        max_age_seconds=self.config.default_max_quote_age_seconds,
+                        context="Execution readiness",
+                    )
+                except Exception as quote_error:
+                    require_inactive()
+                    self.log(
+                        f"Account checks complete; execution quotes unavailable or stale: {quote_error}",
+                        "warning", "read_only_check",
+                        {"broker_write_attempted": False, "execution_quotes_ready": False},
+                    )
+                self.log(
+                    "Safe read-only activation checks completed; broker write methods remained blocked",
+                    category="read_only_check",
+                    payload={"broker_write_attempted": False, "account_last4": account_number[-4:]},
+                )
+            except Exception as exc:
+                # Never leave a prior timestamp looking like a successful current
+                # reconciliation after any provenance, inventory, or race failure.
+                self.snapshot.last_reconcile_at = None
+                self.snapshot.last_refresh = None
+                self.log(
+                    f"Safe read-only activation checks stopped: {exc}",
+                    "error",
+                    "read_only_check",
+                    {"broker_write_attempted": False},
+                )
+                raise
+            finally:
+                self._emit()
+
+    async def reconcile(self, *, strict: bool = False) -> None:
+        """Refresh slower account truth without coupling it to the quote clock."""
+        if not self.snapshot.connected or self.snapshot.account is None:
+            return
+        if self._reconcile_lock.locked():
+            return
+        async with self._reconcile_lock:
+            try:
+                # Keep these sequential. The MCP adapter intentionally serializes tool calls;
+                # enqueueing all three at once would starve a pending fast quote read behind
+                # the entire reconciliation batch.
+                account_number = self.snapshot.account.account_number
+                portfolio = await self.broker.get_portfolio(account_number)
+                positions = await self.broker.get_positions(account_number)
+                orders = await self.broker.get_orders(account_number)
+                self._validate_account_truth(portfolio, positions, orders)
+                self._persist_execution_truth(account_number, orders)
+                if (
+                    self.risk.grant is not None or self.snapshot.strategy_running
+                ) and self._execution_provenance_gaps:
+                    raise BrokerError("Scoped filled order lacks exact provider execution provenance")
+                self.snapshot.portfolio = portfolio
+                self.snapshot.positions = positions
+                self.snapshot.orders = orders
+                self.snapshot.last_reconcile_at = utc_now()
+                self._update_risk_portfolio(portfolio)
+                self._reconcile_submission_tracking(orders, positions)
+                if (
+                    (self.risk.grant is not None or self.snapshot.strategy_running)
+                    and not self._submission_reconcile_required
+                ):
+                    self.store.validate_execution_inventory(account_number, positions)
+                self._validate_reconciled_live_state()
+                await self._recover_agent_execution()
+                if (
+                    self.risk.session_status() == "LOSS LIMIT"
+                    and not self._leveraged_positions()
+                    and not self._submission_reconcile_required
+                ):
+                    self._revoke_live_automation(
+                        "Daily-loss liquidation is confirmed flat; session authority revoked"
+                    )
+            except Exception as exc:
+                self.snapshot.last_reconcile_at = None
+                self.log(f"Account reconciliation failed: {exc}", "error", "broker")
+                if self.snapshot.strategy_running or self.risk.grant is not None:
+                    self._revoke_live_automation(
+                        "Account reconciliation failed; authority revoked and open orders require cancellation"
+                    )
+                    self.log(
+                        "Strategy locked after account reconciliation failure; filled positions may remain open",
+                        "critical",
+                        "risk",
+                    )
+                if strict:
+                    raise
+            finally:
+                self._emit()
+
+    async def _refresh_exact_preplacement_truth(self) -> None:
+        """Serialize one indivisible post-review account/quote truth refresh.
+
+        Timer refreshes intentionally coalesce. A placement refresh cannot: it waits
+        for both locks, holds them in the same reconcile-then-quote order used here,
+        and does not release account truth while waiting for the quote read. This
+        keeps the account snapshot paired with the exact quote batch used for the
+        final authorization immediately before placement.
+        """
+
+        if self.snapshot.account is None:
+            raise BrokerError("Post-review refresh requires the bound Agentic account")
+        account_number = self.snapshot.account.account_number
+        async with self._reconcile_lock:
+            async with self._quote_lock:
+                try:
+                    portfolio = await self.broker.get_portfolio(account_number)
+                    positions = await self.broker.get_positions(account_number)
+                    orders = await self.broker.get_orders(account_number)
+                    self._validate_account_truth(portfolio, positions, orders)
+                    self._persist_execution_truth(account_number, orders)
+                    if self._execution_provenance_gaps:
+                        raise BrokerError(
+                            "Scoped filled order lacks exact provider execution provenance"
+                        )
+                    self.snapshot.portfolio = portfolio
+                    self.snapshot.positions = positions
+                    self.snapshot.orders = orders
+                    self._update_risk_portfolio(portfolio)
+                    self._reconcile_submission_tracking(orders, positions)
+                    if not self._submission_reconcile_required:
+                        self.store.validate_execution_inventory(account_number, positions)
+                    self._validate_reconciled_live_state()
+                    self.snapshot.last_reconcile_at = utc_now()
+
+                    quotes = await self.broker.get_quotes(["QQQ", "TQQQ", "SQQQ"])
+                    max_age = (
+                        self.risk.grant.max_quote_age_seconds
+                        if self.risk.grant is not None
+                        else self.config.default_max_quote_age_seconds
+                    )
+                    quotes = self._validated_execution_quotes(
+                        quotes,
+                        max_age_seconds=max_age,
+                        context="Post-review preplacement refresh",
+                    )
+                    self.snapshot.quotes = quotes
+                    self.snapshot.last_refresh = utc_now()
+                    self.store.record_quote_batch(
+                        quotes,
+                        stream_id=self._quote_stream_id,
+                        validation_profile="exact_execution_quotes",
+                        validation_version=EXACT_QUOTE_VALIDATOR_VERSION,
+                        max_age_seconds=float(max_age),
+                        max_skew_seconds=min(5.0, float(max_age)),
+                    )
+                except Exception:
+                    self.snapshot.last_reconcile_at = None
+                    self.snapshot.last_refresh = None
+                    raise
+
+    async def refresh_quotes(self, evaluate: bool = True, *, strict: bool = False) -> None:
+        """Read one batched quote snapshot; overlapping timer ticks are coalesced."""
+        if not self.snapshot.connected or self.snapshot.account is None:
+            return
+        if self._quote_lock.locked():
+            return
+        try:
+            async with self._quote_lock:
+                quotes = await self.broker.get_quotes(["QQQ", "TQQQ", "SQQQ"])
+                validation_profile = "passive_unvalidated"
+                validation_version = 0
+                validated_age_limit: float | None = None
+                if self.risk.grant is not None or self.snapshot.strategy_running:
+                    max_age = (
+                        self.risk.grant.max_quote_age_seconds
+                        if self.risk.grant is not None
+                        else self.config.default_max_quote_age_seconds
+                    )
+                    quotes = self._validated_execution_quotes(
+                        quotes,
+                        max_age_seconds=max_age,
+                        context=(
+                            "Supervised live execution"
+                            if self._authority_mode == AUTHORITY_MODE_SUPERVISED_EXPERIMENTAL
+                            else "Evidence-gated live execution"
+                        ),
+                    )
+                    validation_profile = "exact_execution_quotes"
+                    validation_version = EXACT_QUOTE_VALIDATOR_VERSION
+                    validated_age_limit = float(max_age)
+                self.snapshot.quotes = quotes
+                self.snapshot.last_refresh = utc_now()
+                self.store.record_quote_batch(
+                    quotes,
+                    stream_id=self._quote_stream_id,
+                    validation_profile=validation_profile,
+                    validation_version=validation_version,
+                    max_age_seconds=validated_age_limit,
+                    max_skew_seconds=(
+                        min(5.0, validated_age_limit)
+                        if validated_age_limit is not None
+                        else None
+                    ),
+                )
+                qqq = quotes.get("QQQ")
+                qqq_observed_at = (
+                    qqq.latest_book_timestamp
+                    if qqq is not None and validation_profile == "exact_execution_quotes"
+                    else (qqq.timestamp if qqq is not None else None)
+                )
+                if qqq and qqq_observed_at and (
+                    self._last_qqq_timestamp is None
+                    or qqq_observed_at > self._last_qqq_timestamp
+                ):
+                    self._last_qqq_timestamp = qqq_observed_at
+                    bar = self.bar_builder.update(replace(qqq, timestamp=qqq_observed_at))
+                    if bar is not None:
+                        self.store.record_bar(bar)
+                        signal = self.strategy.on_bar(bar)
+                        self._analysis_sequence += 1
+                        self.snapshot.signal = signal
+                        self.snapshot.last_analysis_at = signal.timestamp
+                        self.store.record_signal(signal)
+                        self._update_runtime_returns(quotes)
+                        self.log(f"Signal: {signal.regime.value} — {signal.reason}", category="signal")
+                        if self._shadow is not None and self._shadow.state.active:
+                            # This quote caused BarBuilder to emit the completed analysis bar,
+                            # so this accepted batch is the first causal quote/open of the
+                            # following bar. Timestamp the virtual decision at the latest exact
+                            # venue observation in the batch so a fill can never be recorded
+                            # before the target quote used to price it.
+                            causal_timestamp = max(
+                                quote.latest_book_timestamp
+                                for quote in quotes.values()
+                                if quote.latest_book_timestamp is not None
+                            )
+                            if causal_timestamp <= signal.timestamp:
+                                raise BrokerError(
+                                    "Shadow execution batch is not later than the completed analysis bar"
+                                )
+                            fills = self._shadow.on_causal_quote(causal_timestamp, signal, quotes)
+                            self._persist_shadow_checkpoint("fill" if fills else "advance")
+                            for fill in fills:
+                                self.log(
+                                    f"SHADOW {fill.side.upper()} {fill.quantity:.6f} {fill.symbol} "
+                                    f"at ${fill.price:.2f}",
+                                    "market",
+                                    "shadow_fill",
+                                    fill.as_dict(),
+                                )
+            # Live evaluation may perform a mandatory post-review quote read. Do
+            # not retain the quote lock across that placement pipeline.
+            if evaluate and self.snapshot.strategy_running:
+                await self._evaluate_and_trade()
+        except Exception as exc:
+            self.log(f"Quote refresh failed: {exc}", "error", "broker")
+            if self.snapshot.strategy_running or self.risk.grant is not None:
+                self._revoke_live_automation(
+                    "Fresh exact live quotes failed; authority revoked and open orders require cancellation"
+                )
+                self.log(
+                    "Strategy locked after quote refresh failure; filled positions may remain open",
+                    "critical",
+                    "risk",
+                )
+            if strict:
+                raise
+        finally:
+            self._emit()
+
+    def _validate_supervised_experimental_scope(self, grant: LiveGrant) -> None:
+        if self._order_confirmer is None:
+            raise RuntimeError(
+                "Supervised experimental authority requires an interactive per-order confirmation handler"
+            )
+        if grant.max_order_notional > SUPERVISED_MAX_ORDER_NOTIONAL:
+            raise RuntimeError(
+                f"Supervised experimental orders are capped at ${SUPERVISED_MAX_ORDER_NOTIONAL:.2f}"
+            )
+        if grant.max_daily_notional > SUPERVISED_MAX_DAILY_NOTIONAL:
+            raise RuntimeError(
+                "Supervised experimental gross daily notional is capped at "
+                f"${SUPERVISED_MAX_DAILY_NOTIONAL:.2f}"
+            )
+        if grant.max_total_exposure > SUPERVISED_MAX_TOTAL_EXPOSURE:
+            raise RuntimeError(
+                "Supervised experimental exposure is capped at "
+                f"${SUPERVISED_MAX_TOTAL_EXPOSURE:.2f}"
+            )
+        if (
+            grant.market_hours != "regular_hours"
+            or grant.order_type != "market"
+            or grant.time_in_force != "gfd"
+            or self.config.settlement_model != "cash_t1"
+        ):
+            raise RuntimeError(
+                "Supervised experimental mode is restricted to regular-hours market/GFD "
+                "orders under the cash-T+1 model"
+            )
+
+    def authorize_live(self, grant: LiveGrant) -> None:
+        """Authorize the original evidence-gated path without weakening its gate."""
+
+        self._authorize_live(grant, authority_mode=AUTHORITY_MODE_EVIDENCE)
+
+    def authorize_standing(self, grant: LiveGrant, terms: dict) -> None:
+        """Evidence-gated delegation explicitly distinct from attended ticket approval."""
+        from grande_alpha.execution.standing import StandingAuthority, validate_contract, validate_terms
+
+        validate_terms(terms)
+        validate_contract(self.broker)
+        self.authorize_live(grant)
+        try:
+            self._standing = StandingAuthority(grant, self.store, self.broker)
+            self.store.receipt("standing_authority", "Explicit unattended session authorized", {
+                "scope": grant.scope_payload(), "terms": terms,
+                "per_order_confirmation_required": False,
+            })
+        except BaseException:
+            self._revoke_live_automation("Standing authority setup failed")
+            raise
+
+    def authorize_supervised_experimental(self, grant: LiveGrant) -> None:
+        """Authorize a small attended session whose every order needs fresh consent."""
+
+        self._authorize_live(
+            grant,
+            authority_mode=AUTHORITY_MODE_SUPERVISED_EXPERIMENTAL,
+        )
+
+    def _authorize_live(self, grant: LiveGrant, *, authority_mode: str) -> None:
+        if self._standing is not None:
+            self._revoke_live_automation("Replacing standing authority requires a fresh session")
+        self._require_order_runtime("authorize live trading")
+        if authority_mode not in {
+            AUTHORITY_MODE_EVIDENCE,
+            AUTHORITY_MODE_SUPERVISED_EXPERIMENTAL,
+        }:
+            raise RuntimeError("Unknown live authority mode")
+        if not self.config.live_trading_enabled:
+            raise RuntimeError("Real-order controls are disabled. Unlock them deliberately in Settings first")
+        try:
+            grant.validate()
+        except ValueError as exc:
+            raise RuntimeError(f"Invalid live-session limits: {exc}") from exc
+        expected_fingerprint = self.current_strategy_fingerprint(grant)
+        if grant.strategy_fingerprint != expected_fingerprint:
+            raise RuntimeError("Live grant does not match the exact installed candidate and order route")
+        if grant.allowed_symbols != ("TQQQ", "SQQQ"):
+            raise RuntimeError("Live authority must bind exactly TQQQ and SQQQ")
+        if grant.execution != execution_profile(self.config):
+            raise RuntimeError(
+                "Live grant route differs from Settings; change the route in Settings and rerun evidence"
+            )
+        pilot_contract = self.runtime_execution_contract()
+        pilot_route = next(
+            check
+            for check in runtime_parity_assessment(pilot_contract).checks
+            if check.key == "pilot_route"
+        )
+        if not pilot_route.aligned:
+            raise RuntimeError(
+                "Bounded live execution is restricted to regular hours, market orders, GFD, cash T+1 settlement, "
+                "and zero-bar modeled latency; other routes remain research/shadow only"
+            )
+        # Approval is independent of the execution window. Start and every
+        # submitted order still enforce market hours and fresh venue quotes.
+        if authority_mode == AUTHORITY_MODE_EVIDENCE and not self.live_evidence_ready(grant):
+            raise RuntimeError(
+                "Real-order authority requires a current passing evidence certificate for this exact strategy. "
+                "Run the full Evidence Lab on eligible market history; failed or mismatched research stays shadow-only"
+            )
+        if authority_mode == AUTHORITY_MODE_SUPERVISED_EXPERIMENTAL:
+            self._validate_supervised_experimental_scope(grant)
+        if self._shadow is not None and self._shadow.state.active:
+            raise RuntimeError("Stop live shadow mode before granting real-order authority")
+        if self.snapshot.account is None or self.snapshot.portfolio is None:
+            raise RuntimeError("Connect and refresh the Agentic account first")
+        if not self.snapshot.account.agentic_allowed or self.snapshot.account.state.strip().lower() != "active":
+            raise RuntimeError("The selected broker account is not an active Agentic account")
+        if grant.account_number != self.snapshot.account.account_number:
+            raise RuntimeError("Grant account does not match the connected Agentic account")
+        self._assert_agent_route_clear()
+        if self.snapshot.account.account_type.lower() == "cash" and self.config.settlement_model != "cash_t1":
+            raise RuntimeError("Cash-account authority requires the T+1 settlement evidence model")
+        if self.snapshot.portfolio.total_value <= 0 or self.snapshot.portfolio.buying_power <= 0:
+            raise RuntimeError(
+                "Robinhood reports zero account value or buying power; live trading stays locked"
+            )
+        if self.snapshot.last_reconcile_at is None or (
+            utc_now() - self.snapshot.last_reconcile_at
+        ).total_seconds() > max(10.0, self.config.reconcile_seconds * 2.0):
+            raise RuntimeError("Agentic account positions and orders are not freshly reconciled")
+        if self._leveraged_positions():
+            raise RuntimeError("Start a live session only from a flat TQQQ/SQQQ account")
+        if self._nonterminal_orders(self.snapshot.orders):
+            raise RuntimeError("Start a live session only with zero nonterminal Agentic orders")
+        if self._submission_reconcile_required or self._uncertain_submission_refs:
+            raise RuntimeError("A prior placement outcome is unresolved; reconcile it before new authority")
+        unresolved = self.store.unresolved_order_intents(self.snapshot.account.account_number)
+        if unresolved:
+            raise RuntimeError(
+                f"{len(unresolved)} durable order intent(s) have unresolved broker outcomes; "
+                "new authority remains locked"
+            )
+        if self._execution_provenance_gaps:
+            raise RuntimeError(
+                "A completed TQQQ/SQQQ order lacks exact provider execution provenance; "
+                "directional live authority remains locked"
+            )
+        try:
+            self.store.validate_execution_inventory(
+                self.snapshot.account.account_number,
+                self.snapshot.positions,
+            )
+        except ValueError as exc:
+            raise RuntimeError(
+                f"Durable execution history does not reconcile to broker inventory: {exc}"
+            ) from exc
+        pilot_contract.validate()
+        usage = self.store.live_daily_usage(
+            grant.account_number,
+            grant.starts_at.astimezone(EASTERN).date().isoformat(),
+        )
+        session_date = grant.starts_at.astimezone(EASTERN).date().isoformat()
+        provenance_gaps = self.store.incomplete_execution_provenance(
+            grant.account_number,
+            session_date,
+        )
+        if provenance_gaps:
+            raise RuntimeError(
+                "Same-day filled entry intent lacks durable provider execution provenance; "
+                "live authority remains locked"
+            )
+        self._prior_entry_upper_bound = len(
+            self.store.live_filled_entry_order_ids(
+                grant.account_number,
+                session_date,
+                strategy_fingerprint=grant.strategy_fingerprint,
+            )
+        )
+        self._confirmed_entry_order_ids.clear()
+        self.policy = self._policy_for_session(grant.market_hours)
+        daily_risk = self.store.record_daily_risk(
+            grant.account_number, session_date, self.snapshot.portfolio.total_value,
+            grant.max_daily_loss, require_existing=int(usage["submitted_orders"]) > 0,
+        )
+        if daily_risk["loss_latched"]:
+            raise RuntimeError("Daily loss limit was reached; new authority is locked for this trading day")
+        self.risk.arm(
+            grant,
+            self.snapshot.portfolio,
+            initial_daily_notional=float(usage["daily_notional"]),
+            initial_trades=int(usage["submitted_orders"]),
+            previous_receipt_digest=str(usage["last_receipt_digest"]),
+            initial_peak_value=float(daily_risk["peak_value"]),
+        )
+        self._authority_mode = authority_mode
+        self._persist_risk_receipts()
+        self.snapshot.session_expires_at = grant.expires_at
+        self.log(
+            (
+                "Supervised experimental authority granted until "
+                if authority_mode == AUTHORITY_MODE_SUPERVISED_EXPERIMENTAL
+                else "Evidence-gated live authority granted until "
+            )
+            + grant.expires_at.astimezone().strftime("%I:%M %p"),
+            "warning",
+            "authority",
+            {
+                "account_last4": grant.account_number[-4:],
+                "expires_at": grant.expires_at.isoformat(),
+                "max_order_notional": grant.max_order_notional,
+                "max_daily_notional": grant.max_daily_notional,
+                "max_total_exposure": grant.max_total_exposure,
+                "max_daily_loss": grant.max_daily_loss,
+                "max_trades": grant.max_trades,
+                "max_orders_per_minute": grant.max_orders_per_minute,
+                "max_spread_bps": grant.max_spread_bps,
+                "market_hours": grant.market_hours,
+                "order_type": grant.order_type,
+                "time_in_force": grant.time_in_force,
+                "limit_offset_bps": grant.limit_offset_bps,
+                "authority_mode": authority_mode,
+                "per_order_confirmation_required": True,
+            },
+        )
+        self._emit()
+
+    def live_evidence_ready(self, grant: LiveGrant | None = None) -> bool:
+        try:
+            fingerprint = self.current_strategy_fingerprint(grant)
+        except (TypeError, ValueError):
+            return False
+        requested = None
+        if grant is not None:
+            requested = {
+                "max_order_notional": grant.max_order_notional,
+                "max_daily_notional": grant.max_daily_notional,
+                "max_total_exposure": grant.max_total_exposure,
+                "max_daily_loss": grant.max_daily_loss,
+                "max_trades": grant.max_trades,
+                "max_orders_per_minute": grant.max_orders_per_minute,
+                "max_spread_bps": grant.max_spread_bps,
+            }
+        return self.store.current_live_evidence(fingerprint, requested_envelope=requested) is not None
+
+    def _revoke_live_automation(self, reason: str) -> None:
+        had_authority = self.risk.grant is not None or self.snapshot.strategy_running
+        self.snapshot.strategy_running = False
+        self.snapshot.session_expires_at = None
+        self.risk.disarm(reason)
+        self._authority_mode = None
+        if self._standing is not None:
+            standing, self._standing = self._standing, None
+            standing.revoke()
+        self._persist_risk_receipts()
+        if had_authority:
+            self.log(reason, "critical", "authority")
+        self._emit()
+
+    def _live_automation_current(self, *, allow_loss_liquidation: bool = False) -> bool:
+        if self._standing is not None:
+            try:
+                self._standing.check(self.risk.grant, self.broker)
+            except Exception:
+                self._revoke_live_automation("Standing authorization revoked or provider contract changed")
+                return False
+        status = self.risk.session_status()
+        if status == "LOSS LIMIT" and not allow_loss_liquidation:
+            return False
+        if status not in ({"LIVE", "LOSS LIMIT"} if allow_loss_liquidation else {"LIVE"}):
+            self._revoke_live_automation("Automatic trading stopped because live authority is not active")
+            return False
+        if not self.config.live_trading_enabled:
+            self._revoke_live_automation("Automatic trading stopped because real-order controls are disabled")
+            return False
+        grant = self.risk.grant
+        if grant is None or self.snapshot.account is None:
+            self._revoke_live_automation("Automatic trading stopped because account authority is missing")
+            return False
+        if grant.account_number != self.snapshot.account.account_number:
+            self._revoke_live_automation("Automatic trading stopped because the Agentic account changed")
+            return False
+        if grant.strategy_fingerprint != self.current_strategy_fingerprint(grant):
+            self._revoke_live_automation("Automatic trading stopped because candidate identity changed")
+            return False
+        try:
+            pilot_route = next(
+                check
+                for check in runtime_parity_assessment(self.runtime_execution_contract()).checks
+                if check.key == "pilot_route"
+            )
+        except (StopIteration, TypeError, ValueError):
+            pilot_route = None
+        if pilot_route is None or not pilot_route.aligned:
+            self._revoke_live_automation(
+                "Automatic live v1 route moved outside regular-hours market/GFD/cash-T+1/zero-latency"
+            )
+            return False
+        if self._uncertain_submission_refs:
+            self._revoke_live_automation(
+                "Automatic trading stopped because a broker placement outcome is uncertain"
+            )
+            return False
+        if self._authority_mode == AUTHORITY_MODE_EVIDENCE:
+            if not self.live_evidence_ready(self.risk.grant):
+                self._revoke_live_automation(
+                    "Automatic trading stopped because the exact evidence certificate is missing or expired"
+                )
+                return False
+        elif self._authority_mode == AUTHORITY_MODE_SUPERVISED_EXPERIMENTAL:
+            try:
+                self._validate_supervised_experimental_scope(grant)
+            except RuntimeError as exc:
+                self._revoke_live_automation(
+                    f"Supervised experimental authority no longer matches its strict scope: {exc}"
+                )
+                return False
+        else:
+            self._revoke_live_automation("Automatic trading stopped because authority mode is missing")
+            return False
+        return True
+
+    def config_evidence_ready(self, config: AppConfig) -> bool:
+        try:
+            fingerprint = self.current_strategy_fingerprint(config=config)
+        except (TypeError, ValueError):
+            return False
+        return self.store.current_live_evidence(fingerprint) is not None
+
+    def live_readiness(self) -> list[dict[str, str]]:
+        """Return a non-mutating, user-facing activation checklist."""
+
+        rows: list[dict[str, str]] = []
+
+        def add(gate: str, passed: bool, observed: str, action: str) -> None:
+            rows.append(
+                {
+                    "gate": gate,
+                    "status": "PASS" if passed else "BLOCKED",
+                    "observed": observed,
+                    "action": "None" if passed else action,
+                }
+            )
+
+        add(
+            "Broker capability",
+            self.config.broker_connection_enabled,
+            "Enabled" if self.config.broker_connection_enabled else "Disabled",
+            "Enable broker data in Settings & Permissions",
+        )
+        add(
+            "Real-order capability",
+            self.config.live_trading_enabled,
+            "Enabled" if self.config.live_trading_enabled else "Disabled",
+            "Enable only after reviewing the attended supervised-ticket boundary in Settings; "
+            "autonomous use still requires exact evidence",
+        )
+        account_ready = bool(
+            self.snapshot.connected
+            and self.snapshot.account
+            and self.snapshot.account.agentic_allowed
+            and self.snapshot.account.state.strip().lower() == "active"
+        )
+        add(
+            "Exact Agentic account",
+            account_ready,
+            self.snapshot.account.masked if self.snapshot.account else "Disconnected",
+            "Reconnect Robinhood; if authorization is revoked, forget stored OAuth credentials first",
+        )
+        reconcile_fresh = bool(
+            self.snapshot.last_reconcile_at
+            and (utc_now() - self.snapshot.last_reconcile_at).total_seconds()
+            <= max(10.0, self.config.reconcile_seconds * 2.0)
+        )
+        add(
+            "Fresh account truth",
+            reconcile_fresh,
+            self.snapshot.last_reconcile_at.isoformat()
+            if self.snapshot.last_reconcile_at
+            else "Never reconciled",
+            "Connect and refresh positions/orders",
+        )
+        flat = not self._leveraged_positions()
+        add(
+            "Flat leveraged inventory",
+            flat,
+            "Flat" if flat else ", ".join(position.symbol for position in self._leveraged_positions()),
+            "Manually review and flatten existing TQQQ/SQQQ exposure",
+        )
+        open_orders = self._nonterminal_orders(self.snapshot.orders)
+        add(
+            "No working Agentic orders",
+            not open_orders,
+            f"{len(open_orders)} nonterminal",
+            "Use STOP + CANCEL and verify every order terminal in Robinhood",
+        )
+        try:
+            unresolved = (
+                self.store.unresolved_order_intents(self.snapshot.account.account_number)
+                if self.snapshot.account
+                else []
+            )
+        except Exception as exc:
+            unresolved = [{"error": str(exc)}]
+        add(
+            "No ambiguous placements",
+            not unresolved and not self._submission_reconcile_required,
+            f"{len(unresolved) + len(self._submission_reconcile_required)} unresolved",
+            "Reconcile the recorded reference against Robinhood; never retry it blindly",
+        )
+        try:
+            self._validated_execution_quotes(
+                self.snapshot.quotes,
+                context="Live-readiness check",
+            )
+            quotes_ready, quote_observed = True, "QQQ/TQQQ/SQQQ exact and fresh"
+        except Exception as exc:
+            quotes_ready, quote_observed = False, str(exc)
+        add(
+            "Fresh exact venue quotes",
+            quotes_ready,
+            quote_observed,
+            "Wait for a complete current QQQ/TQQQ/SQQQ provider batch",
+        )
+        try:
+            contract = self.runtime_execution_contract()
+            contract_ready, contract_observed = True, contract.fingerprint[:12] + "…"
+            route_check = next(
+                check
+                for check in runtime_parity_assessment(contract).checks
+                if check.key == "pilot_route"
+            )
+            route_ready = route_check.aligned
+            route_observed = (
+                f"{route_check.replay}; settlement {contract.settlement_model}; "
+                f"modeled latency {contract.latency_bars} bars"
+            )
+        except (StopIteration, TypeError, ValueError) as exc:
+            contract = None
+            contract_ready, contract_observed = False, str(exc)
+            route_ready = False
+            route_observed = str(exc)
+        add(
+            "Supported real-order route",
+            route_ready,
+            route_observed,
+            "Select Regular market, Market order, GFD, cash T+1, and zero modeled latency; "
+            "then rerun evidence",
+        )
+        add(
+            "Immutable runtime contract",
+            contract_ready,
+            contract_observed,
+            "Align the saved sandbox candidate with runtime Settings",
+        )
+        if contract_ready and contract is not None:
+            parity = runtime_parity_assessment(contract)
+            parity_observed = (
+                "Certified"
+                if parity.certified
+                else "Blocked: " + ", ".join(check.key for check in parity.blockers)
+            )
+        else:
+            parity = None
+            parity_observed = "Runtime contract is unavailable"
+        add(
+            "Runtime execution parity",
+            bool(parity and parity.certified),
+            parity_observed,
+            "Resolve every machine-readable replay/shadow/live parity blocker, then rerun evidence",
+        )
+        try:
+            evidence_ready = self.live_evidence_ready()
+        except Exception:
+            evidence_ready = False
+        add(
+            "Positive exact evidence",
+            evidence_ready,
+            "Current certificate" if evidence_ready else "No live-review-eligible certificate",
+            "A noncash candidate must pass walk-forward, stressed costs, sealed holdout, and parity gates",
+        )
+        return rows
+
+    @property
+    def active_execution_profile(self) -> ExecutionProfile:
+        return self.risk.grant.execution if self.risk.grant is not None else execution_profile(self.config)
+
+    def entry_window_open(self) -> bool:
+        """Whether execution may start now; approval itself has no hours gate."""
+        grant = self.risk.grant
+        return market_session_allowed(
+            utc_now(), self.config.no_trade_open_minutes,
+            self.config.no_trade_close_minutes,
+            grant.market_hours if grant is not None else self.config.market_hours,
+        )
+
+    def start_strategy(self) -> None:
+        self._require_order_runtime("start live trading")
+        if self._standing is not None:
+            self._standing.check(self.risk.grant, self.broker)
+        if not self.config.live_trading_enabled:
+            raise RuntimeError("Real-order controls are disabled in Settings")
+        if self._authority_mode == AUTHORITY_MODE_EVIDENCE and not self.live_evidence_ready(
+            self.risk.grant
+        ):
+            self.risk.disarm()
+            self._authority_mode = None
+            self.snapshot.strategy_running = False
+            self._emit()
+            raise RuntimeError(
+                "The evidence certificate for this exact strategy is missing or expired; "
+                "real-order authority has been revoked"
+            )
+        if self._authority_mode == AUTHORITY_MODE_SUPERVISED_EXPERIMENTAL:
+            grant = self.risk.grant
+            if grant is None:
+                raise RuntimeError("Authorize a supervised experimental session first")
+            self._validate_supervised_experimental_scope(grant)
+        elif self._authority_mode != AUTHORITY_MODE_EVIDENCE:
+            raise RuntimeError("Authorize a bounded live session first")
+        if self._shadow is not None and self._shadow.state.active:
+            raise RuntimeError("Stop live shadow mode before starting real-order automation")
+        if self.risk.session_status() != "LIVE":
+            raise RuntimeError("Authorize a bounded live session first")
+        if self.snapshot.last_reconcile_at is None or (
+            utc_now() - self.snapshot.last_reconcile_at
+        ).total_seconds() > max(10.0, self.config.reconcile_seconds * 2.0):
+            raise RuntimeError("Refresh account truth before starting live strategy execution")
+        if self._leveraged_positions() or self._nonterminal_orders(self.snapshot.orders):
+            self._revoke_live_automation(
+                "Live strategy start blocked because the Agentic account is no longer flat and order-free"
+            )
+            raise RuntimeError("Live strategy start requires flat TQQQ/SQQQ inventory and zero open orders")
+        grant = self.risk.grant
+        if grant is None:
+            raise RuntimeError("Authorize a bounded live session first")
+        if not market_session_allowed(
+            utc_now(),
+            self.config.no_trade_open_minutes,
+            self.config.no_trade_close_minutes,
+            grant.market_hours,
+        ):
+            raise RuntimeError("Live strategy start is outside the regular-session entry window")
+        self._validated_execution_quotes(
+            self.snapshot.quotes,
+            max_age_seconds=grant.max_quote_age_seconds,
+            context=(
+                "Supervised-start preflight"
+                if self._authority_mode == AUTHORITY_MODE_SUPERVISED_EXPERIMENTAL
+                else "Evidence-gated start preflight"
+            ),
+        )
+        preflight_timestamp = self.snapshot.quotes["QQQ"].timestamp
+        self._reset_signal_pipeline("Live session clean start; warming up on regular-session data")
+        # Do not ingest the preflight quote, or an overlapping refresh whose
+        # venue observation predates the clean-start action, as post-start data.
+        self._last_qqq_timestamp = max(preflight_timestamp, utc_now())
+        self.snapshot.strategy_running = True
+        self._last_trade_decision_sequence = self._analysis_sequence
+        self.log(
+            (
+                "Supervised experimental strategy started; every order still requires confirmation"
+                if self._authority_mode == AUTHORITY_MODE_SUPERVISED_EXPERIMENTAL
+                else "Evidence-gated strategy started"
+            ),
+            "warning",
+            "strategy",
+            {"authority_mode": self._authority_mode},
+        )
+        self._emit()
+
+    def pause_live_authority(self, reason: str = "Paused by user") -> None:
+        self.snapshot.strategy_running = False
+        if not self.risk.pause(reason):
+            raise RuntimeError("No active live authority can be paused")
+        self._persist_risk_receipts()
+        self.log(reason, "warning", "authority")
+        self._emit()
+
+    def resume_live_authority(self, reason: str = "Resumed by user") -> None:
+        if self._standing is not None:
+            self._standing.check(self.risk.grant, self.broker)
+        if self._submission_reconcile_required or self._uncertain_submission_refs:
+            raise RuntimeError("Cannot resume while an order outcome is unresolved")
+        grant = self.risk.grant
+        if grant is None:
+            raise RuntimeError("Cannot resume without current authority")
+        if self._authority_mode == AUTHORITY_MODE_EVIDENCE:
+            if not self.live_evidence_ready(grant):
+                raise RuntimeError("Cannot resume without current exact evidence and authority")
+        elif self._authority_mode == AUTHORITY_MODE_SUPERVISED_EXPERIMENTAL:
+            self._validate_supervised_experimental_scope(grant)
+        else:
+            raise RuntimeError("Cannot resume without a bound authority mode")
+        if not self.risk.resume(reason):
+            raise RuntimeError("No paused live authority can be resumed")
+        self._persist_risk_receipts()
+        self.log(reason, "warning", "authority")
+        self._emit()
+
+    async def revoke_live_authority(self, reason: str = "Authority revoked by user") -> bool:
+        self._revoke_live_automation(reason)
+        return not bool(self._nonterminal_orders(self.snapshot.orders))
+
+    def _persist_shadow_checkpoint(self, event: str) -> dict[str, Any]:
+        if (
+            self._shadow is None
+            or self._shadow_session_key is None
+            or self._shadow_account_fingerprint is None
+            or self._shadow_strategy_fingerprint is None
+        ):
+            raise RuntimeError("Shadow checkpoint identity is incomplete")
+        current_session = self._shadow.current_session
+        if current_session is not None:
+            self._shadow_session_key = current_session
+        checkpoint = self._shadow.checkpoint(
+            sequence=self._shadow_checkpoint_sequence + 1,
+            recorded_at=utc_now(),
+            session=self._shadow_session_key,
+            account_fingerprint=self._shadow_account_fingerprint,
+            strategy_fingerprint=self._shadow_strategy_fingerprint,
+            event=event,
+            previous_digest=self._shadow_checkpoint_digest,
+        )
+        try:
+            self.store.append_shadow_checkpoint(checkpoint)
+        except Exception:
+            # Continuing after a failed durable write would make the displayed ledger
+            # indistinguishable from a stale, restartable checkpoint. Stop in memory too.
+            self._shadow.state.active = False
+            raise
+        self._shadow_checkpoint_sequence = int(checkpoint["sequence"])
+        self._shadow_checkpoint_digest = str(checkpoint["digest"])
+        return checkpoint
+
+    def start_shadow(self, *, separate_run_from: str | None = None) -> None:
+        if not self.config.broker_connection_enabled:
+            raise RuntimeError("Broker connections are disabled in Settings")
+        if not self.snapshot.connected or self.snapshot.account is None:
+            raise RuntimeError("Connect Robinhood read access before starting live shadow mode")
+        if self.risk.session_status() == "LIVE" or self.snapshot.strategy_running:
+            raise RuntimeError("Live shadow and real-order authority are mutually exclusive")
+        if self._shadow is not None and self._shadow.state.active:
+            return
+        shadow_config = self._runtime_candidate_config()
+        if self.snapshot.account.account_type.lower() == "cash":
+            shadow_config = replace(shadow_config, settlement_model="cash_t1")
+        interval = f"{self.config.bar_seconds}s"
+        strategy_id = strategy_fingerprint(shadow_config, interval)
+        account_id = hashlib.sha256(self.snapshot.account.account_number.encode("utf-8")).hexdigest()
+        contract = contract_from_config(shadow_config)
+        current_session = session_key(utc_now(), contract.market_hours)
+        self._shadow = None
+        self._shadow_checkpoint_sequence = 0
+        self._shadow_checkpoint_digest = None
+        self._shadow_session_key = current_session
+        self._shadow_account_fingerprint = account_id
+        self._shadow_strategy_fingerprint = strategy_id
+
+        try:
+            latest = self.store.latest_shadow_checkpoint()
+            inactive_continuity_required = bool(
+                latest is not None
+                and not bool(latest["state"].get("active"))
+                and latest["session_key"] == current_session
+                and shadow_checkpoint_requires_continuity(latest)
+            )
+        except Exception as exc:
+            self.log(
+                f"SHADOW RECOVERY BLOCKED: durable checkpoint chain is invalid: {exc}",
+                "critical",
+                "shadow_recovery",
+                {"error": str(exc), "broker_write_attempted": False},
+            )
+            raise RuntimeError("Shadow recovery blocked by an invalid durable checkpoint chain") from exc
+
+        if separate_run_from is not None:
+            if latest is None or latest["run_id"] != separate_run_from:
+                raise RuntimeError("Shadow history changed; review the recovery choice again")
+            self.log(
+                "User started a separate simulation. Prior run is interrupted, not completed; "
+                "its entire virtual ledger remains unchanged and must not be pooled with this run.",
+                "warning", "shadow_recovery",
+                {"prior_run_id": separate_run_from, "outcome": "interrupted",
+                 "broker_write_attempted": False},
+            )
+            latest = None
+            inactive_continuity_required = False
+
+        if inactive_continuity_required:
+            prior_state = latest["state"]
+            compatibility = {
+                "account": latest["account_fingerprint"] == account_id,
+                "strategy": latest["strategy_fingerprint"] == strategy_id,
+                "contract": latest["contract_fingerprint"] == contract.fingerprint,
+            }
+            self.log(
+                "SHADOW RECOVERY BLOCKED: prior stopped same-session run retains "
+                "unresolved virtual state",
+                "critical",
+                "shadow_recovery",
+                {
+                    "prior_run_id": latest["run_id"],
+                    "prior_session": latest["session_key"],
+                    "open_position": (
+                        prior_state["position"].get("symbol")
+                        if isinstance(prior_state.get("position"), dict)
+                        else None
+                    ),
+                    "pending_transition": prior_state.get("pending") is not None,
+                    "virtual_unsettled_cash": prior_state.get("unsettled_cash"),
+                    "compatible": all(compatibility.values()),
+                    "compatibility": compatibility,
+                    "broker_write_attempted": False,
+                },
+            )
+            raise ShadowRecoveryRequired(latest["run_id"], "stopped run retains unresolved virtual state")
+
+        recovered = False
+        if latest is not None and bool(latest["state"].get("active")):
+            try:
+                self._shadow = LiveShadowEngine.restore(
+                    shadow_config,
+                    latest,
+                    expected_session=current_session,
+                    expected_account_fingerprint=account_id,
+                    expected_strategy_fingerprint=strategy_id,
+                    bar_minutes=self.config.bar_seconds / 60.0,
+                )
+            except Exception as exc:
+                self.log(
+                    f"SHADOW RECOVERY BLOCKED: prior active run cannot be continued: {exc}",
+                    "critical",
+                    "shadow_recovery",
+                    {
+                        "prior_run_id": latest.get("run_id"),
+                        "prior_session": latest.get("session_key"),
+                        "error": str(exc),
+                        "broker_write_attempted": False,
+                    },
+                )
+                raise ShadowRecoveryRequired(latest["run_id"], str(exc)) from exc
+            self._shadow_checkpoint_sequence = int(latest["sequence"])
+            self._shadow_checkpoint_digest = str(latest["digest"])
+            recovered = True
+        else:
+            self._shadow = LiveShadowEngine(
+                shadow_config,
+                bar_minutes=self.config.bar_seconds / 60.0,
+            )
+
+        checkpoint = self._persist_shadow_checkpoint("recovered" if recovered else "started")
+        if recovered:
+            recovered_state = checkpoint["state"]
+            self.log(
+                "Live shadow recovered from its durable same-session checkpoint; "
+                "virtual ledger continuity retained",
+                "warning",
+                "shadow_recovery",
+                {
+                    "run_id": self._shadow.state.run_id,
+                    "checkpoint_sequence": checkpoint["sequence"],
+                    "session": checkpoint["session_key"],
+                    "virtual_cash": recovered_state["cash"],
+                    "virtual_unsettled_cash": recovered_state["unsettled_cash"],
+                    "virtual_equity": recovered_state["equity"],
+                    "virtual_pnl": recovered_state["pnl"],
+                    "position": recovered_state["position"],
+                    "fill_count": len(recovered_state["fills"]),
+                    "entries_by_session": recovered_state["entries_by_session"],
+                    "signal_pipeline_rewarms_after_process_restart": True,
+                    "broker_write_attempted": False,
+                },
+            )
+        self.log(
+            (
+                "Live shadow resumed — virtual TQQQS/SQQQS fills only; no order authority granted"
+                if recovered
+                else "Live shadow started — virtual TQQQS/SQQQS fills only; no order authority granted"
+            ),
+            "warning",
+            "shadow_authority",
+            {
+                "run_id": self._shadow.state.run_id,
+                "broker_calls_allowed": False,
+                "strategy_fingerprint": strategy_id,
+                "contract_fingerprint": contract.fingerprint,
+                "session": current_session,
+                "checkpoint_sequence": checkpoint["sequence"],
+                "recovered": recovered,
+            },
+        )
+        self._emit()
+
+    def stop_shadow(self, reason: str = "Live shadow stopped by user") -> None:
+        if self._shadow is None:
+            return
+        if not self._shadow.state.active:
+            return
+        state = self._shadow.stop(self.snapshot.quotes)
+        checkpoint = self._persist_shadow_checkpoint("stopped")
+        self.log(
+            f"{reason}; virtual equity ${state.equity:,.2f}; P/L ${state.pnl:+,.2f}",
+            "warning",
+            "shadow_authority",
+            {
+                "run_id": state.run_id,
+                "virtual_equity": state.equity,
+                "virtual_pnl": state.pnl,
+                "ending_position": state.position.symbol if state.position else None,
+                "fills": [fill.as_dict() for fill in state.fills],
+                "checkpoint_sequence": checkpoint["sequence"],
+                "checkpoint_digest": checkpoint["digest"],
+                "real_orders_submitted": 0,
+            },
+        )
+        self._emit()
+
+    async def stop_and_cancel(self, reason: str = "STOP + CANCEL pressed") -> bool:
+        """Lock order creation without an implicit provider cancellation write."""
+
+        return await self.execute_confirmed_cancel(None, reason=reason)
+
+    def _stop_for_cancel(self, reason: str) -> None:
+        """Halt locally before waiting for broker truth or writing any receipts."""
+
+        self.snapshot.strategy_running = False
+        self.snapshot.session_expires_at = None
+        self._authority_mode = None
+        self.risk.revoke(reason)
+        try:
+            try:
+                self.stop_agent(reason)
+            finally:
+                self.stop_shadow(reason)
+            self._persist_risk_receipts()
+        finally:
+            self._emit()
+
+    @staticmethod
+    def _cancel_order_target(
+        order: BrokerOrder, durable_binding: dict[str, Any]
+    ) -> CancelOrderTarget:
+        """Freeze the immutable provider identity covered by operator consent."""
+
+        durable_ref = str(durable_binding.get("ref_id", "")).strip()
+        durable_payload = durable_binding.get("payload")
+        if not isinstance(durable_payload, dict):
+            raise BrokerError("GRANDE-owned order lacks its durable intent ticket")
+        placed_agent = order.placed_agent.strip().lower()
+        symbol = order.symbol.strip().upper()
+        side = order.side.strip().lower()
+        order_type = str(order.raw.get("type", "")).strip().lower()
+        market_hours = str(order.raw.get("market_hours", "")).strip().lower()
+        time_in_force = str(order.raw.get("time_in_force", "")).strip().lower()
+        if not order.order_id.strip() or not durable_ref:
+            raise BrokerError("GRANDE-owned order lacks its durable ownership identity")
+        if placed_agent != "agentic":
+            raise BrokerError("GRANDE-owned order was not placed by the Agentic provider")
+        if symbol not in {"TQQQ", "SQQQ"} or side not in {"buy", "sell"}:
+            raise BrokerError("GRANDE-owned order has an unsupported symbol or side")
+        if not order_type or not market_hours or not time_in_force:
+            raise BrokerError("GRANDE-owned order lacks immutable execution instructions")
+        if order.created_at is None or order.created_at.tzinfo is None:
+            raise BrokerError("GRANDE-owned order lacks an aware creation timestamp")
+        if order.quantity is None and order.dollar_amount is None:
+            raise BrokerError("GRANDE-owned order lacks an exact requested amount")
+        raw_limit = order.raw.get("price")
+        limit_price = None if raw_limit is None else float(raw_limit)
+        for value in (order.quantity, order.dollar_amount, limit_price):
+            if value is not None and not math.isfinite(float(value)):
+                raise BrokerError("GRANDE-owned order has a non-finite immutable amount")
+        immutable_actual = {
+            "symbol": symbol,
+            "side": side,
+            "order_type": order_type,
+            "market_hours": market_hours,
+            "time_in_force": time_in_force,
+        }
+        for payload_field, actual in immutable_actual.items():
+            expected = str(durable_payload.get(payload_field, "")).strip().lower()
+            if not expected or actual.lower() != expected:
+                raise BrokerError(
+                    f"GRANDE-owned order {payload_field} differs from its durable intent ticket"
+                )
+        expected_quantity = durable_payload.get("quantity")
+        expected_dollars = durable_payload.get("dollar_amount")
+        expected_limit = durable_payload.get("limit_price")
+        if expected_quantity is not None:
+            if order.quantity is None or not math.isclose(
+                float(order.quantity), float(expected_quantity), rel_tol=1e-9, abs_tol=1e-9
+            ):
+                raise BrokerError(
+                    "GRANDE-owned order quantity differs from its durable intent ticket"
+                )
+        elif expected_dollars is not None:
+            if order.dollar_amount is None or not math.isclose(
+                float(order.dollar_amount),
+                float(expected_dollars),
+                rel_tol=1e-9,
+                abs_tol=0.005,
+            ):
+                raise BrokerError(
+                    "GRANDE-owned order dollars differ from its durable intent ticket"
+                )
+        else:
+            raise BrokerError("Durable intent ticket lacks an exact requested amount")
+        if (expected_limit is None) != (limit_price is None) or (
+            expected_limit is not None
+            and not math.isclose(
+                float(limit_price), float(expected_limit), rel_tol=1e-9, abs_tol=0.005
+            )
+        ):
+            raise BrokerError(
+                "GRANDE-owned order limit price differs from its durable intent ticket"
+            )
+        return CancelOrderTarget(
+            order_id=order.order_id.strip(),
+            ref_id=durable_ref.strip(),
+            placed_agent=placed_agent,
+            symbol=symbol,
+            side=side,
+            quantity=(float(order.quantity) if order.quantity is not None else None),
+            dollar_amount=(
+                float(order.dollar_amount) if order.dollar_amount is not None else None
+            ),
+            order_type=order_type,
+            market_hours=market_hours,
+            time_in_force=time_in_force,
+            limit_price=limit_price,
+            created_at=order.created_at,
+            reviewed_state=normalized_order_state(order.state),
+        )
+
+    def _cancel_scope(
+        self,
+        orders: list[BrokerOrder],
+        account_number: str,
+    ) -> tuple[tuple[CancelOrderTarget, ...], tuple[str, ...]]:
+        bindings = self.store.owned_broker_order_bindings(account_number)
+        nonterminal = self._nonterminal_orders(orders)
+        targets: list[CancelOrderTarget] = []
+        unrelated: list[str] = []
+        seen: set[str] = set()
+        for order in nonterminal:
+            if order.order_id in seen:
+                raise BrokerError("Broker returned duplicate order ids during cancellation review")
+            seen.add(order.order_id)
+            durable_binding = bindings.get(order.order_id)
+            if durable_binding is None:
+                unrelated.append(order.order_id)
+                continue
+            targets.append(self._cancel_order_target(order, durable_binding))
+        return (
+            tuple(sorted(targets, key=lambda item: item.order_id)),
+            tuple(sorted(unrelated)),
+        )
+
+    @staticmethod
+    def _cancel_identity(target: CancelOrderTarget) -> tuple[Any, ...]:
+        """Return only provider fields that must never change for an order id."""
+
+        return (
+            target.order_id,
+            target.ref_id,
+            target.placed_agent,
+            target.symbol,
+            target.side,
+            target.quantity,
+            target.dollar_amount,
+            target.order_type,
+            target.market_hours,
+            target.time_in_force,
+            target.limit_price,
+            target.created_at,
+        )
+
+    @classmethod
+    def _cancel_targets_match(
+        cls,
+        current: tuple[CancelOrderTarget, ...],
+        confirmed: tuple[CancelOrderTarget, ...],
+    ) -> bool:
+        return tuple(cls._cancel_identity(item) for item in current) == tuple(
+            cls._cancel_identity(item) for item in confirmed
+        )
+
+    async def _read_cancel_truth_locked(self, account_number: str) -> list[BrokerOrder]:
+        """Read and reconcile exact account truth while the caller owns the lock."""
+
+        accounts = await self.broker.get_accounts()
+        active = [
+            account
+            for account in accounts
+            if account.agentic_allowed and account.state.strip().lower() == "active"
+        ]
+        if len(active) != 1 or active[0].account_number != account_number:
+            raise BrokerError(
+                "Cancellation requires the same exact single active Agentic account"
+            )
+        portfolio = await self.broker.get_portfolio(account_number)
+        positions = await self.broker.get_positions(account_number)
+        orders = await self.broker.get_orders(account_number)
+        self._validate_account_truth(portfolio, positions, orders)
+        self._persist_execution_truth(account_number, orders)
+        if self._execution_provenance_gaps:
+            raise BrokerError("Cancellation truth contains incomplete execution provenance")
+        self._reconcile_submission_tracking(orders, positions)
+        self.snapshot.portfolio = portfolio
+        self.snapshot.positions = positions
+        self.snapshot.orders = orders
+        self.snapshot.last_reconcile_at = utc_now()
+        return orders
+
+    async def prepare_cancel_plan(self) -> CancelPlan:
+        """Read an exact GRANDE-owned cancellation scope without moving money."""
+
+        await self.stop_and_cancel("STOP requested; preparing cancellation review")
+        if not self.snapshot.connected or self.snapshot.account is None:
+            raise RuntimeError("Connect the Agentic account before preparing cancellation")
+        account_number = self.snapshot.account.account_number
+        if self._has_recorded_order_activity(account_number):
+            async with self._reconcile_lock:
+                orders = await self._read_cancel_truth_locked(account_number)
+                targets, unrelated = self._cancel_scope(orders, account_number)
+        else:
+            targets = ()
+            unrelated = tuple(order.order_id for order in self._nonterminal_orders(self.snapshot.orders))
+        plan = CancelPlan(
+            account_number=account_number,
+            targets=targets,
+            unrelated_order_ids=unrelated,
+            created_at=utc_now(),
+            token=str(uuid.uuid4()),
+        )
+        self._cancel_plans[plan.token] = plan
+        return plan
+
+    def discard_cancel_plan(self, plan: CancelPlan) -> None:
+        """Release a completed or declined review without any broker action."""
+
+        self._cancel_plans.pop(plan.token, None)
+
+    async def execute_confirmed_cancel(
+        self,
+        plan: CancelPlan | None,
+        *,
+        reason: str = "STOP + CANCEL confirmed",
+    ) -> bool:
+        self._stop_for_cancel(reason)
+        if plan is None:
+            self.log(
+                f"{reason}; new orders locked; broker cancellation requires explicit confirmation",
+                "critical",
+                "kill_switch",
+                {"cancel_accepted": [], "confirmation_required": True},
+            )
+            self._emit()
+            return False
+        stored = self._cancel_plans.pop(plan.token, None)
+        if stored != plan or (utc_now() - plan.created_at).total_seconds() > 30.0:
+            self.log(
+                f"{reason}; cancellation confirmation was missing, expired, or already used",
+                "critical",
+                "kill_switch",
+            )
+            self._emit()
+            return False
+        cancel_accepted: list[str] = []
+        failures: list[str] = []
+        target_ids = set(plan.order_ids)
+        remaining = set(target_ids)
+        if (
+            not self.snapshot.connected
+            or self.snapshot.account is None
+            or self.snapshot.account.account_number != plan.account_number
+        ):
+            failures.append("Confirmed Agentic account changed; no orders cancelled")
+        else:
+            async with self._reconcile_lock:
+                try:
+                    orders = await self._read_cancel_truth_locked(plan.account_number)
+                    current_targets, _unrelated = self._cancel_scope(
+                        orders, plan.account_number
+                    )
+                    if not self._cancel_targets_match(current_targets, plan.targets):
+                        raise BrokerError(
+                            "Confirmed GRANDE-owned cancellation identity or scope changed"
+                        )
+                except Exception as exc:
+                    failures.append(f"pre-cancel truth failed: {exc}")
+                else:
+                    for index, target in enumerate(plan.targets):
+                        if index:
+                            try:
+                                orders = await self._read_cancel_truth_locked(
+                                    plan.account_number
+                                )
+                                current_targets, _unrelated = self._cancel_scope(
+                                    orders, plan.account_number
+                                )
+                                current_by_id = {
+                                    item.order_id: item for item in current_targets
+                                }
+                                unprocessed = plan.targets[index:]
+                                if any(
+                                    current_by_id.get(item.order_id) is None
+                                    or self._cancel_identity(current_by_id[item.order_id])
+                                    != self._cancel_identity(item)
+                                    for item in unprocessed
+                                ) or any(
+                                    item.order_id not in plan.order_ids
+                                    for item in current_targets
+                                ):
+                                    raise BrokerError(
+                                        "Confirmed GRANDE-owned cancellation identity or scope changed"
+                                    )
+                            except Exception as exc:
+                                failures.append(f"pre-cancel truth failed: {exc}")
+                                break
+                        order = next(
+                            (item for item in orders if item.order_id == target.order_id),
+                            None,
+                        )
+                        if order is None or order_is_terminal(order):
+                            failures.append(
+                                f"{target.order_id}: confirmed target is no longer nonterminal"
+                            )
+                            break
+                        if normalized_order_state(order.state) == "pending_cancelled":
+                            continue
+                        try:
+                            accepted = await self.broker.cancel_order(
+                                plan.account_number, target.order_id
+                            )
+                        except Exception as exc:
+                            failures.append(f"{target.order_id}: {exc}")
+                            break
+                        if not accepted:
+                            failures.append(f"{target.order_id}: provider did not accept cancellation")
+                            break
+                        cancel_accepted.append(target.order_id)
+
+                if not failures and target_ids:
+                    for attempt in range(4):
+                        if attempt:
+                            await asyncio.sleep(0.5)
+                        try:
+                            observed = await self._read_cancel_truth_locked(plan.account_number)
+                        except Exception as exc:
+                            failures.append(f"terminal verification failed: {exc}")
+                            break
+                        observed_by_id = {order.order_id: order for order in observed}
+                        remaining = {
+                            order_id
+                            for order_id in target_ids
+                            if order_id not in observed_by_id
+                            or not order_is_terminal(observed_by_id[order_id])
+                        }
+                        for target in plan.targets:
+                            observed_order = observed_by_id.get(target.order_id)
+                            if observed_order is not None:
+                                try:
+                                    binding = self.store.owned_broker_order_bindings(
+                                        plan.account_number
+                                    ).get(target.order_id)
+                                    if binding is None:
+                                        raise BrokerError(
+                                            "Durable cancellation ownership disappeared"
+                                        )
+                                    observed_identity = self._cancel_order_target(
+                                        observed_order, binding
+                                    )
+                                except Exception as exc:
+                                    failures.append(
+                                        f"terminal verification identity failed: {exc}"
+                                    )
+                                    break
+                                if self._cancel_identity(
+                                    observed_identity
+                                ) != self._cancel_identity(target):
+                                    failures.append(
+                                        "terminal verification found mutated order identity"
+                                    )
+                                    break
+                        if failures or not remaining:
+                            break
+        if remaining:
+            failures.append(
+                "nonterminal/unverified order ids: " + ", ".join(sorted(remaining))
+            )
+        self._cleanup_unresolved = bool(failures)
+        severity = "critical" if self._cleanup_unresolved else "warning"
+        self.log(
+            f"{reason}; new orders locked; cancel accepted for {len(cancel_accepted)} order(s); "
+            f"terminal verification {'FAILED' if self._cleanup_unresolved else 'passed'}",
+            severity,
+            "kill_switch",
+            {
+                "cancel_accepted": cancel_accepted,
+                "target_order_ids": sorted(target_ids),
+                "remaining_order_ids": sorted(remaining),
+                "failures": failures,
+                "filled_positions_may_remain": bool(self._leveraged_positions()),
+            },
+        )
+        self._emit()
+        return not self._cleanup_unresolved
+
+    def _leveraged_positions(self) -> list[Position]:
+        return [
+            item
+            for item in self.snapshot.positions
+            if item.symbol.strip().upper() in {"TQQQ", "SQQQ"} and abs(item.quantity) > 1e-12
+        ]
+
+    def _exposure(self) -> float:
+        total = 0.0
+        for position in self._leveraged_positions():
+            quote = self.snapshot.quotes.get(position.symbol.strip().upper())
+            if quote:
+                total += abs(position.quantity * quote.mid)
+        return total
+
+    def _has_open_order(self) -> bool:
+        return bool(self._nonterminal_orders(self.snapshot.orders))
+
+    def _policy_for_session(self, market_hours: str) -> DecisionPolicy:
+        return DecisionPolicy(
+            PolicyConfig(
+                hard_stop_pct=self.config.hard_stop_pct,
+                take_profit_pct=self.config.take_profit_pct,
+                max_hold_minutes=self.config.max_hold_minutes,
+                no_trade_open_minutes=self.config.no_trade_open_minutes,
+                no_trade_close_minutes=self.config.no_trade_close_minutes,
+                market_hours=market_hours,
+            )
+        )
+
+    @staticmethod
+    def _limit_price(quote: Quote, side: str, offset_bps: float) -> float:
+        if side == "buy":
+            raw = Decimal(str(quote.ask)) * (Decimal("1") + Decimal(str(offset_bps)) / 10_000)
+            return float(raw.quantize(Decimal("0.01"), rounding=ROUND_CEILING))
+        raw = Decimal(str(quote.bid)) * (Decimal("1") - Decimal(str(offset_bps)) / 10_000)
+        return float(raw.quantize(Decimal("0.01"), rounding=ROUND_FLOOR))
+
+    def _execution_intent(
+        self,
+        symbol: str,
+        side: str,
+        quote: Quote,
+        reason: str,
+        *,
+        notional: float | None = None,
+        quantity: float | None = None,
+    ) -> OrderIntent:
+        grant = self.risk.grant
+        if grant is None:
+            raise RuntimeError("No active execution profile")
+        profile = grant.execution
+        common = {
+            "ref_id": str(uuid.uuid4()),
+            "symbol": symbol,
+            "side": side,
+            "reason": reason,
+            "order_type": profile.order_type,
+            "market_hours": profile.market_hours,
+            "time_in_force": profile.time_in_force,
+        }
+        if profile.order_type == "market":
+            if side == "buy":
+                return OrderIntent(**common, dollar_amount=round(float(notional or 0), 2))
+            return OrderIntent(**common, quantity=float(quantity or 0))
+        limit_price = self._limit_price(quote, side, profile.limit_offset_bps)
+        if side == "buy":
+            shares = math.floor(float(notional or 0) / limit_price)
+            if shares < 1:
+                raise RuntimeError(
+                    f"The {profile.market_hours} limit route requires a whole share, but the "
+                    f"authorized notional is below one {symbol} share at ${limit_price:.2f}"
+                )
+        else:
+            available = float(quantity or 0)
+            shares = math.floor(available + 1e-9)
+            if shares < 1 or not math.isclose(available, shares, abs_tol=1e-9):
+                raise RuntimeError(
+                    "Automatic limit exits require a whole-share position; use the separately reviewed "
+                    "regular-hours manual flatten for fractional inventory"
+                )
+        return OrderIntent(**common, quantity=float(shares), limit_price=limit_price)
+
+    def _inventory_units(self) -> tuple[int, int]:
+        symbols = {
+            position.symbol.strip().upper()
+            for position in self._leveraged_positions()
+            if position.quantity > 0
+        }
+        return int("TQQQ" in symbols), int("SQQQ" in symbols)
+
+    def _trade_decision_due(self) -> bool:
+        return decision_due(
+            analysis_count=self._analysis_sequence,
+            last_decision_count=self._last_trade_decision_sequence,
+            decision_stride=self.config.trade_every_bars,
+        )
+
+    def _record_pair_decision(
+        self,
+        action: PairAction,
+        trade_at: datetime,
+        target_symbol: str | None,
+        reason: str,
+        state_feasible: bool,
+    ) -> None:
+        t_units, s_units = self._inventory_units()
+        route = self.active_execution_profile
+        self.snapshot.pair_action_id = action.action_id
+        self.snapshot.pair_action_label = action.label
+        self.snapshot.last_trade_decision_at = trade_at
+        self.store.receipt(
+            "pair_decision",
+            f"Pair action {action.label}: {reason}",
+            {
+                "action_id": action.action_id,
+                "action_t": int(action.t),
+                "action_s": int(action.s),
+                "before_t": t_units,
+                "before_s": s_units,
+                "action_space_size": len(ALL_PAIR_ACTIONS),
+                "state_feasible_action_ids": list(live_feasible_action_ids(t_units, s_units)),
+                "target_symbol": target_symbol or "cash",
+                "signal_regime": self.snapshot.signal.regime.value,
+                "analysis_at": (
+                    self.snapshot.last_analysis_at.isoformat()
+                    if self.snapshot.last_analysis_at is not None
+                    else None
+                ),
+                "trade_at": trade_at.isoformat(),
+                "analysis_sequence": self._analysis_sequence,
+                "decision_stride": self.config.trade_every_bars,
+                "nominal_analysis_seconds": self.config.bar_seconds,
+                "nominal_trade_seconds": self.config.trade_seconds,
+                "market_hours": route.market_hours,
+                "order_type": route.order_type,
+                "time_in_force": route.time_in_force,
+                "limit_offset_bps": route.limit_offset_bps,
+                "state_feasible": state_feasible,
+                "reason": reason,
+            },
+        )
+
+    async def _evaluate_and_trade(self) -> None:
+        self._require_order_runtime("evaluate live orders")
+        if self.risk.session_status() == "LOSS LIMIT":
+            await self._liquidate_for_loss_limit()
+            return
+        if not self._live_automation_current():
+            return
+        if not self._trade_decision_due():
+            return
+        self._last_trade_decision_sequence = self._analysis_sequence
+        trade_at = utc_now()
+        if self._submission_reconcile_required:
+            self._record_pair_decision(
+                PairAction(TradeCommand.HOLD, TradeCommand.HOLD),
+                trade_at,
+                None,
+                "Waiting for post-submission broker reconciliation",
+                False,
+            )
+            return
+        if self._has_open_order():
+            self._record_pair_decision(
+                PairAction(TradeCommand.HOLD, TradeCommand.HOLD),
+                trade_at,
+                None,
+                "Open broker order is still pending",
+                False,
+            )
+            return
+        if self._last_submission_at and trade_at - self._last_submission_at < timedelta(seconds=12):
+            self._record_pair_decision(
+                PairAction(TradeCommand.HOLD, TradeCommand.HOLD),
+                trade_at,
+                None,
+                "Independent 12-second submission cooldown is active",
+                False,
+            )
+            return
+        positions = self._leveraged_positions()
+        held = positions[0] if positions else None
+        if len(positions) > 1:
+            self._record_pair_decision(
+                pair_action_for_target(1, 1, None),
+                trade_at,
+                None,
+                "Both leveraged funds are held; automatic execution is locked",
+                False,
+            )
+            self.snapshot.strategy_running = False
+            self.risk.disarm()
+            self._authority_mode = None
+            self.log("Both TQQQ and SQQQ are held; automatic trading locked", "critical", "risk")
+            return
+
+        held_symbol = held.symbol.strip().upper() if held else ""
+        held_quote = self.snapshot.quotes.get(held_symbol) if held else None
+        held_duration_minutes = None
+        if held:
+            if self.snapshot.account is None:
+                raise BrokerError("Active holding lacks its bound Agentic account")
+            try:
+                entry_fill_at = self.store.active_holding_start(
+                    self.snapshot.account.account_number,
+                    held_symbol,
+                    held.quantity,
+                )
+            except ValueError as exc:
+                self._revoke_live_automation(
+                    f"Active {held_symbol} holding time lacks exact execution provenance: {exc}"
+                )
+                self.log(
+                    f"Automatic decision blocked: active {held_symbol} holding lacks exact fill time",
+                    "critical",
+                    "live_fill_reconciliation",
+                )
+                return
+            if entry_fill_at is None:
+                self._revoke_live_automation(
+                    f"Active {held_symbol} holding lacks an exact entry execution"
+                )
+                return
+            held_duration_minutes = held_minutes(entry_fill_at, utc_now())
+        policy_position = (
+            PolicyPosition(
+                held_symbol,
+                held.average_price,
+                held_quote.mid if held_quote else None,
+                held_duration_minutes,
+            )
+            if held
+            else None
+        )
+        decision = self.policy.decide(self.snapshot.signal, trade_at, policy_position)
+        target = decision.target_symbol
+        t_units, s_units = self._inventory_units()
+        pair_action = pair_action_for_target(t_units, s_units, target)
+        self._record_pair_decision(
+            pair_action,
+            trade_at,
+            target,
+            decision.reason or "Policy target unchanged",
+            True,
+        )
+
+        if held is not None:
+            quote = held_quote
+            if target == held_symbol:
+                return
+            reason = decision.reason or f"Regime changed from {held_symbol} to {target or 'cash'}"
+            if held.sellable_quantity <= 0:
+                self.log(f"Cannot exit {held_symbol}: broker reports zero sellable shares", "error", "risk")
+                return
+            if quote is None:
+                self.log(f"Cannot exit {held_symbol}: no current quote is available", "error", "risk")
+                return
+            try:
+                intent = self._execution_intent(
+                    held_symbol,
+                    "sell",
+                    quote,
+                    reason,
+                    quantity=held.sellable_quantity,
+                )
+            except RuntimeError as exc:
+                self.snapshot.strategy_running = False
+                self.risk.disarm()
+                self._authority_mode = None
+                self.log(f"Automatic exit route blocked: {exc}", "critical", "risk")
+                return
+            order = await self._submit(intent, quote)
+            if order is not None:
+                self.log(
+                    f"Automatic exit for {held_symbol} is awaiting broker order and inventory truth",
+                    "warning",
+                    "live_exit_lifecycle",
+                    {
+                        "order_id": order.order_id,
+                        "ref_id": intent.ref_id,
+                        "retry_allowed_only_after_terminal_reconciliation": True,
+                    },
+                )
+            return
+
+        if target is None or self.snapshot.portfolio is None:
+            return
+        quote = self.snapshot.quotes.get(target)
+        if quote is None or self.risk.grant is None:
+            return
+        contract = self.runtime_execution_contract()
+        conservative_entries = self._prior_entry_upper_bound + len(
+            self._confirmed_entry_order_ids
+        )
+        if conservative_entries >= contract.max_entries_per_day:
+            self.log(
+                "No buy submitted: conservative daily entry cap reached",
+                "warning",
+                "risk",
+                {
+                    "conservative_entries": conservative_entries,
+                    "max_entries_per_day": contract.max_entries_per_day,
+                    "prior_filled_entry_count": self._prior_entry_upper_bound,
+                    "confirmed_in_process": len(self._confirmed_entry_order_ids),
+                },
+            )
+            return
+        realized = annualized_volatility(
+            tuple(self._recent_returns[target]),
+            bar_minutes=self.config.bar_seconds / 60.0,
+            market_hours=contract.market_hours,
+        )
+        sizing = size_entry(
+            contract,
+            equity=self.snapshot.portfolio.total_value,
+            settled_cash=self.snapshot.portfolio.buying_power,
+            price=quote.ask,
+            realized_volatility=realized,
+        )
+        remaining_exposure = max(0.0, self.risk.grant.max_total_exposure - self._exposure())
+        notional = min(
+            sizing.budget,
+            self.risk.grant.max_order_notional,
+            remaining_exposure,
+            self.snapshot.portfolio.buying_power,
+        )
+        if notional < 1.0:
+            reason = sizing.blocked_reason or "less than $1 of certified buying power remains"
+            self.log(f"No buy submitted: {reason}", "warning", "risk")
+            return
+        try:
+            intent = self._execution_intent(
+                target,
+                "buy",
+                quote,
+                decision.reason,
+                notional=notional,
+            )
+        except RuntimeError as exc:
+            self.log(f"No buy submitted: {exc}", "warning", "risk")
+            return
+        await self._submit(intent, quote)
+
+    async def _liquidate_for_loss_limit(self) -> None:
+        """Use the still-bounded grant only to reduce a held leveraged position."""
+
+        trade_at = utc_now()
+        if not self._live_automation_current(allow_loss_liquidation=True):
+            return
+        if self._submission_reconcile_required:
+            tracked_ids = {
+                order_id for order_id in self._submission_reconcile_required.values() if order_id
+            }
+            tracked_refs = set(self._submission_reconcile_required)
+            tracked_orders = [
+                order
+                for order in self.snapshot.orders
+                if order.order_id in tracked_ids or self._order_ref_id(order) in tracked_refs
+            ]
+            if tracked_orders and all(
+                order.side.strip().lower() == "sell" for order in tracked_orders
+            ):
+                self._record_pair_decision(
+                    PairAction(TradeCommand.HOLD, TradeCommand.HOLD),
+                    trade_at,
+                    None,
+                    "Daily-loss exit is waiting for broker order and inventory reconciliation",
+                    False,
+                )
+                return
+            self._revoke_live_automation(
+                "Daily loss limit reached while a prior non-exit submission remained unresolved"
+            )
+            self.log(
+                "Daily-loss exit needs manual verification because a prior non-exit submission "
+                "had to be cancelled; filled positions may remain",
+                "critical",
+                "risk",
+            )
+            return
+        if self._has_open_order():
+            self._revoke_live_automation(
+                "Daily loss limit reached while an untracked Agentic order remained open"
+            )
+            self.log(
+                "Daily-loss exit needs manual verification because an external or untracked order "
+                "had to be cancelled; filled positions may remain",
+                "critical",
+                "risk",
+            )
+            return
+        positions = self._leveraged_positions()
+        if not positions:
+            self._revoke_live_automation(
+                "Daily loss limit reached while flat; session authority revoked"
+            )
+            return
+        if len(positions) != 1:
+            self._revoke_live_automation(
+                "Daily loss limit reached with conflicting leveraged inventory"
+            )
+            self.log(
+                "Daily-loss liquidation is blocked because both leveraged funds are held; "
+                "manual flatten is required",
+                "critical",
+                "risk",
+            )
+            return
+        held = positions[0]
+        symbol = held.symbol.strip().upper()
+        quote = self.snapshot.quotes.get(symbol)
+        if held.sellable_quantity <= 0 or quote is None:
+            self._revoke_live_automation(
+                "Daily-loss liquidation could not prove sellable inventory and a fresh exit quote"
+            )
+            self.log(
+                f"Daily-loss exit for {symbol} was not submitted; check Robinhood and flatten manually",
+                "critical",
+                "risk",
+            )
+            return
+        intent = self._execution_intent(
+            symbol,
+            "sell",
+            quote,
+            "Daily loss limit reached; liquidation-only exit",
+            quantity=held.sellable_quantity,
+        )
+        self._record_pair_decision(
+            pair_action_for_target(*self._inventory_units(), None),
+            trade_at,
+            None,
+            intent.reason,
+            True,
+        )
+        order = await self._submit(intent, quote, liquidation_only=True)
+        if order is not None:
+            self.log(
+                f"Daily-loss exit for {symbol} is awaiting broker order and inventory truth",
+                "critical",
+                "live_exit_lifecycle",
+                {
+                    "order_id": order.order_id,
+                    "ref_id": intent.ref_id,
+                    "retry_allowed_only_after_terminal_reconciliation": True,
+                },
+            )
+            return
+        if (
+            order is None
+            and self.risk.grant is not None
+            and not self._submission_reconcile_required
+        ):
+            self._revoke_live_automation(
+                "Daily-loss exit was not authorized or submitted; manual flatten is required"
+            )
+            self.log(
+                f"Daily-loss exit for {symbol} was not submitted; check Robinhood and flatten manually",
+                "critical",
+                "risk",
+            )
+
+    async def _submit(
+        self,
+        intent: OrderIntent,
+        quote: Quote | None,
+        *,
+        liquidation_only: bool = False,
+    ) -> BrokerOrder | None:
+        self._require_order_runtime("submit an order")
+        if self._order_submission_lock.locked():
+            self.log(
+                "Order ticket held: another reviewed order is awaiting a decision or reconciliation",
+                "warning",
+                "order_confirmation",
+                {"ref_id": getattr(intent, "ref_id", None), "broker_write_attempted": False},
+            )
+            return None
+        async with self._order_submission_lock:
+            return await self._submit_serialized(
+                intent,
+                quote,
+                liquidation_only=liquidation_only,
+            )
+
+    async def _confirm_reviewed_order(
+        self,
+        intent: OrderIntent,
+        review: OrderReview,
+        *,
+        liquidation_only: bool,
+    ) -> OrderConfirmationRequest | None:
+        grant = self.risk.grant
+        account = self.snapshot.account
+        if grant is None or account is None:
+            self.store.update_intent(intent.ref_id, None, "confirmation_authority_missing")
+            return None
+        if intent != review.intent:
+            self.risk.release_authorization(intent.ref_id, "Broker review did not match exact intent")
+            self._persist_risk_receipts()
+            self.store.update_intent(intent.ref_id, None, "review_intent_mismatch")
+            self._revoke_live_automation("Broker review did not match the exact strategy ticket")
+            return None
+        try:
+            review_quotes = dict(self.snapshot.quotes)
+            review_quotes[intent.symbol] = review.quote
+            self._validated_execution_quotes(
+                review_quotes,
+                max_age_seconds=grant.max_quote_age_seconds,
+                context="Broker order review",
+            )
+        except (BrokerError, ValueError) as exc:
+            self.risk.release_authorization(intent.ref_id, "Broker review quote was invalid")
+            self._persist_risk_receipts()
+            self.store.update_intent(intent.ref_id, None, "review_quote_invalid")
+            self._revoke_live_automation(f"Broker review quote was invalid: {exc}")
+            return None
+        if self._order_confirmer is None:
+            self.risk.release_authorization(intent.ref_id, "Per-order confirmation UI was unavailable")
+            self._persist_risk_receipts()
+            self.store.update_intent(intent.ref_id, None, "confirmation_unavailable")
+            self._revoke_live_automation(
+                "Per-order confirmation UI was unavailable; no broker placement was attempted"
+            )
+            return None
+        requested_at = utc_now()
+        request = OrderConfirmationRequest(
+            account_number=account.account_number,
+            account_masked=account.masked,
+            intent=intent,
+            review=review,
+            authority_id=grant.authority_id,
+            strategy_fingerprint=grant.strategy_fingerprint,
+            requested_at=requested_at,
+            expires_at=min(requested_at + timedelta(seconds=30), grant.expires_at),
+            liquidation_only=liquidation_only,
+        )
+        try:
+            request.validate()
+        except ValueError as exc:
+            self.risk.release_authorization(intent.ref_id, "Order confirmation preview was invalid")
+            self._persist_risk_receipts()
+            self.store.update_intent(intent.ref_id, None, "confirmation_preview_invalid")
+            self._revoke_live_automation(f"Order confirmation preview was invalid: {exc}")
+            return None
+        payload = request.receipt_payload()
+        self.store.receipt(
+            "order_confirmation_requested",
+            f"Confirmation requested for {intent.side} {intent.symbol}",
+            payload,
+        )
+        try:
+            response = await self._order_confirmer(request)
+            if not isinstance(response, OrderConfirmationDecision):
+                raise TypeError("Per-order confirmation returned an unbound decision")
+            response.validate(request)
+        except BaseException as exc:
+            self.risk.release_authorization(intent.ref_id, "Per-order confirmation UI failed")
+            self._persist_risk_receipts()
+            self.store.update_intent(intent.ref_id, None, "confirmation_failed")
+            self.store.receipt(
+                "order_confirmation_decision",
+                f"Confirmation failed for {intent.side} {intent.symbol}",
+                {**payload, "accepted": False, "failure": type(exc).__name__},
+            )
+            self._revoke_live_automation(
+                "Per-order confirmation failed; no broker placement was attempted"
+            )
+            if isinstance(exc, asyncio.CancelledError):
+                raise
+            return None
+        accepted = response.accepted and utc_now() <= request.expires_at
+        self.store.receipt(
+            "order_confirmation_decision",
+            (
+                f"Confirmed {intent.side} {intent.symbol}"
+                if accepted
+                else f"Declined {intent.side} {intent.symbol}"
+            ),
+            {
+                **payload,
+                "accepted": accepted,
+                "typed_phrase_matched": (
+                    response.typed_phrase.strip() == request.confirmation_phrase
+                ),
+                "confirmed_at": response.confirmed_at.isoformat(),
+                "expired": utc_now() > request.expires_at,
+            },
+        )
+        if not accepted:
+            self.risk.release_authorization(
+                intent.ref_id,
+                "Order confirmation declined or expired",
+            )
+            self._persist_risk_receipts()
+            self.store.update_intent(intent.ref_id, None, "confirmation_declined")
+            self.log(
+                f"No order placed: {intent.side.upper()} {intent.symbol} confirmation was declined or expired",
+                "info",
+                "order_confirmation",
+                {"preview_id": request.preview_id, "broker_write_attempted": False},
+            )
+            return None
+        return request
+
+    def _live_loss_entry_block_reason(self) -> str:
+        """Block new exposure after today's loss streak, while allowing exits."""
+        if self.snapshot.account is None:
+            return "Cannot establish consecutive losses without a bound account"
+        try:
+            contract = self.runtime_execution_contract()
+            streak = self.store.live_loss_streak(
+                self.snapshot.account.account_number,
+                utc_now().astimezone(EASTERN).date().isoformat(),
+            )
+        except (ValueError, TypeError, OverflowError) as exc:
+            return f"Cannot establish consecutive losses from execution history: {exc}"
+        if streak["peak_consecutive_losses"] >= contract.max_consecutive_losses:
+            return (
+                "Consecutive loss pause: no new buys for this Eastern trading day "
+                f"(limit {contract.max_consecutive_losses}; "
+                f"observed streak {streak['peak_consecutive_losses']})"
+            )
+        return ""
+
+    async def _submit_serialized(
+        self,
+        intent: OrderIntent,
+        quote: Quote | None,
+        *,
+        liquidation_only: bool = False,
+    ) -> BrokerOrder | None:
+        self._require_order_runtime("submit an order")
+        if self.snapshot.account is None or self.snapshot.portfolio is None or quote is None:
+            return None
+        if liquidation_only and intent.side != "sell":
+            raise RuntimeError("Liquidation-only authority cannot create exposure")
+        if not self._live_automation_current(allow_loss_liquidation=liquidation_only):
+            return None
+        if intent.side == "buy":
+            self._assert_agent_route_clear()
+        if intent.side == "buy" and (reason := self._live_loss_entry_block_reason()):
+            self.log(f"Order blocked: {reason}", "warning", "risk", intent.as_dict())
+            return None
+        exit_position = None
+        if intent.side == "sell":
+            exit_position = next(
+                (
+                    position
+                    for position in self._leveraged_positions()
+                    if position.symbol.strip().upper() == intent.symbol
+                ),
+                None,
+            )
+            if exit_position is None:
+                self.log(
+                    f"Order blocked: no freshly reconciled {intent.symbol} inventory backs the sell",
+                    "critical",
+                    "risk",
+                    intent.as_dict(),
+                )
+                return None
+        decision = self.risk.authorize(
+            intent,
+            quote,
+            self.snapshot.portfolio,
+            self._exposure(),
+            account_number=self.snapshot.account.account_number,
+            strategy_fingerprint=self.current_strategy_fingerprint(self.risk.grant),
+            reconciled_position_quantity=(
+                exit_position.quantity if exit_position is not None else None
+            ),
+            reconciled_sellable_quantity=(
+                exit_position.sellable_quantity if exit_position is not None else None
+            ),
+        )
+        self._persist_risk_receipts()
+        if not decision.allowed:
+            self.log(f"Order blocked: {decision.reason}", "warning", "risk", intent.as_dict())
+            return None
+        if intent.market_hours == "all_day_hours":
+            try:
+                tradability = await self.broker.get_tradability(
+                    self.snapshot.account.account_number,
+                    [intent.symbol],
+                )
+                eligibility = tradability.get(intent.symbol)
+            except Exception as exc:
+                self.risk.release_authorization(
+                    intent.ref_id, "Tradability check failed before placement"
+                )
+                self._persist_risk_receipts()
+                self.snapshot.strategy_running = False
+                self.risk.disarm("24 Hour Market eligibility check failed")
+                self._authority_mode = None
+                self._persist_risk_receipts()
+                self.log(f"24 Hour Market eligibility check failed: {exc}", "error", "risk")
+                return None
+            if eligibility is None or not eligibility.tradeable or not eligibility.all_day_tradeable:
+                self.risk.release_authorization(
+                    intent.ref_id, "Symbol was not eligible before placement"
+                )
+                self._persist_risk_receipts()
+                self.snapshot.strategy_running = False
+                self.risk.disarm("24 Hour Market symbol was ineligible")
+                self._authority_mode = None
+                self._persist_risk_receipts()
+                self.log(
+                    f"Order blocked: {intent.symbol} is not currently eligible for the 24 Hour Market",
+                    "warning",
+                    "risk",
+                    intent.as_dict(),
+                )
+                return None
+            if not self._live_automation_current(allow_loss_liquidation=liquidation_only):
+                return None
+        self.store.record_intent(intent)
+        if self._standing is not None:
+            confirmation = self._standing.permit(intent, self.risk.grant, self.broker)
+            review = None
+            standing_reference_price = quote.ask if intent.side == "buy" else quote.bid
+        else:
+            try:
+                review = await self.broker.review_order(self.snapshot.account.account_number, intent)
+            except Exception as exc:
+                self.risk.release_authorization(intent.ref_id, "Broker review failed before placement")
+                self._persist_risk_receipts()
+                self.store.update_intent(intent.ref_id, None, "review_failed")
+                self._revoke_live_automation("Broker review failed; automatic trading was locked")
+                self.log(f"Robinhood review failed before placement: {exc}", "critical", "order_review")
+                return None
+            if review.market_data_disclosure:
+                self.event.emit("market", review.market_data_disclosure)
+            self.store.receipt(
+                "order_review",
+                f"Reviewed {intent.side} {intent.symbol}",
+                {
+                    "intent": intent.as_dict(),
+                    "market_data_disclosure": review.market_data_disclosure,
+                    "checks": review.checks,
+                },
+            )
+            if review.checks:
+                self.risk.release_authorization(intent.ref_id, "Broker review blocked placement")
+                self._persist_risk_receipts()
+                self.store.update_intent(intent.ref_id, None, "blocked_by_review")
+                self.snapshot.strategy_running = False
+                self.risk.disarm("Robinhood review blocked placement")
+                self._authority_mode = None
+                self._persist_risk_receipts()
+                self.log(
+                    f"Robinhood review alert blocked {intent.side} {intent.symbol}: {review.checks}",
+                    "critical",
+                    "order_review",
+                )
+                return None
+            if not self._live_automation_current(allow_loss_liquidation=liquidation_only):
+                self.store.update_intent(intent.ref_id, None, "blocked_evidence_revoked")
+                return None
+            confirmation = await self._confirm_reviewed_order(
+                intent,
+                review,
+                liquidation_only=liquidation_only,
+            )
+        if confirmation is None:
+            return None
+        if not self._live_automation_current(allow_loss_liquidation=liquidation_only):
+            self.store.update_intent(intent.ref_id, None, "blocked_state_changed_after_confirmation")
+            return None
+        # Broker review is not an execution lock. Re-read exact account and quote
+        # truth after the one-use confirmation, then replace the prior risk reservation
+        # using only that current state immediately before crossing the placement boundary.
+        try:
+            await self._refresh_exact_preplacement_truth()
+        except Exception as exc:
+            self.risk.release_authorization(
+                intent.ref_id, "Exact post-review broker refresh failed"
+            )
+            self._persist_risk_receipts()
+            self._revoke_live_automation(
+                f"Exact post-review broker refresh failed: {exc}"
+            )
+            self.store.update_intent(intent.ref_id, None, "post_review_refresh_failed")
+            return None
+        if not self._live_automation_current(allow_loss_liquidation=liquidation_only):
+            self.store.update_intent(intent.ref_id, None, "blocked_state_changed_after_review")
+            return None
+        current_grant = self.risk.grant
+        current_account = self.snapshot.account
+        if (
+            current_grant is None
+            or current_account is None
+            or current_grant.authority_id != confirmation.authority_id
+            or current_grant.strategy_fingerprint != confirmation.strategy_fingerprint
+            or current_account.account_number != confirmation.account_number
+            or utc_now() > confirmation.expires_at
+        ):
+            self.risk.release_authorization(
+                intent.ref_id,
+                "Confirmed order expired or its account/authority binding changed",
+            )
+            self._persist_risk_receipts()
+            self.store.update_intent(intent.ref_id, None, "confirmation_binding_changed")
+            self.log(
+                "Confirmed order was not placed because its one-use preview expired or changed",
+                "warning",
+                "order_confirmation",
+                {"preview_id": confirmation.preview_id, "broker_write_attempted": False},
+            )
+            return None
+        if self._nonterminal_orders(self.snapshot.orders):
+            self._revoke_live_automation(
+                "A broker order appeared after review; placement was blocked"
+            )
+            self.store.update_intent(intent.ref_id, None, "open_order_after_review")
+            return None
+        refreshed_exit_position = None
+        if intent.side == "buy":
+            # Confirmation and provider reads yield control. Rebuild the streak
+            # from the refreshed execution ledger before crossing placement.
+            if reason := self._live_loss_entry_block_reason():
+                self.risk.release_authorization(intent.ref_id, reason)
+                self._persist_risk_receipts()
+                self.store.update_intent(intent.ref_id, None, "consecutive_loss_blocked")
+                self.log(f"Order blocked after review: {reason}", "warning", "risk", intent.as_dict())
+                return None
+            if self._leveraged_positions():
+                self._revoke_live_automation(
+                    "Leveraged inventory appeared after review; exposure-increasing placement blocked"
+                )
+                self.store.update_intent(intent.ref_id, None, "position_changed_after_review")
+                return None
+        else:
+            refreshed_exit_position = next(
+                (
+                    position
+                    for position in self._leveraged_positions()
+                    if position.symbol.strip().upper() == intent.symbol
+                ),
+                None,
+            )
+            if refreshed_exit_position is None:
+                self._revoke_live_automation(
+                    "Exit inventory disappeared after review; placement was blocked"
+                )
+                self.store.update_intent(intent.ref_id, None, "position_changed_after_review")
+                return None
+        refreshed_quote = self.snapshot.quotes.get(intent.symbol)
+        if refreshed_quote is None or self.snapshot.portfolio is None:
+            self._revoke_live_automation("Exact account or quote truth disappeared after review")
+            self.store.update_intent(intent.ref_id, None, "truth_missing_after_review")
+            return None
+        reviewed_price = review.estimated_execution_price if review is not None else standing_reference_price
+        current_price = refreshed_quote.ask if intent.side == "buy" else refreshed_quote.bid
+        price_drift_bps = abs(current_price - reviewed_price) / reviewed_price * 10_000.0
+        if price_drift_bps > MAX_REVIEW_PRICE_DRIFT_BPS:
+            if refreshed_quote.spread_bps > current_grant.max_spread_bps:
+                self._revoke_live_automation(
+                    "Post-confirmation spread exceeded the bounded session limit"
+                )
+            else:
+                self.risk.release_authorization(
+                    intent.ref_id,
+                    "Reviewed price changed materially after confirmation",
+                )
+                self._persist_risk_receipts()
+            self.store.update_intent(intent.ref_id, None, "review_price_changed")
+            self.log(
+                "Confirmed order was not placed because the reviewed price changed materially; "
+                "a fresh ticket and confirmation are required",
+                "warning",
+                "order_confirmation",
+                {
+                    "preview_id": confirmation.preview_id,
+                    "reviewed_price": reviewed_price,
+                    "current_price": current_price,
+                    "price_drift_bps": price_drift_bps,
+                    "max_price_drift_bps": MAX_REVIEW_PRICE_DRIFT_BPS,
+                    "broker_write_attempted": False,
+                },
+            )
+            return None
+        self.risk.release_authorization(
+            intent.ref_id, "Replacing pre-review authorization with exact post-review truth"
+        )
+        refreshed_decision = self.risk.authorize(
+            intent,
+            refreshed_quote,
+            self.snapshot.portfolio,
+            self._exposure(),
+            account_number=self.snapshot.account.account_number,
+            strategy_fingerprint=self.current_strategy_fingerprint(self.risk.grant),
+            reconciled_position_quantity=(
+                refreshed_exit_position.quantity
+                if refreshed_exit_position is not None
+                else None
+            ),
+            reconciled_sellable_quantity=(
+                refreshed_exit_position.sellable_quantity
+                if refreshed_exit_position is not None
+                else None
+            ),
+        )
+        self._persist_risk_receipts()
+        if not refreshed_decision.allowed:
+            self._revoke_live_automation(
+                f"Post-review risk authorization failed: {refreshed_decision.reason}"
+            )
+            self.store.update_intent(intent.ref_id, None, "post_review_risk_blocked")
+            return None
+        quote = refreshed_quote
+        authorized_notional = float(self.risk.authorized_notionals.get(intent.ref_id, 0.0))
+        grant = self.risk.grant
+        if grant is None:
+            self.store.update_intent(intent.ref_id, None, "blocked_authority_revoked")
+            return None
+        if intent.side == "buy":
+            self._assert_agent_route_clear()
+        self.store.mark_intent_submitting(
+            intent.ref_id,
+            account_number=self.snapshot.account.account_number,
+            authority_id=grant.authority_id,
+            strategy_fingerprint=grant.strategy_fingerprint,
+            authorized_notional=authorized_notional,
+        )
+        if not self._live_automation_current(allow_loss_liquidation=liquidation_only):
+            # Conservatively retain the durable submitting intent for reconciliation.
+            return None
+        # Count the irreversible placement invocation before crossing the broker boundary.
+        # Any timeout/transport loss is conservatively treated as possibly accepted and is
+        # never retried with a new reference.
+        self.risk.record_submission(intent)
+        self._persist_risk_receipts()
+        self.store.receipt(
+            "standing_ticket_consumed" if review is None else "order_confirmation_consumed",
+            f"Consumed {'standing ticket' if review is None else 'one-use confirmation'} for {intent.side} {intent.symbol}",
+            {
+                "preview_id": confirmation.preview_id,
+                "ref_id": intent.ref_id,
+                "authority_id": confirmation.authority_id,
+                "account_last4": confirmation.account_number[-4:],
+                "consumed_at": utc_now().isoformat(),
+            },
+        )
+        self._submission_reconcile_required[intent.ref_id] = None
+        self._uncertain_submission_refs.add(intent.ref_id)
+        submitted_at = utc_now()
+        self._last_submission_at = submitted_at
+        starting_quantity = sum(
+            max(0.0, float(position.quantity))
+            for position in self.snapshot.positions
+            if position.symbol.strip().upper() == intent.symbol
+        )
+        try:
+            order = await self.broker.place_order(self.snapshot.account.account_number, intent)
+        except BaseException as exc:
+            self.store.update_intent(intent.ref_id, None, "submission_uncertain")
+            self.snapshot.strategy_running = False
+            self.risk.revoke("Broker placement response was ambiguous")
+            self._persist_risk_receipts()
+            self._cleanup_unresolved = True
+            self.log(
+                f"PLACEMENT OUTCOME UNKNOWN for {intent.side.upper()} {intent.symbol}; "
+                "automation locked, no retry allowed: " + str(exc),
+                "critical",
+                "order",
+                {"ref_id": intent.ref_id, "intent": intent.as_dict(), "retry_allowed": False},
+            )
+            if isinstance(exc, asyncio.CancelledError):
+                raise
+            return None
+        if not order.order_id:
+            self.store.update_intent(intent.ref_id, None, "submission_uncertain")
+            self.snapshot.strategy_running = False
+            self.risk.revoke("Broker placement returned no order id")
+            self._persist_risk_receipts()
+            self._cleanup_unresolved = True
+            self.log(
+                "PLACEMENT OUTCOME UNKNOWN: Robinhood returned no order id; no retry allowed",
+                "critical",
+                "order",
+                {"ref_id": intent.ref_id, "intent": intent.as_dict(), "retry_allowed": False},
+            )
+            return None
+        self._submission_reconcile_required[intent.ref_id] = order.order_id
+        self._uncertain_submission_refs.discard(intent.ref_id)
+        self._live_submissions[intent.ref_id] = LiveSubmissionReconciliation(
+            ref_id=intent.ref_id,
+            order_id=order.order_id,
+            symbol=intent.symbol,
+            side=intent.side,
+            starting_quantity=starting_quantity,
+            expected_quantity=(float(intent.quantity) if intent.quantity is not None else None),
+            authorized_notional=authorized_notional,
+            submitted_at=submitted_at,
+            reference_price=quote.ask if intent.side == "buy" else quote.bid,
+        )
+        self.snapshot.orders = [
+            order,
+            *[item for item in self.snapshot.orders if item.order_id != order.order_id],
+        ]
+        self.store.update_intent(intent.ref_id, order.order_id, order.state)
+        self.log(
+            f"Submitted {intent.side.upper()} {intent.symbol}; broker state {order.state}",
+            "warning",
+            "order",
+            {"order_id": order.order_id, "ref_id": intent.ref_id, "intent": intent.as_dict()},
+        )
+        return order
+
+    async def review_flatten(self, symbol: str) -> tuple[OrderIntent, OrderReview]:
+        self._require_order_runtime("review a flatten order")
+        if not self.config.live_trading_enabled:
+            raise RuntimeError("Real-order controls are disabled in Settings")
+        if self.snapshot.account is None:
+            raise RuntimeError("Robinhood is not connected")
+        if self.risk.grant is not None or self.snapshot.strategy_running:
+            self._revoke_live_automation("Manual flatten initiated; autonomous authority revoked")
+        await self.reconcile()
+        await self.refresh_quotes(evaluate=False)
+        if self.snapshot.last_reconcile_at is None or (
+            utc_now() - self.snapshot.last_reconcile_at
+        ).total_seconds() > max(10.0, self.config.reconcile_seconds * 2.0):
+            raise RuntimeError("Manual flatten requires fresh broker position and order truth")
+        normalized_symbol = symbol.strip().upper()
+        position = next(
+            (
+                item
+                for item in self.snapshot.positions
+                if item.symbol.strip().upper() == normalized_symbol
+            ),
+            None,
+        )
+        if position is None or position.sellable_quantity <= 0:
+            raise RuntimeError(f"No sellable {normalized_symbol} position")
+        if any(
+            order.symbol.strip().upper() == normalized_symbol
+            for order in self._nonterminal_orders(self.snapshot.orders)
+        ):
+            raise RuntimeError(f"A nonterminal {normalized_symbol} order already exists")
+        quote = self.snapshot.quotes.get(normalized_symbol)
+        if quote is None:
+            raise RuntimeError(f"No current {normalized_symbol} quote is available")
+        quote.validate()
+        if quote.age_seconds(utc_now()) > self.config.default_max_quote_age_seconds:
+            raise RuntimeError(f"The {normalized_symbol} quote is stale")
+        intent = OrderIntent(
+            ref_id=str(uuid.uuid4()),
+            symbol=normalized_symbol,
+            side="sell",
+            quantity=position.sellable_quantity,
+            reason="Manual flatten confirmed in desktop app",
+        )
+        self.store.record_intent(intent)
+        try:
+            review = await self.broker.review_order(self.snapshot.account.account_number, intent)
+        except Exception:
+            self.store.update_intent(intent.ref_id, None, "review_failed")
+            raise
+        try:
+            self._validated_execution_quotes(
+                {review.quote.symbol: review.quote, **{
+                    key: value
+                    for key, value in self.snapshot.quotes.items()
+                    if key != review.quote.symbol
+                }},
+                max_age_seconds=self.config.default_max_quote_age_seconds,
+                context="Manual flatten review",
+            )
+        except (BrokerError, ValueError) as exc:
+            self.store.update_intent(intent.ref_id, None, "review_quote_invalid")
+            raise RuntimeError(f"Manual flatten review quote is unusable: {exc}") from exc
+        if review.market_data_disclosure:
+            self.event.emit("market", review.market_data_disclosure)
+        if review.checks:
+            self.store.update_intent(intent.ref_id, None, "blocked_by_review")
+            raise RuntimeError(f"Robinhood review alert: {review.checks}")
+        return intent, review
+
+    async def place_reviewed_flatten(self, intent: OrderIntent, review: OrderReview) -> BrokerOrder:
+        self._require_order_runtime("place a flatten order")
+        if not self.config.live_trading_enabled:
+            raise RuntimeError("Real-order controls are disabled in Settings")
+        if self.snapshot.account is None:
+            raise RuntimeError("Robinhood is not connected")
+        if intent != review.intent or intent.side != "sell":
+            raise RuntimeError("Manual flatten preview no longer matches the order")
+        try:
+            review.quote.validate()
+        except ValueError as exc:
+            raise RuntimeError(f"Manual flatten review quote is invalid: {exc}") from exc
+        if (
+            review.quote.symbol.strip().upper() != intent.symbol.strip().upper()
+            or review.quote.bid_timestamp is None
+            or review.quote.ask_timestamp is None
+        ):
+            raise RuntimeError("Manual flatten review lacks exact venue quote data")
+        review_quote_bundle = dict(self.snapshot.quotes)
+        review_quote_bundle[intent.symbol] = review.quote
+        try:
+            self._validated_execution_quotes(
+                review_quote_bundle,
+                max_age_seconds=self.config.default_max_quote_age_seconds,
+                context="Manual flatten reviewed quote",
+            )
+        except BrokerError as exc:
+            self.store.update_intent(intent.ref_id, None, "review_quote_invalid")
+            raise RuntimeError(f"Manual flatten reviewed quote is unusable: {exc}") from exc
+        if (utc_now() - intent.created_at).total_seconds() > 30.0:
+            self.store.update_intent(intent.ref_id, None, "review_expired")
+            raise RuntimeError("Manual flatten review expired; request a fresh review")
+        try:
+            await self._refresh_exact_preplacement_truth()
+        except Exception as exc:
+            self.store.update_intent(intent.ref_id, None, "post_review_refresh_failed")
+            raise RuntimeError(
+                f"Manual flatten exact preplacement refresh failed: {exc}"
+            ) from exc
+        if not self.config.live_trading_enabled:
+            self.store.update_intent(intent.ref_id, None, "permission_revoked")
+            raise RuntimeError("Real-order controls were disabled after review")
+        if self.risk.grant is not None or self.snapshot.strategy_running:
+            self.store.update_intent(intent.ref_id, None, "authority_changed")
+            raise RuntimeError("Live authority changed after review; flatten was not placed")
+        position = next(
+            (
+                item
+                for item in self.snapshot.positions
+                if item.symbol.strip().upper() == intent.symbol
+            ),
+            None,
+        )
+        reviewed_quantity = float(intent.quantity or 0.0)
+        if (
+            position is None
+            or reviewed_quantity <= 0
+            or not math.isclose(
+                float(position.sellable_quantity),
+                reviewed_quantity,
+                rel_tol=1e-9,
+                abs_tol=1e-9,
+            )
+        ):
+            self.store.update_intent(intent.ref_id, None, "position_changed")
+            raise RuntimeError("Sellable position changed after review; request a fresh flatten")
+        if any(
+            order.symbol.strip().upper() == intent.symbol
+            for order in self._nonterminal_orders(self.snapshot.orders)
+        ):
+            self.store.update_intent(intent.ref_id, None, "open_order_detected")
+            raise RuntimeError("A nonterminal order appeared after review; flatten was not placed")
+        quote = self.snapshot.quotes.get(intent.symbol)
+        if (
+            quote is None
+            or quote.age_seconds(utc_now()) > self.config.default_max_quote_age_seconds
+        ):
+            self.store.update_intent(intent.ref_id, None, "quote_stale")
+            raise RuntimeError("A fresh quote is required immediately before manual flatten placement")
+        reviewed_bid = float(review.quote.bid)
+        bid_drift_bps = abs(float(quote.bid) - reviewed_bid) / reviewed_bid * 10_000.0
+        max_review_bid_drift_bps = 25.0
+        if bid_drift_bps > max_review_bid_drift_bps:
+            self.store.update_intent(intent.ref_id, None, "review_price_changed")
+            raise RuntimeError(
+                "Reviewed sell estimate changed materially; request a fresh flatten review "
+                f"({bid_drift_bps:.1f} bps; limit {max_review_bid_drift_bps:.1f} bps)"
+            )
+        manual_authority_id = f"manual-flatten-{uuid.uuid4()}"
+        self.store.mark_intent_submitting(
+            intent.ref_id,
+            account_number=self.snapshot.account.account_number,
+            authority_id=manual_authority_id,
+            strategy_fingerprint=hashlib.sha256(b"manual-flatten-v1").hexdigest(),
+            authorized_notional=float(intent.quantity or 0.0) * quote.mid,
+        )
+        self._submission_reconcile_required[intent.ref_id] = None
+        self._uncertain_submission_refs.add(intent.ref_id)
+        submitted_at = utc_now()
+        starting_quantity = float(position.quantity)
+        try:
+            order = await self.broker.place_order(self.snapshot.account.account_number, intent)
+        except BaseException as exc:
+            self.store.update_intent(intent.ref_id, None, "submission_uncertain")
+            self._cleanup_unresolved = True
+            self.log(
+                f"MANUAL FLATTEN OUTCOME UNKNOWN for {intent.symbol}; check Robinhood and do not retry: {exc}",
+                "critical",
+                "manual_flatten",
+                {"ref_id": intent.ref_id, "retry_allowed": False},
+            )
+            if isinstance(exc, asyncio.CancelledError):
+                raise
+            raise RuntimeError("Manual flatten outcome is unknown; check Robinhood before any retry") from exc
+        if not order.order_id:
+            self.store.update_intent(intent.ref_id, None, "submission_uncertain")
+            self._cleanup_unresolved = True
+            raise RuntimeError("Manual flatten outcome is unknown because no broker order id was returned")
+        self._submission_reconcile_required[intent.ref_id] = order.order_id
+        self._uncertain_submission_refs.discard(intent.ref_id)
+        self._live_submissions[intent.ref_id] = LiveSubmissionReconciliation(
+            ref_id=intent.ref_id,
+            order_id=order.order_id,
+            symbol=intent.symbol,
+            side=intent.side,
+            starting_quantity=starting_quantity,
+            expected_quantity=float(intent.quantity or 0.0),
+            authorized_notional=float(intent.quantity or 0.0) * quote.mid,
+            submitted_at=submitted_at,
+            reference_price=quote.bid,
+        )
+        self.snapshot.orders = [
+            order,
+            *[item for item in self.snapshot.orders if item.order_id != order.order_id],
+        ]
+        self.store.update_intent(intent.ref_id, order.order_id, order.state)
+        self.log(
+            f"Manual flatten submitted for {intent.quantity or 0:g} {intent.symbol}; {order.state}",
+            "critical",
+            "manual_flatten",
+            {"order_id": order.order_id, "ref_id": intent.ref_id},
+        )
+        return order
+
+    async def forget_broker_credentials(self) -> None:
+        if self.snapshot.connected:
+            raise RuntimeError(
+                "Disconnect before forgetting credentials; open orders are never cancelled implicitly"
+            )
+        self.broker.clear_credentials()
+        self.log(
+            "Stored broker OAuth credentials were removed; reconnect to restore access",
+            "warning",
+            "credentials",
+        )

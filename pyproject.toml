@@ -57,9 +57,10 @@ dev = [
 [project.scripts]
 grande-alpha = "grande_alpha.app:main"
 grande-alpha-cli = "grande_alpha.cli:main"
+grande-alpha-mcp = "grande_alpha.research.agent_mcp:main"
 
 [tool.setuptools]
-packages = ["grande_alpha", "grande_alpha.assets", "grande_alpha.broker", "grande_alpha.ui"]
+packages = ["grande_alpha", "grande_alpha.application", "grande_alpha.assets", "grande_alpha.broker", "grande_alpha.configuration", "grande_alpha.data", "grande_alpha.desktop", "grande_alpha.domain", "grande_alpha.execution", "grande_alpha.interfaces", "grande_alpha.interfaces.cli", "grande_alpha.persistence", "grande_alpha.research", "grande_alpha.strategy", "grande_alpha.ui"]
 
 [tool.setuptools.package-dir]
 grande_alpha = "scripts"

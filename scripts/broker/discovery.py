@@ -9,10 +9,10 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from grande_alpha.agent_models import AssetClass, Instrument, parse_symbols
 from grande_alpha.broker.base import BrokerError
-from grande_alpha.crypto_models import CryptoPairRules, CryptoQuote, decimal_amount
-from grande_alpha.models import Quote
+from grande_alpha.domain.crypto_models import CryptoPairRules, CryptoQuote, decimal_amount
+from grande_alpha.domain.models import Quote
+from grande_alpha.research.agent_models import AssetClass, Instrument, parse_symbols
 
 ReadCall = Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]]
 READ_TOOLS = frozenset({"get_currency_pairs", "get_crypto_quotes", "get_scans", "run_scan"})

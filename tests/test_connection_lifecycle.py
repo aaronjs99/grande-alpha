@@ -5,10 +5,10 @@ import asyncio
 import pytest
 from PySide6.QtGui import QCloseEvent
 
-from grande_alpha import controller as controller_module
 from grande_alpha.broker import robinhood_mcp
 from grande_alpha.broker.base import BrokerError
 from grande_alpha.broker.robinhood_mcp import RobinhoodMCPBroker
+from grande_alpha.desktop import controller as controller_module
 from grande_alpha.ui.main_window import MainWindow
 from test_live_autonomy import _bind_owned_order, _controller, _order, _qt_app
 from test_live_autonomy import _fixed_live_clock as _fixed_live_clock

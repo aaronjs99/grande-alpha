@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (
     QWizardPage,
 )
 
-from grande_alpha.config import DISCLOSURE_VERSION, ONBOARDING_VERSION, AppConfig
+from grande_alpha.configuration.config import DISCLOSURE_VERSION, ONBOARDING_VERSION, AppConfig
 
 
 class _AcknowledgementPage(QWizardPage):

@@ -19,14 +19,13 @@ from mcp.client.auth import OAuthClientProvider
 from mcp.client.streamable_http import streamablehttp_client
 from mcp.shared.auth import OAuthClientMetadata
 
-from grande_alpha.agent_models import Instrument
 from grande_alpha.broker.base import Broker, BrokerError
 from grande_alpha.broker.crypto import RobinhoodCrypto
 from grande_alpha.broker.discovery import RobinhoodDiscovery
 from grande_alpha.broker.oauth import CredentialTokenStorage, OAuthCallbackServer
-from grande_alpha.config import MCP_URL
-from grande_alpha.crypto_models import CryptoOrder, CryptoOrderIntent, CryptoPosition, CryptoReview
-from grande_alpha.models import (
+from grande_alpha.configuration.config import MCP_URL
+from grande_alpha.domain.crypto_models import CryptoOrder, CryptoOrderIntent, CryptoPosition, CryptoReview
+from grande_alpha.domain.models import (
     Account,
     BrokerExecution,
     BrokerOrder,
@@ -38,6 +37,7 @@ from grande_alpha.models import (
     Quote,
     utc_now,
 )
+from grande_alpha.research.agent_models import Instrument
 
 
 def _exception_details(exc: BaseException) -> str:

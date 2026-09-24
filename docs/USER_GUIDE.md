@@ -14,17 +14,15 @@ Use Windows 10 or 11 and Python 3.11 or 3.12. From the repository root in PowerS
 ```
 
 `setup` uses the selected system Python; a persistent virtual environment is not required. The
-desktop package is optional for command-line use. The application starts in research mode with
-external capabilities disabled. Broker access is enabled only after local setup and browser consent.
+desktop package is optional for command-line use. Opening the desktop does not start the worker
+or connect a broker. Broker access begins only after Connect and the broker's own consent.
 If you have an earlier flat settings file, run `.\grande.ps1 cli config upgrade` before launching
 the desktop. This validates the old file and keeps a backup; startup never converts it silently.
 Keep credentials in Windows Credential Manager, not a JSON file or a Git commit.
 
 For a first session, use the sequence **Connect account → Set limits → Review → Start**. Choose
 your own account, allowed symbols, order and exposure caps, daily loss amount, and recovery policy.
-The mixed candidate template leaves financial limits unfilled. The older attended desktop dialog
-prefills conservative example limits, but they grant no authority until you review and approve them.
-Authorization for the mixed engine
+The mixed candidate template leaves financial limits unfilled. Authorization for the mixed engine
 may be recorded outside market hours. The engine waits for a supported regular session and fresh
 broker data before considering an order.
 
@@ -38,32 +36,43 @@ local tests unless provider-observed evidence is explicitly stated.
 
 | Capability | Implemented | Tested locally | Remaining before public/live claim |
 |---|---|---|---|
-| Desktop research, replay, and live shadow | Yes | Yes | Native hardware acceptance and current data rights |
-| Attended ETF session with per-order confirmation | Yes | Yes | Provider-observed end-to-end acceptance |
+| Desktop mixed-worker control, status, responsive layout, and Stop | Yes | Offscreen and substitute tests | Installed Windows and provider-observed acceptance |
+| Optional equity/crypto research and local MCP | Yes, research only | Synthetic/local tests | Client-specific setup; no live order authority or model-performance claim |
+| Attended ETF CLI session with per-order confirmation | Yes | Yes | Provider-observed end-to-end acceptance |
 | Mixed earnings-stock and TQQQ/SQQQ allocation | Yes | Yes | Current point-in-time earnings coverage and strategy evaluation |
-| Mixed foreground autonomous runner | Yes | Partial | Exact provider schemas, order/fill/outage tests, and deployment operations |
+| Mixed background autonomous runner | Yes | Substitute/local tests | Exact provider schemas, order/fill/outage tests, and deployment operations |
 | Named saved settings and backed-up flat-file upgrade | Yes | Yes | Existing users must run the explicit upgrade |
-| Persistent, exact-scope mixed authorization | Yes | Yes | Desktop control and full worker integration |
+| Persistent, exact-scope mixed authorization | Yes | Local and offscreen tests | Provider-observed account acceptance |
 | Durable references, deduplicated fills, process lease | Yes | Partial | Provider-observed ambiguous-submission and partial-fill recovery |
 | Daily mixed loss stop and recovery delay | Yes | Yes | Live reconciliation across external broker activity |
-| One desktop/CLI background worker | No | No | Authenticated current-user control and restart operations |
+| User-started hidden mixed worker and local control | Yes in source | Substitute/local tests | Installed Windows operation, restart, and provider-observed recovery |
 | Public signed binary or paid plan | No | No | Signing, support, provider and legal review; billing is not included |
 
-The desktop currently operates its older attended ETF path; the mixed autonomous runner is a
-foreground command-line path. They are **not yet one shared background service**. Do not interpret
-desktop status as confirmation that the mixed runner is active.
+The desktop and autonomous mixed CLI use the same user-started hidden worker. Attended ETF and
+shadow CLI sessions remain foreground paths. The worker implementation and substitute tests are not installed-Windows
+or provider-observed acceptance. Do not interpret an Agent research status as confirmation that
+the mixed worker is active or authorized.
+
+## Optional research connection
+
+After reviewing a connected account, expand **Research MCP** and enable it for this worker
+session, or use `research mcp enable` from the CLI. It starts off, is separate from trading,
+and exposes only bounded research context and controls to a compatible local AI client.
+Stop, Revoke, or worker shutdown closes the connection and discards queued requests. Already
+shared data cannot be recalled; do not put secrets in prompts. See the
+[research connection guide](RESEARCH.md#agent-research-prompts-and-local-mcp) and
+[privacy policy](../PRIVACY.md).
 
 ## Stop, close, and recover
 
-**Stop trading** must block new local submissions. It does not reverse a sent order, cancel an
-accepted order, or sell a filled position. The desktop's separate stop-and-cancel flow previews
-only orders it can identify as app-owned and requires a further cancellation decision. Check the
+**Stop trading** blocks new local submissions. It does not reverse a sent order, cancel an
+accepted order, or sell a filled position. Check the
 broker directly after a disconnection, unresolved placement, or shutdown.
 
 When closing a connected desktop window, choose **Keep running in tray**, **Stop trading and exit**,
-or **Cancel**. The tray choice keeps that desktop process running; it is not a Windows scheduler or
-an independent service. Stop-and-exit completes even when broker cleanup cannot be verified, and
-retains local records for later reconciliation. A headless runner must be started separately.
+or **Cancel**. The tray choice leaves the already-started worker running; it is not a Windows
+scheduler or startup service. Stop-and-exit completes even when broker cleanup cannot be verified,
+and retains local records for later reconciliation.
 
 The mixed runner stores one approval for an exact account, candidate, symbol universe, and limits
 until revoked. A changed candidate needs a fresh approval. A restart may use the unchanged approval
@@ -110,8 +119,8 @@ a cancellation request is never proof that an order is terminal or a holding is 
 | Quotes or earnings are missing | Check timestamps, symbol coverage, provider permissions, quota, and whether consensus was captured before the announcement. Missing stock allocation stays in cash. |
 | A strategy remains idle | Inspect market window, fresh quotes, available buying power, approval scope, loss state, and the selected policy. An idle result is not necessarily an error. |
 | Stop leaves a holding | Stop blocks local submissions; selling a filled holding is a separate reviewed action. Verify the broker position. |
-| Disconnect warns about unverified orders | Review the exact app-owned cancellation scope or deliberately leave without cancellation, then manage orders in the broker. Durable records remain for reconnection. |
-| The desktop closes but a terminal runner is active | The desktop and mixed runner are separate processes today; stop the runner explicitly. Tray mode keeps only the desktop process alive. |
+| Exit warns about unverified orders | Check the broker directly. The local stop fence does not prove cancellation, and durable records remain for reconciliation. |
+| The desktop closes but a session appears active | Check the worker's session status. Keep running in tray and closing a terminal do not stop it; Stop trading and exit writes the local fence. |
 
 Never paste credentials, account identifiers, balances, or unredacted diagnostics into a public
 issue. If an installed app behaves differently from the source, update or reinstall the exact

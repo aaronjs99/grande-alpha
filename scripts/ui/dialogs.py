@@ -22,9 +22,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from grande_alpha.config import AppConfig
-from grande_alpha.execution import MARKET_HOURS_LABELS, ORDER_TYPE_LABELS, TIME_IN_FORCE_LABELS
-from grande_alpha.models import (
+from grande_alpha.configuration.config import AppConfig
+from grande_alpha.domain.execution_profile import MARKET_HOURS_LABELS, ORDER_TYPE_LABELS, TIME_IN_FORCE_LABELS
+from grande_alpha.domain.models import (
     AUTHORITY_TIMEZONE,
     Account,
     LiveGrant,

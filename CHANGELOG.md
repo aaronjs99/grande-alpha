@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+## 0.18.0 - 2026-09-23
+
+- Reorganized the `scripts/` package by responsibility. The package root now holds only the
+  version, entrypoints, and a short map; configuration, data, domain, execution, persistence,
+  research, strategy, broker, and desktop code live in focused subpackages.
+- Replaced the launched desktop with a responsive local-worker control panel using the same mixed
+  execution service as the CLI. Stop and exit can write a durable local fence when the broker or
+  control connection is unavailable; neither action claims to cancel orders already sent.
+- Added exact-scope, user-started background operation, request-limited earnings collection,
+  recoverable execution-store upgrade, and an optional research-only MCP bridge. Fast crash
+  recovery waits for an old account lease rather than abandoning the previously running session.
+- Ported Antonio's broker shutdown and concurrent research improvements from PR #13 into this
+  layout. The current guides now separate implemented behavior, local checks, and provider-observed
+  acceptance still outstanding.
+- This release does not certify a profitable strategy, provider-observed autonomous execution, or
+  a signed public Windows installer. Attended and shadow CLI modes remain foreground paths.
+
+### Intermediate development notes
+
+The entries below record changes made during the development cycle. Some described temporary
+limitations or earlier interfaces that were superseded by the 0.18.0 release summary above.
+
 - Ported the stalled Robinhood transport, STOP, and disconnect fixes from Antonio's open
   PR #13 into the current `scripts/` layout. Active and queued callers now release on
   transport interruption; shutdown has bounded waits, and a read-only session does not

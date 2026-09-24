@@ -3,10 +3,10 @@ from uuid import uuid4
 
 import pytest
 
-from grande_alpha.broker_permissions import VerifiedBrokerEligibility
-from grande_alpha.equity_execution import EquityOrderIntent
-from grande_alpha.models import EquityTradability, OrderReview, Quote
-from grande_alpha.standing import REQUIRED_TOOL_ARGUMENTS, ROBINHOOD_URL
+from grande_alpha.broker.permissions import VerifiedBrokerEligibility
+from grande_alpha.domain.models import EquityTradability, OrderReview, Quote
+from grande_alpha.execution.equity_execution import EquityOrderIntent
+from grande_alpha.execution.standing import REQUIRED_TOOL_ARGUMENTS, ROBINHOOD_URL
 
 
 @pytest.mark.asyncio

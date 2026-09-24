@@ -7,12 +7,12 @@ import pytest
 from PySide6.QtWidgets import QApplication
 
 from fake_broker import DisabledBroker
-from grande_alpha.agent_ledger import AgentBudget
-from grande_alpha.agent_models import AgentSnapshot
-from grande_alpha.config import AppConfig
-from grande_alpha.controller import TradingController, TradingSnapshot
-from grande_alpha.models import Account, Portfolio, utc_now
-from grande_alpha.storage import AuditStore
+from grande_alpha.configuration.config import AppConfig
+from grande_alpha.desktop.controller import TradingController, TradingSnapshot
+from grande_alpha.domain.models import Account, Portfolio, utc_now
+from grande_alpha.persistence.agent_ledger import AgentBudget
+from grande_alpha.persistence.store import AuditStore
+from grande_alpha.research.agent_models import AgentSnapshot
 from grande_alpha.ui.main_window import MainWindow
 
 

@@ -5,12 +5,13 @@ from argparse import Namespace
 import pytest
 
 from grande_alpha.cli import build_parser, command_session_run
-from grande_alpha.cli_table import format_table
-from grande_alpha.config_cli import (
+from grande_alpha.interfaces.cli.cli_table import format_table
+from grande_alpha.interfaces.cli.config_cli import (
     command_config_import_legacy,
     command_config_show,
     command_config_upgrade,
 )
+from grande_alpha.interfaces.cli.worker_cli import command_research_mcp
 
 
 def test_table_renderer_wraps_content_and_normalizes_cells() -> None:
@@ -53,3 +54,9 @@ def test_public_cli_has_six_groups_and_one_session_runner() -> None:
         parser.parse_args(["session", "run", "--mode", "autonomous"])
     with pytest.raises(SystemExit):
         parser.parse_args(["session", "run", "--mode", "standing", "--strategy", "etf"])
+
+
+def test_research_mcp_stays_in_research_command_group() -> None:
+    parser = build_parser()
+    assert parser.parse_args(["research", "mcp", "enable"]).func is command_research_mcp
+    assert parser.parse_args(["research", "mcp", "disable"]).func is command_research_mcp

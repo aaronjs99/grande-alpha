@@ -7,12 +7,12 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from grande_alpha.agent_analyst import parse_decisions
-from grande_alpha.agent_models import AgentSettings, AssetClass, Instrument, parse_symbols
-from grande_alpha.agent_runtime import AgentRuntime
 from grande_alpha.broker.discovery import RobinhoodDiscovery
-from grande_alpha.crypto_models import CryptoQuote
-from grande_alpha.models import Quote
+from grande_alpha.domain.crypto_models import CryptoQuote
+from grande_alpha.domain.models import Quote
+from grande_alpha.research.agent_analyst import parse_decisions
+from grande_alpha.research.agent_models import AgentSettings, AssetClass, Instrument, parse_symbols
+from grande_alpha.research.agent_runtime import AgentRuntime
 
 NOW = datetime(2026, 9, 23, 15, 0, tzinfo=UTC)
 

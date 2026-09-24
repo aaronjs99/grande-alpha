@@ -23,13 +23,13 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from grande_alpha.config import AppConfig
-from grande_alpha.execution import (
+from grande_alpha.configuration.config import AppConfig
+from grande_alpha.domain.execution_profile import (
     MARKET_HOURS_LABELS,
     ORDER_TYPE_LABELS,
     TIME_IN_FORCE_LABELS,
 )
-from grande_alpha.strategy import STRATEGY_NAMES
+from grande_alpha.strategy.core import STRATEGY_NAMES
 from grande_alpha.ui.glossary import add_explained_row, apply_help, help_hint
 from grande_alpha.ui.themes import set_widget_style
 

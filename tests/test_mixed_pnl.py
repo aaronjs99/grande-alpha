@@ -1,8 +1,8 @@
 from datetime import UTC, datetime, timedelta
 
-from grande_alpha.equity_ledger import EquityLedger
-from grande_alpha.models import Quote
-from grande_alpha.storage import AuditStore
+from grande_alpha.domain.models import Quote
+from grande_alpha.execution.equity_ledger import EquityLedger
+from grande_alpha.persistence.store import AuditStore
 
 NOW = datetime(2026, 9, 23, 18, 0, tzinfo=UTC)
 

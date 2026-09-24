@@ -15,7 +15,7 @@ from decimal import Decimal, localcontext
 
 from grande_alpha.broker.base import BrokerError
 from grande_alpha.broker.discovery import ReadCall, RobinhoodDiscovery, object_rows
-from grande_alpha.crypto_models import (
+from grande_alpha.domain.crypto_models import (
     CryptoExecution,
     CryptoOrder,
     CryptoOrderIntent,
@@ -23,7 +23,7 @@ from grande_alpha.crypto_models import (
     CryptoReview,
     decimal_amount,
 )
-from grande_alpha.models import Account, utc_now
+from grande_alpha.domain.models import Account, utc_now
 
 CRYPTO_TOOLS = frozenset({
     "get_crypto_positions", "get_crypto_orders", "get_portfolio",

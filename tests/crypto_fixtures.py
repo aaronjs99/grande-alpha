@@ -5,8 +5,8 @@ from datetime import UTC, datetime
 from decimal import Decimal
 
 from grande_alpha.broker.crypto import RobinhoodCrypto
-from grande_alpha.crypto_models import CryptoOrderIntent
-from grande_alpha.models import Account
+from grande_alpha.domain.crypto_models import CryptoOrderIntent
+from grande_alpha.domain.models import Account
 
 NOW = datetime(2026, 9, 23, 15, tzinfo=UTC)
 PAIR_ID = "11111111-1111-4111-8111-111111111111"

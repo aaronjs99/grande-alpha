@@ -2,11 +2,11 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-import grande_alpha.live_data as live_data
-from grande_alpha.earnings_feed import EarningsObservationStore
-from grande_alpha.equity_execution import EquityScope
-from grande_alpha.mixed_portfolio import AllocationPolicy, plan
-from grande_alpha.models import Quote
+import grande_alpha.data.live_data as live_data
+from grande_alpha.data.earnings_feed import EarningsObservationStore
+from grande_alpha.domain.models import Quote
+from grande_alpha.execution.equity_execution import EquityScope
+from grande_alpha.strategy.mixed_portfolio import AllocationPolicy, plan
 
 NOW = datetime(2026, 9, 23, 18, 0, tzinfo=UTC)
 
@@ -68,6 +68,38 @@ async def test_missing_stock_event_does_not_increase_etf_cap(tmp_path, monkeypat
         assert set(targets) == {"TQQQ"}
         assert 0 < targets["TQQQ"] <= .2
         assert "AAPL" in snapshot["coverage"]["missing"]
+    finally:
+        source.close()
+        earnings.close()
+
+
+@pytest.mark.asyncio
+async def test_snapshot_collects_earnings_but_keeps_cash_without_verified_event(tmp_path, monkeypatch):
+    monkeypatch.setattr(live_data, "utc_now", lambda: NOW)
+
+    class UnavailableProvider:
+        calls = 0
+
+        async def fetch(self, symbol, dataset):
+            self.calls += 1
+            raise ConnectionError("offline")
+
+    provider = UnavailableProvider()
+    earnings = EarningsObservationStore(tmp_path / "earnings.db")
+    scope = EquityScope("account-1", ("AAPL", "TQQQ", "SQQQ"), NOW, None,
+                        20, 100, 100, 25, 5, 8, 20)
+    thresholds = {"min_surprise_bps": 1, "min_momentum_bps": 1, "max_spread_bps": 20,
+                  "max_event_age_days": 10, "max_quote_age_seconds": 8}
+    source = live_data.LiveDataService(tmp_path / "market.db", QuoteBroker(), earnings,
+                                       scope, AllocationPolicy(), thresholds,
+                                       earnings_client=provider)
+    try:
+        snapshot = await source.snapshot()
+        assert provider.calls == 2
+        assert snapshot["coverage"]["earnings_observations"]["AAPL"]["EARNINGS"]["status"] == "provider_error"
+        assert snapshot["coverage"]["earnings_observations"]["AAPL"]["EARNINGS_ESTIMATES"]["status"] == "provider_error"
+        assert "AAPL" in snapshot["coverage"]["missing"]
+        assert plan(snapshot["request"])["cash_target_usd"] == 1.0
     finally:
         source.close()
         earnings.close()

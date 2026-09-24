@@ -4,7 +4,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from grande_alpha.earnings_feed import EarningsObservationStore
+from grande_alpha.data.earnings_feed import EarningsObservationStore
 
 NOW = datetime(2026, 9, 23, 18, 0, tzinfo=UTC)
 
@@ -58,14 +58,18 @@ async def test_identical_refetch_renews_cache_without_rewriting_raw_observation(
         async def fetch(self, symbol, dataset):
             self.calls += 1
             return {"provider": "alpha_vantage", "dataset": dataset, "symbol": symbol,
-                    "observed_at": NOW.isoformat(), "sha256": hashlib.sha256(canonical.encode()).hexdigest(),
+                    "observed_at": (NOW + timedelta(hours=25 * (self.calls - 1))).isoformat(),
+                    "sha256": hashlib.sha256(canonical.encode()).hexdigest(),
                     "payload": payload}
 
     client = SameResponse()
     store = EarningsObservationStore(tmp_path / "earnings.db")
     try:
         await store.fetch_cached(client, "AAPL", "EARNINGS", now=NOW)
-        await store.fetch_cached(client, "AAPL", "EARNINGS", now=NOW + timedelta(hours=25))
+        refreshed, fetched_from_cache, _ = await store.fetch_cached(
+            client, "AAPL", "EARNINGS", now=NOW + timedelta(hours=25))
+        assert fetched_from_cache is False
+        assert refreshed["observed_at"] == NOW.isoformat()
         result, cached, _ = await store.fetch_cached(client, "AAPL", "EARNINGS",
                                                       now=NOW + timedelta(hours=26))
         assert client.calls == 2

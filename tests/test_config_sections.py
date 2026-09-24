@@ -1,16 +1,24 @@
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, fields
+from dataclasses import fields
 
 import pytest
 
-from grande_alpha import config as config_module
-from grande_alpha.config import (
+from grande_alpha.configuration import config as config_module
+from grande_alpha.configuration.config import (
     CONFIG_SECTIONS,
     AppConfig,
+    BrokerConfig,
     ConfigUpgradeRequired,
+    DataConfig,
+    DesktopConfig,
+    ExecutionConfig,
+    RiskConfig,
+    StorageConfig,
+    StrategyConfig,
     config_document,
+    flat_config_values,
     load_config,
     save_config,
     upgrade_config,
@@ -20,7 +28,8 @@ from grande_alpha.config import (
 def test_every_setting_has_one_saved_section_and_round_trips(tmp_path):
     names = [name for section in CONFIG_SECTIONS.values() for name in section]
     assert len(names) == len(set(names))
-    assert set(names) == {item.name for item in fields(AppConfig)} - {"cadence_version"}
+    assert set(names) == set(flat_config_values(AppConfig())) - {"cadence_version"}
+    assert {item.name for item in fields(AppConfig)} == {"cadence_version", *CONFIG_SECTIONS}
 
     path = tmp_path / "config.json"
     config = AppConfig(broker_connection_enabled=True, live_trading_enabled=True,
@@ -49,7 +58,7 @@ def test_unknown_configuration_fields_are_rejected(tmp_path, location):
 
 def test_old_flat_configuration_needs_explicit_backed_up_upgrade(tmp_path):
     path = tmp_path / "config.json"
-    original = asdict(AppConfig(broker_connection_enabled=True, live_trading_enabled=True))
+    original = flat_config_values(AppConfig(broker_connection_enabled=True, live_trading_enabled=True))
     path.write_text(json.dumps(original), encoding="utf-8")
     with pytest.raises(ConfigUpgradeRequired):
         load_config(path)
@@ -65,7 +74,7 @@ def test_old_flat_configuration_needs_explicit_backed_up_upgrade(tmp_path):
 
 def test_interrupted_upgrade_preserves_original_and_backup(tmp_path, monkeypatch):
     path = tmp_path / "config.json"
-    original = json.dumps(asdict(AppConfig()))
+    original = json.dumps(flat_config_values(AppConfig()))
     path.write_text(original, encoding="utf-8")
 
     def interrupt(_config, _path, **_kwargs):
@@ -82,6 +91,32 @@ def test_missing_configuration_lookup_is_read_only(tmp_path):
     path = tmp_path / "nonexistent" / "config.json"
     assert load_config(path) == AppConfig()
     assert not path.parent.exists()
+
+
+def test_typed_sections_are_authoritative_and_compatibility_updates_are_independent():
+    config = AppConfig()
+    assert isinstance(config.broker, BrokerConfig)
+    assert isinstance(config.data, DataConfig)
+    assert isinstance(config.strategy, StrategyConfig)
+    assert isinstance(config.execution, ExecutionConfig)
+    assert isinstance(config.risk, RiskConfig)
+    assert isinstance(config.storage, StorageConfig)
+    assert isinstance(config.desktop, DesktopConfig)
+    config.risk.default_max_daily_loss = 3.5
+    assert config.default_max_daily_loss == 3.5
+    updated = config.with_flat_updates(default_max_daily_loss=4.5)
+    assert updated.risk.default_max_daily_loss == 4.5
+    assert config.risk.default_max_daily_loss == 3.5
+
+
+def test_invalid_grouped_field_error_omits_value(tmp_path):
+    path = tmp_path / "config.json"
+    document = config_document(AppConfig())
+    document["risk"]["default_max_daily_loss"] = "secret-value"
+    path.write_text(json.dumps(document), encoding="utf-8")
+    with pytest.raises(ValueError, match="default_max_daily_loss") as error:
+        load_config(path)
+    assert "secret-value" not in str(error.value)
 
 
 @pytest.mark.parametrize(

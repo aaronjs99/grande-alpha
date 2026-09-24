@@ -8,8 +8,8 @@ from decimal import Decimal
 
 import pytest
 
-from grande_alpha.agent_ledger import AgentBudget, ExecutionObservation, ExecutionTicket
-from grande_alpha.storage import AuditStore
+from grande_alpha.persistence.agent_ledger import AgentBudget, ExecutionObservation, ExecutionTicket
+from grande_alpha.persistence.store import AuditStore
 
 D = Decimal
 NOW = datetime(2026, 9, 23, 15, tzinfo=UTC)

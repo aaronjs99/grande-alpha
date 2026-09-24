@@ -25,7 +25,7 @@ foreach ($ShortcutPath in @(
     $Shortcut.IconLocation = "$Icon,0"
     $Shortcut.Description = 'GRANDE Alpha research and consent-gated trading workstation'
     $Shortcut.Save()
-    & $PythonExe -m grande_alpha.windows_shortcut $ShortcutPath
+    & $PythonExe -m grande_alpha.desktop.windows_shortcut $ShortcutPath
     if ($LASTEXITCODE -ne 0) {
         throw "Could not assign the GRANDE Alpha taskbar identity to $ShortcutPath"
     }

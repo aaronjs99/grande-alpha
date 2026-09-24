@@ -8,10 +8,10 @@ from decimal import Decimal
 import pytest
 
 from crypto_fixtures import ACCOUNT, EXECUTION, NOW
-from grande_alpha.agent_execution import AgentExecutor, crypto_ticket
-from grande_alpha.agent_ledger import AgentBudget
+from grande_alpha.application.agent_execution import AgentExecutor, crypto_ticket
 from grande_alpha.broker.crypto import CryptoOutcomeUnknown
-from grande_alpha.storage import AuditStore
+from grande_alpha.persistence.agent_ledger import AgentBudget
+from grande_alpha.persistence.store import AuditStore
 from test_agent_execution import FixtureBroker, filled, reviewed
 from test_agent_execution import fixture as fixture
 
@@ -209,8 +209,8 @@ async def test_partial_fill_then_cancellation_keeps_inventory_cost(fixture):
 
 @pytest.mark.asyncio
 async def test_equity_cancellation_uses_account_scoped_stock_route(fixture):
-    from grande_alpha.agent_execution import equity_ticket
-    from grande_alpha.models import BrokerOrder
+    from grande_alpha.application.agent_execution import equity_ticket
+    from grande_alpha.domain.models import BrokerOrder
     from test_agent_execution import equity_review
 
     store, _, broker, _ = fixture

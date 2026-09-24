@@ -1,6 +1,6 @@
 import pytest
 
-import grande_alpha.read_retry as retries
+import grande_alpha.execution.read_retry as retries
 from grande_alpha.broker.base import BrokerError
 
 

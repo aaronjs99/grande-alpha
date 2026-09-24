@@ -14,8 +14,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from grande_alpha.config import AppConfig
-from grande_alpha.strategy import STRATEGY_NAMES
+from grande_alpha.configuration.config import AppConfig
+from grande_alpha.strategy.core import STRATEGY_NAMES
 from grande_alpha.ui.themes import set_widget_style
 
 

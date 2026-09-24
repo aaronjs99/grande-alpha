@@ -35,7 +35,7 @@ if (-not $ImportReady) {
     $ShortcutPaths = @($DesktopShortcut, $StartShortcut)
     $ExistingShortcuts = @($ShortcutPaths | Where-Object { Test-Path -LiteralPath $_ })
     if ($ExistingShortcuts.Count -eq $ShortcutPaths.Count) {
-        & $PythonExe -m grande_alpha.windows_shortcut --check @ExistingShortcuts | Out-Null
+        & $PythonExe -m grande_alpha.desktop.windows_shortcut --check @ExistingShortcuts | Out-Null
         if ($LASTEXITCODE -eq 0) {
             Write-Check 'Taskbar identity' 'READY - GRANDE Alpha logo pin' Green
         } else {
@@ -72,7 +72,7 @@ if ($Full -and $SourceReady) {
 if ($Broker -and $SourceReady) {
     Write-Host ''
     Write-Host 'Starting explicit read-only Robinhood OAuth and data check...' -ForegroundColor Cyan
-    & $PythonExe -m grande_alpha.broker_check
+    & $PythonExe -m grande_alpha.broker.check
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }
 

@@ -8,9 +8,9 @@ from pathlib import Path
 from PySide6.QtWidgets import QApplication
 
 from fake_broker import DisabledBroker
-from grande_alpha.config import AppConfig
-from grande_alpha.controller import TradingController
-from grande_alpha.storage import AuditStore
+from grande_alpha.configuration.config import AppConfig
+from grande_alpha.desktop.controller import TradingController
+from grande_alpha.persistence.store import AuditStore
 from grande_alpha.ui.main_window import MainWindow
 from grande_alpha.ui.settings_dialog import SettingsDialog
 from grande_alpha.ui.themes import apply_application_theme
