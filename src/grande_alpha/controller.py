@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal
 from typing import Any
 
-from PySide6.QtCore import QObject, Signal
+from PySide6.QtCore import QObject, QTimer, Signal
 
 from grande_alpha.action_lab import (
     ALL_PAIR_ACTIONS,
@@ -20,6 +20,7 @@ from grande_alpha.action_lab import (
     live_feasible_action_ids,
     pair_action_for_target,
 )
+from grande_alpha.agent_bridge import AgentBridge
 from grande_alpha.agent_execution import AgentExecutor
 from grande_alpha.agent_ledger import AgentBudget
 from grande_alpha.agent_models import AgentSettings
@@ -177,6 +178,8 @@ class CancelPlan:
 class TradingController(QObject):
     snapshot_changed = Signal(object)
     agent_changed = Signal(object)
+    agent_mcp_changed = Signal(bool)
+    agent_settings_changed = Signal()
     event = Signal(str, str)
     connection_busy = Signal(bool)
 
@@ -257,6 +260,103 @@ class TradingController(QObject):
             log=self.log,
             crypto_account_type=lambda: self.snapshot.account.brokerage_account_type if self.snapshot.account else "",
         )
+
+        self.agent_bridge = AgentBridge(store.path.parent / "agent-mcp.db")
+        self._agent_mcp_timer = QTimer(self)
+        self._agent_mcp_timer.setInterval(250)
+        self._agent_mcp_timer.timeout.connect(self._poll_agent_mcp)
+
+    def set_agent_mcp_enabled(self, enabled: bool) -> None:
+        if enabled:
+            if self.shadow_only_runtime:
+                raise RuntimeError("Scheduled shadow cannot enable research MCP")
+            if self.agent_bridge.session:
+                return
+            self.agent_bridge.enable()
+            self._agent_mcp_timer.start()
+        else:
+            self._agent_mcp_timer.stop()
+            self.agent_bridge.disable()
+        self.agent_mcp_changed.emit(enabled)
+
+    def stop_agent(self, reason: str = "Agent stopped") -> None:
+        # Revoke remote restart permission before stopping local work.
+        self.set_agent_mcp_enabled(False)
+        self.agent.stop(reason)
+
+    def set_agent_brief(self, market: str, brief: str) -> None:
+        self.agent.set_brief(market, brief)
+        self.agent_settings_changed.emit()
+
+    def _poll_agent_mcp(self) -> None:
+        try:
+            if self.shadow_only_runtime:
+                self.set_agent_mcp_enabled(False)
+                return
+            self.agent_bridge.poll(self._agent_mcp_command)
+        except Exception:
+            self.set_agent_mcp_enabled(False)
+            self.event.emit("warning", "Research MCP connection stopped; enable it again to reconnect")
+
+    def _agent_mcp_command(self, command: str, payload: dict) -> dict:
+        if not self.agent_bridge.session or self.shadow_only_runtime:
+            raise RuntimeError("Research MCP is not enabled")
+        fields = {"context": set(), "start": set(), "stop": set(),
+                  "brief": {"market", "brief"}, "universe": {"equity_symbols", "crypto_symbols"}}
+        if command not in fields or set(payload) != fields[command]:
+            raise ValueError("Invalid research command fields")
+        if command == "brief":
+            self.set_agent_brief(payload["market"], payload["brief"])
+            return {"status": "Prompt saved for the next cycle; no trading authority changed"}
+        if command == "universe":
+            if self.agent.snapshot.running:
+                raise ValueError("Stop research before changing its universe")
+            if any(not isinstance(value, list) or any(not isinstance(s, str) for s in value) for value in payload.values()):
+                raise ValueError("Research symbols must be lists of strings")
+            settings = replace(self.agent.settings, **{key: tuple(value) for key, value in payload.items()}, scan_id="")
+            settings.validate()
+            self.agent.settings = settings
+            self.agent_settings_changed.emit()
+            return {"status": "Research universe saved; no broker settings changed"}
+        if command == "start":
+            self.start_agent(self.agent.settings)
+            return {"status": "Research workers started; no orders authorized"}
+        if command == "stop":
+            self.agent.stop("Research workers stopped from MCP")
+            return {"status": "Research stopped; MCP remains enabled; orders and positions unchanged"}
+        snapshot = self.agent.snapshot
+        observations = []
+        if self.snapshot.connected and self.config.broker_connection_enabled:
+            for item in snapshot.decisions:
+                quote = item.quote
+                try:
+                    if quote is None:
+                        continue
+                    quote.validate()
+                    numbers = (quote.bid, quote.ask, quote.spread_bps, item.change_bps or 0)
+                    if not all(math.isfinite(n) for n in numbers):
+                        continue
+                    observations.append({
+                        "key": item.instrument.key, "bid": quote.bid, "ask": quote.ask,
+                        "spread_bps": quote.spread_bps, "quote_at": quote.timestamp.isoformat(),
+                        "age_seconds": quote.age_seconds(utc_now()), "samples": item.samples,
+                        "change_bps": item.change_bps, "proposal": item.action,
+                        "data_checks": item.risk_status,
+                    })
+                except (ValueError, TypeError, OverflowError):
+                    continue
+        settings = self.agent.settings
+        return {
+            "mode": "research_only", "orders_available": False,
+            "running": snapshot.running, "cycle": snapshot.cycle, "phase": snapshot.phase,
+            "workers": snapshot.worker_status,
+            "observed_at": snapshot.observed_at.isoformat() if snapshot.observed_at else None,
+            "briefs": {"team": settings.research_brief, "equity": settings.equity_brief, "crypto": settings.crypto_brief},
+            "local_ai_enabled": settings.local_ai_enabled,
+            "prompt_effect": "Local AI uses briefs next cycle" if settings.local_ai_enabled else "Rules are unchanged; briefs are context for the connected AI client",
+            "universe": {"equity": settings.equity_symbols, "crypto": settings.crypto_symbols},
+            "observations": observations,
+        }
 
     def start_agent(self, settings: AgentSettings) -> None:
         if self.shadow_only_runtime:
@@ -1037,7 +1137,7 @@ class TradingController(QObject):
         """Apply safe runtime settings; a bar-size change starts a fresh warm-up."""
         config.validate_cadence()
         if not config.broker_connection_enabled:
-            self.agent.stop("Agent stopped because broker access was revoked")
+            self.stop_agent("Agent stopped because broker access was revoked")
         if self.shadow_only_runtime and config.market_hours != "regular_hours":
             raise ValueError("Auto-shadow v1 cannot switch away from regular market hours")
         config_changed = config != self.config
@@ -2255,7 +2355,7 @@ class TradingController(QObject):
         self.risk.revoke(reason)
         try:
             try:
-                self.agent.stop(reason)
+                self.stop_agent(reason)
             finally:
                 self.stop_shadow(reason)
             self._persist_risk_receipts()

@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Added concurrent Equities/Crypto research workers with independent progress, bounded
+  cycle deadlines, cancellation of both workers, and separate local-model prompts.
+- Added **Prompts + AI connections** and a local stdio MCP research server with copied
+  client configuration, default-off session access, bounded/expiring commands and STOP
+  revocation. Compatible AI clients can inspect observations and direct research, without
+  account exports, broker-write tools, or changes to live-trading authority.
+
 - Fixed a cancelled Robinhood session leaving its active request unresolved and blocking
   reconciliation, STOP, disconnect, and exit. Teardown now drains queued requests, waits
   for a bounded interval, and cancels the original transport owner when needed.

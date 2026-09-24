@@ -19,8 +19,10 @@ Switching does not reset charts, restart analysis, or change broker permissions 
 
 The Agent tab uses a light dashboard inspired by the supplied reference: four large account
 and research metrics, a green account-history chart beside a tagged activity feed, a shared
-status strip, and six colored avatar cards. The cards represent Scout, Analyst, Risk,
-Execution, Equities, and Crypto pipeline modules, not six independent trading agents.
+status strip, and six colored avatar cards. The Equities and Crypto cards now represent concurrent research workers. Scout, Analyst,
+Risk and Execution show the shared workflow; they are not six independently authorized
+trading agents. **Prompts + AI connections** adds per-worker briefs and an optional local
+MCP connection for compatible AI clients. See [prompts and MCP setup](AGENT_MCP.md).
 
 `[SCAN]`, `[IDEA]`, and `[RISK]` describe research observations and proposals. They are not
 broker fills. Account history uses this session's broker-reported snapshots and can include
@@ -49,7 +51,8 @@ budget, and authority behavior is unchanged.
 5. Choose the cycle interval and optional local model, then **Start agent analysis**.
    Settings apply to this run only. Nothing starts automatically on launch.
 
-Each cycle reads up to 20 candidates per market. Larger universes rotate through
+Each cycle runs Equities and Crypto concurrently and reads up to 20 candidates per market.
+Each worker has a 35-second deadline; broker session calls remain serialized. Larger universes rotate through
 batches. The next cycle starts only after the prior cycle completes plus the configured
 interval; slow responses cannot queue overlapping scans. One market's provider error
 does not erase the other market's results. Stop, disconnect, broker-permission revocation,
@@ -63,8 +66,8 @@ four distinct provider quote timestamps spanning 60 seconds. It compares midpoin
 movement with the larger of 20 basis points and twice the current spread. These are
 research heuristics, not a trained model, trading edge, or profitability certificate.
 
-An optional Ollama analyst accepts only the numeric observations for the current
-candidates and returns structured buy/hold/exit proposals with reasons. Install and run
+An optional Ollama analyst accepts numeric observations for the current
+candidates plus your team and market research briefs and returns structured buy/hold/exit proposals with reasons. Install and run
 Ollama separately and enter the name of an installed local model. Enabling the checkbox
 consents to requests to `http://127.0.0.1:11434/api/chat`. No model is downloaded by GRANDE.
 The app sends no broker credentials, account IDs, balances, or position information to

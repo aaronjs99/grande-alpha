@@ -37,6 +37,7 @@ dev = [
 [project.scripts]
 grande-alpha = "grande_alpha.app:main"
 grande-alpha-cli = "grande_alpha.cli:main"
+grande-alpha-mcp = "grande_alpha.agent_mcp:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

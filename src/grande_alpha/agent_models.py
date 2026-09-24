@@ -45,11 +45,17 @@ class AgentSettings:
     interval_seconds: int = 30
     local_ai_model: str = ""
     local_ai_enabled: bool = False
+    research_brief: str = ""
+    equity_brief: str = ""
+    crypto_brief: str = ""
     max_quote_age_seconds: float = 15.0
     equity_max_spread_bps: float = 20.0
     crypto_max_spread_bps: float = 100.0
 
     def validate(self) -> None:
+        for brief in (self.research_brief, self.equity_brief, self.crypto_brief):
+            if not isinstance(brief, str) or len(brief) > 2000 or "\x00" in brief:
+                raise ValueError("Each research prompt must be at most 2,000 characters without NUL")
         if type(self.interval_seconds) is not int or not 15 <= self.interval_seconds <= 300:
             raise ValueError("Agent cycles must be 15–300 seconds apart")
         for symbols in (self.equity_symbols, self.crypto_symbols):
@@ -86,4 +92,5 @@ class AgentSnapshot:
     observed_at: datetime | None = None
     decisions: tuple[AgentDecision, ...] = ()
     market_status: dict[str, str] = field(default_factory=dict)
+    worker_status: dict[str, str] = field(default_factory=dict)
     execution_status: str = "Live stocks/crypto agent execution is not available in this build"

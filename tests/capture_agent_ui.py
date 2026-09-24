@@ -22,7 +22,7 @@ from grande_alpha.ui.main_window import MainWindow
 from grande_alpha.ui.themes import apply_application_theme
 
 
-def capture(path: Path, width: int = 1366, height: int = 900, *, budget: bool = False, theme: str = "light") -> None:
+def capture(path: Path, width: int = 1366, height: int = 900, *, budget: bool = False, prompts: bool = False, theme: str = "light") -> None:
     app = QApplication.instance() or QApplication([])
     with tempfile.TemporaryDirectory() as directory:
         store = AuditStore(Path(directory) / "synthetic.db")
@@ -85,8 +85,16 @@ def capture(path: Path, width: int = 1366, height: int = 900, *, budget: bool = 
         )
         widget.mode.setText("SYNTHETIC UI VERIFICATION · PROPOSALS ONLY · NO REAL TRADES")
         widget.budget_toggle.setChecked(budget)
+        widget.prompts_toggle.setChecked(prompts)
+        if prompts:
+            widget.briefs["team"].setText("Compare observed moves and spreads; explain uncertainty")
+            widget.briefs["equity"].setText("Focus on stock quote quality and momentum")
+            widget.briefs["crypto"].setText("Focus on crypto volatility and spread changes")
         window.show()
         app.processEvents()
+        if prompts:
+            widget.ensureWidgetVisible(widget.prompt_box)
+            app.processEvents()
         if budget:
             widget.ensureWidgetVisible(widget.save_budget)
             app.processEvents()
@@ -103,6 +111,7 @@ if __name__ == "__main__":
     parser.add_argument("--width", type=int, default=1600)
     parser.add_argument("--height", type=int, default=1200)
     parser.add_argument("--budget", action="store_true")
+    parser.add_argument("--prompts", action="store_true")
     parser.add_argument("--theme", choices=("light", "dark"), default="light")
     args = parser.parse_args()
-    capture(args.output, args.width, args.height, budget=args.budget, theme=args.theme)
+    capture(args.output, args.width, args.height, budget=args.budget, prompts=args.prompts, theme=args.theme)

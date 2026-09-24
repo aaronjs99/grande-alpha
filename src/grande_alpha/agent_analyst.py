@@ -54,7 +54,9 @@ def parse_decisions(payload: str, expected_keys: set[str]) -> dict[str, tuple[st
 
 
 class OllamaAnalyst:
-    async def analyze(self, model: str, observations: list[dict]) -> dict[str, tuple[str, str]]:
+    async def analyze(
+        self, model: str, observations: list[dict], *, research_brief: str = "", market_brief: str = ""
+    ) -> dict[str, tuple[str, str]]:
         # Fixed loopback endpoint, no proxy inheritance, redirects or broker credentials.
         async with httpx.AsyncClient(timeout=25.0, trust_env=False, follow_redirects=False) as client:
             response = await client.post(
@@ -77,7 +79,14 @@ class OllamaAnalyst:
                                 "the bid/ask spread. The response schema is " + json.dumps(DECISION_SCHEMA)
                             ),
                         },
-                        {"role": "user", "content": json.dumps(observations, allow_nan=False)},
+                        {
+                            "role": "user",
+                            "content": json.dumps({
+                                "research_brief": research_brief,
+                                "market_brief": market_brief,
+                                "observations": observations,
+                            }, allow_nan=False),
+                        },
                     ],
                 },
             )

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sys
 from collections import deque
 from decimal import Decimal
 from pathlib import Path
@@ -11,6 +12,7 @@ from PySide6.QtCore import QRectF, Qt
 from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QApplication,
     QBoxLayout,
     QCheckBox,
     QComboBox,
@@ -246,15 +248,63 @@ class AgentWidget(QScrollArea):
             )
         )
 
+        self.save_setup = QPushButton("Save research setup")
+        self.save_setup.clicked.connect(self._save_settings)
+        form.addRow(self.save_setup)
+
+        self.prompts_toggle = QPushButton("Prompts + AI connections")
+        self.prompts_toggle.setCheckable(True)
+        self.prompt_box = QGroupBox("Worker prompts and MCP")
+        self.prompt_box.setVisible(False)
+        self.prompts_toggle.toggled.connect(self.prompt_box.setVisible)
+        prompt_form = QFormLayout(self.prompt_box)
+        prompt_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
+        self.briefs = {}
+        for key, title, placeholder in (
+            ("team", "Team brief", "Compare observations, account for spreads, explain uncertainty"),
+            ("equity", "Equities worker", "Focus on stock momentum and quote quality"),
+            ("crypto", "Crypto worker", "Focus on crypto volatility and spread changes"),
+        ):
+            editor = QLineEdit()
+            editor.setMaxLength(2000)
+            editor.setPlaceholderText(placeholder)
+            self.briefs[key] = editor
+            prompt_form.addRow(title, editor)
+        self.apply_briefs = QPushButton("Apply prompts · next cycle")
+        self.apply_briefs.clicked.connect(self._apply_briefs)
+        prompt_form.addRow(self.apply_briefs)
+        prompt_form.addRow(label(
+            "Prompts guide local Ollama when enabled. With Rules baseline, they are context for a connected "
+            "AI app and do not change the rules. Prompts cannot change trading permissions or risk limits. "
+            "Do not include secrets; applied prompts are recorded locally with research cycles."
+        ))
+        prompt_form.addRow(label(
+            "MCP lets a compatible local AI app read symbols, price observations and prompts, change research "
+            "prompts/universes, and start or stop analysis. Its provider may process that shared data. "
+            "Account balances, credentials, positions and order tools are excluded. Access starts off and "
+            "ends on Stop agent, STOP + CANCEL, Disconnect or Exit."
+        ))
+        self.mcp_enabled = QCheckBox("Enable research MCP for this app session")
+        self.mcp_enabled.toggled.connect(self._toggle_mcp)
+        prompt_form.addRow(self.mcp_enabled)
+        self.copy_mcp = QPushButton("Copy MCP client configuration")
+        self.copy_mcp.clicked.connect(self._copy_mcp_config)
+        self.copy_mcp.setEnabled(not getattr(sys, "frozen", False))
+        prompt_form.addRow(self.copy_mcp)
+        self.mcp_status = label("MCP is off · supports local stdio clients · live orders unavailable")
+        prompt_form.addRow(self.mcp_status)
+
         controls = QHBoxLayout()
         self.start = QPushButton("Start agent analysis")
         self.start.setObjectName("primary")
         self.start.clicked.connect(self._start)
         self.stop = QPushButton("Stop agent")
-        self.stop.clicked.connect(lambda: controller.agent.stop())
+        self.stop.clicked.connect(lambda: controller.stop_agent())
         controls.addWidget(self.start)
         controls.addWidget(self.stop)
+        controls.addWidget(self.prompts_toggle)
         layout.addLayout(controls)
+        layout.addWidget(self.prompt_box)
 
         self.scout_status = label("Waiting for discovery")
         self.analyst_status = label("Rules baseline")
@@ -345,7 +395,7 @@ class AgentWidget(QScrollArea):
             self.stage_cards.append(card)
             self.stages.addWidget(card, index // 3, index % 3)
         layout.addLayout(self.stages)
-        detail = label("Modules show the current pipeline state; they are not independently trading agents.")
+        detail = label("Equities and Crypto work concurrently. Scout, Analyst and Risk show their shared workflow; Execution remains locked.")
         detail.setObjectName("metricCaption")
         layout.addWidget(detail)
 
@@ -368,6 +418,8 @@ class AgentWidget(QScrollArea):
         layout.addWidget(self.budget_box)
         self.setWidget(content)
         controller.agent_changed.connect(self.update_agent)
+        controller.agent_mcp_changed.connect(self._mcp_changed)
+        controller.agent_settings_changed.connect(self._sync_agent_settings)
         self.update_agent(controller.agent.snapshot)
 
     def apply_theme(self) -> None:
@@ -428,20 +480,77 @@ class AgentWidget(QScrollArea):
         configure_adjustable_columns(table, headers)
         return table
 
+    def _read_settings(self) -> AgentSettings:
+        return AgentSettings(
+            equity_symbols=parse_symbols(self.equities.text()),
+            crypto_symbols=parse_symbols(self.crypto.text()),
+            scan_id=str(self.scans.currentData() or ""),
+            interval_seconds=self.interval.value(),
+            local_ai_model=self.model.text().strip(), local_ai_enabled=self.local_ai.isChecked(),
+            research_brief=self.briefs["team"].text(), equity_brief=self.briefs["equity"].text(),
+            crypto_brief=self.briefs["crypto"].text(),
+        )
+
+    def _save_settings(self) -> None:
+        try:
+            settings = self._read_settings()
+            settings.validate()
+            if self.controller.agent.snapshot.running:
+                raise ValueError("Stop research before changing its setup")
+            self.controller.agent.settings = settings
+            self.controller.agent_settings_changed.emit()
+            self.market_status.setText("Research setup saved for this app session. Analysis starts only when requested.")
+        except (ValueError, RuntimeError) as exc:
+            self.market_status.setText(str(exc))
+
     def _start(self) -> None:
         try:
-            self.controller.start_agent(
-                AgentSettings(
-                    equity_symbols=parse_symbols(self.equities.text()),
-                    crypto_symbols=parse_symbols(self.crypto.text()),
-                    scan_id=str(self.scans.currentData() or ""),
-                    interval_seconds=self.interval.value(),
-                    local_ai_model=self.model.text().strip(),
-                    local_ai_enabled=self.local_ai.isChecked(),
-                )
-            )
+            self.controller.start_agent(self._read_settings())
         except Exception as exc:
             QMessageBox.warning(self, "Agent could not start", str(exc))
+
+    def _sync_agent_settings(self) -> None:
+        settings = self.controller.agent.settings
+        for market, value in (("team", settings.research_brief), ("equity", settings.equity_brief), ("crypto", settings.crypto_brief)):
+            self.briefs[market].setText(value)
+        self.equities.setText(", ".join(settings.equity_symbols))
+        self.crypto.setText(", ".join(settings.crypto_symbols))
+        self.scans.setCurrentIndex(max(0, self.scans.findData(settings.scan_id)))
+        self.interval.setValue(settings.interval_seconds)
+        self.local_ai.setChecked(settings.local_ai_enabled)
+        self.model.setText(settings.local_ai_model)
+
+    def _apply_briefs(self) -> None:
+        values = {market: editor.text() for market, editor in self.briefs.items()}
+        try:
+            for market, value in values.items():
+                self.controller.set_agent_brief(market, value)
+            self.mcp_status.setText("Prompts applied for the next cycle; Rules baseline ignores prompts when local AI is off.")
+        except (ValueError, RuntimeError) as exc:
+            self.mcp_status.setText(str(exc))
+
+    def _toggle_mcp(self, enabled: bool) -> None:
+        try:
+            self.controller.set_agent_mcp_enabled(enabled)
+        except Exception:
+            self._mcp_changed(False)
+            self.mcp_status.setText("MCP could not start. Check that the app's data directory is writable.")
+
+    def _mcp_changed(self, enabled: bool) -> None:
+        self.mcp_enabled.blockSignals(True)
+        self.mcp_enabled.setChecked(enabled)
+        self.mcp_enabled.blockSignals(False)
+        self.mcp_status.setText("MCP enabled · research access only" if enabled else "MCP is off · enable it again to allow AI access")
+        self._set_controls()
+
+    def _copy_mcp_config(self) -> None:
+        config = {"mcpServers": {"grande-alpha": {
+            "command": sys.executable,
+            "args": ["-m", "grande_alpha.agent_mcp", "--bridge", str(self.controller.agent_bridge.path.resolve())],
+            "env": {"PYTHONPATH": str(Path(__file__).resolve().parents[2])},
+        }}}
+        QApplication.clipboard().setText(json.dumps(config, indent=2))
+        self.mcp_status.setText("Configuration copied. Add it to a local stdio MCP client; keep GRANDE open and MCP enabled.")
 
     def _schedule_scans(self) -> None:
         if self._scan_task is not None and not self._scan_task.done():
@@ -481,6 +590,7 @@ class AgentWidget(QScrollArea):
             self.load_scans.setEnabled(self._connected and not self.controller.agent.snapshot.running)
 
     def update_account(self, snapshot) -> None:
+        was_connected = self._connected
         self._connected = bool(snapshot.connected and self.controller.config.broker_connection_enabled)
         account = snapshot.account.account_number if snapshot.account and self._connected else None
         budget = snapshot.agent_budget if account and snapshot.agent_budget and snapshot.agent_budget.get("account_number") == account else None
@@ -522,10 +632,10 @@ class AgentWidget(QScrollArea):
             self._balances.append(portfolio.total_value)
             self.curve.setFillLevel(min(self._balances) - max(0.01, (max(self._balances) - min(self._balances)) * 0.1))
             self.curve.setData(list(self._balance_times), list(self._balances), symbol="o" if len(self._balances) == 1 else None, symbolSize=5, symbolBrush=color("#1ca97a", base="light"))
-        if not self._connected:
+        if was_connected and not self._connected:
             if self._scan_task is not None:
                 self._scan_task.cancel()
-            self.controller.agent.stop("Agent stopped because the broker disconnected")
+            self.controller.stop_agent("Agent stopped because the broker disconnected")
         self._set_controls()
 
     def _set_controls(self) -> None:
@@ -535,7 +645,8 @@ class AgentWidget(QScrollArea):
         self.budget_box.setEnabled(enabled and not running)
         self.start.setEnabled(enabled and not running)
         self.export_contracts.setEnabled(enabled and not running)
-        self.stop.setEnabled(running)
+        self.stop.setEnabled(running or bool(self.controller.agent_bridge.session))
+        self.mcp_enabled.setEnabled(not self.controller.shadow_only_runtime)
         self.configure.setEnabled(not running)
         self.settings_box.setEnabled(not running)
         self.load_scans.setEnabled(
@@ -554,8 +665,8 @@ class AgentWidget(QScrollArea):
         if snapshot.running and self.configure.isChecked():
             self.configure.setChecked(False)
         self.mode.setText(f"{snapshot.phase.upper()} · CYCLE {snapshot.cycle} · PROPOSALS ONLY")
-        self.equity_status.setText(snapshot.market_status.get("equity", "Waiting for stock observations"))
-        self.crypto_status.setText(snapshot.market_status.get("crypto", "Waiting for crypto observations"))
+        self.equity_status.setText(snapshot.worker_status.get("equity", "Idle") + " · " + snapshot.market_status.get("equity", "Waiting for stock observations"))
+        self.crypto_status.setText(snapshot.worker_status.get("crypto", "Idle") + " · " + snapshot.market_status.get("crypto", "Waiting for crypto observations"))
         self.candidates.setText(str(len(snapshot.decisions)))
         self.proposals.setText(str(sum(item.action != "hold" for item in snapshot.decisions)))
         self.scout_status.setText(f"Scout · {snapshot.phase}")
@@ -617,4 +728,4 @@ class AgentWidget(QScrollArea):
     def shutdown(self) -> None:
         if self._scan_task is not None:
             self._scan_task.cancel()
-        self.controller.agent.stop("Agent stopped when the application closed")
+        self.controller.stop_agent("Agent stopped when the application closed")
