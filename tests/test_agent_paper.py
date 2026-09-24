@@ -16,7 +16,7 @@ from test_agent_runtime import NOW, ReadMarket
 from grande_alpha.agent_bridge import AgentBridge
 from grande_alpha.agent_mcp import create_server
 from grande_alpha.agent_models import AgentDecision, AgentSettings, AssetClass, Instrument
-from grande_alpha.agent_paper import PaperLedger, validate_paper_settings
+from grande_alpha.agent_paper import PaperLedger, demo_market, demo_time, validate_paper_settings
 from grande_alpha.models import Quote
 
 desktop = _desktop
@@ -56,6 +56,77 @@ def test_next_quote_fills_spread_slippage_pnl_and_cash_conservation():
     assert Decimal(result["cash"]) == 1000 + Decimal(result["realized_pnl"])
     assert Decimal(result["realized_pnl"]) == quantity * (Decimal("109.945") - Decimal("101.0505"))
     assert result["total_pnl"] == result["realized_pnl"]
+    assert result["closed_trades"] == 1 and result["wins"] == 1 and result["win_rate"] == 100
+    assert len(result["equity_history"]) == 5  # repeated quote/time never adds a point
+    assert result["equity_history"][-1]["equity"] == result["equity"]
+
+
+def test_win_rate_counts_closed_trades_and_upgrade_reads_complete_journal(tmp_path):
+    path = tmp_path / "old-paper.db"
+    book = PaperLedger(path)
+    book.start("demo", 1000, 100)
+    book.state["slippage_bps"] = "0"  # Exact $10 gain, $10 loss and $0 outcome in this fixture.
+    now = NOW
+    for exit_price in (110, 90, 100):
+        for side, price in (("buy", 100), ("hold", 100), ("exit", exit_price), ("hold", exit_price)):
+            book.consume([decision(side, now, price, price)], now, 15)
+            now += timedelta(seconds=30)
+    for _ in range(2):
+        book.consume([decision("buy", now, 100, 100)], now, 15)
+        now += timedelta(seconds=30)
+    result = book.summary()
+    assert result["fill_count"] == 7 and len(result["positions"]) == 1
+    assert result["closed_trades"] == 3
+    assert result["wins"] == result["losses"] == result["breakeven"] == 1
+    assert result["win_rate"] == pytest.approx(100 / 3)
+    assert Decimal(result["return_pct"]) == 0
+    assert len(result["equity_history"]) == 14
+    legacy = dict(book.state)
+    for key in ("wins", "losses", "breakeven", "equity_history"):
+        legacy.pop(key)
+    legacy["fills"] = legacy["fills"][-1:]
+    with book._db:
+        book._db.execute("UPDATE paper_sessions SET payload=?", (json.dumps(legacy),))
+    book.close()
+    reopened = PaperLedger(path)
+    report = reopened.summary()
+    assert report["closed_trades"] == 3 and report["win_rate"] == pytest.approx(100 / 3)
+    assert report["equity_history"] == []  # Old points cannot be reconstructed truthfully.
+    reopened.close()
+
+
+def test_repeat_demo_prices_repeat_but_clocks_keep_advancing_through_weekdays():
+    for market in AssetClass:
+        _, first = demo_market(market, 1)
+        _, repeated = demo_market(market, 25)
+        a, b = next(iter(first.values())), next(iter(repeated.values()))
+        assert a.bid == b.bid and a.timestamp < b.timestamp
+    assert demo_time(599) < demo_time(600)
+    assert demo_time(1800).weekday() == 0  # Friday rolls over to Monday.
+
+
+@pytest.mark.asyncio
+async def test_repeating_demo_runs_past_24_cycles_and_stop_freezes_results_and_events(monkeypatch):
+    monkeypatch.setattr("grande_alpha.agent_runtime.DEMO_INTERVAL_SECONDS", 0)
+    market = ReadMarket()
+    market.connected = False
+    agent = market.runtime()
+    agent.start_paper(AgentSettings(), loop_demo=True)
+    task = agent._task
+    async with asyncio.timeout(5):
+        while agent.snapshot.cycle < 51:
+            await asyncio.sleep(0)
+    agent.stop()
+    frozen = agent.paper_context()
+    events = agent.snapshot.team_events
+    await task
+    assert not market.calls and not agent.snapshot.running
+    assert frozen["fill_count"] >= 8 and frozen["pending_count"] == 0
+    assert agent.paper_context() == frozen and agent.snapshot.team_events == events
+    assert len(events) <= 120
+    assert {event["from"] for event in events} == {"NOVA", "ORIN", "VELA", "KADE", "RUNE", "ZARA"}
+    assert all(event["kind"] != "FILL" or "PAPER" in event["message"] for event in events)
+    assert agent.snapshot.elapsed_seconds >= 0
 
 
 def test_two_workers_share_cash_without_overdraft_or_short_sells():
@@ -245,7 +316,7 @@ async def test_mcp_paper_demo_without_broker_reports_virtual_results_and_stop(de
     task = asyncio.create_task(pump(controller))
     try:
         async with create_connected_server_and_client_session(server) as client:
-            result = await client.call_tool("start_paper_trading", {"source": "demo", "initial_cash": 500, "trade_cash": 50})
+            result = await client.call_tool("start_paper_trading", {"source": "demo", "initial_cash": 500, "trade_cash": 50, "loop_demo": True})
             assert not result.isError
             running = controller.agent._task
             context = await client.call_tool("get_research_context")
@@ -253,6 +324,8 @@ async def test_mcp_paper_demo_without_broker_reports_virtual_results_and_stop(de
             assert payload["observation_source"] == "synthetic_demo"
             assert payload["paper"]["initial_cash"] == "500.0"
             assert not payload["orders_available"]
+            assert payload["loop_demo"] is True
+            assert "team_events" in payload
             assert controller.risk.grant is None
             assert controller.store.agent_ledger.records("SECRET-ACCOUNT") == []
             assert not any(s in json.dumps(payload) for s in ("SECRET-ACCOUNT", "PRIVATE-NAME", "123.45"))
@@ -286,6 +359,21 @@ async def test_ui_paper_demo_button_works_disconnected_and_results_survive_stop(
     assert "VIRTUAL MONEY" in widget.mode.text()
     assert "Realized" in widget.paper_summary.text()
     assert widget.paper_start.isEnabled()
+    assert widget.win_rate.text() == "0.0%"
+    assert widget.fills_metric.text() == "4"
+    assert widget.balance.text() == "$998.58"
+    assert widget.total_pnl.text() == "$-1.42"
+    assert len(widget.curve.getData()[0]) == 24
+    assert not widget._highlighted  # Stopped workers never look live.
+    assert "last handoff, session stopped" in widget.comms.text()
+    assert set(widget.team_cards) == {"NOVA", "ORIN", "VELA", "KADE", "RUNE", "ZARA"}
+    row_count = widget.activity.rowCount()
+    widget.update_agent(controller.agent.snapshot)
+    assert widget.activity.rowCount() == row_count
+    controller.snapshot.connected = True
+    widget.update_account(controller.snapshot)
+    assert widget.balance.text() == "$998.58"  # Broker's $123.45 must not replace virtual equity.
+    assert len(widget.curve.getData()[0]) == 24
     controller.stop_agent()
     assert widget.paper_fills.rowCount() == 4
     controller.shadow_only_runtime = True

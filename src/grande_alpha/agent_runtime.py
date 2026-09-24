@@ -67,6 +67,8 @@ class AgentRuntime:
         self.settings = AgentSettings()
         self.paper = paper or PaperLedger()
         self.paper_source: str | None = None
+        self.loop_demo = False
+        self._event_sequence = 0
         self.snapshot = AgentSnapshot(paper=self.paper.summary())
 
     def _now(self) -> datetime:
@@ -81,18 +83,29 @@ class AgentRuntime:
 
     def _publish(self, **values) -> None:
         self.snapshot = replace(self.snapshot, **values)
+        if self.snapshot.started_at:
+            self.snapshot = replace(self.snapshot, elapsed_seconds=max(0, (utc_now() - self.snapshot.started_at).total_seconds()))
         self.snapshot = replace(self.snapshot, paper=self.paper_context())
         self._changed(self.snapshot)
+
+    def _handoff(self, sender: str, recipient: str, message: str, kind: str = "SCAN") -> None:
+        self._event_sequence += 1
+        event = {"id": self._event_sequence, "from": sender, "to": recipient, "message": message,
+                 "kind": kind, "cycle": self.snapshot.cycle, "at": self._now().isoformat()}
+        self._publish(team_events=(*self.snapshot.team_events[-119:], event))
 
     def start(self, settings: AgentSettings) -> None:
         self._start(settings)
 
     def start_paper(self, settings: AgentSettings, source: str = "demo", initial_cash: float = 1000,
-                    trade_cash: float = 100) -> None:
+                    trade_cash: float = 100, loop_demo: bool = False) -> None:
         validate_paper_settings(source, initial_cash, trade_cash)
-        self._start(settings, source, initial_cash, trade_cash)
+        if type(loop_demo) is not bool or (loop_demo and source != "demo"):
+            raise ValueError("Repeat is available only for the offline demo")
+        self._start(settings, source, initial_cash, trade_cash, loop_demo)
 
-    def _start(self, settings: AgentSettings, source: str | None = None, initial_cash=1000, trade_cash=100) -> None:
+    def _start(self, settings: AgentSettings, source: str | None = None, initial_cash=1000, trade_cash=100,
+               loop_demo: bool = False) -> None:
         settings.validate()
         if source != "demo" and not self._connected():
             raise ValueError("Connect the consented Robinhood account before starting the agent")
@@ -102,12 +115,14 @@ class AgentRuntime:
         if source:
             self.paper.start(source, initial_cash, trade_cash)
         self.paper_source = source
+        self.loop_demo = loop_demo
+        self._event_sequence = 0
         self._generation += 1
         self.settings = settings
         self._history.clear()
         self._pairs = None
         self._session_id = str(uuid.uuid4())
-        self.snapshot = AgentSnapshot()
+        self.snapshot = AgentSnapshot(session_id=self._session_id, started_at=utc_now())
         self._publish(
             running=True,
             phase="Starting",
@@ -129,7 +144,8 @@ class AgentRuntime:
         self._discard_paper_intents()
         if self.snapshot.running:
             self._publish(running=False, phase="Stopped", decisions=(), observed_at=None,
-                          worker_status={"equity": "Stopped", "crypto": "Stopped"})
+                          worker_status={"equity": "Stopped", "crypto": "Stopped"},
+                          team_status={name: "Stopped" for name in self.snapshot.team_status})
             self._log(reason, category="agent_session")
 
     def _discard_paper_intents(self) -> None:
@@ -147,10 +163,11 @@ class AgentRuntime:
                     self._publish(running=False, phase="Disconnected")
                     break
                 await self.cycle()
-                if self.paper_source == "demo" and self.snapshot.cycle >= DEMO_CYCLES:
+                if self.paper_source == "demo" and not self.loop_demo and self.snapshot.cycle >= DEMO_CYCLES:
                     self._discard_paper_intents()
                     self._publish(running=False, phase="Demo complete",
-                                  worker_status={"equity": "Demo complete", "crypto": "Demo complete"})
+                                  worker_status={"equity": "Demo complete", "crypto": "Demo complete"},
+                                  team_status={name: "Demo complete" for name in self.snapshot.team_status})
                     break
                 await asyncio.sleep(DEMO_INTERVAL_SECONDS if self.paper_source == "demo" else self.settings.interval_seconds)
         except asyncio.CancelledError:
@@ -299,6 +316,8 @@ class AgentRuntime:
         )
         if not current():
             raise asyncio.CancelledError
+        name = "NOVA" if asset_class == AssetClass.EQUITY else "ORIN"
+        self._handoff(name, "VELA", f"{len(quotes)} {asset_class.value} quotes ready")
         now = self._now()
         decisions = [self._inspect(item, quotes.get(item.symbol), now, settings) for item in batch]
         progress("Analyzing")
@@ -334,7 +353,11 @@ class AgentRuntime:
                     replace(item, action="hold", reason="Local AI unavailable or invalid response; no proposal accepted", risk_status="Blocked")
                     if item in eligible else item for item in decisions
                 ]
+        if not current():
+            raise asyncio.CancelledError
         progress("Checking data")
+        self._handoff("VELA", "KADE", f"{asset_class.value}: {sum(d.risk_status == 'Blocked' for d in decisions)} blocked, "
+                      f"{sum(d.risk_status == 'Warming up' for d in decisions)} warming up", "RISK")
         return decisions, f"Observed {len(batch)} of {len(instruments)} candidates"
 
     def _recheck(self, decisions, settings):
@@ -363,7 +386,10 @@ class AgentRuntime:
             status = {}
             workers = {"equity": "Queued", "crypto": "Queued"}
             self._publish(phase="Working", cycle=cycle, decisions=(), observed_at=None,
-                          market_status={}, worker_status=dict(workers))
+                          market_status={}, worker_status=dict(workers),
+                          team_status={"NOVA": "Queued", "ORIN": "Queued", "VELA": "Waiting for quotes",
+                                       "KADE": "Waiting for analysis", "RUNE": "Waiting for eligible signals",
+                                       "ZARA": "Coordinating cycle"})
 
             def current():
                 return generation == self._generation and self._available()
@@ -375,7 +401,13 @@ class AgentRuntime:
                 def progress(phase):
                     workers[market.value] = phase
                     if current():
-                        self._publish(worker_status=dict(workers))
+                        team = dict(self.snapshot.team_status)
+                        team["NOVA" if market == AssetClass.EQUITY else "ORIN"] = phase
+                        if phase == "Analyzing":
+                            team["VELA"] = self.snapshot.analyst
+                        if phase == "Checking data":
+                            team["KADE"] = "Checking quotes and limits"
+                        self._publish(worker_status=dict(workers), team_status=team)
                 try:
                     async with asyncio.timeout(MARKET_WORKER_TIMEOUT_SECONDS):
                         decisions, summary = await self._market_cycle(market, cycle, settings, progress, current)
@@ -390,6 +422,8 @@ class AgentRuntime:
                             del self._history[key]
                     status[market.value] = "Unavailable: worker timed out" if isinstance(exc, TimeoutError) else f"Unavailable: {str(exc)[:240]}"
                     progress("Unavailable")
+                    self._handoff("NOVA" if market == AssetClass.EQUITY else "ORIN", "ZARA",
+                                  f"{market.value} worker unavailable; inspect local status", "WARN")
                 if current():
                     self._publish(decisions=tuple(combined()), market_status=dict(status))
 
@@ -403,10 +437,26 @@ class AgentRuntime:
                 self._publish(running=False, phase="Disconnected", decisions=())
                 return
             decisions = combined()
+            eligible = sum(item.risk_status == "Data checks passed" for item in decisions)
+            self._handoff("KADE", "RUNE", f"{eligible} of {len(decisions)} candidates passed data checks", "RISK")
+            fills_before = self.paper.state["fill_count"] if self.paper.state else 0
             if self.paper_source and self.snapshot.running:
                 self.paper.consume(decisions, self._now(), settings.max_quote_age_seconds)
+                report = self.paper_context()
+                for fill in report["fills"]:
+                    if fill["number"] > fills_before:
+                        self._handoff("RUNE", "ZARA", f"PAPER {fill['side'].upper()} {fill['key']} · "
+                                      f"{float(fill['quantity']):.6g} units @ ${float(fill['price']):,.6g}", "FILL")
+                self._handoff("ZARA", "NOVA + ORIN", f"Virtual equity ${float(report['equity']):,.2f} · "
+                              f"P&L ${float(report['total_pnl']):+,.2f} · {report['pending_count']} pending", "BOOK")
+            else:
+                self._handoff("RUNE", "ZARA", "Research cycle recorded; paper trading is off", "BOOK")
+            team = dict(self.snapshot.team_status)
+            team.update(VELA=self.snapshot.analyst, KADE=f"{eligible}/{len(decisions)} data checks passed",
+                        RUNE=(f"{self.paper.state['fill_count'] - fills_before} paper fills this cycle" if self.paper_source else "Research only"),
+                        ZARA="Portfolio updated" if self.paper_source else "Cycle recorded")
             self._publish(phase="Waiting", observed_at=self._now(), decisions=tuple(decisions),
-                          market_status=status, worker_status=workers)
+                          market_status=status, worker_status=workers, team_status=team)
             self._log(
                 f"Agent cycle {cycle}: {len(decisions)} candidates; "
                 f"{sum(item.action != 'hold' for item in decisions)} proposals; no orders submitted",

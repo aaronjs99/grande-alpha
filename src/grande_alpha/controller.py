@@ -306,7 +306,8 @@ class TradingController(QObject):
         fields = {"context": set(), "start": set(), "stop": set(),
                   "paper_start": {"source", "initial_cash", "trade_cash"},
                   "brief": {"market", "brief"}, "universe": {"equity_symbols", "crypto_symbols"}}
-        if command not in fields or set(payload) != fields[command]:
+        payload_fields = set(payload) - {"loop_demo"} if command == "paper_start" else set(payload)
+        if command not in fields or payload_fields != fields[command]:
             raise ValueError("Invalid research command fields")
         if command == "brief":
             self.set_agent_brief(payload["market"], payload["brief"])
@@ -367,6 +368,8 @@ class TradingController(QObject):
             "observations": observations,
             "observation_source": "synthetic_demo" if self.agent.paper_source == "demo" else "broker_quotes",
             "paper": self.agent.paper_context(),
+            "team_status": snapshot.team_status, "team_events": snapshot.team_events,
+            "elapsed_seconds": snapshot.elapsed_seconds, "loop_demo": self.agent.loop_demo,
         }
 
     def start_agent(self, settings: AgentSettings) -> None:
@@ -375,10 +378,10 @@ class TradingController(QObject):
         self.agent.start(settings)
 
     def start_agent_paper(self, settings: AgentSettings, source: str = "demo", initial_cash: float = 1000,
-                          trade_cash: float = 100) -> None:
+                          trade_cash: float = 100, loop_demo: bool = False) -> None:
         if self.shadow_only_runtime:
             raise RuntimeError("Scheduled ETF shadow does not start agent paper trading")
-        self.agent.start_paper(settings, source, initial_cash, trade_cash)
+        self.agent.start_paper(settings, source, initial_cash, trade_cash, loop_demo)
 
     async def _agent_crypto_quotes(self, instruments):
         account = self.snapshot.account

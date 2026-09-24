@@ -95,3 +95,8 @@ class AgentSnapshot:
     worker_status: dict[str, str] = field(default_factory=dict)
     execution_status: str = "Live stocks/crypto agent execution is not available in this build"
     paper: dict | None = None
+    session_id: str = ""
+    started_at: datetime | None = None
+    elapsed_seconds: float = 0
+    team_status: dict[str, str] = field(default_factory=dict)
+    team_events: tuple[dict, ...] = ()

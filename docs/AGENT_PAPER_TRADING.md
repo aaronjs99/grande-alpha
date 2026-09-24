@@ -1,7 +1,8 @@
 # Agent paper trading
 
-On **Agent · Stocks + Crypto**, use **Paper trading · virtual money** and click
-**Start new paper session**. Defaults are $1,000 virtual cash and $100 per buy.
+On **Agent · Stocks + Crypto**, click **Start offline demo**. Open **Session setup**
+to change the price source, virtual cash or repeat option. Defaults are $1,000
+virtual cash and $100 per buy. Select Robinhood quotes to **Start paper trading**.
 Each session has its own portfolio; the cash never comes from Robinhood.
 
 ## Two price sources
@@ -11,6 +12,8 @@ Each session has its own portfolio; the cash never comes from Robinhood.
   made-up prices. It needs no broker connection and calls no broker or AI provider.
   The normal rules and data checks generate the signals. The path intentionally
   exercises buys and sells; its P&L is not evidence of strategy performance.
+  **Repeat offline demo until I press Stop** repeats the fixed price path while
+  advancing the synthetic clock through weekdays. This remains made-up data.
 - **Robinhood quotes** uses the current watchlists, cadence and analysis settings.
   A connected broker is required for market data. Existing session, freshness,
   spread, pair restriction and warm-up checks remain in force. A run may produce
@@ -27,7 +30,36 @@ time so simultaneous workers cannot overdraw it. No shorts or borrowing.
 
 ## Reading the results
 
-The panel shows virtual cash, portfolio value, realized/unrealized/total P&L,
+The main dashboard shows virtual portfolio balance, total P&L and percentage
+return, simulated fills, and win rate. Win rate is profitable closed virtual
+trades divided by all closed virtual trades, including flat outcomes; open
+positions and buy fills do not count. Before a paper session exists, the balance
+card can show broker account value, labeled separately from paper results.
+
+The equity chart follows the current paper session's last 500 cycle observations.
+Prices and the activity timestamps use a synthetic clock in demo mode. Elapsed
+time measures actual session duration. Quote refreshes cannot substitute the
+real account's balance for virtual equity. The activity log includes actual
+worker handoffs, data checks, proposals, simulated fills and portfolio updates.
+It keeps the latest 200 rows and identifies saved fills after reopening.
+
+Six named cards expose stages in the workflow, not six independent AI models:
+
+| Card | Work |
+| --- | --- |
+| NOVA | Stock/ETF discovery and quotes |
+| ORIN | Crypto discovery and quotes, concurrent with NOVA |
+| VELA | Rules analysis or the configured local Ollama model |
+| KADE | Quote, session, spread and eligibility checks |
+| RUNE | Next-quote virtual fills |
+| ZARA | Shared virtual portfolio and cycle summaries |
+
+Agent comms and card highlights follow emitted runtime events; highlights turn
+off when stopped. Research-only analysis remains available below the dashboard.
+The page does not have token-launch, mempool, wallet, or social-media scanners.
+Connecting ChatGPT through MCP does not turn these stages into autonomous LLMs.
+
+Below the cards, the details show virtual cash, realized/unrealized/total P&L,
 open virtual holdings, pending count, and the latest 30 simulated fills.
 Holdings are valued at their last eligible bid, with quote timestamps and old
 valuations labeled. A rotating discovery universe does not update every holding
@@ -40,7 +72,7 @@ software simulation, not a forecast of executable prices or future returns.
 **Stop agent**, **STOP + CANCEL**, Disconnect and Exit stop the worker runtime and
 discard pending virtual intents. Completed fills and virtual holdings remain
 visible; stopping does not force a simulated liquidation. The offline demo stops
-automatically after its final cycle. Reopening the app displays the last paper
+automatically after its final cycle unless repeat is checked. Reopening the app displays the last paper
 session but never resumes it. Starting again creates a new session and archives
 the prior one; it does not reset any real trading budget, order or position.
 
@@ -56,8 +88,11 @@ discovery if the new tool is not listed. With session research access enabled:
 - `start_paper_trading(source="demo", initial_cash=1000, trade_cash=100)` starts
   a new offline simulation while stopped. Use `source="broker_quotes"` for live
   market observations with virtual fills.
+  Optional `loop_demo=true` repeats only the offline demo until stopped.
 - `get_research_context` includes a `paper` report and `observation_source`.
   `synthetic_demo` observations must never be described as real market prices.
+  The paper report includes win/loss counts and equity history; `team_status`
+  and `team_events` expose the same runtime handoffs shown on the dashboard.
 - `stop_research` stops research or paper simulation while keeping MCP enabled.
 
 These tools cannot place broker orders or change real-money limits. Research

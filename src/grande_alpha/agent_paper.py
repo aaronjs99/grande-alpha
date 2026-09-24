@@ -44,13 +44,20 @@ def validate_paper_settings(source: str, initial_cash: object, trade_cash: objec
 
 
 def demo_time(cycle: int) -> datetime:
-    return DEMO_EPOCH + timedelta(seconds=30 * cycle)
+    days, frame = divmod(cycle, 600)
+    day = DEMO_EPOCH
+    for _ in range(days):
+        day += timedelta(days=1)
+        while day.weekday() >= 5:
+            day += timedelta(days=1)
+    return day + timedelta(seconds=30 * frame)
 
 
 def demo_market(market: AssetClass, cycle: int) -> tuple[list[Instrument], dict[str, Quote]]:
     """A fixed up/down path exercises the real research rules without any I/O."""
     symbol = "DEMO-STOCK" if market == AssetClass.EQUITY else "DEMO-USD"
-    step = cycle if cycle <= 10 else 20 - cycle
+    frame = (cycle - 1) % DEMO_CYCLES + 1
+    step = frame if frame <= 10 else 20 - frame
     price = (100 if market == AssetClass.EQUITY else 200) * (1 + step * 0.003)
     quote = Quote(symbol, price, price * 1.0002, price, demo_time(cycle))
     return [Instrument(market, symbol, source="synthetic_demo")], {symbol: quote}
@@ -65,6 +72,13 @@ class PaperLedger:
         self._db.execute("CREATE TABLE IF NOT EXISTS paper_fills (session_id TEXT, number INTEGER, payload TEXT NOT NULL, PRIMARY KEY(session_id, number))")
         row = self._db.execute("SELECT payload FROM paper_sessions ORDER BY rowid DESC LIMIT 1").fetchone()
         self.state = json.loads(row[0]) if row else None
+        if self.state and "wins" not in self.state:
+            # Upgrade earlier paper sessions from their complete fill journal.
+            exits = [json.loads(row[0]) for row in self._db.execute(
+                "SELECT payload FROM paper_fills WHERE session_id=?", (self.state["session_id"],))]
+            pnls = [money(fill["realized_pnl"]) for fill in exits if fill["side"] == "sell"]
+            self.state.update(wins=sum(p > 0 for p in pnls), losses=sum(p < 0 for p in pnls),
+                              breakeven=sum(p == 0 for p in pnls), equity_history=[])
 
     def close(self) -> None:
         self._db.close()
@@ -89,6 +103,7 @@ class PaperLedger:
             "slippage_bps": "5", "realized_pnl": "0", "positions": {}, "pending": {},
             "last_quotes": {}, "fills": [], "fill_count": 0, "observed_at": None,
             "created_at": datetime.now(UTC).isoformat(),
+            "wins": 0, "losses": 0, "breakeven": 0, "equity_history": [],
         })
 
     def cancel_pending(self) -> None:
@@ -145,6 +160,12 @@ class PaperLedger:
                 if side and (side == "sell" or money(state["cash"]) >= money(state["trade_cash"])):
                     pending[key] = {"side": side, "signal_at": timestamp.isoformat()}
         state["observed_at"] = now.isoformat()
+        equity = money(state["cash"]) + sum(
+            (money(p["quantity"]) * money(p["bid"]) for p in positions.values()), Decimal(0))
+        history = state["equity_history"]
+        if not history or now > datetime.fromisoformat(history[-1]["at"]):
+            history.append({"at": now.isoformat(), "equity": str(equity)})
+        state["equity_history"] = history[-500:]
         self._save(state)
 
     @staticmethod
@@ -176,6 +197,8 @@ class PaperLedger:
             pnl = proceeds - money(holding["cost"])
             cash += proceeds
             state["realized_pnl"] = str(money(state["realized_pnl"]) + pnl)
+            outcome = "wins" if pnl > 0 else "losses" if pnl < 0 else "breakeven"
+            state[outcome] += 1
         state["cash"] = str(cash)
         state["fill_count"] += 1
         state["fills"].append({"number": state["fill_count"], "key": key, "side": side,
@@ -198,6 +221,7 @@ class PaperLedger:
             value += market_value
             cost += basis
         equity = money(state["cash"]) + value
+        closed = state["wins"] + state["losses"] + state["breakeven"]
         return {
             "session_id": state["session_id"], "source": state["source"], "active": active,
             "initial_cash": state["initial_cash"], "cash": state["cash"], "equity": str(equity),
@@ -207,5 +231,9 @@ class PaperLedger:
             "positions": positions, "pending_count": len(state["pending"]) if active else 0,
             "fill_count": state["fill_count"], "fills": deepcopy(state["fills"]),
             "observed_at": state["observed_at"],
+            "wins": state["wins"], "losses": state["losses"], "breakeven": state["breakeven"],
+            "closed_trades": closed, "win_rate": 100 * state["wins"] / closed if closed else None,
+            "return_pct": str(100 * (equity / money(state["initial_cash"]) - 1)),
+            "equity_history": deepcopy(state["equity_history"]),
             "model": "Virtual only; next eligible quote; fractional units; 5 bps adverse slippage; no fees; immediate settlement; no liquidity model",
         }

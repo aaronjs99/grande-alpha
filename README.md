@@ -32,7 +32,10 @@ The `tony-dev` branch also includes **Agent · Stocks + Crypto**: continuous wat
 discovery, supported crypto-pair observations, optional local AI analysis, and an activity dashboard.
 This workspace produces research proposals and can simulate trades with virtual
 cash. **Paper trading** offers an offline demo or Robinhood quotes, simulated fills,
-and realized/unrealized P&L. See [Agent paper trading](docs/AGENT_PAPER_TRADING.md).
+and realized/unrealized P&L. Its dashboard shows virtual equity history, closed-trade
+win rate, fills, and six named workflow cards with actual handoffs. An optional
+repeat setting keeps the offline demo running until stopped.
+See [Agent paper trading](docs/AGENT_PAPER_TRADING.md).
 It does not place multi-market broker orders. See
 [Agent workspace setup and current execution limits](docs/AGENT_WORKSPACE.md).
 Equities and Crypto run as concurrent research workers. **Prompts + AI connections**
