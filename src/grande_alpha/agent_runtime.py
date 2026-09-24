@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import math
+import sqlite3
 import uuid
 from collections import deque
 from collections.abc import Awaitable, Callable
@@ -23,10 +24,12 @@ from grande_alpha.agent_models import (
     AssetClass,
     Instrument,
 )
+from grande_alpha.agent_paper import DEMO_CYCLES, PaperLedger, demo_market, demo_time, validate_paper_settings
 from grande_alpha.models import Quote, utc_now
 from grande_alpha.policy import market_session_allowed
 
 MARKET_WORKER_TIMEOUT_SECONDS = 35.0
+DEMO_INTERVAL_SECONDS = 1.0
 
 
 class AgentRuntime:
@@ -43,6 +46,7 @@ class AgentRuntime:
         clock: Callable[[], datetime] = utc_now,
         analyst: OllamaAnalyst | None = None,
         crypto_account_type: Callable[[], str] = lambda: "",
+        paper: PaperLedger | None = None,
     ) -> None:
         self._equity_quotes = equity_quotes
         self._crypto_pairs = crypto_pairs
@@ -61,19 +65,43 @@ class AgentRuntime:
         self._session_id = ""
         self._generation = 0
         self.settings = AgentSettings()
-        self.snapshot = AgentSnapshot()
+        self.paper = paper or PaperLedger()
+        self.paper_source: str | None = None
+        self.snapshot = AgentSnapshot(paper=self.paper.summary())
+
+    def _now(self) -> datetime:
+        return demo_time(self.snapshot.cycle) if self.paper_source == "demo" else self._clock()
+
+    def _available(self) -> bool:
+        return self.paper_source == "demo" or self._connected()
+
+    def paper_context(self) -> dict | None:
+        return self.paper.summary(active=bool(self.paper_source and self.snapshot.running),
+                                  now=self._now(), max_age=self.settings.max_quote_age_seconds)
 
     def _publish(self, **values) -> None:
         self.snapshot = replace(self.snapshot, **values)
+        self.snapshot = replace(self.snapshot, paper=self.paper_context())
         self._changed(self.snapshot)
 
     def start(self, settings: AgentSettings) -> None:
+        self._start(settings)
+
+    def start_paper(self, settings: AgentSettings, source: str = "demo", initial_cash: float = 1000,
+                    trade_cash: float = 100) -> None:
+        validate_paper_settings(source, initial_cash, trade_cash)
+        self._start(settings, source, initial_cash, trade_cash)
+
+    def _start(self, settings: AgentSettings, source: str | None = None, initial_cash=1000, trade_cash=100) -> None:
         settings.validate()
-        if not self._connected():
+        if source != "demo" and not self._connected():
             raise ValueError("Connect the consented Robinhood account before starting the agent")
         if self.snapshot.running:
             raise ValueError("Stop the current agent run before changing its settings")
         loop = asyncio.get_running_loop()
+        if source:
+            self.paper.start(source, initial_cash, trade_cash)
+        self.paper_source = source
         self._generation += 1
         self.settings = settings
         self._history.clear()
@@ -83,11 +111,13 @@ class AgentRuntime:
         self._publish(
             running=True,
             phase="Starting",
-            analyst=f"Local AI · {settings.local_ai_model}"
+            analyst="Demo rules baseline" if source == "demo" else f"Local AI · {settings.local_ai_model}"
             if settings.local_ai_enabled
             else "Rules baseline",
         )
-        self._log("Agent started: stocks/ETFs + crypto; proposals only", category="agent_session")
+        if source:
+            self._publish(execution_status="Paper simulation only · virtual cash · no broker orders")
+        self._log(f"Agent started: stocks/ETFs + crypto; {'paper simulation · ' + source if source else 'proposals only'}", category="agent_session")
         self._task = loop.create_task(self._run(), name="grande-multi-market-agent")
 
     def stop(self, reason: str = "Agent stopped") -> None:
@@ -96,22 +126,37 @@ class AgentRuntime:
         self._task = None
         if task is not None and not task.done():
             task.cancel()
+        self._discard_paper_intents()
         if self.snapshot.running:
             self._publish(running=False, phase="Stopped", decisions=(), observed_at=None,
                           worker_status={"equity": "Stopped", "crypto": "Stopped"})
             self._log(reason, category="agent_session")
 
+    def _discard_paper_intents(self) -> None:
+        try:
+            self.paper.cancel_pending()
+        except sqlite3.Error:
+            # Paper storage must never obstruct the app's broker STOP/Disconnect.
+            self._log("Paper simulation stopped; pending-intent cleanup could not be saved", "warning", "agent_session")
+
     async def _run(self) -> None:
         try:
             while self.snapshot.running:
-                if not self._connected():
+                if not self._available():
+                    self._discard_paper_intents()
                     self._publish(running=False, phase="Disconnected")
                     break
                 await self.cycle()
-                await asyncio.sleep(self.settings.interval_seconds)
+                if self.paper_source == "demo" and self.snapshot.cycle >= DEMO_CYCLES:
+                    self._discard_paper_intents()
+                    self._publish(running=False, phase="Demo complete",
+                                  worker_status={"equity": "Demo complete", "crypto": "Demo complete"})
+                    break
+                await asyncio.sleep(DEMO_INTERVAL_SECONDS if self.paper_source == "demo" else self.settings.interval_seconds)
         except asyncio.CancelledError:
             pass
         except Exception as exc:
+            self._discard_paper_intents()
             self._publish(running=False, phase="Error")
             self._log(f"Agent stopped: {type(exc).__name__}", "error", "agent_session")
 
@@ -226,7 +271,9 @@ class AgentRuntime:
 
     async def _market_cycle(self, asset_class: AssetClass, cycle: int, settings: AgentSettings, progress, current):
         progress("Scanning")
-        if asset_class == AssetClass.EQUITY:
+        if self.paper_source == "demo":
+            instruments, quotes = demo_market(asset_class, cycle)
+        elif asset_class == AssetClass.EQUITY:
             instruments = [Instrument(asset_class, symbol) for symbol in settings.equity_symbols]
             if settings.scan_id:
                 instruments += await self._equity_scan(settings.scan_id)
@@ -245,18 +292,18 @@ class AgentRuntime:
         if any(item.asset_class != asset_class for item in instruments):
             raise ValueError("Discovery returned a different asset class")
         batch = self._batch(instruments, cycle)
-        quotes = (
+        quotes = quotes if self.paper_source == "demo" else (
             await self._equity_quotes([item.symbol for item in batch])
             if asset_class == AssetClass.EQUITY and batch
             else await self._crypto_quotes(batch) if batch else {}
         )
         if not current():
             raise asyncio.CancelledError
-        now = self._clock()
+        now = self._now()
         decisions = [self._inspect(item, quotes.get(item.symbol), now, settings) for item in batch]
         progress("Analyzing")
         eligible = [item for item in decisions if item.risk_status == "Data checks passed"]
-        if settings.local_ai_enabled and eligible:
+        if settings.local_ai_enabled and eligible and self.paper_source != "demo":
             observations = [
                 {
                     "key": item.instrument.key,
@@ -291,7 +338,7 @@ class AgentRuntime:
         return decisions, f"Observed {len(batch)} of {len(instruments)} candidates"
 
     def _recheck(self, decisions, settings):
-        now = self._clock()
+        now = self._now()
         result = []
         for item in decisions:
             if item.risk_status == "Data checks passed":
@@ -307,7 +354,7 @@ class AgentRuntime:
         if self._cycle_lock.locked():
             return
         async with self._cycle_lock:
-            if not self._connected():
+            if not self._available():
                 return
             generation = self._generation
             settings = self.settings  # Prompt changes apply to the next complete cycle.
@@ -319,7 +366,7 @@ class AgentRuntime:
                           market_status={}, worker_status=dict(workers))
 
             def current():
-                return generation == self._generation and self._connected()
+                return generation == self._generation and self._available()
 
             def combined():
                 return self._recheck([item for market in AssetClass for item in results.get(market, [])], settings)
@@ -351,11 +398,14 @@ class AgentRuntime:
                     group.create_task(worker(market), name=f"grande-agent-{market.value}")
             if generation != self._generation:
                 return
-            if not self._connected():
+            if not self._available():
+                self._discard_paper_intents()
                 self._publish(running=False, phase="Disconnected", decisions=())
                 return
             decisions = combined()
-            self._publish(phase="Waiting", observed_at=self._clock(), decisions=tuple(decisions),
+            if self.paper_source and self.snapshot.running:
+                self.paper.consume(decisions, self._now(), settings.max_quote_age_seconds)
+            self._publish(phase="Waiting", observed_at=self._now(), decisions=tuple(decisions),
                           market_status=status, worker_status=workers)
             self._log(
                 f"Agent cycle {cycle}: {len(decisions)} candidates; "

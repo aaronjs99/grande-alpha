@@ -30,7 +30,10 @@ evidence, provenance, privacy, and transaction-consent controls are never plan-g
 
 The `tony-dev` branch also includes **Agent · Stocks + Crypto**: continuous watchlist/saved-scan
 discovery, supported crypto-pair observations, optional local AI analysis, and an activity dashboard.
-This workspace produces research proposals and does not place multi-market orders. See
+This workspace produces research proposals and can simulate trades with virtual
+cash. **Paper trading** offers an offline demo or Robinhood quotes, simulated fills,
+and realized/unrealized P&L. See [Agent paper trading](docs/AGENT_PAPER_TRADING.md).
+It does not place multi-market broker orders. See
 [Agent workspace setup and current execution limits](docs/AGENT_WORKSPACE.md).
 Equities and Crypto run as concurrent research workers. **Prompts + AI connections**
 adds editable team/worker prompts and a default-off local MCP connection for compatible

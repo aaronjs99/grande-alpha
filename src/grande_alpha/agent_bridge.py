@@ -17,7 +17,7 @@ from pathlib import Path
 LEASE_SECONDS = 5.0
 REQUEST_SECONDS = 10.0
 MAX_PENDING = 32
-COMMANDS = {"context", "brief", "universe", "start", "stop"}
+COMMANDS = {"context", "brief", "universe", "start", "stop", "paper_start"}
 
 
 class BridgeUnavailable(RuntimeError):

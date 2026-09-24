@@ -38,8 +38,10 @@ class AuditStore:
         self._connection.row_factory = sqlite3.Row
         self._initialize()
         from grande_alpha.agent_ledger import AgentLedger
+        from grande_alpha.agent_paper import PaperLedger
 
         self.agent_ledger = AgentLedger(self._connection, self._lock)
+        self.agent_paper = PaperLedger(self.path.with_name(self.path.stem + "-paper.db"))
 
     def _initialize(self) -> None:
         with self._lock, self._connection:
@@ -2018,6 +2020,7 @@ class AuditStore:
 
     def close(self) -> None:
         with self._lock:
+            self.agent_paper.close()
             self._connection.close()
 
 

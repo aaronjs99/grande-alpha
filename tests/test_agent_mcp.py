@@ -52,7 +52,8 @@ async def test_mcp_protocol_tools_prompts_and_no_broker_write_capabilities(deskt
     async with create_connected_server_and_client_session(server) as client:
         listed = await client.list_tools()
         assert {t.name for t in listed.tools} == {
-            'get_research_context', 'set_research_brief', 'configure_research_universe', 'start_research', 'stop_research'
+            'get_research_context', 'set_research_brief', 'configure_research_universe', 'start_research', 'stop_research',
+            'start_paper_trading'
         }
         assert (await client.call_tool('get_research_context')).isError
         assert (await client.list_prompts()).prompts[0].name == 'review_markets'

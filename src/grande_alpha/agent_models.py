@@ -94,3 +94,4 @@ class AgentSnapshot:
     market_status: dict[str, str] = field(default_factory=dict)
     worker_status: dict[str, str] = field(default_factory=dict)
     execution_status: str = "Live stocks/crypto agent execution is not available in this build"
+    paper: dict | None = None

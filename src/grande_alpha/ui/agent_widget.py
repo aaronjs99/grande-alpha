@@ -139,7 +139,7 @@ class AgentWidget(QScrollArea):
         self.mode.setObjectName("modeBadge")
         self.header_layout.addWidget(self.mode)
         layout.addLayout(self.header_layout)
-        notice = label("STOCKS + CRYPTO  /  Research mode · analysis is active only when started · live execution is unavailable")
+        notice = label("STOCKS + CRYPTO  /  Research + paper trading · simulations use virtual money · live execution is unavailable")
         notice.setObjectName("dashboardNotice")
         layout.addWidget(notice)
 
@@ -283,8 +283,9 @@ class AgentWidget(QScrollArea):
         ))
         prompt_form.addRow(label(
             "A connected AI app can read symbols, price observations and prompts, change research "
-            "prompts/universes, and start or stop analysis. Its provider may process that shared data. "
-            "Account balances, credentials, positions and order tools are excluded. Access starts off and "
+            "prompts/universes, start virtual paper sessions, and read simulated fills and P&L. "
+            "Its provider may process that shared data. Real account balances, credentials, positions "
+            "and order tools are excluded. Access starts off and "
             "ends on Stop agent, STOP + CANCEL, Disconnect or Exit."
         ))
         self.mcp_enabled = QCheckBox("Allow AI research access for this app session")
@@ -312,6 +313,7 @@ class AgentWidget(QScrollArea):
         controls.addWidget(self.prompts_toggle)
         layout.addLayout(controls)
         layout.addWidget(self.prompt_box)
+        self._build_paper_panel(layout)
 
         self.scout_status = label("Waiting for discovery")
         self.analyst_status = label("Rules baseline")
@@ -428,6 +430,96 @@ class AgentWidget(QScrollArea):
         controller.agent_mcp_changed.connect(self._mcp_changed)
         controller.agent_settings_changed.connect(self._sync_agent_settings)
         self.update_agent(controller.agent.snapshot)
+
+    def _build_paper_panel(self, layout) -> None:
+        box = QGroupBox("Paper trading · virtual money")
+        form = QFormLayout(box)
+        form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
+        self.paper_source = QComboBox()
+        self.paper_source.addItem("Offline demo · made-up prices · about 24 seconds", "demo")
+        self.paper_source.addItem("Robinhood quotes · existing market and data checks", "broker_quotes")
+        self.paper_source.setMinimumWidth(0)
+        self.paper_source.currentIndexChanged.connect(lambda: self._set_controls())
+        form.addRow("Price source", self.paper_source)
+        self.paper_cash = QDoubleSpinBox()
+        self.paper_cash.setRange(1, 1000000)
+        self.paper_cash.setPrefix("$")
+        self.paper_cash.setValue(1000)
+        self.paper_trade_cash = QDoubleSpinBox()
+        self.paper_trade_cash.setRange(1, 1000000)
+        self.paper_trade_cash.setPrefix("$")
+        self.paper_trade_cash.setValue(100)
+        form.addRow("Starting virtual cash", self.paper_cash)
+        form.addRow("Virtual cash per buy", self.paper_trade_cash)
+        self.paper_start = QPushButton("Start new paper session")
+        self.paper_start.setObjectName("primary")
+        self.paper_start.clicked.connect(self._start_paper)
+        form.addRow(self.paper_start)
+        form.addRow(label(
+            "Demo runs both workers on a fixed up/down price path without Robinhood or AI calls. "
+            "Robinhood quotes may produce only HOLD decisions. Each new session starts a fresh virtual "
+            "portfolio; older sessions stay archived locally. Stop agent ends either run."
+        ))
+        self.paper_status = label("No paper session yet · no real funds used")
+        self.paper_summary = label("Virtual cash and profit/loss will appear here.")
+        form.addRow(self.paper_status)
+        form.addRow(self.paper_summary)
+        self.paper_positions = self._table(["Virtual holding", "Units", "Value at last bid", "Unrealized P&L", "Quote"])
+        self.paper_positions.setMaximumHeight(155)
+        self.paper_fills = self._table(["Simulated time", "Symbol", "Side", "Units", "Fill price", "Realized P&L"])
+        self.paper_fills.setMaximumHeight(210)
+        for table, widths in ((self.paper_positions, [200, 110, 160, 170, 140]),
+                              (self.paper_fills, [130, 190, 70, 110, 120, 140])):
+            table.setProperty("grandeDefaultColumnWidths", widths)
+            for column, width in enumerate(widths):
+                table.setColumnWidth(column, width)
+        form.addRow(self.paper_positions)
+        form.addRow(self.paper_fills)
+        form.addRow(label(
+            "Fill model: next eligible quote, buys at ask and sells at bid, plus 0.05% adverse slippage. "
+            "Fractional units, immediate settlement, no fees or liquidity constraints. "
+            "P&L uses the last eligible bid; old valuations are labeled. Demo results do not predict returns."
+        ))
+        layout.addWidget(box)
+
+    def _start_paper(self) -> None:
+        try:
+            self.controller.start_agent_paper(self._read_settings(), self.paper_source.currentData(),
+                                              self.paper_cash.value(), self.paper_trade_cash.value())
+        except Exception as exc:
+            self.paper_status.setText(f"Paper session did not start: {exc}")
+
+    def _update_paper(self, paper: dict | None) -> None:
+        self.paper_positions.setVisible(bool(paper and paper["positions"]))
+        self.paper_fills.setVisible(bool(paper))
+        if not paper:
+            return
+        source = "SYNTHETIC DEMO" if paper["source"] == "demo" else "ROBINHOOD QUOTES"
+        self.paper_status.setText(f"{source} · {'RUNNING' if paper['active'] else 'STOPPED'} · "
+                                 f"{paper['fill_count']} simulated fills · {paper['pending_count']} pending · virtual funds only")
+        self.paper_summary.setText(
+            f"Virtual cash ${float(paper['cash']):,.2f}  ·  Portfolio at last bids ${float(paper['equity']):,.2f}\n"
+            f"Total P&L ${float(paper['total_pnl']):+,.2f}  ·  Realized ${float(paper['realized_pnl']):+,.2f}"
+            f"  ·  Unrealized ${float(paper['unrealized_pnl']):+,.2f}"
+        )
+        self.paper_positions.setRowCount(len(paper["positions"]))
+        for row, p in enumerate(paper["positions"]):
+            values = (p["key"], f"{float(p['quantity']):.8g}", f"${float(p['value']):,.2f}",
+                      f"${float(p['unrealized_pnl']):+,.2f}", "Old / last known" if p["stale"] or not paper["active"] else "At latest cycle")
+            for col, value in enumerate(values):
+                item = QTableWidgetItem(value)
+                item.setToolTip(p["marked_at"] if col == 4 else value)
+                self.paper_positions.setItem(row, col, item)
+        fills = list(reversed(paper["fills"][-30:]))
+        self.paper_fills.setRowCount(len(fills))
+        for row, fill in enumerate(fills):
+            values = (fill["filled_at"][11:19] + " UTC", fill["key"].split(":", 1)[-1], fill["side"].upper(),
+                      f"{float(fill['quantity']):.8g}", f"${float(fill['price']):,.6g}",
+                      f"${float(fill['realized_pnl']):+,.2f}" if fill["side"] == "sell" else "—")
+            for col, value in enumerate(values):
+                item = QTableWidgetItem(value)
+                item.setToolTip(fill["filled_at"] if col == 0 else value)
+                self.paper_fills.setItem(row, col, item)
 
     def apply_theme(self) -> None:
         self.setStyleSheet(theme_css(DASHBOARD_STYLE, base="light"))
@@ -666,6 +758,10 @@ class AgentWidget(QScrollArea):
         self.save_budget.setEnabled(enabled and not running)
         self.budget_box.setEnabled(enabled and not running)
         self.start.setEnabled(enabled and not running)
+        self.paper_start.setEnabled(not running and not self.controller.shadow_only_runtime
+                                    and (self.paper_source.currentData() == "demo" or enabled))
+        for editor in (self.paper_source, self.paper_cash, self.paper_trade_cash):
+            editor.setEnabled(not running)
         self.export_contracts.setEnabled(enabled and not running)
         self.stop.setEnabled(running or bool(self.controller.agent_bridge.session))
         self.mcp_enabled.setEnabled(not self.controller.shadow_only_runtime)
@@ -686,7 +782,10 @@ class AgentWidget(QScrollArea):
     def update_agent(self, snapshot: AgentSnapshot) -> None:
         if snapshot.running and self.configure.isChecked():
             self.configure.setChecked(False)
-        self.mode.setText(f"{snapshot.phase.upper()} · CYCLE {snapshot.cycle} · PROPOSALS ONLY")
+        paper_mode = bool(snapshot.paper and self.controller.agent.paper_source)
+        mode = ("DEMO · VIRTUAL MONEY" if snapshot.paper["source"] == "demo" else "PAPER · VIRTUAL MONEY") if paper_mode else "PROPOSALS ONLY"
+        self.mode.setText(f"{snapshot.phase.upper()} · CYCLE {snapshot.cycle} · {mode}")
+        self._update_paper(snapshot.paper)
         self.equity_status.setText(snapshot.worker_status.get("equity", "Idle") + " · " + snapshot.market_status.get("equity", "Waiting for stock observations"))
         self.crypto_status.setText(snapshot.worker_status.get("crypto", "Idle") + " · " + snapshot.market_status.get("crypto", "Waiting for crypto observations"))
         self.candidates.setText(str(len(snapshot.decisions)))

@@ -260,6 +260,7 @@ class TradingController(QObject):
             changed=self.agent_changed.emit,
             log=self.log,
             crypto_account_type=lambda: self.snapshot.account.brokerage_account_type if self.snapshot.account else "",
+            paper=store.agent_paper,
         )
 
         self.agent_bridge = AgentBridge(store.path.parent / "agent-mcp.db")
@@ -303,6 +304,7 @@ class TradingController(QObject):
         if not self.agent_bridge.session or self.shadow_only_runtime:
             raise RuntimeError("Research MCP is not enabled")
         fields = {"context": set(), "start": set(), "stop": set(),
+                  "paper_start": {"source", "initial_cash", "trade_cash"},
                   "brief": {"market", "brief"}, "universe": {"equity_symbols", "crypto_symbols"}}
         if command not in fields or set(payload) != fields[command]:
             raise ValueError("Invalid research command fields")
@@ -322,12 +324,15 @@ class TradingController(QObject):
         if command == "start":
             self.start_agent(self.agent.settings)
             return {"status": "Research workers started; no orders authorized"}
+        if command == "paper_start":
+            self.start_agent_paper(self.agent.settings, **payload)
+            return {"status": "Paper session started; virtual funds only; no broker orders", "paper": self.agent.paper_context()}
         if command == "stop":
             self.agent.stop("Research workers stopped from MCP")
             return {"status": "Research stopped; MCP remains enabled; orders and positions unchanged"}
         snapshot = self.agent.snapshot
         observations = []
-        if self.snapshot.connected and self.config.broker_connection_enabled:
+        if self.agent.paper_source == "demo" or (self.snapshot.connected and self.config.broker_connection_enabled):
             for item in snapshot.decisions:
                 quote = item.quote
                 try:
@@ -340,13 +345,14 @@ class TradingController(QObject):
                     observations.append({
                         "key": item.instrument.key, "bid": quote.bid, "ask": quote.ask,
                         "spread_bps": quote.spread_bps, "quote_at": quote.timestamp.isoformat(),
-                        "age_seconds": quote.age_seconds(utc_now()), "samples": item.samples,
+                        "age_seconds": quote.age_seconds(self.agent._now()), "samples": item.samples,
                         "change_bps": item.change_bps, "proposal": item.action,
                         "data_checks": item.risk_status,
                     })
                 except (ValueError, TypeError, OverflowError):
                     continue
         settings = self.agent.settings
+        local_ai_active = settings.local_ai_enabled and self.agent.paper_source != "demo"
         self.agent_mcp_context_requested.emit()
         return {
             "mode": "research_only", "orders_available": False,
@@ -354,16 +360,25 @@ class TradingController(QObject):
             "workers": snapshot.worker_status,
             "observed_at": snapshot.observed_at.isoformat() if snapshot.observed_at else None,
             "briefs": {"team": settings.research_brief, "equity": settings.equity_brief, "crypto": settings.crypto_brief},
-            "local_ai_enabled": settings.local_ai_enabled,
-            "prompt_effect": "Local AI uses briefs next cycle" if settings.local_ai_enabled else "Rules are unchanged; briefs are context for the connected AI client",
+            "local_ai_enabled": local_ai_active,
+            "prompt_effect": "Demo uses fixed rules and synthetic prices" if self.agent.paper_source == "demo" else (
+                "Local AI uses briefs next cycle" if local_ai_active else "Rules are unchanged; briefs are context for the connected AI client"),
             "universe": {"equity": settings.equity_symbols, "crypto": settings.crypto_symbols},
             "observations": observations,
+            "observation_source": "synthetic_demo" if self.agent.paper_source == "demo" else "broker_quotes",
+            "paper": self.agent.paper_context(),
         }
 
     def start_agent(self, settings: AgentSettings) -> None:
         if self.shadow_only_runtime:
             raise RuntimeError("Scheduled ETF shadow does not start the multi-market agent")
         self.agent.start(settings)
+
+    def start_agent_paper(self, settings: AgentSettings, source: str = "demo", initial_cash: float = 1000,
+                          trade_cash: float = 100) -> None:
+        if self.shadow_only_runtime:
+            raise RuntimeError("Scheduled ETF shadow does not start agent paper trading")
+        self.agent.start_paper(settings, source, initial_cash, trade_cash)
 
     async def _agent_crypto_quotes(self, instruments):
         account = self.snapshot.account
