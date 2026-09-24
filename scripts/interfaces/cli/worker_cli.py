@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 
 from grande_alpha.configuration.config import data_dir
+from grande_alpha.execution.candidate_profile import candidate_template
 from grande_alpha.execution.worker_control import WorkerControlStore
 from grande_alpha.execution.worker_ipc import LocalControlClient, LocalControlError
 from grande_alpha.execution.worker_process import launch_worker
@@ -19,6 +20,11 @@ def _client(*, launch: bool) -> LocalControlClient:
 
 def _show(value: dict) -> None:
     print(json.dumps(value, indent=2, sort_keys=True, allow_nan=False))
+
+
+def command_candidate_template(_args) -> int:
+    _show(candidate_template())
+    return 0
 
 
 def _approval(prompt: str, phrase: str) -> str:

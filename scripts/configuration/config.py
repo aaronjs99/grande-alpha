@@ -89,14 +89,16 @@ class ExecutionConfig:
 
 @dataclass
 class RiskConfig:
-    default_max_order_notional: float = 25.0
-    default_max_daily_notional: float = 50.0
-    default_max_total_exposure: float = 40.0
-    default_max_daily_loss: float = 2.0
-    default_max_trades: int = 6
-    default_max_orders_per_minute: int = 2
-    default_max_spread_bps: float = 20.0
-    default_max_quote_age_seconds: float = 8.0
+    """Retained saved preferences; live limits always come from an approved candidate."""
+
+    default_max_order_notional: float | None = None
+    default_max_daily_notional: float | None = None
+    default_max_total_exposure: float | None = None
+    default_max_daily_loss: float | None = None
+    default_max_trades: int | None = None
+    default_max_orders_per_minute: int | None = None
+    default_max_spread_bps: float | None = None
+    default_max_quote_age_seconds: float | None = None
 
 
 @dataclass
@@ -122,16 +124,9 @@ SECTION_TYPES = {
 SETTING_SECTION = {name: section for section, names in CONFIG_SECTIONS.items() for name in names}
 
 
-def flat_config_values(config: AppConfig) -> dict[str, object]:
-    """Compatibility snapshot for consumers still expecting the former flat shape."""
-    return {"cadence_version": config.cadence_version,
-            **{name: getattr(getattr(config, section), name)
-               for section, names in CONFIG_SECTIONS.items() for name in names}}
-
-
-@dataclass(init=False)
+@dataclass
 class AppConfig:
-    """Typed settings sections; flat access remains a temporary caller adapter."""
+    """Saved preferences for research and desktop use, not a live trading permit."""
 
     cadence_version: int = CADENCE_VERSION
     broker: BrokerConfig = field(default_factory=BrokerConfig)
@@ -142,44 +137,12 @@ class AppConfig:
     storage: StorageConfig = field(default_factory=StorageConfig)
     desktop: DesktopConfig = field(default_factory=DesktopConfig)
 
-    def __init__(self, *, cadence_version: int = CADENCE_VERSION, **values: object) -> None:
-        object.__setattr__(self, "cadence_version", cadence_version)
-        for section, section_type in SECTION_TYPES.items():
-            supplied = values.pop(section, None)
-            if supplied is not None and not isinstance(supplied, section_type):
-                raise ValueError(f"{section} must be a {section_type.__name__}")
-            object.__setattr__(self, section, supplied if supplied is not None else section_type())
-        for name, value in values.items():
-            if name not in SETTING_SECTION:
-                raise ValueError(f"Unknown configuration setting: {name}")
-            setattr(self, name, value)
-
-    def __getattr__(self, name: str) -> object:
-        section = SETTING_SECTION.get(name)
-        if section is None:
-            raise AttributeError(name)
-        return getattr(getattr(self, section), name)
-
-    def __setattr__(self, name: str, value: object) -> None:
-        section = SETTING_SECTION.get(name)
-        if section is not None:
-            setattr(getattr(self, section), name, value)
-        else:
-            object.__setattr__(self, name, value)
-
-    def with_flat_updates(self, **updates: object) -> AppConfig:
-        """Return an independent copy with validated flat-name updates."""
-        copied = AppConfig(**flat_config_values(self))
-        for name, value in updates.items():
-            if name not in SETTING_SECTION:
-                raise ValueError(f"Unknown configuration setting: {name}")
-            setattr(copied, name, value)
-        copied.validate_cadence()
-        return copied
+    def _setting(self, name: str) -> object:
+        return getattr(getattr(self, SETTING_SECTION[name]), name)
 
     @property
     def trade_seconds(self) -> int:
-        return self.bar_seconds * self.trade_every_bars
+        return self.data.bar_seconds * self.strategy.trade_every_bars
 
     def validate_cadence(self) -> None:
         for section, section_type in SECTION_TYPES.items():
@@ -187,55 +150,59 @@ class AppConfig:
                 raise ValueError(f"{section} must be a {section_type.__name__}")
         for name in ("broker_connection_enabled", "live_trading_enabled",
                      "remote_market_data_enabled", "personal_ledger_enabled"):
-            if type(getattr(self, name)) is not bool:
+            if type(self._setting(name)) is not bool:
                 raise ValueError(f"{name} must be true or false")
-        if not isinstance(self.disclosure_version, str):
+        if not isinstance(self.desktop.disclosure_version, str):
             raise ValueError("disclosure_version must be text")
         for name in ("onboarding_version", "market_history_retention_days", "bar_seconds",
                      "trade_every_bars",
                      "warmup_bars", "fast_ema", "slow_ema", "momentum_bars",
                      "max_hold_minutes", "default_session_minutes", "default_max_trades",
                      "default_max_orders_per_minute"):
-            value = getattr(self, name)
+            value = self._setting(name)
+            if name.startswith("default_max_") and value is None:
+                continue
             minimum = 0 if name == "onboarding_version" else 1
             if type(value) is not int or value < minimum:
                 raise ValueError(f"{name} must be an integer of at least {minimum}")
         for name in ("no_trade_open_minutes", "no_trade_close_minutes"):
-            value = getattr(self, name)
+            value = self._setting(name)
             if type(value) is not int or value < 0:
                 raise ValueError(f"{name} must be a nonnegative integer")
         for name in ("hard_stop_pct", "take_profit_pct", "default_max_order_notional",
                      "default_max_daily_notional", "default_max_total_exposure",
                      "default_max_daily_loss", "default_max_spread_bps",
                      "default_max_quote_age_seconds"):
-            value = getattr(self, name)
+            value = self._setting(name)
+            if name.startswith("default_max_") and value is None:
+                continue
             if (isinstance(value, bool) or not isinstance(value, (int, float))
                     or not math.isfinite(value) or value <= 0):
                 raise ValueError(f"{name} must be finite and positive")
         for name in ("trend_threshold_bps", "limit_offset_bps"):
-            value = getattr(self, name)
+            value = self._setting(name)
             if (isinstance(value, bool) or not isinstance(value, (int, float))
                     or not math.isfinite(value) or value < 0):
                 raise ValueError(f"{name} must be finite and nonnegative")
         for name in ("poll_seconds", "reconcile_seconds"):
-            value = getattr(self, name)
+            value = self._setting(name)
             if (isinstance(value, bool) or not isinstance(value, (int, float))
                     or not math.isfinite(value)):
                 raise ValueError(f"{name} must be a finite number of seconds")
-        if self.hard_stop_pct >= 1 or self.take_profit_pct >= 1:
+        if self.strategy.hard_stop_pct >= 1 or self.strategy.take_profit_pct >= 1:
             raise ValueError("Hard stop and take profit must be fractions below 1")
-        if not 0.25 <= self.poll_seconds <= 5.0:
+        if not 0.25 <= self.data.poll_seconds <= 5.0:
             raise ValueError("Quote request target must be between 0.25 and 5 seconds")
-        if not 2.0 <= self.reconcile_seconds <= 60.0:
+        if not 2.0 <= self.data.reconcile_seconds <= 60.0:
             raise ValueError("Account reconciliation must be between 2 and 60 seconds")
-        if not 1 <= self.bar_seconds <= 300:
+        if not 1 <= self.data.bar_seconds <= 300:
             raise ValueError("Analysis bar must be between 1 and 300 seconds")
-        if not 2 <= self.trade_every_bars <= 120:
+        if not 2 <= self.strategy.trade_every_bars <= 120:
             raise ValueError("Trade decisions must be separated by 2 to 120 analysis bars")
-        if self.strategy_name not in STRATEGY_NAMES:
-            raise ValueError(f"Unknown runtime strategy: {self.strategy_name}")
-        execution_profile(self)
-        if self.settlement_model not in {"cash_t1", "instant"}:
+        if self.strategy.strategy_name not in STRATEGY_NAMES:
+            raise ValueError(f"Unknown runtime strategy: {self.strategy.strategy_name}")
+        execution_profile(self.execution)
+        if self.execution.settlement_model not in {"cash_t1", "instant"}:
             raise ValueError("Settlement model must be cash_t1 or instant")
 
 
@@ -395,7 +362,11 @@ def upgrade_config(path: Path | None = None) -> Path | None:
     unknown = set(migrated) - allowed
     if unknown:
         raise ValueError(f"Unknown configuration settings: {', '.join(sorted(unknown))}")
-    config = AppConfig(**migrated)
+    sections = {
+        section: SECTION_TYPES[section](**{name: migrated[name] for name in names if name in migrated})
+        for section, names in CONFIG_SECTIONS.items()
+    }
+    config = AppConfig(cadence_version=migrated["cadence_version"], **sections)
     config.validate_cadence()
     timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
     backup = path.with_name(f"{path.stem}.{timestamp}.backup{path.suffix}")

@@ -8,10 +8,10 @@ from pathlib import Path
 import pytest
 
 from grande_alpha.domain.models import Account
+from grande_alpha.execution.candidate_profile import candidate_template
 from grande_alpha.execution.equity_ledger import ExecutionLeaseBusy
 from grande_alpha.execution.session_runtime import BrokerSessionRuntime
 from grande_alpha.execution.worker_control import WorkerControlStore
-from grande_alpha.interfaces.cli.autonomous_cli import candidate_template
 
 
 @pytest.mark.asyncio

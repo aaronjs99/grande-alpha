@@ -19,13 +19,13 @@ from grande_alpha.execution.authorization import (
     create_authorization,
     revoke_authorization,
 )
+from grande_alpha.execution.candidate_profile import load_candidate
 from grande_alpha.execution.equity_ledger import EquityLedger, ExecutionLeaseBusy
 from grande_alpha.execution.mixed_engine import mixed_candidate_digest, run_cycles
 from grande_alpha.execution.production import build_production_engine
 from grande_alpha.execution.read_retry import read_with_backoff
 from grande_alpha.execution.standing import validate_contract
 from grande_alpha.execution.worker_control import WorkerControlStore, WorkerPermission, WorkerState
-from grande_alpha.interfaces.cli.autonomous_cli import load_candidate
 from grande_alpha.persistence.store import AuditStore
 from grande_alpha.research.portfolio_replay import EASTERN
 from grande_alpha.research.worker_research import WorkerResearch

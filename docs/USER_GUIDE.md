@@ -38,7 +38,6 @@ local tests unless provider-observed evidence is explicitly stated.
 |---|---|---|---|
 | Desktop mixed-worker control, status, responsive layout, and Stop | Yes | Offscreen and substitute tests | Installed Windows and provider-observed acceptance |
 | Optional equity/crypto research and local MCP | Yes, research only | Synthetic/local tests | Client-specific setup; no live order authority or model-performance claim |
-| Attended ETF CLI session with per-order confirmation | Yes | Yes | Provider-observed end-to-end acceptance |
 | Mixed earnings-stock and TQQQ/SQQQ allocation | Yes | Yes | Current point-in-time earnings coverage and strategy evaluation |
 | Mixed background autonomous runner | Yes | Substitute/local tests | Exact provider schemas, order/fill/outage tests, and deployment operations |
 | Named saved settings and backed-up flat-file upgrade | Yes | Yes | Existing users must run the explicit upgrade |
@@ -48,8 +47,8 @@ local tests unless provider-observed evidence is explicitly stated.
 | User-started hidden mixed worker and local control | Yes in source | Substitute/local tests | Installed Windows operation, restart, and provider-observed recovery |
 | Public signed binary or paid plan | No | No | Signing, support, provider and legal review; billing is not included |
 
-The desktop and autonomous mixed CLI use the same user-started hidden worker. Attended ETF and
-shadow CLI sessions remain foreground paths. The worker implementation and substitute tests are not installed-Windows
+The desktop and CLI use the same user-started hidden mixed worker. Attended ETF and live-shadow
+sessions are retired; offline replay and historical records remain. The worker implementation and substitute tests are not installed-Windows
 or provider-observed acceptance. Do not interpret an Agent research status as confirmation that
 the mixed worker is active or authorized.
 
@@ -92,7 +91,7 @@ feature in this release.
 
 ## Safety and account responsibilities
 
-Sandbox and shadow sessions do not place broker orders. A saved connection preference is not
+Sandbox and historical replay do not place broker orders. A saved connection preference is not
 trading authorization. Approval applies only to the reviewed account, strategy, symbols, route,
 and limits; broker permission and live data checks are separate. The app cannot guarantee fills,
 settlement, liquidity, or continuous availability, and a market gap can exceed a local loss limit.

@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+## 0.19.0 - 2026-09-24
+
+- Retired the attended ETF and live-shadow order/session routes. The mixed stock/ETF worker is
+  the only supported live route; offline replay and existing historical records remain intact.
+- Removed the unused broker-writing agent executor, legacy desktop controller and window, and
+  their route-specific tests. No local account database or authorization file was deleted.
+- Split CLI data, research, records, and broker commands from the parser. Removed superseded
+  policy, activation, and direct-permit commands in favor of the shared worker controls.
+- Removed the internal flat-settings adapter. New saved risk preferences have no financial
+  defaults; live limits still require an explicit reviewed candidate and separate approval.
+- Fixed Windows bundling for the `scripts/` package mapping; frozen version and worker
+  entrypoints now load from the built artifact.
+- Local regression and packaging results are development evidence, not provider-observed
+  execution, installed-product acceptance, or a profitability claim.
+
 ## 0.18.0 - 2026-09-23
 
 - Reorganized the `scripts/` package by responsibility. The package root now holds only the

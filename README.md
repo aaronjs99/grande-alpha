@@ -5,7 +5,7 @@
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
 GRANDE Alpha is a local-first Windows desktop and command-line project for trading research,
-replay, live shadow observation, and controlled broker execution. Its mixed stock/ETF candidate
+replay, and controlled broker execution. Its mixed stock/ETF candidate
 uses earnings observations and a bounded QQQ/TQQQ/SQQQ allocation. Research works without a
 broker account; external connections and real-order capabilities require separate opt-in.
 
@@ -39,8 +39,9 @@ optional research tools, not mandatory waiting periods or profitability certific
 
 ## Current limits
 
-The desktop and mixed autonomous command line control the same user-started hidden worker;
-attended and shadow CLI sessions remain separate foreground paths. Local substitute tests cover worker controls, but installed
+The desktop and command line control the same user-started hidden mixed stock/ETF worker. The
+former attended ETF and live-shadow routes have been retired; historical records and offline replay
+remain available. Local substitute tests cover worker controls, but installed
 Windows and provider-observed recovery are still pending. Verify the exact worker state rather
 than assuming a desktop badge proves a broker session is live.
 Provider-specific order schemas, earnings coverage, restart/partial-fill behavior, and installed

@@ -14,17 +14,36 @@ $PythonExe = if (Test-Path -LiteralPath $ConfiguredPython) { $ConfiguredPython }
 $IconIco = Join-Path $ProjectRoot 'assets\brand\grande-alpha.ico'
 $IconPng = Join-Path $ProjectRoot 'scripts\assets\app-icon.png'
 
-& $PythonExe -m PyInstaller --noconfirm --clean --windowed --name GRANDEAlpha `
-    --icon $IconIco --add-data "${IconPng};grande_alpha/assets" `
-    --collect-all keyring `
-    --collect-data rfc3987_syntax `
-    --exclude-module pyqtgraph --exclude-module matplotlib `
-    --exclude-module IPython --exclude-module pytest --exclude-module black `
-    --exclude-module nbformat --exclude-module tkinter `
-    --hidden-import mcp.client.auth.oauth2 --hidden-import mcp.client.streamable_http `
-    --hidden-import mcp.shared.auth `
-    (Join-Path $ProjectRoot 'scripts\app.py')
-$BuildExitCode = $LASTEXITCODE
+$TemporaryRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath())
+$StageRoot = Join-Path $TemporaryRoot ("grande-alpha-pyinstaller-$([guid]::NewGuid().ToString('N'))")
+try {
+    # PyInstaller cannot resolve setuptools' editable scripts/ -> grande_alpha mapping.
+    New-Item -ItemType Directory -Path $StageRoot | Out-Null
+    Copy-Item -LiteralPath (Join-Path $ProjectRoot 'scripts') -Destination (Join-Path $StageRoot 'grande_alpha') -Recurse
+    & $PythonExe -m PyInstaller --noconfirm --clean --windowed --name GRANDEAlpha `
+        --paths $StageRoot `
+        --icon $IconIco --add-data "${IconPng};grande_alpha/assets" `
+        --collect-all keyring `
+        --collect-submodules grande_alpha `
+        --collect-data rfc3987_syntax `
+        --exclude-module pyqtgraph --exclude-module matplotlib `
+        --exclude-module IPython --exclude-module pytest --exclude-module black `
+        --exclude-module nbformat --exclude-module tkinter `
+        --hidden-import mcp.client.auth.oauth2 --hidden-import mcp.client.streamable_http `
+        --hidden-import mcp.shared.auth `
+        (Join-Path $ProjectRoot 'scripts\app.py')
+    $BuildExitCode = $LASTEXITCODE
+} finally {
+    $ResolvedStage = [IO.Path]::GetFullPath($StageRoot)
+    if ($ResolvedStage.StartsWith($TemporaryRoot, [StringComparison]::OrdinalIgnoreCase) -and
+        (Split-Path -Leaf $ResolvedStage) -like 'grande-alpha-pyinstaller-*') {
+        try {
+            Remove-Item -LiteralPath $ResolvedStage -Recurse -Force
+        } catch {
+            Write-Warning "Temporary packaging files remain at ${ResolvedStage}: $_"
+        }
+    }
+}
 if ($BuildExitCode -ne 0) {
     throw "PyInstaller failed with exit code $BuildExitCode"
 }

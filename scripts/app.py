@@ -23,7 +23,8 @@ def _set_windows_app_identity() -> None:
 
 def main() -> int:
     if "--version" in sys.argv:
-        print(f"GRANDE Alpha {__version__}")
+        if sys.stdout is not None:
+            print(f"GRANDE Alpha {__version__}")
         return 0
     # A frozen windowed build hosts the hidden worker through the same executable.
     # Dispatch before importing Qt so the worker process never creates desktop UI.

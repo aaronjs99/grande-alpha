@@ -61,10 +61,6 @@ class AuditStore:
         self.sandbox = SandboxRepository(self)
         self.shadow = ShadowRepository(self)
 
-        from grande_alpha.persistence.agent_ledger import AgentLedger
-
-        self.agent_ledger = AgentLedger(self._connection, self._lock)
-
     def transaction(self):
         return self._transactions.transaction()
 

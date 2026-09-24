@@ -21,8 +21,8 @@ class CandidateExecutionContract:
     """Immutable candidate-bound execution, sizing, and lifecycle semantics.
 
     Market observations (bar ranges, quoted spreads, prices, and volume) remain explicit
-    inputs. Replay, live shadow, and a future broker-order controller therefore use the same
-    formulas without pretending their market-data sources are identical.
+    inputs. Historical replay and the broker execution path can share these formulas without
+    pretending their market-data sources are identical.
     """
 
     contract_version: int = CONTRACT_VERSION
@@ -161,67 +161,18 @@ class CandidateExecutionContract:
         return hashlib.sha256(self.canonical_json().encode("utf-8")).hexdigest()
 
 
-_CONFIG_ALIASES = {
-    "order_notional": "default_max_order_notional",
-    "max_entries_per_day": "default_max_trades",
-    "decision_stride": "trade_every_bars",
-}
 
 
 def contract_from_config(config: object) -> CandidateExecutionContract:
-    """Create one canonical contract from a sandbox config or compatible runtime config."""
-
+    """Bind an offline replay configuration to its explicit execution assumptions."""
     defaults = CandidateExecutionContract()
-    values: dict[str, Any] = {}
-    for field in fields(defaults):
-        if field.name == "contract_version":
-            continue
-        if hasattr(config, field.name):
-            values[field.name] = getattr(config, field.name)
-            continue
-        alias = _CONFIG_ALIASES.get(field.name)
-        values[field.name] = getattr(config, alias) if alias and hasattr(config, alias) else getattr(
-            defaults, field.name
-        )
+    values = {
+        item.name: getattr(config, item.name, getattr(defaults, item.name))
+        for item in fields(defaults) if item.name != "contract_version"
+    }
     contract = CandidateExecutionContract(**values)
     contract.validate()
     return contract
-
-
-_RUNTIME_PARITY_FIELDS = {
-    "decision_stride": "trade_every_bars",
-    "market_hours": "market_hours",
-    "order_type": "order_type",
-    "time_in_force": "time_in_force",
-    "limit_offset_bps": "limit_offset_bps",
-    "settlement_model": "settlement_model",
-    "hard_stop_pct": "hard_stop_pct",
-    "take_profit_pct": "take_profit_pct",
-    "max_hold_minutes": "max_hold_minutes",
-    "no_trade_open_minutes": "no_trade_open_minutes",
-    "no_trade_close_minutes": "no_trade_close_minutes",
-}
-
-
-def contract_from_app_and_sandbox(
-    app_config: object,
-    sandbox_config: object,
-) -> CandidateExecutionContract:
-    """Bind a sandbox candidate to runtime-owned fields, rejecting any mismatch."""
-
-    mismatches = []
-    for candidate_field, runtime_field in _RUNTIME_PARITY_FIELDS.items():
-        if not hasattr(app_config, runtime_field):
-            continue
-        runtime_value = getattr(app_config, runtime_field)
-        candidate_value = getattr(sandbox_config, candidate_field)
-        if runtime_value != candidate_value:
-            mismatches.append(
-                f"{candidate_field}: candidate={candidate_value!r}, runtime={runtime_value!r}"
-            )
-    if mismatches:
-        raise ValueError("Candidate/runtime contract mismatch: " + "; ".join(mismatches))
-    return contract_from_config(sandbox_config)
 
 
 @dataclass(frozen=True)
@@ -408,7 +359,7 @@ def decision_due(
 ) -> bool:
     """Return whether another completed-bar decision is due.
 
-    Counts are deliberately explicit so replay, live shadow, and the broker controller
+    Counts are deliberately explicit so replay and the broker execution path
     do not mix provider-poll cadence with completed-analysis-bar cadence.
     """
 

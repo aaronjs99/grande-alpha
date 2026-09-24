@@ -695,7 +695,7 @@ class RobinhoodMCPBroker(Broker):
             venue_times = [value for value in (regular_time, extended_time) if value is not None]
             # A local receive time is not evidence that a venue quote is current.  Missing
             # venue timestamps therefore make the row unusable instead of manufacturing a
-            # fresh-looking quote, which is especially important for unattended shadow runs.
+            # fresh-looking quote, which is especially important before unattended entries.
             if not venue_times:
                 raise BrokerError(
                     f"Robinhood quote for {symbol} omitted a valid venue timestamp"
