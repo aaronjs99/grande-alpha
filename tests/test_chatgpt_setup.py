@@ -10,11 +10,14 @@ import tomllib
 import pytest
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
+from PySide6.QtCore import Qt
+from PySide6.QtTest import QTest
 from test_agent_mcp import desktop as desktop
 from test_agent_mcp import pump
 
 from grande_alpha import chatgpt_connection as setup
 from grande_alpha.ui.chatgpt_setup import TEST_PROMPT, ChatGPTSetupDialog
+from grande_alpha.ui.main_window import MainWindow
 
 
 def test_settings_preserve_existing_options_and_undo_later_unrelated_edits(tmp_path):
@@ -112,9 +115,10 @@ async def test_wizard_saved_config_launches_real_stdio_and_stop_revokes(desktop,
     assert dialog.saved
     assert not controller.agent_bridge.session
     dialog.next.click()
-    dialog.allow.setChecked(True)
+    dialog.show()
+    app.processEvents()
+    QTest.mouseClick(dialog.allow, Qt.MouseButton.LeftButton)
     assert controller.agent_bridge.session
-    dialog.next.click()
     assert dialog.pages.currentIndex() == 2
     dialog.copy_prompt.click()
     assert app.clipboard().text() == TEST_PROMPT
@@ -134,7 +138,7 @@ async def test_wizard_saved_config_launches_real_stdio_and_stop_revokes(desktop,
             assert not controller.agent.snapshot.running
             assert controller.risk.grant is None
             controller._stop_for_cancel('User STOP')
-            assert not dialog.allow.isChecked()
+            assert "Allow research access" in dialog.allow.text()
             assert 'OFF' in dialog.access_status.text()
             assert (await client.call_tool('get_research_context')).isError
         dialog.remove.click()
@@ -158,4 +162,91 @@ def test_frozen_help_does_not_offer_invalid_connection(desktop, tmp_path, monkey
     assert not controller.agent_bridge.session
     dialog.close()
     dialog.deleteLater()
+    app.processEvents()
+
+
+@pytest.mark.parametrize('failure', ['permission', 'locked', 'shadow'])
+def test_step_two_failure_stays_visible_and_allows_retry(desktop, tmp_path, monkeypatch, failure):
+    import sqlite3
+
+    app, controller = desktop
+    monkeypatch.setenv('CODEX_HOME', str(tmp_path / 'chatgpt'))
+    dialog = ChatGPTSetupDialog(controller)
+    dialog.add.click()
+    dialog.next.click()
+    dialog.show()
+    app.processEvents()
+    enable = controller.agent_bridge.enable
+
+    def unavailable():
+        if failure == 'permission':
+            raise PermissionError('PRIVATE-DATA-PATH')
+        error = sqlite3.OperationalError('PRIVATE-DATA-PATH')
+        error.sqlite_errorcode = sqlite3.SQLITE_BUSY
+        raise error
+
+    if failure == 'shadow':
+        controller.shadow_only_runtime = True
+        dialog.set_operation_busy(False)
+        assert not dialog.allow.isEnabled()
+    else:
+        monkeypatch.setattr(controller.agent_bridge, 'enable', unavailable)
+    QTest.mouseClick(dialog.allow, Qt.MouseButton.LeftButton)
+    assert dialog.pages.currentIndex() == 1
+    assert not controller.agent_bridge.session
+    assert dialog.back.isEnabled()
+    message = dialog.permission_status.text()
+    assert 'PRIVATE-DATA-PATH' not in message
+    assert ('scheduled shadow' if failure == 'shadow' else 'retry') in message
+    controller.shadow_only_runtime = False
+    monkeypatch.setattr(controller.agent_bridge, 'enable', enable)
+    dialog.set_operation_busy(False)
+    # Test keyboard activation of the visible consent action as well as the mouse.
+    dialog.allow.setFocus()
+    QTest.keyClick(dialog.allow, Qt.Key.Key_Space)
+    assert controller.agent_bridge.session
+    assert dialog.pages.currentIndex() == 2
+    dialog.close()
+    dialog.deleteLater()
+    app.processEvents()
+
+
+def test_setup_stays_usable_during_broker_actions_without_regranting_access(desktop, tmp_path, monkeypatch):
+    app, controller = desktop
+    monkeypatch.setenv('CODEX_HOME', str(tmp_path / 'chatgpt'))
+    window = MainWindow(controller, controller.config)
+    window.agent_widget.chatgpt_setup.click()
+    dialog = window.agent_widget._chatgpt_help
+    dialog.add.click()
+    dialog.next.click()
+    for attribute in ('_connection_busy', '_stop_cancel_busy', '_close_requested'):
+        setattr(window, attribute, True)
+        window._set_controls()
+        app.processEvents()
+        assert not window.agent_widget.isEnabled()
+        assert dialog.isEnabled()
+        assert dialog.back.isEnabled()
+        assert not dialog.allow.isEnabled()
+        assert 'broker action' in dialog.permission_status.text()
+        QTest.mouseClick(dialog.allow, Qt.MouseButton.LeftButton)
+        assert not controller.agent_bridge.session
+        QTest.mouseClick(dialog.back, Qt.MouseButton.LeftButton)
+        assert dialog.pages.currentIndex() == 0
+        dialog.close()
+        assert not dialog.isVisible()
+        setattr(window, attribute, False)
+        window._set_controls()
+        window.agent_widget.chatgpt_setup.click()
+        dialog.next.click()
+    QTest.mouseClick(dialog.allow, Qt.MouseButton.LeftButton)
+    assert dialog.pages.currentIndex() == 2
+    assert controller.agent_bridge.session
+    controller._stop_for_cancel('User STOP')
+    QTest.mouseClick(dialog.back, Qt.MouseButton.LeftButton)
+    assert dialog.pages.currentIndex() == 1
+    assert not controller.agent_bridge.session
+    assert dialog.allow.isEnabled()
+    window._closing_after_cleanup = True
+    window.close()
+    window.deleteLater()
     app.processEvents()

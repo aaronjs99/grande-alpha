@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Fixed ChatGPT setup getting stuck on step 2: replaced the small checkbox and disabled
+  Next button with **Allow research access and continue**, which advances only after
+  access is enabled. File-access failures show retry instructions beside the button.
+  Broker work no longer disables the whole guide; Back/Close remain usable while the
+  permission action waits. Scheduled-shadow restrictions and STOP revocation remain enforced.
+  Regression tests now use real mouse/keyboard events instead of setting checkbox state.
+
 - Simplified **ChatGPT Astra setup** into three guided steps: add the local desktop
   connection, allow research access, and send a copied test message to Astra. The desktop
   route writes the named ChatGPT/Codex connection with a private settings backup,

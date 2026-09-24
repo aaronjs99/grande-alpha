@@ -42,8 +42,9 @@ sign in to ChatGPT desktop before starting.
 
 1. **Add GRANDE connection.** Close ChatGPT's Settings window, then click the button.
    GRANDE saves its connection settings for you. Click **Next**.
-2. **Allow research access.** Review the sharing description and switch access on.
-   This permission lasts only for the current GRANDE session. Click **Next**.
+2. **Allow research access.** Review the sharing description, then click the large
+   **Allow research access and continue** button. It enables access and opens step 3.
+   This permission lasts only for the current GRANDE session.
 3. **Try Astra.** Restart ChatGPT desktop, start a local Codex chat on this computer,
    and select Astra if your account offers it. Click **Copy test message** and paste it
    into that chat. GRANDE reports when a research request arrives; verify the actual
@@ -63,6 +64,21 @@ A standalone frozen desktop executable needs a Python source installation for th
 connection; the wizard explains this instead of generating an invalid command.
 
 ![Three-step ChatGPT Astra setup, with synthetic data and no connection enabled](images/chatgpt-astra-setup.png)
+
+### If step 2 cannot continue
+
+Click **Allow research access and continue** in the middle of the page. There is no
+separate checkbox or disabled Next button on this step. The guide advances only after
+GRANDE confirms research access is on. Connecting Robinhood is not required for setup.
+
+If GRANDE is finishing a broker action, the permission button waits while **Back** and
+**Close** remain usable. After that action finishes, retry the button. A busy or unwritable
+research connection file produces an explanation beside the button; close other GRANDE
+windows or resolve folder access, then retry. Scheduled shadow remains unable to grant
+research access; use the regular GRANDE app. Stop/Disconnect/Exit still revoke access,
+and revisiting a setup page never turns it back on automatically.
+
+![Step 2 with an explicit permission button; synthetic capture, access off](images/chatgpt-astra-step2.png)
 
 ### What the setup button changes
 

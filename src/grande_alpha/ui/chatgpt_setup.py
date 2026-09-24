@@ -3,13 +3,13 @@ from __future__ import annotations
 
 import os
 import shlex
+import sqlite3
 import subprocess
 import sys
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QApplication,
-    QCheckBox,
     QDialog,
     QDialogButtonBox,
     QHBoxLayout,
@@ -28,6 +28,7 @@ from grande_alpha.chatgpt_connection import (
     connection_settings,
     remove_connection,
 )
+from grande_alpha.ui.themes import set_widget_style
 
 DESKTOP_GUIDE = "https://learn.chatgpt.com/docs/extend/mcp"
 TUNNEL_GUIDE = "https://developers.openai.com/api/docs/guides/secure-mcp-tunnels"
@@ -53,15 +54,17 @@ class ChatGPTSetupDialog(QDialog):
         self.controller = controller
         self.settings_path = config_path()
         self.saved = False
+        self._operation_busy = False
         self.setWindowTitle("ChatGPT Astra setup")
         self.setModal(False)
+        set_widget_style(self, "QPushButton#primary:disabled { background: #121b24; border-color: #2c4155; color: #596b7a; }")
         self.resize(720, 640)
         if screen := self.screen():
             area = screen.availableGeometry()
             self.resize(min(720, area.width() - 60), min(640, area.height() - 80))
         layout = QVBoxLayout(self)
         title = _label("Use Astra with GRANDE")
-        title.setObjectName("dashboardTitle")
+        title.setObjectName("dialogTitle")
         layout.addWidget(title)
         layout.addWidget(_label("Recommended: ChatGPT desktop on this computer. No Terminal or API key needed."))
         self.progress = _label("")
@@ -92,9 +95,16 @@ class ChatGPTSetupDialog(QDialog):
             "watchlists, and start or stop research. OpenAI may process the information you share. "
             "Broker passwords, account balances, positions and order controls are excluded."
         ))
-        self.allow = QCheckBox("Allow AI research access while GRANDE is open")
-        self.allow.toggled.connect(self._allow)
+        self.permission_status = _label("Click the button below to allow research access and go to the test message.")
+        second.addWidget(self.permission_status)
+        self.allow = QPushButton("Allow research access and continue")
+        self.allow.setObjectName("primary")
+        self.allow.setMinimumHeight(44)
+        self.allow.clicked.connect(self._continue)
         second.addWidget(self.allow)
+        self.revoke = QPushButton("Turn research access off")
+        self.revoke.clicked.connect(lambda: self.controller.set_agent_mcp_enabled(False))
+        second.addWidget(self.revoke)
         second.addWidget(_label(
             "Keep GRANDE open. Stop agent, STOP + CANCEL, Disconnect or Exit turns access off. "
             "Turn it on again for a new session. You can test before connecting Robinhood."
@@ -124,7 +134,7 @@ class ChatGPTSetupDialog(QDialog):
         self.next = QPushButton("Next")
         self.next.setObjectName("primary")
         self.back.clicked.connect(lambda: self._step(self.pages.currentIndex() - 1))
-        self.next.clicked.connect(lambda: self._step(self.pages.currentIndex() + 1))
+        self.next.clicked.connect(self._continue)
         navigation.addWidget(self.back)
         navigation.addStretch()
         navigation.addWidget(self.next)
@@ -196,7 +206,11 @@ folder run <code>.venv/bin/python -m pip install -e .</code> on macOS/Linux
             self.setup_status.setText("This packaged app needs a Python source installation for the connection. See Advanced.")
         controller.agent_mcp_changed.connect(self._access_changed)
         controller.agent_mcp_context_requested.connect(self._request_received)
+        # Enter must not unexpectedly activate a permission button on a different page.
+        for button in self.findChildren(QPushButton):
+            button.setAutoDefault(False)
         self._access_changed(bool(controller.agent_bridge.session))
+        self.set_operation_busy(False)
         self._step(0)
 
     def _page(self, title: str) -> QVBoxLayout:
@@ -214,8 +228,56 @@ folder run <code>.venv/bin/python -m pip install -e .</code> on macOS/Linux
         index = self.pages.currentIndex()
         self.progress.setText(f"STEP {index + 1} OF 3")
         self.back.setEnabled(index > 0)
-        self.next.setVisible(index < 2)
-        self.next.setEnabled(self.saved if index == 0 else bool(self.controller.agent_bridge.session))
+        self.next.setVisible(index == 0)
+        self.next.setEnabled(self.saved and not self._operation_busy)
+        self.allow.setEnabled(not self._blocked_reason())
+
+    def _blocked_reason(self) -> str:
+        if self._operation_busy:
+            return "GRANDE is finishing a broker action. Wait for it to finish, then try again. Back and Close still work."
+        if self.controller.shadow_only_runtime:
+            return "Research access is unavailable in scheduled shadow. Open the regular GRANDE app to continue."
+        return ""
+
+    def set_operation_busy(self, busy: bool) -> None:
+        changed = self._operation_busy != busy
+        self._operation_busy = busy
+        reason = self._blocked_reason()
+        if reason or changed:
+            self.permission_status.setText(reason or "Ready. Click Allow research access and continue.")
+        self.add.setEnabled(self.settings is not None and not busy)
+        self._step(self.pages.currentIndex())
+
+    def _continue(self) -> None:
+        if self.pages.currentIndex() == 0:
+            if self.saved and not self._operation_busy:
+                self._step(1)
+            return
+        if self.pages.currentIndex() != 1:
+            return
+        if reason := self._blocked_reason():
+            self.permission_status.setText(reason)
+            return
+        self.permission_status.setText("Starting research access…")
+        try:
+            self.controller.set_agent_mcp_enabled(True)
+        except PermissionError:
+            self.permission_status.setText("GRANDE cannot write its research connection file. Check access to the app's data folder, then click the button to retry.")
+        except sqlite3.OperationalError as exc:
+            code = getattr(exc, "sqlite_errorcode", 0) & 0xff
+            if code in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED):
+                self.permission_status.setText("The research connection file is busy. Close any other GRANDE windows, then click the button to retry.")
+            else:
+                self.permission_status.setText("GRANDE cannot open its research connection file. Check that the app's data folder is writable, then retry.")
+        except Exception:
+            self.permission_status.setText("Research access could not start. Close other GRANDE windows and try again. Access has not been granted.")
+        else:
+            if self.controller.agent_bridge.session:
+                self.permission_status.setText("Research access is on.")
+                self.status.setText("")
+                self._step(2)
+            else:
+                self.permission_status.setText("Research access is still off. Click the button to retry.")
 
     def _add(self) -> None:
         if self.settings is None:
@@ -242,17 +304,13 @@ folder run <code>.venv/bin/python -m pip install -e .</code> on macOS/Linux
             self.status.setText("Research access is off. Research already running can be stopped from the Agent desk.")
             self._step(0)
 
-    def _allow(self, enabled: bool) -> None:
-        try:
-            self.controller.set_agent_mcp_enabled(enabled)
-        except Exception:
-            self._access_changed(False)
-            self.status.setText("Research access could not start. Check the app's data folder and runtime mode.")
-
     def _access_changed(self, enabled: bool) -> None:
-        self.allow.blockSignals(True)
-        self.allow.setChecked(enabled)
-        self.allow.blockSignals(False)
+        self.allow.setText("Continue to test message" if enabled else "Allow research access and continue")
+        self.revoke.setVisible(enabled)
+        self.permission_status.setText(self._blocked_reason() or (
+            "Research access is on. Continue to the test message or turn access off below." if enabled else
+            "Click Allow research access and continue to go to the test message."
+        ))
         self.access_status.setText("Research access ON · trading remains off" if enabled else "Research access OFF")
         self.request_status.setText(
             "Waiting for a research request. Paste the test message into ChatGPT." if enabled else

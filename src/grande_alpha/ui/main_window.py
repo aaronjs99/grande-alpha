@@ -1633,6 +1633,7 @@ class MainWindow(QMainWindow):
                 self.forget_credentials_action, self.activation_widget.safe_checks_button,
             ):
                 control.setEnabled(False)
+        self.agent_widget.set_connection_busy(busy)
         self.agent_widget.setEnabled(not busy and not self._stop_cancel_busy)
         self._apply_responsive_layout(self.width(), self.height(), force=True)
 

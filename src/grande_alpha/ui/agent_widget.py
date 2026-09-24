@@ -116,6 +116,7 @@ class AgentWidget(QScrollArea):
         super().__init__()
         self.controller = controller
         self._connected = False
+        self._connection_busy = False
         self._last_cycle = 0
         self._balance_account: str | None = None
         self._budget_account: str | None = None
@@ -551,10 +552,18 @@ class AgentWidget(QScrollArea):
 
     def _show_chatgpt_setup(self) -> None:
         if self._chatgpt_help is None:
-            self._chatgpt_help = ChatGPTSetupDialog(self.controller, self)
+            # Broker work disables the Agent page. The setup window must retain
+            # Back/Close while guarding its permission action explicitly.
+            self._chatgpt_help = ChatGPTSetupDialog(self.controller, self.window())
+        self._chatgpt_help.set_operation_busy(self._connection_busy)
         self._chatgpt_help.show()
         self._chatgpt_help.raise_()
         self._chatgpt_help.activateWindow()
+
+    def set_connection_busy(self, busy: bool) -> None:
+        self._connection_busy = busy
+        if self._chatgpt_help is not None:
+            self._chatgpt_help.set_operation_busy(busy)
 
     def _copy_mcp_config(self) -> None:
         config = {"mcpServers": {"grande-alpha": {
