@@ -16,7 +16,8 @@ worker. Its tools cannot approve trading or place orders. See the
 > [!WARNING]
 > This is experimental software, not investment advice. No included strategy is demonstrated to
 > be profitable. Leveraged and inverse ETFs can lose substantial value, including all capital
-> committed. Local tests do not establish provider-observed live readiness.
+> committed. This repository does not include an automated regression suite. Source checks do not
+> establish provider-observed live readiness.
 
 ## Install and first use
 
@@ -41,9 +42,9 @@ optional research tools, not mandatory waiting periods or profitability certific
 
 The desktop and command line control the same user-started hidden mixed stock/ETF worker. The
 former attended ETF and live-shadow routes have been retired; historical records and offline replay
-remain available. Local substitute tests cover worker controls, but installed
-Windows and provider-observed recovery are still pending. Verify the exact worker state rather
-than assuming a desktop badge proves a broker session is live.
+remain available. The automated regression suite has been removed; installed Windows and
+provider-observed recovery are still pending. Verify the exact worker state rather than assuming a
+desktop badge proves a broker session is live.
 Provider-specific order schemas, earnings coverage, restart/partial-fill behavior, and installed
 Windows operation still require end-to-end acceptance before this project can claim public live
 autonomous readiness. There is no Windows scheduler, signed public installer, billing system, or
@@ -54,8 +55,8 @@ positions. Disconnect and exit preserve unresolved order records. Always verify 
 and holdings at the broker. Credentials belong in the operating-system credential store, never
 in repository files, screenshots, or issues.
 
-The [capability matrix](docs/USER_GUIDE.md#what-is-implemented-tested-and-still-pending)
-separates implementation, local testing, and remaining live work. See the
+The [capability matrix](docs/USER_GUIDE.md#implemented-behavior-and-remaining-work) separates
+source implementation from remaining live work. See the
 [user guide](docs/USER_GUIDE.md), [configuration and CLI](docs/CONFIGURATION_CLI.md),
 [architecture](docs/ARCHITECTURE.md), [development and release](docs/DEVELOPMENT_RELEASE.md),
 and [research](docs/RESEARCH.md). Dated results remain under

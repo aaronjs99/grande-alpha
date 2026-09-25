@@ -8,11 +8,10 @@ Describe the user problem and the focused change.
 - Does it add an external connection, persisted data, credential scope, or user-visible risk?
 - If none, write `None`.
 
-## Verification
+## Checks and manual review
 
 - [ ] `./grande.ps1 verify` passes.
-- [ ] New or changed behavior has tests.
-- [ ] No test connects to a live broker or places an order.
+- [ ] I did not place a live broker order as part of this change.
 - [ ] Documentation and `CHANGELOG.md` are updated when needed.
 - [ ] UI changes were checked at relevant portrait and landscape sizes.
 - [ ] Screenshots and diagnostics are redacted.

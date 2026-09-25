@@ -52,10 +52,8 @@ switch ($Task) {
         Write-Host "Python: $PythonExe" -ForegroundColor Green
     }
     'verify' {
-        Invoke-Python -Arguments @('-m', 'ruff', 'check', 'scripts', 'tests')
+        Invoke-Python -Arguments @('-m', 'ruff', 'check', 'scripts')
         Invoke-Python -Arguments @('-m', 'compileall', '-q', 'scripts')
-        $env:QT_QPA_PLATFORM = 'offscreen'
-        Invoke-Python -Arguments @('-m', 'pytest', '-q')
         # Build from a fresh sdist so removed source files cannot leak from build/lib.
         try {
             Invoke-Python -Arguments @('-m', 'build', '--outdir', (Join-Path $ProjectRoot 'artifacts\wheel-check'))

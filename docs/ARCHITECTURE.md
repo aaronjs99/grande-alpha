@@ -63,5 +63,5 @@ Configuration uses named saved sections and an explicit backed-up upgrade. Worke
 execution-store migration code need targeted integration and installed-Windows acceptance before
 they can be treated as operational guarantees. The execution-store upgrade is explicit and offline;
 startup does not silently replace historical journals.
-See the [capability matrix](USER_GUIDE.md#what-is-implemented-tested-and-still-pending)
-for the current state and [development and release](DEVELOPMENT_RELEASE.md) for verification.
+See the [capability matrix](USER_GUIDE.md#implemented-behavior-and-remaining-work)
+for the current state and [development and release](DEVELOPMENT_RELEASE.md) for source checks.

@@ -74,9 +74,10 @@ The runner requires `--candidate`, `--authorization`, and `--earnings-database`.
 there is no manually refreshed research-file argument. First authorization displays the exact
 account, universe and limits and requires a typed phrase in an interactive terminal. It may be
 approved before the market opens. The command starts a user-owned hidden worker. Closing the
-starting terminal does not prove that worker stopped. Local substitute tests do not establish installed Windows or
-provider-observed readiness. Do not deploy it unattended until the remaining checks in the
-[capability matrix](USER_GUIDE.md#what-is-implemented-tested-and-still-pending) are complete.
+starting terminal does not prove that worker stopped. Source implementation does not establish
+installed Windows or provider-observed readiness. Do not deploy it unattended until the remaining
+acceptance items in the [capability matrix](USER_GUIDE.md#implemented-behavior-and-remaining-work)
+are complete.
 
 Use `session stop` to fence new submissions without claiming to cancel broker orders.
 Use `session status`, `session review`, `session authorize`, `session start`, and `session shutdown`

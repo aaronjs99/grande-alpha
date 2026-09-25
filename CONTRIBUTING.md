@@ -44,9 +44,10 @@ Run the source application only when interactive UI testing is necessary:
 - Keep generated files, local databases, credentials, diagnostics, licensed data, and build artifacts
   out of Git.
 
-## Verify your change
+## Check your change
 
-The standard check runs linting, bytecode compilation, and a wheel build:
+The repository has no automated regression suite. The standard check runs linting, bytecode
+compilation, and a wheel build; it does not exercise broker or desktop runtime behavior:
 
 ```powershell
 .\grande.ps1 verify
@@ -69,7 +70,7 @@ repository checks completed; it does not establish trading profitability, broker
 suitability, or release readiness.
 
 Changes intended for the stable product should identify the capability they advance in the
-[user guide](docs/USER_GUIDE.md#what-is-implemented-tested-and-still-pending) and preserve the
+[user guide](docs/USER_GUIDE.md#implemented-behavior-and-remaining-work) and preserve the
 execution boundaries in the [architecture guide](docs/ARCHITECTURE.md).
 
 Unless explicitly stated otherwise, contributions intentionally submitted for inclusion are

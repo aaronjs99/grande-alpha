@@ -115,5 +115,5 @@ particular, the [August baseline](historical/BASELINE_VALIDATION_2026-08-09.md),
 [champion selection](historical/CHAMPION_SELECTION_2026-08-11.md), and
 [strategy research](historical/STRATEGY_RESEARCH_2026-08-09.md) describe earlier versions and
 cannot be treated as current performance claims. See the
-[capability matrix](USER_GUIDE.md#what-is-implemented-tested-and-still-pending) for what the
-current code actually implements and tests.
+[capability matrix](USER_GUIDE.md#implemented-behavior-and-remaining-work) for the current source
+status and remaining acceptance work.

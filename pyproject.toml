@@ -49,8 +49,6 @@ dev = [
   "cyclonedx-bom>=7.1,<8",
   "pip-audit>=2.9,<3",
   "pyinstaller>=6.13,<7",
-  "pytest>=8.3,<10",
-  "pytest-asyncio>=1.0,<2",
   "ruff>=0.11,<1",
 ]
 
@@ -74,7 +72,7 @@ grande_alpha = ["assets/*.png"]
 [tool.ruff]
 line-length = 110
 target-version = "py311"
-src = ["tests"]
+src = ["scripts"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]

@@ -33,27 +33,28 @@ orders, fills, balances, and positions directly with Robinhood. **Stop trading**
 Practice trading and historical replay are useful but optional. They are not mandatory activation
 periods or profit certificates.
 
-## What is implemented, tested, and still pending
+## Implemented behavior and remaining work
 
-This is the authoritative capability matrix for the current checkout. “Tested” means deterministic
-local tests unless provider-observed evidence is explicitly stated.
+This is the authoritative capability matrix for the current checkout. The repository does not
+include an automated regression suite. “Implemented” describes source code, not verified live
+broker behavior.
 
-| Capability | Implemented | Tested locally | Remaining before public/live claim |
+| Capability | Source status | Remaining before public/live claim |
 |---|---|---|---|
-| Desktop mixed-worker control, status, responsive layout, and Stop | Yes | Offscreen and substitute tests | Installed Windows and provider-observed acceptance |
-| Optional equity/crypto research and local MCP | Yes, research only | Synthetic/local tests | Client-specific setup; no live order authority or model-performance claim |
-| Mixed earnings-stock and TQQQ/SQQQ allocation | Yes | Yes | Current point-in-time earnings coverage and strategy evaluation |
-| Mixed background autonomous runner | Yes | Substitute/local tests | Exact provider schemas, order/fill/outage tests, and deployment operations |
-| Named saved settings and backed-up flat-file upgrade | Yes | Yes | Existing users must run the explicit upgrade |
-| Persistent, exact-scope mixed authorization | Yes | Local and offscreen tests | Provider-observed account acceptance |
-| Durable references, deduplicated fills, process lease | Yes | Partial | Provider-observed ambiguous-submission and partial-fill recovery |
-| Daily mixed loss stop and recovery delay | Yes | Yes | Live reconciliation across external broker activity |
-| User-started hidden mixed worker and local control | Yes in source | Substitute/local tests | Installed Windows operation, restart, and provider-observed recovery |
-| Public signed binary or paid plan | No | No | Signing, support, provider and legal review; billing is not included |
+| Desktop mixed-worker control, status, responsive layout, and Stop | Implemented | Installed Windows and provider-observed acceptance |
+| Optional equity/crypto research and local MCP | Implemented; research only | Client-specific setup; no live order authority or model-performance claim |
+| Mixed earnings-stock and TQQQ/SQQQ allocation | Implemented | Current point-in-time earnings coverage and strategy evaluation |
+| Mixed background autonomous runner | Implemented in source | Exact provider behavior and deployment acceptance |
+| Named saved settings and backed-up flat-file upgrade | Implemented | Existing users must run the explicit upgrade |
+| Persistent, exact-scope mixed authorization | Implemented in source | Provider-observed account acceptance |
+| Durable references, deduplicated fills, process lease | Implemented in source | Provider-observed ambiguous-submission and partial-fill recovery |
+| Daily mixed loss stop and recovery delay | Implemented in source | Live reconciliation across external broker activity |
+| User-started hidden mixed worker and local control | Implemented in source | Installed Windows operation, restart, and provider-observed recovery |
+| Public signed binary or paid plan | Not included | Signing, support, provider and legal review; billing is not included |
 
 The desktop and CLI use the same user-started hidden mixed worker. Attended ETF and live-shadow
-sessions are retired; offline replay and historical records remain. The worker implementation and substitute tests are not installed-Windows
-or provider-observed acceptance. Do not interpret an Agent research status as confirmation that
+sessions are retired; offline replay and historical records remain. Source implementation is not
+installed-Windows or provider-observed acceptance. Do not interpret an Agent research status as confirmation that
 the mixed worker is active or authorized.
 
 ## Optional research connection

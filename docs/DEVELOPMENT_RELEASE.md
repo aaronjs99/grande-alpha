@@ -5,31 +5,27 @@ selected system Python; a persistent virtual environment is optional. The packag
 under `scripts/`. Avoid installing development/build outputs into the tracked tree. Before a
 refactor, inspect the working tree and preserve other contributors' changes.
 
-## Local checks
+## Repository checks
 
 From the repository root:
 
 ```powershell
-python -m ruff check scripts tests
-python -m pytest -q
+python -m ruff check scripts
+python -m compileall -q scripts
 .\grande.ps1 verify
 ```
 
-Run affected tests after each subsystem change and the entire suite before a release. Synthetic
-broker tests must cover stalled and ambiguous calls, durable references, duplicate/partial fills,
-concurrent processes, restart reconciliation, stale data, revocation, loss stops, timed recovery,
-and disconnected exit. Replay/accounting regression checks detect changes in strategy semantics.
-An offscreen Qt check is useful for narrow, portrait, and landscape layouts, but it is not a
-substitute for an installed Windows acceptance test.
+The automated regression suite is intentionally not included. These repository checks cover
+linting, bytecode compilation, and packaging only; they do not exercise broker behavior,
+execution recovery, or interface operation.
 
 For the 0.19.0 integration, also verify the current-user worker's ownership and authentication,
 stop fencing, stalled/ambiguous operations, restart recovery, and explicit offline execution-store
-upgrade against disposable databases. Test that desktop and CLI agree on the same session without
+upgrade against disposable databases. Confirm that desktop and CLI agree on the same session without
 silently widening a reviewed scope. Separately exercise the research MCP with a real local stdio
 client: default-off access, fresh session on each opt-in, bounded queue, prompt snapshot,
-revocation/timeout, no account fields, and no broker-write tool. A fake-broker or local protocol
-pass is software evidence only. It is not provider-observed execution or installed-product
-acceptance. See the [architecture boundaries](ARCHITECTURE.md) and
+revocation/timeout, no account fields, and no broker-write tool. Local interface checks are not
+provider-observed execution or installed-product acceptance. See the [architecture boundaries](ARCHITECTURE.md) and
 [research MCP guide](RESEARCH.md#agent-research-prompts-and-local-mcp).
 
 ## Packaging and distribution
@@ -37,7 +33,7 @@ acceptance. See the [architecture boundaries](ARCHITECTURE.md) and
 Build a clean wheel outside the checkout, install it in a disposable location, and exercise the
 headless command line without Qt. Then build and inspect the Windows desktop artifact with its
 optional dependencies. The wheel must not include credentials, account data, generated `egg-info`,
-test output, local databases, or research datasets. A release also needs current documentation
+local databases, or research datasets. A release also needs current documentation
 links, a dependency and secret audit, and a check that all command examples still parse.
 
 The Windows builder stages `scripts/` as a temporary `grande_alpha` package because PyInstaller
@@ -71,17 +67,17 @@ For `1.0.0`, the exact release candidate must also satisfy these product gates:
    diagnostics, and integration contracts.
 
 These are distribution-quality thresholds, not a profitability certificate or guarantee of
-uninterrupted broker service. Open items remain open even when local tests pass.
+uninterrupted broker service. Source checks alone do not establish that any threshold is met.
 
-Local fake-broker tests, historical replay, forward shadow observation, provider-observed trading,
-and public deployment are different evidence levels. Report them separately. Never use a local
-test pass to claim a live order route is safe or profitable. Do not place a live order as a release
-test without the operator's exact approval and accepted financial limits.
+Historical replay, forward shadow observation, provider-observed trading, and public deployment are
+different evidence levels. Report them separately. Do not claim a live order route is safe or
+profitable from a source build alone. Do not place a live order as a release exercise without the
+operator's exact approval and accepted financial limits.
 
 ## Contribution workflow
 
 Work on `master` for this checkout without rewriting collaborator history. Review an external PR
 against the current package layout before incorporating it; a PR based on an older tree may need
-an explicit port. Commit only reviewed source/docs/tests, inspect the staged diff, then push after
-the full verification pass. Keep dated research results under [historical records](historical/README.md)
+an explicit port. Commit only reviewed source and documentation, inspect the staged diff, then push
+after the available repository checks. Keep dated research results under [historical records](historical/README.md)
 when superseded rather than silently repurposing their evidence.

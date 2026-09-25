@@ -206,7 +206,7 @@ $DevelopmentComponents = @(
     @($Sbom.components) |
         Where-Object {
             $_.name -in @(
-                'build', 'cyclonedx-bom', 'pip', 'pyinstaller', 'pytest', 'ruff', 'wheel'
+                'build', 'cyclonedx-bom', 'pip', 'pyinstaller', 'ruff', 'wheel'
             )
         }
 )

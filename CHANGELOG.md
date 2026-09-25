@@ -11,8 +11,10 @@
 - Kept the compact session UI and five-guide documentation structure. Removed the disconnected
   legacy Agent desk, duplicate background supervisor, paid X connector and Codex-specific setup
   wizard rather than maintaining a second process or client-specific control surface.
-- No combined-branch test run, installed-Windows acceptance, provider-observed execution, or
-  profitability result is claimed for this integration.
+- Removed the automated regression suite and its runner dependencies. CI now performs lint,
+  compilation, packaging, and dependency checks only; execution safeguards remain in the product.
+- No installed-Windows acceptance, provider-observed execution, or profitability result is claimed
+  for this integration.
 
 ## 0.19.0 - 2026-09-24
 
