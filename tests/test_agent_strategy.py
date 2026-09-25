@@ -241,11 +241,11 @@ def test_exposure_and_drawdown_limits_include_pending_entries_without_blocking_e
     book = PaperLedger()
     book.start('broker_quotes', 1000, 300)
     rows = [replace(decision(), instrument=Instrument(AssetClass.EQUITY, symbol)) for symbol in ('AAPL', 'MSFT')]
-    result = limit_entries(rows, book.state)
+    result = limit_entries(rows, book.state, AgentSettings())
     assert result[0].action == 'buy' and result[1].action == 'hold'
     assert '40%' in result[1].reason
     book.state['max_drawdown_pct'] = '3'
-    result = limit_entries([rows[0], replace(rows[1], action='exit')], book.state)
+    result = limit_entries([rows[0], replace(rows[1], action='exit')], book.state, AgentSettings())
     assert result[0].action == 'hold' and 'drawdown' in result[0].reason
     assert result[1].action == 'exit'
 

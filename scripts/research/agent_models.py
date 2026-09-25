@@ -10,6 +10,9 @@ from enum import StrEnum
 from grande_alpha.domain.crypto_models import CryptoPairRules
 from grande_alpha.domain.models import Quote
 
+MAX_PAPER_POSITIONS = 4
+MAX_PAPER_EXPOSURE_PCT = 40
+
 
 class AssetClass(StrEnum):
     EQUITY = "equity"
@@ -55,15 +58,15 @@ class AgentSettings:
     social_enabled: bool = False
     paper_strategy: str = "legacy"
     paper_entries_paused: bool = False
-    paper_max_positions: int = 4
-    paper_max_exposure_pct: int = 40
+    paper_max_positions: int = MAX_PAPER_POSITIONS
+    paper_max_exposure_pct: int = MAX_PAPER_EXPOSURE_PCT
 
     def validate(self) -> None:
         if type(self.paper_entries_paused) is not bool or type(self.local_ai_enabled) is not bool:
             raise ValueError("AI and paper pause settings must be true or false")
-        if type(self.paper_max_positions) is not int or not 1 <= self.paper_max_positions <= 4:
+        if type(self.paper_max_positions) is not int or not 1 <= self.paper_max_positions <= MAX_PAPER_POSITIONS:
             raise ValueError("Adaptive paper positions must be between 1 and 4")
-        if type(self.paper_max_exposure_pct) is not int or not 5 <= self.paper_max_exposure_pct <= 40:
+        if type(self.paper_max_exposure_pct) is not int or not 5 <= self.paper_max_exposure_pct <= MAX_PAPER_EXPOSURE_PCT:
             raise ValueError("Adaptive paper exposure must be between 5% and 40%")
         if not isinstance(self.local_ai_model, str) or len(self.local_ai_model) > 120 or "\x00" in self.local_ai_model:
             raise ValueError("Use an Ollama model name of at most 120 characters")

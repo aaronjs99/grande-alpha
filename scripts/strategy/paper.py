@@ -7,7 +7,7 @@ from dataclasses import replace
 from datetime import datetime
 from statistics import pstdev
 
-from grande_alpha.research.agent_models import AgentDecision
+from grande_alpha.research.agent_models import AgentDecision, AgentSettings
 
 ADAPTIVE_POLICY = "adaptive-trend-v1"
 HISTORY_SECONDS = 600
@@ -16,8 +16,6 @@ TRAIL_BPS = 75.0
 TARGET_BPS = 200.0
 MAX_HOLD_SECONDS = 1800
 COOLDOWN_SECONDS = 60
-MAX_POSITIONS = 4
-MAX_EXPOSURE_FRACTION = 0.40
 MAX_DRAWDOWN_PCT = 3.0
 
 
@@ -104,7 +102,9 @@ def adaptive_decision(item: AgentDecision, history, state: dict, now: datetime) 
                   (" · virtual entry awaiting confirmation" if key in occupied else ""))
 
 
-def limit_entries(decisions, state, settings=None):
+def limit_entries(
+    decisions: list[AgentDecision], state: dict, settings: AgentSettings
+) -> list[AgentDecision]:
     """Reserve capacity within a batch as well as across both market workers."""
     occupied = set(state["positions"]) | {k for k, v in state["pending"].items() if v["side"] == "buy"}
     costs = {k: float(p["cost"]) for k, p in state["positions"].items()}
@@ -112,8 +112,8 @@ def limit_entries(decisions, state, settings=None):
     costs.update({k: trade_cash for k in occupied if k not in costs})
     family = {"equity:QQQ", "equity:TQQQ", "equity:SQQQ"}
     result = []
-    max_positions = settings.paper_max_positions if settings else MAX_POSITIONS
-    max_exposure = settings.paper_max_exposure_pct / 100 if settings else MAX_EXPOSURE_FRACTION
+    max_positions = settings.paper_max_positions
+    max_exposure = settings.paper_max_exposure_pct / 100
     for item in decisions:
         key, reason = item.instrument.key, ""
         if item.action == "buy" and item.buy_allowed:
