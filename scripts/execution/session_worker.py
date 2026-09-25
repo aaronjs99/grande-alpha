@@ -35,6 +35,7 @@ class SessionWorker:
             "connected": bool(getattr(self.runtime, "connected", False)),
             "data_coverage": getattr(self.runtime, "coverage", {}),
             "last_data_at": getattr(self.runtime, "last_data_at", None),
+            "last_cycle": dict(getattr(self.runtime, "last_cycle", {}) or {}),
             "research": self.runtime.research_status() if hasattr(self.runtime, "research_status") else {},
             "error": self._last_error,
             "generation": state.generation,

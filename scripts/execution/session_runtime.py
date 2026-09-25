@@ -49,6 +49,7 @@ class BrokerSessionRuntime:
         self.account_masked = ""
         self.coverage: dict = {}
         self.last_data_at: str | None = None
+        self.last_cycle: dict = {}
         self.research: WorkerResearch | None = None
         self._running = False
         self._connect_lock = asyncio.Lock()
@@ -321,6 +322,9 @@ class BrokerSessionRuntime:
                 if authority_id is not None:
                     audit.stop_standing(authority_id)
                 engine.arm()
+            self.coverage = {}
+            self.last_data_at = None
+            self.last_cycle = {}
             self._running = True
             try:
                 async def observed_snapshot() -> dict:
@@ -329,7 +333,19 @@ class BrokerSessionRuntime:
                     self.last_data_at = utc_now().isoformat()
                     return snapshot
 
-                await run_cycles(engine, observed_snapshot, poll_seconds=state.poll_seconds)
+                def record_cycle(result: dict) -> None:
+                    self.last_cycle = {
+                        "status": str(result.get("status", "COMPLETED")),
+                        "submitted": result.get("submitted") is True,
+                        "at": utc_now().isoformat(),
+                    }
+
+                await run_cycles(
+                    engine,
+                    observed_snapshot,
+                    poll_seconds=state.poll_seconds,
+                    cycle_reporter=record_cycle,
+                )
             finally:
                 self._running = False
 

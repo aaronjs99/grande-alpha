@@ -5,6 +5,7 @@ import json
 import os
 import sys
 import threading
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -265,6 +266,45 @@ async def test_optional_research_bridge_is_worker_hosted_and_orderless(tmp_path:
         assert window._status["research"]["orders_available"] is False
         await window._toggle_research()
         assert ("research_disable", {}) in client.calls
+    finally:
+        window._closing = True
+        window.close()
+
+
+def test_running_view_reports_cycle_and_data_freshness_without_claiming_a_fill(tmp_path: Path) -> None:
+    _app()
+    client = FakeClient()
+    window = SessionWindow(tmp_path, client_factory=lambda _path: client, auto_probe=False)
+    try:
+        window._apply_status({
+            **client.status,
+            "running": True,
+            "phase": "Running",
+            "last_data_at": (datetime.now(UTC) - timedelta(seconds=10)).isoformat(),
+            "last_cycle": {
+                "status": "RESPONSE_RECORDED",
+                "submitted": True,
+                "at": (datetime.now(UTC) - timedelta(seconds=8)).isoformat(),
+            },
+        })
+
+        assert window.flow_panel.isHidden()
+        assert not window.monitor_panel.isHidden()
+        assert window.monitor_cycle.text() == "Broker response recorded"
+        assert "not a fill confirmation" in window.monitor_cycle_time.text()
+        assert "seconds ago" in window.monitor_data.text()
+
+        window._apply_responsive_layout(520, 900, force=True)
+        assert window.content_layout.getItemPosition(
+            window.content_layout.indexOf(window.monitor_panel)
+        ) == (0, 0, 1, 1)
+        assert window.content_layout.getItemPosition(
+            window.content_layout.indexOf(window.activity_panel)
+        ) == (1, 0, 1, 1)
+
+        window._apply_status(dict(client.status))
+        assert window.flow_panel.isHidden() is False
+        assert window.monitor_panel.isHidden() is True
     finally:
         window._closing = True
         window.close()

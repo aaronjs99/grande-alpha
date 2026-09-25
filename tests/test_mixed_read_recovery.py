@@ -31,6 +31,7 @@ async def test_source_read_failure_waits_without_revoking_or_submitting(monkeypa
 
         async def cycle(self, _request, _theses):
             self.cycles += 1
+            return {"status": "NO_TICKET", "submitted": False}
 
         async def shutdown(self, **_kwargs):
             self.shutdowns += 1
@@ -45,6 +46,10 @@ async def test_source_read_failure_waits_without_revoking_or_submitting(monkeypa
         return {"request": {}, "theses": {}}
 
     engine = Engine()
-    assert await mixed_engine.run_cycles(engine, source, poll_seconds=.001, max_cycles=1) == 1
+    cycle_reports = []
+    assert await mixed_engine.run_cycles(
+        engine, source, poll_seconds=.001, max_cycles=1, cycle_reporter=cycle_reports.append
+    ) == 1
     assert calls == 2 and engine.cycles == 1 and engine.shutdowns == 1
+    assert cycle_reports == [{"status": "NO_TICKET", "submitted": False}]
     assert engine.audit.receipts[0][0] == "mixed_data_wait"

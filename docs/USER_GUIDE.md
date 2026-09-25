@@ -26,6 +26,10 @@ The mixed candidate template leaves financial limits unfilled. Authorization for
 may be recorded outside market hours. The engine waits for a supported regular session and fresh
 broker data before considering an order.
 
+While a session runs, the setup form gives way to a monitor showing the latest strategy check and
+when the worker last received a market snapshot. A broker response is not proof of a fill; check
+orders, fills, balances, and positions directly with Robinhood. **Stop trading** stays visible.
+
 Practice trading and historical replay are useful but optional. They are not mandatory activation
 periods or profit certificates.
 

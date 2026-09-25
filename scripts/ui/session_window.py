@@ -108,6 +108,7 @@ class SessionWindow(QMainWindow):
         self._exit_warning_box: QMessageBox | None = None
         self._tasks: set[asyncio.Task] = set()
         self._layout_mode = ""
+        self._primary_panel: QWidget | None = None
 
         self.setWindowTitle(f"GRANDE Alpha {__version__}")
         self.setMinimumSize(390, 560)
@@ -181,7 +182,7 @@ class SessionWindow(QMainWindow):
         self.account_card = StatusCard("Account", "Not connected")
         self.session_card = StatusCard("Session", "Stopped")
         self.coverage_card = StatusCard("Data coverage", "Awaiting first cycle")
-        self.event_card = StatusCard("Last event", "Open the app")
+        self.event_card = StatusCard("Last control update", "Open the app")
         self.status_cards = (
             self.worker_card,
             self.account_card,
@@ -196,6 +197,7 @@ class SessionWindow(QMainWindow):
         self.content_layout.setContentsMargins(0, 0, 0, 0)
         self.content_layout.setSpacing(12)
         self.flow_panel = self._build_flow_panel()
+        self.monitor_panel = self._build_monitor_panel()
         self.activity_panel = self._build_activity_panel()
         self.outer.addWidget(self.content, 1)
 
@@ -206,6 +208,53 @@ class SessionWindow(QMainWindow):
         footer.setObjectName("settingsDescription")
         footer.setWordWrap(True)
         self.outer.addWidget(footer)
+
+    def _build_monitor_panel(self) -> QWidget:
+        panel = QFrame()
+        panel.setObjectName("card")
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(14, 12, 14, 14)
+        layout.setSpacing(11)
+
+        heading = QLabel("Session monitor")
+        heading.setObjectName("dialogTitle")
+        self.monitor_summary = QLabel("Start a session to monitor it here.")
+        self.monitor_summary.setObjectName("settingsDescription")
+        self.monitor_summary.setWordWrap(True)
+
+        cycle_heading = QLabel("Latest strategy check")
+        cycle_heading.setObjectName("settingsDescription")
+        self.monitor_cycle = QLabel("No cycle reported yet")
+        self.monitor_cycle.setObjectName("dialogTitle")
+        self.monitor_cycle.setWordWrap(True)
+        self.monitor_cycle_time = QLabel("")
+        self.monitor_cycle_time.setObjectName("settingsDescription")
+
+        data_heading = QLabel("Market data")
+        data_heading.setObjectName("settingsDescription")
+        self.monitor_data = QLabel("No market snapshot reported yet")
+        self.monitor_data.setWordWrap(True)
+
+        self.monitor_note = QLabel(
+            "A recorded broker response is not proof of a fill. Verify orders, fills, balances, "
+            "and positions with Robinhood."
+        )
+        self.monitor_note.setObjectName("settingsDescription")
+        self.monitor_note.setWordWrap(True)
+
+        for widget in (
+            heading,
+            self.monitor_summary,
+            cycle_heading,
+            self.monitor_cycle,
+            self.monitor_cycle_time,
+            data_heading,
+            self.monitor_data,
+            self.monitor_note,
+        ):
+            layout.addWidget(widget)
+        layout.addStretch()
+        return panel
 
     def _build_flow_panel(self) -> QWidget:
         panel = QFrame()
@@ -521,18 +570,28 @@ class SessionWindow(QMainWindow):
     def _apply_responsive_layout(self, width: int, height: int, *, force: bool = False) -> None:
         narrow = width < 900 or height > width
         mode = "portrait" if narrow else "landscape"
-        if not force and mode == self._layout_mode:
+        primary_panel = (
+            self.monitor_panel if self._status.get("running") is True else self.flow_panel
+        )
+        if not force and mode == self._layout_mode and primary_panel is self._primary_panel:
             return
         self._layout_mode = mode
+        self._primary_panel = primary_panel
         self.header_layout.removeWidget(self.brand_panel)
         self.header_layout.removeWidget(self.stop_button)
         self.content_layout.removeWidget(self.flow_panel)
+        self.content_layout.removeWidget(self.monitor_panel)
         self.content_layout.removeWidget(self.activity_panel)
+        self.flow_panel.hide()
+        self.monitor_panel.hide()
+        self.activity_panel.hide()
         if narrow:
             self.header_layout.addWidget(self.brand_panel, 0, 0)
             self.header_layout.addWidget(self.stop_button, 1, 0)
-            self.content_layout.addWidget(self.flow_panel, 0, 0)
+            self.content_layout.addWidget(primary_panel, 0, 0)
             self.content_layout.addWidget(self.activity_panel, 1, 0)
+            primary_panel.show()
+            self.activity_panel.show()
             self.content_layout.setRowStretch(0, 0)
             self.content_layout.setRowStretch(1, 1)
             self.content_layout.setColumnStretch(0, 1)
@@ -543,8 +602,10 @@ class SessionWindow(QMainWindow):
             self.header_layout.addWidget(self.brand_panel, 0, 0)
             self.header_layout.addWidget(self.stop_button, 0, 1)
             self.header_layout.setColumnStretch(0, 1)
-            self.content_layout.addWidget(self.flow_panel, 0, 0)
+            self.content_layout.addWidget(primary_panel, 0, 0)
             self.content_layout.addWidget(self.activity_panel, 0, 1)
+            primary_panel.show()
+            self.activity_panel.show()
             self.content_layout.setColumnStretch(0, 3)
             self.content_layout.setColumnStretch(1, 2)
             self.content_layout.setRowStretch(0, 1)
@@ -1016,6 +1077,7 @@ class SessionWindow(QMainWindow):
             self._status_in_flight = False
 
     def _apply_status(self, status: dict[str, Any]) -> None:
+        was_running = self._status.get("running") is True
         previous_phase = self._status.get("phase")
         previous_error = self._status.get("error")
         self._status = status
@@ -1055,11 +1117,84 @@ class SessionWindow(QMainWindow):
         else:
             self.coverage_card.value.setText("Awaiting first cycle")
             self.coverage_card.setToolTip("The worker has not reported a completed data snapshot.")
+        self._update_monitor(status, phase)
+        if running != was_running:
+            self._apply_responsive_layout(self.width(), self.height(), force=True)
         if phase != previous_phase and previous_phase is not None:
             self._log("info", f"Worker phase: {phase}")
         if error and error != previous_error:
             self._show_error(f"Worker reported: {error}")
         self._refresh_controls()
+
+    def _update_monitor(self, status: dict[str, Any], phase: str) -> None:
+        running = status.get("running") is True
+        if not running:
+            self.monitor_summary.setText("Start a session to monitor it here.")
+        elif phase == "Waiting for market":
+            self.monitor_summary.setText(
+                "Waiting for the supported market window. The worker stays active but does not "
+                "request a strategy snapshot or submit orders while the market is closed."
+            )
+        else:
+            self.monitor_summary.setText(
+                "The worker checks current data against the approved allocation and limits. "
+                "Use STOP TRADING to block further automatic submissions."
+            )
+
+        cycle = status.get("last_cycle")
+        if isinstance(cycle, dict) and isinstance(cycle.get("status"), str):
+            labels = {
+                "NO_TICKET": "No portfolio change needed",
+                "THESIS_NOT_VALID": "Entry skipped — research condition not met",
+                "BELOW_MINIMUM": "No order — below the minimum size",
+                "RISK_BLOCKED": "Risk controls blocked a new order",
+                "RESPONSE_RECORDED": "Broker response recorded",
+                "BUSY": "A strategy check is already in progress",
+            }
+            label = labels.get(cycle["status"], "Strategy check completed")
+            self.monitor_cycle.setText(label)
+            cycle_time = self._age_text(cycle.get("at"))
+            self.monitor_cycle_time.setText(
+                f"Last check {cycle_time}. "
+                + (
+                    "The broker response is not a fill confirmation."
+                    if cycle.get("submitted") is True
+                    else "No order submission was reported for this check."
+                )
+            )
+        else:
+            self.monitor_cycle.setText("No cycle reported yet")
+            self.monitor_cycle_time.setText("")
+
+        data_time = self._age_text(status.get("last_data_at"))
+        self.monitor_data.setText(
+            "No market snapshot reported yet"
+            if data_time is None
+            else f"Latest snapshot {data_time}"
+        )
+
+    @staticmethod
+    def _age_text(value: Any) -> str | None:
+        if not isinstance(value, str) or not value:
+            return None
+        try:
+            instant = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            if instant.tzinfo is None:
+                return "time unavailable (no timezone)"
+            seconds = (datetime.now().astimezone() - instant.astimezone()).total_seconds()
+        except (TypeError, ValueError, OverflowError):
+            return "time unavailable"
+        if seconds < -5:
+            return "time unavailable (device clock differs)"
+        seconds = max(0, seconds)
+        if seconds < 60:
+            return "just now" if seconds < 5 else f"{int(seconds)} seconds ago"
+        if seconds < 3600:
+            minutes = int(seconds // 60)
+            return f"{minutes} minute{'s' if minutes != 1 else ''} ago"
+        hours = int(seconds // 3600)
+        minutes = int((seconds % 3600) // 60)
+        return f"{hours}h {minutes}m ago" if minutes else f"{hours}h ago"
 
     # ---------- State and messaging ----------
     def _invalidate_review(self, reason: str) -> None:

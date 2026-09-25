@@ -13,6 +13,7 @@ import hashlib
 import json
 import math
 import uuid
+from collections.abc import Callable
 from dataclasses import asdict
 from datetime import timedelta
 from decimal import ROUND_DOWN, Decimal
@@ -42,10 +43,14 @@ def _closed_gate(_):
     raise RuntimeError("Mixed-strategy authorization is not configured")
 
 
-async def run_cycles(engine, source, *, poll_seconds: float = 5, max_cycles: int | None = None):
+async def run_cycles(
+    engine, source, *, poll_seconds: float = 5, max_cycles: int | None = None,
+    cycle_reporter: Callable[[dict], None] | None = None,
+):
     """Drive an already-armed engine from current broker and stored earnings observations.
 
     Never renews authority, reconnects/retries broker writes, or installs a scheduler.
+    The optional local reporter receives completed cycle results for status display only.
     """
     from grande_alpha.data.earnings import _number
 
@@ -97,7 +102,9 @@ async def run_cycles(engine, source, *, poll_seconds: float = 5, max_cycles: int
                     await source_task
                 raise
             engine._check()
-            await engine.cycle(snapshot["request"], snapshot["theses"])
+            result = await engine.cycle(snapshot["request"], snapshot["theses"])
+            if cycle_reporter is not None:
+                cycle_reporter(result)
             count += 1
             if max_cycles is not None and count >= max_cycles:
                 return count
