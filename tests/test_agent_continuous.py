@@ -193,7 +193,8 @@ async def test_slow_ai_reply_cannot_bypass_current_market_or_news_checks(blocker
 
     agent = await manual_agent(market, AgentSettings(equity_symbols=('AAPL',), crypto_symbols=('BTC',),
                                                    local_ai_enabled=True, local_ai_model='fixture',
-                                                   news_enabled=blocker == 'news', twitter_enabled=blocker == 'sources'), Analyst())
+                                                   news_enabled=blocker in {'news', 'sources'},
+                                                   social_enabled=blocker == 'sources'), Analyst())
     context = {'articles': [{'id': 'fixture', 'kind': 'news', 'scope': 'direct'}],
                'buy_supported': True, 'risk_terms': [], 'coverage': 'Fixture coverage'}
     agent._poll_sources = lambda *_: None
@@ -520,10 +521,14 @@ async def test_old_worker_cleanup_cannot_stop_a_restarted_session():
     agent.start_paper(AgentSettings(), 'broker_quotes')
     await entered.wait()
     old = agent._task
+    old_generation = agent._generation
     agent.stop()
+    with pytest.raises(ValueError, match='previous research cycle'):
+        agent.start_paper(AgentSettings(), 'broker_quotes')
+    await asyncio.gather(old, return_exceptions=True)
     agent.start_paper(AgentSettings(), 'broker_quotes')
     new = agent._task
-    await asyncio.gather(old, return_exceptions=True)
+    agent._run_finished(old, old_generation)
     await asyncio.sleep(0)
     assert agent.snapshot.running and not agent.snapshot.error and agent._task is new
     agent.stop()
