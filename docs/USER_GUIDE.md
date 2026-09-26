@@ -89,7 +89,9 @@ allow backed, risk-reducing exits; ordinary Stop or Revoke cannot.
 Application records are stored under the current Windows user's `GRANDEAlpha` application-data
 directory. Preserve the databases when upgrading: they contain order identities, fills, risk
 history, and research evidence. Alpha Vantage access keys use credential storage or a process
-environment variable; never paste them into issues or examples. Notifications stay on the device.
+environment variable; never paste them into issues or examples. Warning and error notifications
+are kept in the local inbox; view them with `grande-alpha-cli records notifications --unread`.
+They are not sent by email.
 The free Community product has no checkout or entitlement service. Pro is a roadmap, not a paid
 feature in this release.
 

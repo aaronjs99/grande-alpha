@@ -44,11 +44,14 @@ old post-event estimates cannot be relabeled as pre-event evidence.
 .\grande.ps1 cli data audit --help
 .\grande.ps1 cli records status
 .\grande.ps1 cli records receipts --limit 20
+.\grande.ps1 cli records notifications --unread
 .\grande.ps1 cli records upgrade-execution-store --audit C:\private\GRANDEAlpha\grande_alpha.db --legacy-equity C:\private\GRANDEAlpha\equity_v1.db --backup-dir C:\private\GRANDEAlpha\upgrade-backups
 ```
 
 Research targets and replay fills are not broker orders. Saved activity and
-notifications remain local. See [research](RESEARCH.md) for data provenance and cost assumptions.
+notifications remain local. `records notifications --unread` reads the on-device inbox;
+`--ack <id>` acknowledges one entry. GRANDE Alpha sends no notification email. See
+[research](RESEARCH.md) for data provenance and cost assumptions.
 The separate `grande-alpha-mcp` entry point is a local stdio research interface, not a broker
 session runner. It cannot place orders or grant authority and needs explicit per-worker-session
 enablement in the desktop or `research mcp enable` CLI command. Configure the compatible client
