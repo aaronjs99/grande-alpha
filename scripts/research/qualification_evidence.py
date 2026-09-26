@@ -10,7 +10,8 @@ from pathlib import Path
 
 from grande_alpha.configuration.json_inputs import load_json
 from grande_alpha.data.earnings import _number, _time
-from grande_alpha.research.portfolio_replay import EASTERN, replay
+from grande_alpha.domain.policy import EASTERN
+from grande_alpha.research.portfolio_replay import replay
 from grande_alpha.strategy.mixed_portfolio import plan
 
 

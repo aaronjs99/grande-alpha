@@ -4,12 +4,11 @@ from collections import deque
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol
-from zoneinfo import ZoneInfo
 
 from grande_alpha.domain.clock import utc_now
 from grande_alpha.domain.market_models import Bar, Quote, Regime, Signal
+from grande_alpha.domain.policy import EASTERN
 
-EASTERN = ZoneInfo("America/New_York")
 STRATEGY_NAMES = {
     "cash": "Cash / hold — runtime champion",
     "ema_momentum": "EMA momentum",

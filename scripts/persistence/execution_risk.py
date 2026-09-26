@@ -5,9 +5,9 @@ import math
 from datetime import UTC, date, datetime
 from numbers import Real
 from typing import Any
-from zoneinfo import ZoneInfo
 
 from grande_alpha.domain.loss_recovery import recovery_deadline
+from grande_alpha.domain.policy import EASTERN
 from grande_alpha.execution.candidate_execution import next_consecutive_losses
 
 from .validation import (
@@ -28,12 +28,11 @@ class ExecutionRiskMethods:
             requested_date = date.fromisoformat(et_date)
         except (TypeError, ValueError) as exc:
             raise ValueError("Trading date must use YYYY-MM-DD") from exc
-        eastern = ZoneInfo("America/New_York")
         inventory: dict[str, tuple[float, float]] = {}
         consecutive = peak = 0
         for row in self.broker_executions(account_number):
             executed_at = _parse_aware_utc(row["executed_at"], field="execution timestamp")
-            execution_date = executed_at.astimezone(eastern).date()
+            execution_date = executed_at.astimezone(EASTERN).date()
             if execution_date > requested_date:
                 continue
             symbol = str(row["symbol"])
@@ -91,13 +90,12 @@ class ExecutionRiskMethods:
                     (account_number.strip(), strategy_fingerprint.strip()),
                 ).fetchall()
             eligible_order_ids = {str(row["broker_order_id"]) for row in intents}
-        eastern = ZoneInfo("America/New_York")
         order_ids: set[str] = set()
         for row in rows:
             executed_at = _parse_aware_utc(row["executed_at"], field="execution timestamp")
             if (
                 row["side"] == "buy"
-                and executed_at.astimezone(eastern).date() == requested_date
+                and executed_at.astimezone(EASTERN).date() == requested_date
                 and (eligible_order_ids is None or row["order_id"] in eligible_order_ids)
             ):
                 order_ids.add(str(row["order_id"]))
@@ -173,7 +171,6 @@ class ExecutionRiskMethods:
             requested_date = date.fromisoformat(et_date)
         except (TypeError, ValueError) as exc:
             raise ValueError("Trading date must use YYYY-MM-DD") from exc
-        eastern = ZoneInfo("America/New_York")
         with self._lock:
             rows = self._connection.execute(
                 """SELECT ref_id,broker_order_id,broker_state,submission_started_at
@@ -184,7 +181,7 @@ class ExecutionRiskMethods:
         gaps: list[str] = []
         for row in rows:
             submitted_at = _parse_aware_utc(row["submission_started_at"], field="submission timestamp")
-            if submitted_at.astimezone(eastern).date() != requested_date:
+            if submitted_at.astimezone(EASTERN).date() != requested_date:
                 continue
             state = str(row["broker_state"] or "").strip().lower()
             if state not in {"filled", "partially_filled"}:
@@ -466,7 +463,6 @@ class ExecutionRiskMethods:
                 """SELECT payload_json FROM receipts WHERE category='authority_action'
                 ORDER BY id DESC LIMIT 1"""
             ).fetchone()
-        eastern = ZoneInfo("America/New_York")
         daily_notional = 0.0
         submitted_orders = 0
         for row in rows:
@@ -477,7 +473,7 @@ class ExecutionRiskMethods:
                 raise ValueError("Stored submission provenance is invalid") from exc
             if submitted_at.tzinfo is None or not math.isfinite(notional) or notional < 0:
                 raise ValueError("Stored submission provenance is invalid")
-            if submitted_at.astimezone(eastern).date() == requested_date:
+            if submitted_at.astimezone(EASTERN).date() == requested_date:
                 daily_notional += notional
                 submitted_orders += 1
         last_digest = ""

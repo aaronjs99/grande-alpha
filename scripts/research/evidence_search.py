@@ -11,7 +11,7 @@ from grande_alpha.research.evidence_contract import (
     WalkForwardResult,
 )
 from grande_alpha.research.evidence_replay import _run_replay, _sessions, _subset
-from grande_alpha.research.historical import HistoricalBundle
+from grande_alpha.research.historical_models import HistoricalBundle
 from grande_alpha.research.sandbox import SandboxReplayRunner
 from grande_alpha.research.sandbox_models import SandboxConfig
 

@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from grande_alpha.research.evidence_contract import EVIDENCE_POLICY_VERSION
-from grande_alpha.research.historical import RUNTIME_REQUIRED_SYMBOLS
+from grande_alpha.research.historical_models import RUNTIME_REQUIRED_SYMBOLS
 
 
 def audit_evidence_ledger(database_path: Path) -> dict[str, Any]:

@@ -9,7 +9,6 @@ import math
 import random
 from datetime import UTC, datetime, time, timedelta
 from pathlib import Path
-from zoneinfo import ZoneInfo
 
 import httpx
 
@@ -17,17 +16,20 @@ from grande_alpha import __version__
 from grande_alpha.configuration.config import data_dir
 from grande_alpha.domain.clock import utc_now
 from grande_alpha.domain.market_models import Bar
+from grande_alpha.domain.policy import EASTERN
 from grande_alpha.research.historical import (
     INTERVAL_LIMITS,
-    INTERVAL_SECONDS,
     SHARED_LEVERAGED_HISTORY_START,
     YAHOO_CHART_URL,
-    DataProvenance,
-    HistoricalBundle,
-    ReplayFrame,
     align_bars,
     assess_quality,
     parse_yahoo_chart,
+)
+from grande_alpha.research.historical_models import (
+    INTERVAL_SECONDS,
+    DataProvenance,
+    HistoricalBundle,
+    ReplayFrame,
 )
 
 
@@ -181,8 +183,7 @@ def load_csv_history_bytes(
     frames = align_bars(series["QQQ"], series["TQQQ"], series["SQQQ"])
     if len(frames) < 30:
         raise ValueError(f"CSV produced only {len(frames)} aligned candles")
-    eastern = ZoneInfo("America/New_York")
-    local_times = [frame.start.astimezone(eastern).time() for frame in frames]
+    local_times = [frame.start.astimezone(EASTERN).time() for frame in frames]
     has_extended = any(value < time(9, 30) or value >= time(16, 0) for value in local_times)
     if len(declared_coverage) > 1:
         raise ValueError("CSV market_hours must declare one consistent coverage value")
@@ -227,20 +228,19 @@ def load_csv_history(path: Path, interval: str = "1m") -> HistoricalBundle:
 
 
 def _demo_market_days(days: int, end: datetime) -> list[datetime]:
-    eastern = ZoneInfo("America/New_York")
-    local_end = end.astimezone(eastern).date()
+    local_end = end.astimezone(EASTERN).date()
     start = local_end - timedelta(days=max(1, days) - 1)
     result: list[datetime] = []
     cursor = start
     while cursor <= local_end:
         if cursor.weekday() < 5:
-            result.append(datetime.combine(cursor, time(9, 30), eastern).astimezone(UTC))
+            result.append(datetime.combine(cursor, time(9, 30), EASTERN).astimezone(UTC))
         cursor += timedelta(days=1)
     if not result:
         cursor = local_end
         while cursor.weekday() >= 5:
             cursor -= timedelta(days=1)
-        result.append(datetime.combine(cursor, time(9, 30), eastern).astimezone(UTC))
+        result.append(datetime.combine(cursor, time(9, 30), EASTERN).astimezone(UTC))
     return result
 
 

@@ -7,12 +7,12 @@ from pathlib import Path
 from typing import Any
 
 from grande_alpha.domain.market_models import Bar, Quote
-from grande_alpha.research.historical import (
+from grande_alpha.research.historical import assess_quality
+from grande_alpha.research.historical_models import (
     RUNTIME_PROVENANCE_FIELDS,
     DataProvenance,
     HistoricalBundle,
     ReplayFrame,
-    assess_quality,
 )
 
 

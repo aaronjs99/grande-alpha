@@ -39,9 +39,6 @@ from .validation import (
     _valid_risk_envelope as _valid_risk_envelope,
 )
 
-QUOTE_BATCH_SCHEMA_VERSION = 2
-EXACT_QUOTE_VALIDATOR_VERSION = 2
-
 
 class AuditStore:
     """Compatibility facade; each operation belongs to one focused repository."""

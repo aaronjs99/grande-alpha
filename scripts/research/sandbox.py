@@ -7,7 +7,7 @@ from pathlib import Path
 from grande_alpha.configuration.config import data_dir
 from grande_alpha.domain.market_models import Signal
 from grande_alpha.research.bar_replay import SandboxReplayEngine
-from grande_alpha.research.historical import HistoricalBundle
+from grande_alpha.research.historical_models import HistoricalBundle
 from grande_alpha.research.runtime_replay import RuntimeObservationReplayEngine
 from grande_alpha.research.sandbox_models import SandboxConfig, SandboxResult
 

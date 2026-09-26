@@ -26,7 +26,7 @@ def _valid_provenance_record(
     if not isinstance(provenance, dict):
         return False
     try:
-        from grande_alpha.research.historical import DataProvenance
+        from grande_alpha.research.historical_models import DataProvenance
 
         allowed = DataProvenance.__dataclass_fields__.keys()
         record = DataProvenance(**{key: value for key, value in provenance.items() if key in allowed})

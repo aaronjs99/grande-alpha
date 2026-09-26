@@ -5,7 +5,7 @@ from __future__ import annotations
 from calendar import monthrange
 from datetime import UTC, datetime, timedelta
 
-from grande_alpha.research.portfolio_replay import EASTERN
+from grande_alpha.domain.policy import EASTERN
 
 RECOVERY_UNITS = frozenset({"manual", "minutes", "hours", "days", "weeks", "months", "years"})
 

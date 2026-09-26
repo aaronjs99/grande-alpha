@@ -20,7 +20,7 @@ from grande_alpha.research.evidence_statistics import (
     deflated_sharpe_ratio,
     forced_flatten_count,
 )
-from grande_alpha.research.historical import DataQuality, HistoricalBundle
+from grande_alpha.research.historical_models import DataQuality, HistoricalBundle
 from grande_alpha.research.sandbox_models import SandboxConfig, SandboxResult
 
 

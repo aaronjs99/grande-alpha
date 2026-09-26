@@ -27,7 +27,7 @@ from grande_alpha.research.evidence_contract import (
     MIN_EVIDENCE_SESSIONS,
     MIN_TOTAL_EVIDENCE_SESSIONS,
 )
-from grande_alpha.research.historical import (
+from grande_alpha.research.historical_models import (
     RUNTIME_REQUIRED_SYMBOLS,
     HistoricalBundle,
 )

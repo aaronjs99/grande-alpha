@@ -21,7 +21,7 @@ from grande_alpha.execution.candidate_execution import (
     next_consecutive_losses,
     observed_range_bps,
 )
-from grande_alpha.research.historical import HistoricalBundle, ReplayFrame
+from grande_alpha.research.historical_models import HistoricalBundle, ReplayFrame
 from grande_alpha.research.sandbox_execution import SandboxExecutionModel, _VirtualPosition
 from grande_alpha.research.sandbox_models import (
     EquityPoint,

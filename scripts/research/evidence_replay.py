@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from grande_alpha.domain.policy import session_key
-from grande_alpha.research.historical import HistoricalBundle, assess_quality
+from grande_alpha.research.historical import assess_quality
+from grande_alpha.research.historical_models import HistoricalBundle
 from grande_alpha.research.sandbox import SandboxReplayRunner
 from grande_alpha.research.sandbox_models import SandboxConfig, SandboxResult
 

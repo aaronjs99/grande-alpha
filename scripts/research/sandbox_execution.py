@@ -16,7 +16,7 @@ from grande_alpha.execution.candidate_execution import (
     observed_range_bps,
     size_entry,
 )
-from grande_alpha.research.historical import ReplayFrame
+from grande_alpha.research.historical_models import ReplayFrame
 from grande_alpha.research.sandbox_models import ExecutionEvent, SandboxFill
 
 

@@ -20,7 +20,7 @@ from grande_alpha.domain.market_calendar import regular_session_times
 from grande_alpha.domain.policy import session_key
 from grande_alpha.interfaces.cli.cli_table import format_table
 from grande_alpha.interfaces.cli.render import print_json as _json
-from grande_alpha.research.historical import (
+from grande_alpha.research.historical_models import (
     RUNTIME_ANALYSIS_PRICE_SEMANTICS,
     RUNTIME_EXECUTION_PRICE_SEMANTICS,
     RUNTIME_OBSERVATION_SCHEMA,

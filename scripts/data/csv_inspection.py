@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from grande_alpha.domain.policy import session_bounds
-from grande_alpha.research.historical import RUNTIME_REQUIRED_SYMBOLS as EXPECTED_SYMBOLS
+from grande_alpha.research.historical_models import RUNTIME_REQUIRED_SYMBOLS as EXPECTED_SYMBOLS
 
 
 @dataclass(frozen=True)

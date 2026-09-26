@@ -8,15 +8,14 @@ from pathlib import Path
 from typing import Any
 
 from grande_alpha.domain.clock import utc_now
-from grande_alpha.domain.market_models import Bar, Quote
-from grande_alpha.domain.policy import market_session_allowed, session_bounds, session_key
-from grande_alpha.persistence.store import EXACT_QUOTE_VALIDATOR_VERSION, QUOTE_BATCH_SCHEMA_VERSION
-from grande_alpha.research.historical import (
-    EASTERN,
+from grande_alpha.domain.market_models import EXACT_QUOTE_VALIDATOR_VERSION, Bar, Quote
+from grande_alpha.domain.policy import EASTERN, market_session_allowed, session_bounds, session_key
+from grande_alpha.persistence.market import QUOTE_BATCH_SCHEMA_VERSION
+from grande_alpha.research.historical import assess_quality
+from grande_alpha.research.historical_models import (
     RUNTIME_REQUIRED_SYMBOLS,
     HistoricalBundle,
     ReplayFrame,
-    assess_quality,
 )
 from grande_alpha.research.runtime_trace_provenance import _runtime_trace_provenance
 from grande_alpha.strategy.core import BarBuilder

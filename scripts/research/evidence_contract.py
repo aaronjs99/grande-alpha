@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass, fields, replace
-from zoneinfo import ZoneInfo
 
 from grande_alpha.domain.execution_profile import execution_profile
 from grande_alpha.execution.candidate_execution import (
@@ -14,7 +13,6 @@ from grande_alpha.execution.candidate_execution import (
 from grande_alpha.research.sandbox_models import INTERVAL_MINUTES, SandboxConfig
 from grande_alpha.strategy.core import StrategyConfig
 
-EASTERN = ZoneInfo("America/New_York")
 EVIDENCE_POLICY_VERSION = 15
 # This value is derived from the machine-readable mechanics assessment below. It must not
 # become true merely because entry sizing shares a helper: exact observations, fill economics,

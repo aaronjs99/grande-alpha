@@ -6,8 +6,8 @@ from datetime import date, datetime
 from typing import Any
 
 from grande_alpha.domain.clock import utc_now
-from grande_alpha.persistence.store import EXACT_QUOTE_VALIDATOR_VERSION
-from grande_alpha.research.historical import (
+from grande_alpha.domain.market_models import EXACT_QUOTE_VALIDATOR_VERSION
+from grande_alpha.research.historical_models import (
     INTERVAL_SECONDS,
     RUNTIME_ANALYSIS_PRICE_SEMANTICS,
     RUNTIME_EXECUTION_PRICE_SEMANTICS,

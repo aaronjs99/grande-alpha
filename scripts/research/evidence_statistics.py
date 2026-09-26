@@ -8,7 +8,7 @@ from dataclasses import dataclass, replace
 from grande_alpha.domain.market_models import Regime, Signal
 from grande_alpha.domain.policy import session_key
 from grande_alpha.research.evidence_replay import _run_replay, _sessions
-from grande_alpha.research.historical import HistoricalBundle
+from grande_alpha.research.historical_models import HistoricalBundle
 from grande_alpha.research.sandbox import SandboxReplayRunner
 from grande_alpha.research.sandbox_models import (
     SandboxConfig,

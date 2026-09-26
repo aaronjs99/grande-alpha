@@ -8,14 +8,12 @@ import json
 import math
 from datetime import timedelta
 from pathlib import Path
-from zoneinfo import ZoneInfo
 
 from grande_alpha.configuration.json_inputs import load_json
 from grande_alpha.data.earnings import _number, _time
 from grande_alpha.domain.market_calendar import is_regular_trading_day, regular_session_times
+from grande_alpha.domain.policy import EASTERN
 from grande_alpha.strategy.mixed_portfolio import plan
-
-EASTERN = ZoneInfo("America/New_York")
 
 
 def _nav(cash, unsettled, holdings, quotes):

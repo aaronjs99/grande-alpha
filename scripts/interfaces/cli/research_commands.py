@@ -18,7 +18,7 @@ from grande_alpha.interfaces.cli.render import print_json as _json
 from grande_alpha.interfaces.cli.render import sandbox_metric_rows as _sandbox_metric_rows
 from grande_alpha.persistence.store import AuditStore
 from grande_alpha.research.bar_replay import SandboxReplayEngine
-from grande_alpha.research.historical import HistoricalBundle
+from grande_alpha.research.historical_models import HistoricalBundle
 from grande_alpha.research.historical_source import (
     HistoricalDataProvider,
     deterministic_demo,

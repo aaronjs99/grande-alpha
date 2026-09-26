@@ -8,12 +8,10 @@ from dataclasses import field
 from datetime import datetime
 from numbers import Real
 from typing import Any
-from zoneinfo import ZoneInfo
 
 from grande_alpha.domain.clock import utc_now
 from grande_alpha.domain.execution_profile import ExecutionProfile, execution_profile
-
-AUTHORITY_TIMEZONE = ZoneInfo("America/New_York")
+from grande_alpha.domain.policy import EASTERN as AUTHORITY_TIMEZONE
 
 
 class LiveGrant:

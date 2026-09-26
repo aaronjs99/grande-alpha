@@ -3,12 +3,16 @@ from __future__ import annotations
 import math
 import uuid
 
-from grande_alpha.domain.market_models import Bar, Quote, Signal
+from grande_alpha.domain.market_models import (
+    EXACT_QUOTE_VALIDATOR_VERSION,
+    Bar,
+    Quote,
+    Signal,
+)
 
 from .base import Repository
 
 QUOTE_BATCH_SCHEMA_VERSION = 2
-EXACT_QUOTE_VALIDATOR_VERSION = 2
 
 
 class MarketRepository(Repository):

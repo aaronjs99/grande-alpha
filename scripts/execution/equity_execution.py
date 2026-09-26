@@ -15,7 +15,7 @@ from grande_alpha.domain.loss_recovery import validate_recovery
 from grande_alpha.domain.market_calendar import regular_session_times
 from grande_alpha.domain.market_models import Quote
 from grande_alpha.domain.order_models import OrderIntent
-from grande_alpha.research.portfolio_replay import EASTERN
+from grande_alpha.domain.policy import EASTERN
 
 
 def symbol_valid(symbol) -> bool:

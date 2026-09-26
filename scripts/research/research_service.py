@@ -23,7 +23,8 @@ from grande_alpha.research.evidence_statistics import (
     forced_flatten_count,
     random_entry_control,
 )
-from grande_alpha.research.historical import HistoricalBundle, split_final_holdout
+from grande_alpha.research.historical import split_final_holdout
+from grande_alpha.research.historical_models import HistoricalBundle
 from grande_alpha.research.sandbox import SandboxReplayRunner
 from grande_alpha.research.sandbox_models import SandboxConfig, SandboxResult
 

@@ -14,6 +14,7 @@ from grande_alpha.data.earnings_feed import AlphaVantageEarningsClient, Earnings
 from grande_alpha.data.live_data import LiveDataService
 from grande_alpha.domain.clock import utc_now
 from grande_alpha.domain.market_calendar import regular_session_times
+from grande_alpha.domain.policy import EASTERN
 from grande_alpha.execution.authorization import (
     UserAuthorizationGate,
     create_authorization,
@@ -27,7 +28,6 @@ from grande_alpha.execution.read_retry import read_with_backoff
 from grande_alpha.execution.standing import validate_contract
 from grande_alpha.execution.worker_control import WorkerControlStore, WorkerPermission, WorkerState
 from grande_alpha.persistence.store import AuditStore
-from grande_alpha.research.portfolio_replay import EASTERN
 from grande_alpha.research.worker_research import WorkerResearch
 
 

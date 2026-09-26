@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from grande_alpha.research.historical import (
+from grande_alpha.research.historical_models import (
     INTERVAL_SECONDS,
     RUNTIME_REQUIRED_SYMBOLS,
     DataProvenance,

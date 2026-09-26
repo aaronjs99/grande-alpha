@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Separated historical research records from data transformations and centralized the exchange
+  timezone and exact-quote validator contract to avoid drift between persistence, research,
+  execution, and strategy code.
 - Integrated Antonio's multi-market research runtime, adaptive virtual-paper strategy and durable
   paper journal into the existing single worker. The desktop can start a paper session with
   user-entered virtual amounts; research MCP exposes the same paper-only operations.

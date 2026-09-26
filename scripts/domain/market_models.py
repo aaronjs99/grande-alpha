@@ -8,6 +8,8 @@ from numbers import Real
 
 from grande_alpha.domain.clock import utc_now
 
+EXACT_QUOTE_VALIDATOR_VERSION = 2
+
 
 class Regime(StrEnum):
     BULLISH = "bullish"

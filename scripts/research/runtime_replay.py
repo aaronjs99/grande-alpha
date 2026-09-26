@@ -9,7 +9,7 @@ from typing import Any
 from grande_alpha.domain.market_models import Bar, Signal
 from grande_alpha.domain.policy import session_bounds, session_key, session_minutes
 from grande_alpha.research.bar_replay import SandboxReplayEngine
-from grande_alpha.research.historical import HistoricalBundle, ReplayFrame
+from grande_alpha.research.historical_models import HistoricalBundle, ReplayFrame
 from grande_alpha.research.sandbox_models import (
     EquityPoint,
     ExecutionEvent,

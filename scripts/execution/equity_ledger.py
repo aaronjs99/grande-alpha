@@ -6,10 +6,11 @@ import json
 import math
 import sqlite3
 import threading
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 from grande_alpha.domain.order_models import BrokerOrder
+from grande_alpha.domain.policy import EASTERN
 from grande_alpha.execution.equity_execution import EquityOrderIntent
 
 EQUITY_SCHEMA = """
@@ -165,9 +166,6 @@ class EquityLedger:
                 )
 
     def daily_usage(self, account: str, day: str) -> dict:
-        from datetime import date
-        from zoneinfo import ZoneInfo
-
         requested = date.fromisoformat(day)
         with self._lock:
             rows = self._db.execute(
@@ -183,7 +181,7 @@ class EquityLedger:
             when = datetime.fromisoformat(row["submitted_at"])
             if when.tzinfo is None or not math.isfinite(row["notional"]) or row["notional"] <= 0:
                 raise ValueError("Invalid durable stock usage")
-            if when.astimezone(ZoneInfo("America/New_York")).date() == requested:
+            if when.astimezone(EASTERN).date() == requested:
                 count += 1
                 amount += row["notional"]
         return {"orders": count, "notional": amount}
