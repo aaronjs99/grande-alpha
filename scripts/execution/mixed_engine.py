@@ -1,7 +1,7 @@
 """Mixed-strategy dispatch, closed by default without an exact user permit.
 
-The foreground CLI activates this engine through independent authorization, broker,
-data, and risk checks. Tests use fabricated dependencies, not provider observations.
+The foreground CLI activates this engine through separate authorization, broker,
+data, and risk checks. Source availability does not imply provider acceptance.
 """
 
 from __future__ import annotations

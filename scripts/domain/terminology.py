@@ -45,7 +45,6 @@ TERM_HELP: dict[str, str] = {
         "Maximum price concession from the current ask for a buy or bid for a sell, measured in basis points."
     ),
     "Live authority": "Whether a separately confirmed, time-limited real-order session is currently armed.",
-    "Live shadow": "Live broker observations with virtual fills only; it cannot submit a real order.",
     "Local credential": "The Windows-stored Robinhood OAuth credential used to reconnect GRANDE Alpha.",
     "Long-history CSV": (
         "A user-supplied aligned QQQ/TQQQ/SQQQ file. Its license, accuracy, timezone, and completeness remain "
@@ -82,9 +81,6 @@ TERM_HELP: dict[str, str] = {
     "Order cap": "Maximum dollars allocated to a single virtual sandbox entry.",
     "Order type": (
         "Market orders prioritize execution but not price. Limit orders constrain price but may partially fill or not fill."
-    ),
-    "Pair action (T,S)": (
-        "Current command for TQQQ and SQQQ: -1 sell, 0 hold, or +1 buy. Inventory and risk masks can block a command."
     ),
     "Pause after losses": "Number of consecutive losing exits that pauses new virtual entries.",
     "Period (YYYY-MM)": "Month assigned to an optional capital-planning entry.",
@@ -147,7 +143,7 @@ TERM_HELP: dict[str, str] = {
     "Profit concentration": "Share of positive daily P/L contributed by the single best day; promotion caps it at 50%.",
     "Random-entry control": "Seeded chance-entry benchmark using comparable holding and sizing assumptions.",
     "Runtime sizing parity": (
-        "Whether replay and shadow/live use the exact same certified position-sizing contract. "
+        "Whether replay and live execution use the exact same certified position-sizing contract. "
         "This currently fails non-cash candidates because runtime does not share replay's "
         "risk-budget and volatility sizing."
     ),

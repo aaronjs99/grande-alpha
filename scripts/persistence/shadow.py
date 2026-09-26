@@ -111,7 +111,7 @@ class ShadowRepository(Repository):
             return self._decode_shadow_checkpoint(latest)
 
     def shadow_checkpoints(self, run_id: str) -> list[dict[str, Any]]:
-        """Return a verified checkpoint chain for diagnostics and focused tests."""
+        """Return a verified checkpoint chain for inspection and recovery."""
 
         if not isinstance(run_id, str) or not run_id.strip():
             raise ValueError("Shadow run id must be nonempty")

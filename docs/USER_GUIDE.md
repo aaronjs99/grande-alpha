@@ -35,9 +35,8 @@ periods or profit certificates.
 
 ## Implemented behavior and remaining work
 
-This is the authoritative capability matrix for the current checkout. The repository does not
-include an automated regression suite. “Implemented” describes source code, not verified live
-broker behavior.
+This is the authoritative capability matrix for the current checkout. “Implemented” describes
+source code, not verified live broker behavior.
 
 | Capability | Source status | Remaining before public/live claim |
 |---|---|---|---|
@@ -52,10 +51,10 @@ broker behavior.
 | User-started hidden mixed worker and local control | Implemented in source | Installed Windows operation, restart, and provider-observed recovery |
 | Public signed binary or paid plan | Not included | Signing, support, provider and legal review; billing is not included |
 
-The desktop and CLI use the same user-started hidden mixed worker. Attended ETF and live-shadow
-sessions are retired; offline replay and historical records remain. Source implementation is not
-installed-Windows or provider-observed acceptance. Do not interpret an Agent research status as confirmation that
-the mixed worker is active or authorized.
+The desktop and CLI use the same user-started hidden mixed worker. The old attended ETF and
+shadow-session paths are retired; offline replay and historical records remain. Source
+implementation is not installed-Windows or provider-observed acceptance. Do not interpret an
+Agent research status as confirmation that the mixed worker is active or authorized.
 
 ## Optional research connection
 

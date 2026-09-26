@@ -4,7 +4,7 @@ Describe the user problem and the focused change.
 
 ## Safety and privacy impact
 
-- Does this change research, broker reads, shadow mode, supervised orders, or autonomous authority?
+- Does this change research/simulation, broker reads, supervised orders, or autonomous authority?
 - Does it add an external connection, persisted data, credential scope, or user-visible risk?
 - If none, write `None`.
 

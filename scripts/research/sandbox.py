@@ -285,7 +285,7 @@ class SandboxResult:
 
 @dataclass(frozen=True)
 class RuntimeObservationReplayResult:
-    """Clock trace from the same causal quote path used by live shadow execution."""
+    """Clock trace from the causal quote path used by virtual runtime execution."""
 
     bars: tuple[Bar, ...]
     signals: tuple[Signal, ...]
@@ -318,11 +318,11 @@ class RuntimeObservationReplayEngine:
             )
         if signals is not None and len(signals) != len(bundle.frames):
             raise ValueError("Exact runtime replay needs one causal signal per observation frame")
-        # Local import avoids a module cycle: live shadow consumes SandboxConfig but has no broker.
-        from grande_alpha.strategy.shadow import LiveShadowEngine
+        # Local import avoids a cycle between replay configuration and virtual execution.
+        from grande_alpha.strategy.shadow import QuoteSimulationExecutor
 
         strategy = build_strategy(self.config.strategy_config())
-        shadow = LiveShadowEngine(self.config, bar_minutes=interval_minutes(bundle.interval))
+        simulator = QuoteSimulationExecutor(self.config, bar_minutes=interval_minutes(bundle.interval))
         active_session: str | None = None
         active_stream: str | None = None
         last_frame: ReplayFrame | None = None
@@ -345,25 +345,25 @@ class RuntimeObservationReplayEngine:
 
         def finish_session(frame: ReplayFrame) -> None:
             nonlocal completed_session_pnl
-            prior_fill_count = len(shadow.state.fills)
+            prior_fill_count = len(simulator.state.fills)
             if self.config.force_flat_at_end and session_reached_close(frame):
-                shadow.stop(
+                simulator.stop(
                     frame.runtime_quotes(),
                     flatten_at=frame.causal_timestamp,
                     flatten_reason="SESSION-END VIRTUAL FLAT at regular-session close",
                 )
-            extra_fills = shadow.state.fills[prior_fill_count:]
+            extra_fills = simulator.state.fills[prior_fill_count:]
             fills.extend(extra_fills)
             if curve:
                 curve[-1] = EquityPoint(
                     curve[-1].timestamp,
-                    self.config.initial_cash + completed_session_pnl + shadow.state.pnl,
-                    completed_session_pnl + shadow.state.cash,
-                    shadow.state.position.symbol if shadow.state.position else None,
-                    shadow.state.unsettled_cash,
+                    self.config.initial_cash + completed_session_pnl + simulator.state.pnl,
+                    completed_session_pnl + simulator.state.cash,
+                    simulator.state.position.symbol if simulator.state.position else None,
+                    simulator.state.unsettled_cash,
                 )
-            session_states.append(shadow.state)
-            completed_session_pnl += shadow.state.pnl
+            session_states.append(simulator.state)
+            completed_session_pnl += simulator.state.pnl
 
         for index, frame in enumerate(bundle.frames):
             assert frame.causal_timestamp is not None
@@ -372,15 +372,13 @@ class RuntimeObservationReplayEngine:
                 assert last_frame is not None
                 finish_session(last_frame)
                 strategy = build_strategy(self.config.strategy_config())
-                shadow = LiveShadowEngine(
+                simulator = QuoteSimulationExecutor(
                     self.config,
                     bar_minutes=interval_minutes(bundle.interval),
                 )
             elif active_stream is not None and frame.stream_id != active_stream:
-                # A process restart discards the partial bar/indicator pipeline, but
-                # durable live shadow restores its same-session cash, position, pending
-                # transition, and risk state. Exact replay must preserve that execution
-                # ledger while rewarming only the forecasting strategy.
+                # A restart resets partial bars and indicators. Preserve the execution
+                # ledger and risk state while rewarming only the forecasting strategy.
                 strategy = build_strategy(self.config.strategy_config())
             active_session = current_session
             active_stream = frame.stream_id
@@ -390,7 +388,7 @@ class RuntimeObservationReplayEngine:
                 else strategy.on_bar(frame.qqq)
             )
             fills.extend(
-                shadow.on_causal_quote(
+                simulator.on_causal_quote(
                     frame.causal_timestamp,
                     signal,
                     frame.runtime_quotes(),
@@ -402,10 +400,10 @@ class RuntimeObservationReplayEngine:
             curve.append(
                 EquityPoint(
                     frame.causal_timestamp,
-                    self.config.initial_cash + completed_session_pnl + shadow.state.pnl,
-                    completed_session_pnl + shadow.state.cash,
-                    shadow.state.position.symbol if shadow.state.position else None,
-                    shadow.state.unsettled_cash,
+                    self.config.initial_cash + completed_session_pnl + simulator.state.pnl,
+                    completed_session_pnl + simulator.state.cash,
+                    simulator.state.position.symbol if simulator.state.position else None,
+                    simulator.state.unsettled_cash,
                 )
             )
             last_frame = frame
@@ -416,7 +414,7 @@ class RuntimeObservationReplayEngine:
             tuple(emitted_signals),
             tuple(causal_timestamps),
             tuple(fills),
-            shadow.state,
+            simulator.state,
             tuple(curve),
             tuple(session_states),
         )

@@ -25,8 +25,8 @@ not evidence of broker fills.
 Freeze strategy rules and order-sizing assumptions before evaluating a holdout. Replay with the
 same market window, quote freshness, order route, spread, slippage, delay, partial-fill, and
 settlement assumptions that the proposed runtime uses. Separate development and later chronological
-holdout periods; report failures as well as passes. Forward shadow operation tests behavior and
-operations, but cannot prove future profit or exact live fill prices.
+holdout periods; report failures as well as passes. Paper simulation measures software behavior and
+operational handling, but cannot prove future profit or exact live fill prices.
 
 Legacy Evidence Lab certificates and exact-runtime manifests are retained as historical research
 records. They are not a mandatory profit gate for the mixed live route. Independent technical

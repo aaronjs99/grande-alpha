@@ -38,15 +38,11 @@ class EntitlementSnapshot:
     checkout_available: bool
     paid_entitlement_available: bool
 
-    def allows(self, feature_id: str) -> bool:
-        return feature_id in COMMUNITY_FEATURE_IDS
-
-
 COMMUNITY_FEATURES = (
     ProductFeature(
         "research_sandbox",
-        "Research sandbox and nine-action lab",
-        "Run local replay, configuration comparisons, and the auditable nine-action policy lab.",
+        "Research and historical replay",
+        "Run local market research, deterministic replay, and configuration comparisons.",
         FeatureStatus.AVAILABLE,
     ),
     ProductFeature(
@@ -56,15 +52,15 @@ COMMUNITY_FEATURES = (
         FeatureStatus.AVAILABLE,
     ),
     ProductFeature(
-        "shadow_and_receipts",
-        "Live shadow and local receipts",
-        "Observe supported provider data and simulate fills without sending an order.",
+        "simulation_and_records",
+        "Simulation and local records",
+        "Use synthetic or read-only provider data for local simulations and keep research records.",
         FeatureStatus.AVAILABLE,
     ),
     ProductFeature(
         "safety_and_consent",
         "All safety and consent controls",
-        "Risk limits, provenance gates, stop controls, and per-order consent are never plan-gated.",
+        "Account permissions, bounded authorization, risk limits, and Stop controls remain available to every user.",
         FeatureStatus.AVAILABLE,
     ),
 )
@@ -107,8 +103,6 @@ PRO_PLAN = ProductPlan(
 )
 
 PRODUCT_PLANS = (COMMUNITY_PLAN, PRO_PLAN)
-COMMUNITY_FEATURE_IDS = frozenset(feature.feature_id for feature in COMMUNITY_FEATURES)
-SAFETY_FEATURE_IDS = frozenset({"safety_and_consent", "evidence_and_provenance"})
 UPGRADE_URL_ENV = "GRANDE_ALPHA_UPGRADE_URL"
 
 

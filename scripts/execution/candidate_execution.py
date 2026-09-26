@@ -480,7 +480,7 @@ def runtime_parity_assessment(
             "completed_bar_decision_cadence",
             True,
             "decision_due on completed historical bars",
-            "decision_due on completed live-shadow bars",
+            "decision_due on completed virtual quote-execution bars",
             "decision_due on completed BarBuilder bars; provider polls do not advance it",
             "Decision stride is measured only in completed analysis bars",
         ),
@@ -524,8 +524,8 @@ def runtime_parity_assessment(
             "Next causal bar open plus modeled spread/slippage, fill fraction, and volume cap",
             "First causal quote plus modeled spread/slippage and fill fraction",
             "Provider execution quantity, price, fees, and timestamp are durably recorded, but broker "
-            "fill behavior still differs from replay/shadow modeled fill assumptions",
-            "Live provider fills cannot certify replay/shadow fill economics as identical",
+            "fill behavior still differs from replay's virtual fill assumptions",
+            "Live provider fills cannot certify replay's virtual fill economics as identical",
         ),
         RuntimeParityCheck(
             "autonomous_exit_lifecycle",

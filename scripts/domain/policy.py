@@ -108,7 +108,7 @@ def session_minutes(market_hours: str) -> int:
 
 
 class DecisionPolicy:
-    """Pure strategy-to-position policy shared by live, replay, and shadow execution."""
+    """Pure strategy-to-position policy shared by live and virtual execution."""
 
     def __init__(self, config: PolicyConfig) -> None:
         self.config = config

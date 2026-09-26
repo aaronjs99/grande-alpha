@@ -16,8 +16,7 @@ worker. Its tools cannot approve trading or place orders. See the
 > [!WARNING]
 > This is experimental software, not investment advice. No included strategy is demonstrated to
 > be profitable. Leveraged and inverse ETFs can lose substantial value, including all capital
-> committed. This repository does not include an automated regression suite. Source checks do not
-> establish provider-observed live readiness.
+> committed. Source checks do not establish provider-observed live readiness.
 
 ## Install and first use
 

@@ -13,6 +13,8 @@
   wizard rather than maintaining a second process or client-specific control surface.
 - Removed the automated regression suite and its runner dependencies. CI now performs lint,
   compilation, packaging, and dependency checks only; execution safeguards remain in the product.
+- Removed the disconnected nine-action research module, its stale plan/glossary claims, redundant
+  source-map page, and unreferenced screenshots; dated research records remain intact.
 - No installed-Windows acceptance, provider-observed execution, or profitability result is claimed
   for this integration.
 

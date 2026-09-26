@@ -69,7 +69,7 @@ For `1.0.0`, the exact release candidate must also satisfy these product gates:
 These are distribution-quality thresholds, not a profitability certificate or guarantee of
 uninterrupted broker service. Source checks alone do not establish that any threshold is met.
 
-Historical replay, forward shadow observation, provider-observed trading, and public deployment are
+Historical replay, paper simulation, provider-observed trading, and public deployment are
 different evidence levels. Report them separately. Do not claim a live order route is safe or
 profitable from a source build alone. Do not place a live order as a release exercise without the
 operator's exact approval and accepted financial limits.

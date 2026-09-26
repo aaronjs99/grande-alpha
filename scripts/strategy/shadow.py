@@ -218,8 +218,8 @@ class _PendingTransition:
     session: str
 
 
-class LiveShadowEngine:
-    """Live-quote virtual executor. This module has no broker dependency by design."""
+class QuoteSimulationExecutor:
+    """Virtual quote executor for research replay; it has no broker dependency."""
 
     def __init__(self, config: SandboxConfig, *, bar_minutes: float | None = None) -> None:
         config.validate()
@@ -356,7 +356,7 @@ class LiveShadowEngine:
         expected_account_fingerprint: str,
         expected_strategy_fingerprint: str,
         bar_minutes: float | None = None,
-    ) -> LiveShadowEngine:
+    ) -> QuoteSimulationExecutor:
         """Restore one exact compatible session, rejecting partial or ambiguous continuity."""
 
         validated = validate_shadow_checkpoint(checkpoint)
