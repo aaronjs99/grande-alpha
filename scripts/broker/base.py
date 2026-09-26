@@ -2,17 +2,10 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 
+from grande_alpha.domain.account_models import Account, EquityTradability, Portfolio, Position
 from grande_alpha.domain.crypto_models import CryptoOrder, CryptoOrderIntent, CryptoPosition, CryptoReview
-from grande_alpha.domain.models import (
-    Account,
-    BrokerOrder,
-    EquityTradability,
-    OrderIntent,
-    OrderReview,
-    Portfolio,
-    Position,
-    Quote,
-)
+from grande_alpha.domain.market_models import Quote
+from grande_alpha.domain.order_models import BrokerOrder, OrderIntent, OrderReview
 from grande_alpha.research.agent_models import Instrument
 
 TERMINAL_ORDER_STATES = frozenset(

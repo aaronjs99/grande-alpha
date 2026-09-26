@@ -14,7 +14,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 
-from grande_alpha.domain.models import utc_now
+from grande_alpha.domain.clock import utc_now
 from grande_alpha.research.agent_models import AssetClass, Instrument
 
 REFRESH_SECONDS = 600

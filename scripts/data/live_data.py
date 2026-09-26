@@ -12,7 +12,7 @@ from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from grande_alpha.domain.models import utc_now
+from grande_alpha.domain.clock import utc_now
 from grande_alpha.execution.read_retry import read_with_backoff
 
 ETFS = {"TQQQ", "SQQQ"}

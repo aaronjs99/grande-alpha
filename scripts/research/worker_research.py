@@ -7,7 +7,7 @@ import math
 from dataclasses import replace
 from pathlib import Path
 
-from grande_alpha.domain.models import utc_now
+from grande_alpha.domain.clock import utc_now
 from grande_alpha.research.agent_bridge import AgentBridge
 from grande_alpha.research.agent_models import AgentSettings
 from grande_alpha.research.agent_runtime import AgentRuntime

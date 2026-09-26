@@ -7,8 +7,9 @@ from pathlib import Path
 from typing import Any
 
 from grande_alpha.configuration.config import data_dir
-from grande_alpha.domain.models import Bar, BrokerOrder, OrderIntent, Quote, Signal
-from grande_alpha.domain.models import utc_now as utc_now
+from grande_alpha.domain.clock import utc_now
+from grande_alpha.domain.market_models import Bar, Quote, Signal
+from grande_alpha.domain.order_models import BrokerOrder, OrderIntent
 
 from .execution import ExecutionRepository
 from .market import MarketRepository

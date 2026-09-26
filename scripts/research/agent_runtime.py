@@ -8,7 +8,6 @@ contracts, account mapping, risk ledger, and strategy evidence before that chang
 from __future__ import annotations
 
 import asyncio
-import math
 import sqlite3
 import uuid
 from collections import deque
@@ -16,26 +15,22 @@ from collections.abc import Awaitable, Callable
 from dataclasses import asdict, replace
 from datetime import datetime, timedelta
 
-import httpx
-
-from grande_alpha.domain.models import Quote, utc_now
+from grande_alpha.domain.clock import utc_now
+from grande_alpha.domain.market_models import Quote
 from grande_alpha.domain.policy import market_session_allowed
 from grande_alpha.research.agent_analyst import (
-    AI_MAX_ANALYSIS_AGE_SECONDS,
-    AI_MAX_PRICE_DRIFT_BPS,
-    AI_REQUEST_TIMEOUT_SECONDS,
-    AnalystResponseError,
     OllamaAnalyst,
 )
 from grande_alpha.research.agent_diagnostics import completed_check_report
 from grande_alpha.research.agent_models import (
-    AgentDecision,
     AgentSettings,
     AgentSnapshot,
     AssetClass,
     Instrument,
 )
-from grande_alpha.research.agent_sources import NEWS_POLICY, REFRESH_SECONDS, ResearchSources
+from grande_alpha.research.agent_quote_screening import AgentQuoteScreening
+from grande_alpha.research.agent_source_analysis import AgentSourceAnalysis
+from grande_alpha.research.agent_sources import NEWS_POLICY, ResearchSources
 from grande_alpha.research.paper.ledger import (
     DEMO_CYCLES,
     PaperLedger,
@@ -45,7 +40,6 @@ from grande_alpha.research.paper.ledger import (
 )
 from grande_alpha.strategy.paper import (
     ADAPTIVE_POLICY,
-    HISTORY_SECONDS,
     adaptive_decision,
     limit_entries,
     pause_entries,
@@ -53,12 +47,10 @@ from grande_alpha.strategy.paper import (
 
 MARKET_WORKER_TIMEOUT_SECONDS = 35.0
 DEMO_INTERVAL_SECONDS = 1.0
-AI_TIMEOUT_SECONDS = AI_REQUEST_TIMEOUT_SECONDS
-PAPER_FOCUS_SECONDS = 120
 PAPER_SAMPLING_POLICY = "focused-quotes-v1"
 
 
-class AgentRuntime:
+class AgentRuntime(AgentSourceAnalysis, AgentQuoteScreening):
     def __init__(
         self,
         *,
@@ -115,187 +107,13 @@ class AgentRuntime:
     def adaptive_paper(self) -> bool:
         return self.continuous_paper and self.settings.paper_strategy == "adaptive"
 
-    def _source_context(self, instrument, now, settings):
-        return {**self.sources.context(instrument, now),
-                "news_required": settings.news_enabled and not self.adaptive_paper,
-                "usage": "context and headline-risk checks" if self.adaptive_paper else "entry confirmation"}
 
-    def _background(self, coroutine) -> asyncio.Task:
-        task = asyncio.create_task(coroutine)
-        owned = self._background_tasks
-        owned.add(task)
-        task.add_done_callback(owned.discard)
-        return task
 
-    async def _refresh_sources(self, symbols, settings) -> bool:
-        try:
-            await self.sources.refresh(symbols, social=settings.social_enabled,
-                                       news=settings.news_enabled)
-            return True
-        except Exception:
-            return False
 
-    def _finish_sources(self, task, generation) -> None:
-        if generation != self._generation or task is not self._source_task or not self.snapshot.running or not self._available():
-            return
-        self._source_failed = task.cancelled() or not task.result()
-        self._source_task = None
-        report = self.sources.summary()
-        refreshed = datetime.fromisoformat(report['refreshed_at']) if report.get('refreshed_at') and not self._source_failed else self._now()
-        self._source_due = max(refreshed + timedelta(seconds=REFRESH_SECONDS), self._now() + timedelta(seconds=1))
-        if self._source_failed:
-            report = {**report, "items": [], "sources": [{"source": "Research reader", "status": "Unavailable", "fresh_items": 0}]}
-        self._publish(research_sources=report, sources_loading=False)
-        self._handoff("VELA", "KADE", f"{len(report['items'])} dated items · "
-                      f"{sum(s['status'] == 'OK' for s in report['sources'])}/{len(report['sources'])} feeds available", "NEWS")
 
-    def _poll_sources(self, symbols, settings) -> None:
-        if self._source_task is None and (self._source_due is None or self._now() >= self._source_due):
-            self._source_due = self._now() + timedelta(seconds=REFRESH_SECONDS)
-            self._source_task = self._background(self._refresh_sources(symbols, settings))
-            generation = self._generation
-            self._source_task.add_done_callback(lambda task: self._finish_sources(task, generation))
-            self._publish(sources_loading=True)
 
-    async def _ask_analyst(self, settings, observations, prompts):
-        started = asyncio.get_running_loop().time()
-        proposals, error = None, ""
-        try:
-            async with asyncio.timeout(AI_TIMEOUT_SECONDS):
-                proposals = await self._analyst.analyze(settings.local_ai_model, observations, **prompts)
-            if set(proposals) != {o['key'] for o in observations} or any(
-                not isinstance(p, (tuple, list)) or len(p) != 2 or p[0] not in {'buy', 'hold', 'exit'}
-                or not isinstance(p[1], str) or not p[1].strip() for p in proposals.values()
-            ):
-                raise ValueError("Unexpected model proposals")
-        except (TimeoutError, httpx.TimeoutException):
-            error = f"AI request timed out ({AI_TIMEOUT_SECONDS:g}s maximum)"
-        except httpx.ConnectError:
-            error = "Ollama is unreachable; open the Ollama app"
-        except httpx.HTTPStatusError as exc:
-            error = f"Ollama returned HTTP {exc.response.status_code}; check the model and Ollama server log"
-        except AnalystResponseError as exc:
-            error = str(exc)
-        except (ValueError, TypeError, KeyError):
-            error = "AI returned an invalid decision format or source citation"
-        except Exception:
-            error = "AI request failed; check the Ollama server log"
-        return {"proposals": None if error else proposals, "error": error,
-                "seconds": asyncio.get_running_loop().time() - started}
 
-    def _analysis_blocker(self, original, item, job, settings):
-        """Revalidate a bounded, older analysis against the independently checked live book."""
-        now = self._now()
-        anchor = datetime.fromisoformat(original['observations'][-1]['at'])
-        age = (now - anchor).total_seconds()
-        elapsed = (now - job['started_at']).total_seconds()
-        if not 0 <= age <= AI_MAX_ANALYSIS_AGE_SECONDS or not 0 <= elapsed <= AI_MAX_ANALYSIS_AGE_SECONDS:
-            return f"AI result expired (analysis limit {AI_MAX_ANALYSIS_AGE_SECONDS:g}s)"
-        if item.instrument != job['instruments'].get(item.instrument.key):
-            return "Instrument details changed during analysis"
-        if item.quote is None or item.quote.age_seconds(now) > settings.max_quote_age_seconds:
-            return "Current quote is stale; analysis cannot be used"
-        # The current candidate already passed _inspect, including halts, spread,
-        # all book clocks and market hours. Require continuity and a newer book.
-        history = self._history.get(item.instrument.key, ())
-        if not any(at == anchor for at, _ in history) or history[-1][0] <= anchor:
-            return "Quote history changed during analysis; fresh analysis required"
-        input_ids = {a['id'] for a in (original.get('source_context') or {}).get('articles', [])}
-        current_ids = {a['id'] for a in (item.source_context or {}).get('articles', [])}
-        if not input_ids <= current_ids:
-            return "Source context changed during analysis; fresh analysis required"
-        mid = original['observations'][-1]['mid']
-        moves = [abs(value / mid - 1) * 10_000 for at, value in history if at >= anchor]
-        moves += [abs(item.quote.bid / original['bid'] - 1) * 10_000,
-                  abs(item.quote.ask / original['ask'] - 1) * 10_000]
-        drift = max(moves)
-        if not math.isfinite(drift) or drift > AI_MAX_PRICE_DRIFT_BPS:
-            return (f"Price moved {drift:.1f} bps during analysis "
-                    f"(limit {AI_MAX_PRICE_DRIFT_BPS:g} bps); fresh analysis required")
-        return ""
 
-    def _continuous_analysis(self, market, decisions, eligible, settings, observations, prompts):
-        job = self._ai_jobs.get(market)
-        proposals, inputs, result = None, {}, "Waiting for enough eligible quotes"
-        rejected, failure = False, ""
-        completed = False
-        outcome = None
-        accepted = []
-        blockers = []
-        if job and job['settings'] != settings:
-            job['task'].cancel()
-            self._ai_jobs.pop(market)
-            job = None
-        if job and job['task'].done():
-            completed = True
-            outcome = ({'proposals': None, 'error': 'AI request cancelled', 'seconds': 0.0}
-                       if job['task'].cancelled() else job['task'].result())
-            proposals, failure = outcome['proposals'], outcome['error']
-            inputs = {o['key']: o for o in job['observations']}
-            rejected = proposals is None
-            result = failure if rejected else "AI result received"
-            self._ai_jobs.pop(market)
-        output = []
-        for item in decisions:
-            if item not in eligible:
-                if completed and item.instrument.key in inputs:
-                    blockers.append(item.reason)
-                output.append(item)
-                continue
-            original = inputs.get(item.instrument.key)
-            action, reason, buy_allowed = "hold", "AI is analyzing; quote monitoring continues", not rejected
-            if rejected:
-                reason = f"AI unavailable: {failure}; quote monitoring continues"
-            if proposals is not None and original:
-                blocker = self._analysis_blocker(original, item, job, settings)
-                if not blocker:
-                    action, reason = proposals[item.instrument.key]
-                    accepted.append(action)
-                    reason += (" · Analysis quote: " + original['observations'][-1]['at']
-                               + " · Rechecked against current quote: " + item.quote.timestamp.isoformat())
-                else:
-                    buy_allowed = False
-                    reason = blocker
-                    blockers.append(blocker)
-            if self.adaptive_paper:
-                # The selected price strategy acts every quote. AI proposals are
-                # separately labeled context, never a pending/failure trade gate.
-                if proposals is not None and original and not blocker:
-                    item = replace(item, reason=item.reason + f" · AI context ({action}): " + reason)
-                output.append(item)
-            else:
-                output.append(replace(item, action=action, reason=reason, buy_allowed=buy_allowed))
-        if completed:
-            if not rejected:
-                result = (f"AI reply rechecked: {len(accepted)}/{len(inputs)} usable proposals "
-                          f"({accepted.count('buy')} buy, {accepted.count('hold')} hold, {accepted.count('exit')} exit); "
-                          "news and paper-fill checks still apply")
-                if blockers:
-                    result += " · " + blockers[0]
-                if self.adaptive_paper:
-                    result += " · Advisory only; adaptive price strategy decides paper trades"
-            last = (f"{self._now().isoformat()} · {settings.local_ai_model} · "
-                    f"request {outcome['seconds']:.1f}s · {result}")
-            self._publish(analysis_last_result={**self.snapshot.analysis_last_result, market.value: last})
-            job = None
-        # Rotate discovery after consuming this batch; immediately re-analyzing
-        # the same follow-up quotes would pin the scan to these symbols forever.
-        due = self._ai_due.get(market)
-        if job is None and eligible and not completed and (not self.adaptive_paper or due is None or self._now() >= due):
-            task = self._background(self._ask_analyst(settings, observations, prompts))
-            if self.adaptive_paper:
-                self._ai_due[market] = self._now() + timedelta(seconds=60)
-            self._ai_jobs[market] = {'task': task, 'settings': settings, 'observations': observations,
-                                    'started_at': self._now(),
-                                    'instruments': {item.instrument.key: item.instrument for item in eligible}}
-            result = f"Analyzing latest quotes · 0s / {AI_TIMEOUT_SECONDS:g}s maximum"
-        elif job:
-            elapsed = max(0, (self._now() - job['started_at']).total_seconds())
-            result = f"Analyzing latest quotes · {elapsed:.0f}s / {AI_TIMEOUT_SECONDS:g}s maximum"
-        elif self.adaptive_paper and due and not completed and eligible:
-            result = f"Next AI context in {max(0, math.ceil((due - self._now()).total_seconds()))}s; price strategy continues"
-        self._publish(analysis_status={**self.snapshot.analysis_status, market.value: result})
-        return output
 
     def _now(self) -> datetime:
         return demo_time(self.snapshot.cycle) if self.paper_source == "demo" else self._clock()
@@ -502,157 +320,9 @@ class AgentRuntime:
             if tasks:
                 await asyncio.gather(*tasks, return_exceptions=True)
 
-    @staticmethod
-    def _batch(items: list[Instrument], cycle: int) -> list[Instrument]:
-        if not items:
-            return []
-        start = ((cycle - 1) * 20) % len(items)
-        return (items + items)[start : start + min(20, len(items))]
 
-    def _paper_batch(self, items: list[Instrument], cycle: int) -> list[Instrument]:
-        if self.adaptive_paper:
-            return self._adaptive_batch(items, cycle)
-        state = self.paper.state or {}
-        keys = set(state.get('positions', {})) | set(state.get('pending', {}))
-        priority = self._batch([i for i in items if i.key in keys], cycle)
-        job = self._ai_jobs.get(items[0].asset_class) if items else None
-        analyzing = {o['key'] for o in job['observations']} if job else set()
-        followup = [i for i in items if i.key in analyzing and i.key not in keys]
-        candidates = self._batch([i for i in items if i.key not in keys | analyzing], cycle)
-        return (priority + followup + candidates)[:20]
 
-    def _adaptive_batch(self, items: list[Instrument], cycle: int) -> list[Instrument]:
-        """Keep a bounded group on every poll long enough to observe a price signal.
 
-        Rotating 20 names every poll can leave each name more than 30 seconds
-        between observations, making the adaptive breakout condition impossible.
-        Holdings and pending intents always take precedence over discovery.
-        """
-        if not items:
-            return []
-        market, now = items[0].asset_class, self._now()
-        by_key = {item.key: item for item in items}
-        state = self.paper.state or {}
-        held = set(state.get("positions", {})) | set(state.get("pending", {}))
-        priority = self._batch([item for key, item in by_key.items() if key in held], cycle)
-        slots = max(0, 20 - len(priority))
-        started, previous = self._paper_focus.get(market, (now, ()))
-        focus = [key for key in previous if key in by_key and key not in held]
-        if not focus or not 0 <= (now - started).total_seconds() < PAPER_FOCUS_SECONDS:
-            candidates = [key for key in sorted(by_key) if key not in held]
-            after = self._paper_scan_after.get(market, "")
-            start = next((i for i, key in enumerate(candidates) if key > after), 0)
-            focus = (candidates[start:] + candidates[:start])[:slots]
-            self._paper_focus[market] = (now, tuple(focus))
-            if focus:
-                self._paper_scan_after[market] = focus[-1]
-        # Resolve the saved names to this poll's metadata so new halts or
-        # restrictions are still checked, including for a pending virtual buy.
-        return priority + [by_key[key] for key in focus[:slots]]
-
-    def _inspect(
-        self, instrument: Instrument, quote: Quote | None, now: datetime, settings: AgentSettings | None = None
-    ) -> AgentDecision:
-        settings = settings or self.settings
-        if instrument.key not in self._history and len(self._history) >= 400:
-            # Discovery universes can change on every scan; cap long-running memory.
-            del self._history[next(iter(self._history))]
-        # Keep enough distinct quotes to span 60s even at the fastest supported cadence.
-        window = HISTORY_SECONDS if self.adaptive_paper else 120
-        history_size = 12 if self.paper_source == "demo" else max(12, math.ceil(window / settings.interval_seconds) + 1)
-        history = self._history.setdefault(instrument.key, deque(maxlen=history_size))
-        reason = ""
-        if instrument.crypto_rules is not None:
-            # A research buy proposal cannot override current pair restrictions.
-            reason = instrument.crypto_rules.restriction("buy", self._crypto_account_type())
-        if reason:
-            history.clear()
-            return AgentDecision(instrument, quote, "hold", reason, "Blocked", analyst=self.snapshot.analyst)
-        if quote is None:
-            reason = "Broker omitted the requested quote"
-        else:
-            try:
-                quote.validate()
-                if not math.isfinite(quote.mid) or not math.isfinite(quote.spread_bps):
-                    raise ValueError("Quote midpoint and spread must be finite")
-                if quote.symbol != instrument.symbol:
-                    raise ValueError("Quote identity does not match the candidate")
-                if instrument.asset_class == AssetClass.CRYPTO:
-                    clocks = [t for t in (quote.timestamp, quote.bid_timestamp, quote.ask_timestamp) if t is not None]
-                    timestamp, newest = min(clocks), max(clocks)
-                else:
-                    timestamp = quote.book_timestamp or quote.timestamp
-                    newest = quote.latest_book_timestamp or quote.timestamp
-                age = (now - timestamp).total_seconds()
-                if (newest - now).total_seconds() > 2:
-                    reason = "Quote timestamp is in the future"
-                elif age > settings.max_quote_age_seconds:
-                    reason = "Quote is stale"
-                elif quote.spread_bps > (
-                    settings.equity_max_spread_bps
-                    if instrument.asset_class == AssetClass.EQUITY
-                    else settings.crypto_max_spread_bps
-                ):
-                    limit = (settings.equity_max_spread_bps if instrument.asset_class == AssetClass.EQUITY
-                             else settings.crypto_max_spread_bps)
-                    reason = (f"Spread {quote.spread_bps / 100:.3f}% exceeds {limit / 100:.3f}% limit "
-                              f"(bid {quote.bid:.10g}; ask {quote.ask:.10g})")
-                elif instrument.asset_class == AssetClass.EQUITY and not market_session_allowed(
-                    now, 0, 0, "regular_hours"
-                ):
-                    reason = "Equity regular session is closed"
-                elif history and timestamp <= history[-1][0]:
-                    reason = "Waiting for a newer broker quote"
-                else:
-                    if history and (timestamp - history[-1][0]).total_seconds() > 600:
-                        history.clear()
-                    history.append((timestamp, quote.mid))
-                    if self.adaptive_paper:
-                        while len(history) > 1 and (timestamp - history[0][0]).total_seconds() > HISTORY_SECONDS:
-                            history.popleft()
-            except (ValueError, TypeError, OverflowError) as exc:
-                reason = str(exc)
-        if reason:
-            # Invalid observations break the contiguous evidence window. Repeats don't add samples.
-            if reason != "Waiting for a newer broker quote":
-                history.clear()
-            return AgentDecision(
-                instrument, quote, "hold", reason, "Blocked", len(history), analyst=self.snapshot.analyst
-            )
-        if len(history) < 4 or (history[-1][0] - history[0][0]).total_seconds() < 60:
-            return AgentDecision(
-                instrument,
-                quote,
-                "hold",
-                f"Collecting at least 4 distinct quotes spanning 60 seconds "
-                f"({len(history)} quotes, {(history[-1][0] - history[0][0]).total_seconds():.1f}s so far)",
-                "Warming up",
-                len(history),
-                analyst=self.snapshot.analyst,
-            )
-        change = (history[-1][1] / history[0][1] - 1) * 10_000
-        if not math.isfinite(change):
-            history.clear()
-            return AgentDecision(
-                instrument,
-                quote,
-                "hold",
-                "Nonfinite observed price change",
-                "Blocked",
-                analyst=self.snapshot.analyst,
-            )
-        threshold = max(20, 2 * quote.spread_bps)
-        action = "buy" if change > threshold else "exit" if change < -threshold else "hold"
-        return AgentDecision(
-            instrument,
-            quote,
-            action,
-            f"Observed midpoint change {change:+.1f} bps; research threshold {threshold:.1f} bps",
-            "Data checks passed",
-            len(history),
-            change,
-            self.snapshot.analyst,
-        )
 
     def set_brief(self, market: str, brief: str) -> None:
         field = {"team": "research_brief", "equity": "equity_brief", "crypto": "crypto_brief"}.get(market)

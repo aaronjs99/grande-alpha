@@ -7,7 +7,8 @@ from datetime import datetime
 
 from grande_alpha.broker import RobinhoodMCPBroker
 from grande_alpha.broker.base import Broker, BrokerError, ReadOnlyBroker, order_is_terminal
-from grande_alpha.domain.models import Quote, utc_now
+from grande_alpha.domain.clock import utc_now
+from grande_alpha.domain.market_models import Quote
 
 REQUIRED_QUOTE_SYMBOLS = ("QQQ", "TQQQ", "SQQQ")
 DEFAULT_MAX_QUOTE_AGE_SECONDS = 8.0

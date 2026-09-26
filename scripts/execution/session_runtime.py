@@ -12,8 +12,8 @@ from grande_alpha.broker.base import order_is_terminal
 from grande_alpha.configuration.config import data_dir
 from grande_alpha.data.earnings_feed import AlphaVantageEarningsClient, EarningsObservationStore, load_api_key
 from grande_alpha.data.live_data import LiveDataService
+from grande_alpha.domain.clock import utc_now
 from grande_alpha.domain.market_calendar import regular_session_times
-from grande_alpha.domain.models import utc_now
 from grande_alpha.execution.authorization import (
     UserAuthorizationGate,
     create_authorization,

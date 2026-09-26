@@ -10,7 +10,7 @@ from .base import Repository
 class ShadowRepository(Repository):
     @staticmethod
     def _decode_shadow_checkpoint(row: sqlite3.Row) -> dict[str, Any]:
-        from grande_alpha.strategy.shadow import validate_shadow_checkpoint
+        from grande_alpha.strategy.shadow_state import validate_shadow_checkpoint
 
         try:
             checkpoint = json.loads(str(row["checkpoint_json"]))
@@ -37,7 +37,7 @@ class ShadowRepository(Repository):
     def append_shadow_checkpoint(self, checkpoint: dict[str, Any]) -> None:
         """Atomically append one immutable checkpoint to a run's hash chain."""
 
-        from grande_alpha.strategy.shadow import validate_shadow_checkpoint
+        from grande_alpha.strategy.shadow_state import validate_shadow_checkpoint
 
         validate_shadow_checkpoint(checkpoint)
         run_id = str(checkpoint["run_id"])

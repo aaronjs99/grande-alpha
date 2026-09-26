@@ -8,7 +8,7 @@ from datetime import datetime
 from enum import StrEnum
 
 from grande_alpha.domain.crypto_models import CryptoPairRules
-from grande_alpha.domain.models import Quote
+from grande_alpha.domain.market_models import Quote
 
 MAX_PAPER_POSITIONS = 4
 MAX_PAPER_EXPOSURE_PCT = 40

@@ -19,8 +19,8 @@ from datetime import timedelta
 from decimal import ROUND_DOWN, Decimal
 
 from grande_alpha.broker.base import order_is_terminal
+from grande_alpha.domain.clock import utc_now
 from grande_alpha.domain.market_calendar import regular_session_times
-from grande_alpha.domain.models import utc_now
 from grande_alpha.execution.equity_execution import EquityOrderIntent, EquityScope, assess_ticket
 from grande_alpha.execution.read_retry import read_with_backoff
 from grande_alpha.research.portfolio_replay import EASTERN

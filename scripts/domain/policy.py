@@ -5,7 +5,7 @@ from datetime import date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
 from grande_alpha.domain.market_calendar import REGULAR_OPEN, regular_session_times
-from grande_alpha.domain.models import Regime, Signal
+from grande_alpha.domain.market_models import Regime, Signal
 
 EASTERN = ZoneInfo("America/New_York")
 

@@ -9,7 +9,7 @@ import threading
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from grande_alpha.domain.models import BrokerOrder
+from grande_alpha.domain.order_models import BrokerOrder
 from grande_alpha.execution.equity_execution import EquityOrderIntent
 
 EQUITY_SCHEMA = """

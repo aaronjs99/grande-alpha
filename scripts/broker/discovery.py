@@ -11,7 +11,7 @@ from typing import Any
 
 from grande_alpha.broker.base import BrokerError
 from grande_alpha.domain.crypto_models import CryptoPairRules, CryptoQuote, decimal_amount
-from grande_alpha.domain.models import Quote
+from grande_alpha.domain.market_models import Quote
 from grande_alpha.research.agent_models import AssetClass, Instrument, parse_symbols
 
 ReadCall = Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]]
@@ -44,7 +44,7 @@ class RobinhoodDiscovery:
         return await self._read(name, arguments)
 
     async def _pages(self, name: str, arguments: dict, *keys: str) -> list[dict]:
-        from grande_alpha.broker.robinhood_mcp import _next_cursor
+        from grande_alpha.broker.robinhood_contract import _next_cursor
 
         rows: list[dict] = []
         cursors: set[str] = set()
@@ -63,7 +63,7 @@ class RobinhoodDiscovery:
         raise BrokerError("Discovery pagination exceeded the ten-page limit")
 
     async def currency_pairs(self) -> list[Instrument]:
-        from grande_alpha.broker.robinhood_mcp import _required_bool, _required_text
+        from grande_alpha.broker.robinhood_contract import _required_bool, _required_text
 
         rows = await self._pages("get_currency_pairs", {"limit": 200}, "results")
         pairs: list[Instrument] = []
@@ -111,7 +111,7 @@ class RobinhoodDiscovery:
         return sorted(pairs, key=lambda item: item.symbol)
 
     async def scans(self) -> list[tuple[str, str]]:
-        from grande_alpha.broker.robinhood_mcp import _required_text
+        from grande_alpha.broker.robinhood_contract import _required_text
 
         rows = await self._pages("get_scans", {}, "scans")
         return [
@@ -123,7 +123,7 @@ class RobinhoodDiscovery:
         ]
 
     async def scan(self, scan_id: str) -> list[Instrument]:
-        from grande_alpha.broker.robinhood_mcp import _required_text
+        from grande_alpha.broker.robinhood_contract import _required_text
 
         data = await self._call("run_scan", {"scan_id": scan_id})
         result = data.get("result")
@@ -146,7 +146,7 @@ class RobinhoodDiscovery:
         return [Instrument(AssetClass.EQUITY, s, source="Robinhood saved scan") for s in symbols]
 
     async def crypto_quotes(self, instruments: list[Instrument], *, rhs_account_number: str = "") -> dict[str, Quote]:
-        from grande_alpha.broker.robinhood_mcp import (
+        from grande_alpha.broker.robinhood_contract import (
             _required_datetime,
             _required_number,
             _required_text,

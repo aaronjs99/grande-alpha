@@ -9,14 +9,15 @@ development launcher; the command line and desktop entrypoints are `grande-alpha
 
 | Responsibility | Main modules | Boundary |
 |---|---|---|
-| Broker transport | `broker/robinhood_mcp.py`, `broker/permissions.py` | One MCP session owner; typed account, quote, review, order, and cancellation operations |
-| Market and earnings inputs | `data/live_data.py`, `data/earnings_feed.py`, `domain/market_calendar.py` | Fresh broker observations and timestamped earnings facts; missing facts do not become inferred trades |
-| Strategy and replay | `strategy/`, `data/earnings.py`, `research/` | Deterministic signals and simulation; research results do not authorize orders |
+| Broker access | `broker/robinhood_mcp.py`, `broker/robinhood_transport.py`, `broker/robinhood_contract.py`, `broker/permissions.py` | Typed broker operations are separate from MCP session ownership and response-contract parsing |
+| Domain records | `domain/market_models.py`, `domain/account_models.py`, `domain/order_models.py`, `domain/authorization_models.py`, `domain/crypto_models.py` | Market observations, account snapshots, order records, and authority records have separate validation boundaries |
+| Market and earnings inputs | `data/live_data.py`, `data/earnings_feed.py`, `data/dataset_manifest.py`, `data/csv_inspection.py`, `research/historical_source.py`, `research/historical_storage.py`, `domain/market_calendar.py` | Fresh broker observations and timestamped earnings facts; imported-data provenance is handled separately |
+| Strategy and replay | `strategy/`, `data/earnings.py`, `research/sandbox_models.py`, `research/bar_replay.py`, `research/runtime_replay.py`, `research/runtime_trace.py`, `research/evidence_replay.py`, `research/evidence_statistics.py` | Deterministic signals and simulation; research results do not authorize orders |
 | Mixed execution | `execution/mixed_engine.py`, `execution/equity_execution.py`, `execution/equity_ledger.py` | Exact-scope permit, limits, one durable reference per intent, fill reconciliation, and stop state |
-| Persistence | `persistence/`, `execution/authorization.py` | Local SQLite records and credential-store-backed approval; unresolved records survive restart |
-| Research agent | `research/agent_runtime.py`, `research/agent_analyst.py`, `research/agent_bridge.py`, `research/agent_mcp.py` | Concurrent equity/crypto research, optional local AI, and a separate per-session MCP mailbox; no broker-write tools |
+| Persistence | `persistence/`, `persistence/execution_authority.py`, `persistence/execution_orders.py`, `persistence/execution_risk.py`, `execution/authorization.py` | Focused records share one SQLite transaction manager where authorization, orders, fills, and daily risk must remain consistent |
+| Research agent | `research/agent_runtime.py`, `research/agent_source_analysis.py`, `research/agent_quote_screening.py`, `research/agent_analyst.py`, `research/agent_bridge.py`, `research/agent_mcp.py` | The coordinator delegates source analysis and quote screening; optional AI remains research-only with a separate per-session MCP mailbox |
 | Local worker controls | `execution/session_worker.py`, `execution/worker_control.py`, `execution/worker_ipc.py`, `execution/worker_process.py` | User-started hidden mixed worker and authenticated local controls; installed and provider acceptance remain outstanding |
-| Interfaces | `cli.py`, `interfaces/cli/`, `app.py`, `ui/session_window.py` | CLI prompts and output stay in interface adapters; desktop and CLI control the same mixed worker |
+| Interfaces | `cli.py`, `interfaces/cli/`, `app.py`, `ui/session_window.py`, `ui/session_panels.py`, `ui/session_setup.py`, `ui/session_status.py`, `ui/session_lifecycle.py` | CLI prompts and output stay in interface adapters; the desktop composes focused setup, status, panel, and exit components |
 
 The desktop and CLI use one user-owned hidden worker. Attended ETF and live-shadow modes were
 retired; historical research and offline replay records remain. Source checks do not establish an

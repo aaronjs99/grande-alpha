@@ -15,7 +15,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import ROUND_DOWN, Decimal
 from pathlib import Path
 
-from grande_alpha.domain.models import Quote
+from grande_alpha.domain.market_models import Quote
 from grande_alpha.research.agent_models import AgentDecision, AssetClass, Instrument
 
 DEMO_CYCLES = 24

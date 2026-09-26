@@ -3,7 +3,7 @@ from __future__ import annotations
 import math
 import uuid
 
-from grande_alpha.domain.models import Bar, Quote, Signal
+from grande_alpha.domain.market_models import Bar, Quote, Signal
 
 from .base import Repository
 

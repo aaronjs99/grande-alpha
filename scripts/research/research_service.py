@@ -9,22 +9,25 @@ from grande_alpha.research.evidence import (
     FINAL_HOLDOUT_SESSIONS,
     MIN_TOTAL_EVIDENCE_SESSIONS,
     PromotionReport,
-    RandomControl,
     SensitivityPoint,
     WalkForwardResult,
     candidate_grid,
-    cost_stress,
-    cost_stressed_config,
-    forced_flatten_count,
     parameter_sweep,
     promotion_report,
-    random_entry_control,
     strategy_fingerprint,
     tested_risk_envelope,
     walk_forward,
 )
+from grande_alpha.research.evidence_statistics import (
+    RandomControl,
+    cost_stress,
+    cost_stressed_config,
+    forced_flatten_count,
+    random_entry_control,
+)
 from grande_alpha.research.historical import HistoricalBundle, split_final_holdout
-from grande_alpha.research.sandbox import SandboxConfig, SandboxReplayRunner, SandboxResult
+from grande_alpha.research.sandbox import SandboxReplayRunner
+from grande_alpha.research.sandbox_models import SandboxConfig, SandboxResult
 
 
 @dataclass(frozen=True)

@@ -5,7 +5,8 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from grande_alpha.broker.base import normalized_order_state, order_is_terminal
-from grande_alpha.domain.models import BrokerOrder, Position
+from grande_alpha.domain.account_models import Position
+from grande_alpha.domain.order_models import BrokerOrder
 
 
 @dataclass

@@ -8,7 +8,8 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime
 from decimal import Decimal, InvalidOperation, localcontext
 
-from grande_alpha.domain.models import Quote
+from grande_alpha.domain.clock import utc_now
+from grande_alpha.domain.market_models import Quote
 
 
 def decimal_amount(value, field: str, *, positive: bool = False) -> Decimal:
@@ -87,8 +88,6 @@ class CryptoQuote(Quote):
                 raise ValueError("Crypto book timestamp must be timezone-aware")
 
     def age_seconds(self, now: datetime | None = None) -> float:
-        from grande_alpha.domain.models import utc_now
-
         oldest = min(t for t in (self.timestamp, self.bid_timestamp, self.ask_timestamp) if t is not None)
         return max(0.0, ((now or utc_now()) - oldest).total_seconds())
 
