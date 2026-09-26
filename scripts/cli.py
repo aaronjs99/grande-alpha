@@ -120,19 +120,20 @@ def command_session_run(args: argparse.Namespace) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    from grande_alpha.data.earnings import command_screen, command_template
-    from grande_alpha.data.earnings_feed import (
-        command_fetch,
-        command_import_event,
-        command_key_delete,
-        command_key_set,
-        command_key_status,
-        command_normalize_fact,
-        command_record_fact,
-        command_verify_event,
-    )
     from grande_alpha.desktop.device_notifications import command_notifications
     from grande_alpha.interfaces.cli.broker_cli import command_engine_inspect
+    from grande_alpha.interfaces.cli.earnings_commands import (
+        command_earnings_fetch,
+        command_earnings_import_event,
+        command_earnings_key_delete,
+        command_earnings_key_set,
+        command_earnings_key_status,
+        command_earnings_normalize_fact,
+        command_earnings_record_fact,
+        command_earnings_screen,
+        command_earnings_template,
+        command_earnings_verify_event,
+    )
     from grande_alpha.interfaces.cli.worker_cli import (
         command_candidate_template,
         command_research_mcp,
@@ -250,12 +251,12 @@ def build_parser() -> argparse.ArgumentParser:
     earnings_template = earnings_commands.add_parser(
         "template", help="Print the unfilled earnings research schema"
     )
-    earnings_template.set_defaults(func=command_template)
+    earnings_template.set_defaults(func=command_earnings_template)
     earnings_screen = earnings_commands.add_parser(
         "screen", help="Screen supplied events; not a backtest or trading signal"
     )
     earnings_screen.add_argument("--input", required=True)
-    earnings_screen.set_defaults(func=command_screen)
+    earnings_screen.set_defaults(func=command_earnings_screen)
     earnings_fetch = earnings_commands.add_parser(
         "fetch", help="Capture one raw Alpha Vantage earnings response"
     )
@@ -264,21 +265,21 @@ def build_parser() -> argparse.ArgumentParser:
     earnings_fetch.add_argument("--dataset", choices=("EARNINGS", "EARNINGS_ESTIMATES"), required=True)
     earnings_fetch.add_argument("--cache-hours", type=float, default=12.0)
     earnings_fetch.add_argument("--max-requests-24h", type=int, default=25)
-    earnings_fetch.set_defaults(func=command_fetch)
+    earnings_fetch.set_defaults(func=command_earnings_fetch)
     earnings_key_set = earnings_commands.add_parser("key-set", help="Store the API key with a hidden prompt")
-    earnings_key_set.set_defaults(func=command_key_set)
+    earnings_key_set.set_defaults(func=command_earnings_key_set)
     earnings_key_status = earnings_commands.add_parser(
         "key-status", help="Report key presence without printing it"
     )
-    earnings_key_status.set_defaults(func=command_key_status)
+    earnings_key_status.set_defaults(func=command_earnings_key_status)
     earnings_key_delete = earnings_commands.add_parser("key-delete", help="Remove the stored API key")
-    earnings_key_delete.set_defaults(func=command_key_delete)
+    earnings_key_delete.set_defaults(func=command_earnings_key_delete)
     earnings_fact = earnings_commands.add_parser(
         "record-fact", help="Bind one normalized fact to a raw response"
     )
     earnings_fact.add_argument("--database", required=True)
     earnings_fact.add_argument("--input", required=True)
-    earnings_fact.set_defaults(func=command_record_fact)
+    earnings_fact.set_defaults(func=command_earnings_record_fact)
     earnings_normalize = earnings_commands.add_parser(
         "normalize", help="Extract one exact quarterly EPS fact from a stored raw response"
     )
@@ -290,19 +291,19 @@ def build_parser() -> argparse.ArgumentParser:
     )
     earnings_normalize.add_argument("--basis", required=True, help="Explicit accounting/estimate basis label")
     earnings_normalize.add_argument("--currency", required=True)
-    earnings_normalize.set_defaults(func=command_normalize_fact)
+    earnings_normalize.set_defaults(func=command_earnings_normalize_fact)
     earnings_verify = earnings_commands.add_parser(
         "verify-event", help="Verify an event against stored provider facts"
     )
     earnings_verify.add_argument("--database", required=True)
     earnings_verify.add_argument("--input", required=True)
-    earnings_verify.set_defaults(func=command_verify_event)
+    earnings_verify.set_defaults(func=command_earnings_verify_event)
     earnings_import = earnings_commands.add_parser(
         "import-event", help="Store a provider-verified earnings event"
     )
     earnings_import.add_argument("--database", required=True)
     earnings_import.add_argument("--input", required=True)
-    earnings_import.set_defaults(func=command_import_event)
+    earnings_import.set_defaults(func=command_earnings_import_event)
 
     engine_commands = session_commands
     qualification = research_commands.add_parser("qualification-check", help="Check a historical certificate")

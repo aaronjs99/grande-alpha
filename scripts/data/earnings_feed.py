@@ -6,8 +6,6 @@ never relabeled as a pre-report consensus snapshot.
 
 from __future__ import annotations
 
-import asyncio
-import getpass
 import hashlib
 import json
 import math
@@ -18,7 +16,6 @@ from pathlib import Path
 
 import httpx
 
-from grande_alpha.configuration.json_inputs import load_json
 from grande_alpha.execution.equity_execution import symbol_valid
 
 KEYRING_SERVICE = "GRANDE Alpha"
@@ -35,6 +32,25 @@ def load_api_key() -> tuple[str, str]:
     if value:
         return value, "windows_credential_manager"
     raise RuntimeError("No Alpha Vantage key is configured")
+
+
+def store_api_key(value: str) -> None:
+    value = value.strip()
+    if not value.isalnum() or not 8 <= len(value) <= 128:
+        raise ValueError("API key must be 8-128 letters or digits")
+    import keyring
+
+    keyring.set_password(KEYRING_SERVICE, KEYRING_ACCOUNT, value)
+
+
+def delete_api_key() -> None:
+    import keyring
+    from keyring.errors import PasswordDeleteError
+
+    try:
+        keyring.delete_password(KEYRING_SERVICE, KEYRING_ACCOUNT)
+    except PasswordDeleteError:
+        pass
 
 
 class AlphaVantageEarningsClient:
@@ -104,7 +120,7 @@ class EarningsObservationStore:
                 );
             """)
 
-    def close(self):
+    def close(self) -> None:
         self.db.close()
 
     def cached_observation(self, symbol: str, dataset: str, *, now: datetime,
@@ -417,96 +433,3 @@ class EarningsObservationStore:
                 events.append(event)
                 seen.add(event["symbol"])
         return events
-
-
-def command_fetch(args) -> int:
-    api_key, _source = load_api_key()
-    store = EarningsObservationStore(Path(args.database))
-    try:
-        observation, cached, remaining = asyncio.run(
-            store.fetch_cached(AlphaVantageEarningsClient(api_key), args.symbol, args.dataset,
-                               cache_age=timedelta(hours=args.cache_hours),
-                               max_requests_per_24h=args.max_requests_24h)
-        )
-    finally:
-        store.close()
-    print(json.dumps({**{key: observation[key] for key in observation if key != "payload"},
-                      "cached": cached, "remaining_local_requests_24h": remaining}, indent=2))
-    return 0
-
-
-def command_key_set(args) -> int:
-    value = getpass.getpass("Alpha Vantage API key (hidden): ").strip()
-    if not value.isalnum() or not 8 <= len(value) <= 128:
-        raise ValueError("API key must be 8-128 letters or digits")
-    import keyring
-
-    keyring.set_password(KEYRING_SERVICE, KEYRING_ACCOUNT, value)
-    print(json.dumps({"configured": True, "storage": "windows_credential_manager"}, indent=2))
-    return 0
-
-
-def command_key_status(args) -> int:
-    try:
-        _value, source = load_api_key()
-    except RuntimeError:
-        print(json.dumps({"configured": False}, indent=2))
-        return 2
-    print(json.dumps({"configured": True, "source": source}, indent=2))
-    return 0
-
-
-def command_key_delete(args) -> int:
-    import keyring
-    from keyring.errors import PasswordDeleteError
-
-    try:
-        keyring.delete_password(KEYRING_SERVICE, KEYRING_ACCOUNT)
-    except PasswordDeleteError:
-        pass
-    print(json.dumps({"configured_in_credential_manager": False}, indent=2))
-    return 0
-
-
-def command_record_fact(args) -> int:
-    fact = load_json(Path(args.input), max_bytes=64_000)
-    store = EarningsObservationStore(Path(args.database))
-    try:
-        digest = store.record_fact(fact)
-    finally:
-        store.close()
-    print(json.dumps({"recorded": True, "fact_sha256": digest}, indent=2))
-    return 0
-
-
-def command_normalize_fact(args) -> int:
-    store = EarningsObservationStore(Path(args.database))
-    try:
-        digest = store.normalize_fact(args.source_sha, kind=args.kind, fiscal_period=args.period,
-                                      basis=args.basis, currency=args.currency)
-    finally:
-        store.close()
-    print(json.dumps({"recorded": True, "fact_sha256": digest}, indent=2))
-    return 0
-
-
-def command_verify_event(args) -> int:
-    event = load_json(Path(args.input), max_bytes=128_000)
-    store = EarningsObservationStore(Path(args.database))
-    try:
-        verified = store.verify_event(event)
-    finally:
-        store.close()
-    print(json.dumps({"verified": verified, "authority_granted": False}, indent=2))
-    return 0 if verified else 2
-
-
-def command_import_event(args) -> int:
-    event = load_json(Path(args.input), max_bytes=128_000)
-    store = EarningsObservationStore(Path(args.database))
-    try:
-        store.record_event(event)
-    finally:
-        store.close()
-    print(json.dumps({"stored": True, "event_id": event["event_id"]}, indent=2))
-    return 0

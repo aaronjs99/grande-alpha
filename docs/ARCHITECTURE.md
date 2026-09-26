@@ -16,7 +16,7 @@ development launcher; the command line and desktop entrypoints are `grande-alpha
 | Persistence | `persistence/`, `execution/authorization.py` | Local SQLite records and credential-store-backed approval; unresolved records survive restart |
 | Research agent | `research/agent_runtime.py`, `research/agent_analyst.py`, `research/agent_bridge.py`, `research/agent_mcp.py` | Concurrent equity/crypto research, optional local AI, and a separate per-session MCP mailbox; no broker-write tools |
 | Local worker controls | `execution/session_worker.py`, `execution/worker_control.py`, `execution/worker_ipc.py`, `execution/worker_process.py` | User-started hidden mixed worker and authenticated local controls; installed and provider acceptance remain outstanding |
-| Interfaces | `cli.py`, `interfaces/cli/`, `app.py`, `ui/session_window.py` | Desktop and CLI control the same mixed worker |
+| Interfaces | `cli.py`, `interfaces/cli/`, `app.py`, `ui/session_window.py` | CLI prompts and output stay in interface adapters; desktop and CLI control the same mixed worker |
 
 The desktop and CLI use one user-owned hidden worker. Attended ETF and live-shadow modes were
 retired; historical research and offline replay records remain. Source checks do not establish an

@@ -7,10 +7,7 @@ import json
 import math
 import re
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import Any
-
-from grande_alpha.configuration.json_inputs import load_json
 
 SCHEMA_VERSION = 1
 LIMITS = {
@@ -199,14 +196,3 @@ def screen(payload: Any) -> dict[str, Any]:
         "backtest_performed": False,
         "results": results,
     }
-
-
-def command_screen(args: Any) -> int:
-    result = screen(load_json(Path(args.input), max_bytes=5_000_000))
-    print(json.dumps(result, indent=2, allow_nan=False))
-    return 2 if any(row["status"] == "INVALID_INPUT" for row in result["results"]) else 0
-
-
-def command_template(args: Any) -> int:
-    print(json.dumps(template(), indent=2))
-    return 0
