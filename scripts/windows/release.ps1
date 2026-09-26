@@ -60,6 +60,11 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "Could not install modern setuptools in the release runtime" }
     & $RuntimePython -m pip install --disable-pip-version-check --no-input $WheelCandidates[0].FullName
     if ($LASTEXITCODE -ne 0) { throw "Could not install the verified wheel in the release runtime" }
+    $InstalledVersion = (& $RuntimePython -c `
+        "from importlib.metadata import version; print(version('grande-alpha'))").Trim()
+    if ($LASTEXITCODE -ne 0 -or $InstalledVersion -ne $Version) {
+        throw "The release runtime wheel version does not match the source version $Version"
+    }
     $SetuptoolsVersion = (& $RuntimePython -c `
         "from importlib.metadata import version; print(version('setuptools'))").Trim()
     if ($LASTEXITCODE -ne 0 -or -not $SetuptoolsVersion) {
@@ -194,10 +199,18 @@ if ($SbomText -match '(?i)file:/{2,3}|[A-Za-z]:\\Users\\') {
     throw "Refusing to publish an SBOM containing a local workstation path"
 }
 $Sbom = $SbomText | ConvertFrom-Json
-$OwnComponents = @(
-    @($Sbom.metadata.component) + @($Sbom.components) |
-        Where-Object { $_.name -eq 'grande-alpha' }
-)
+$RootComponent = $Sbom.metadata.component
+if (-not $RootComponent -or $RootComponent.name -ne 'grande-alpha' -or
+    $RootComponent.type -ne 'application') {
+    throw "Runtime SBOM must identify GRANDE Alpha as its root application"
+}
+# CycloneDX cannot resolve setuptools' dynamic version from pyproject.toml. Use the version
+# read from the wheel installed in the isolated runtime, and verify it against the source above.
+$RootComponent.version = $InstalledVersion
+$SbomText = ConvertTo-Json -InputObject $Sbom -Depth 100
+Set-Content -LiteralPath $SbomPath -Value $SbomText -Encoding utf8
+$Sbom = $SbomText | ConvertFrom-Json
+$OwnComponents = @($Sbom.metadata.component)
 $SetuptoolsComponents = @(
     @($Sbom.components) |
         Where-Object { $_.name -eq 'setuptools' }

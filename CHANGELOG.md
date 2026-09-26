@@ -7,6 +7,8 @@
   execution, and strategy code.
 - Kept the local notification inbox command with the other records commands and removed its
   unused terminal-delivery helper. Documented how to read and acknowledge inbox entries.
+- Fixed Windows release SBOM versioning by taking the application version from the isolated
+  installed wheel when CycloneDX leaves the dynamic project version unset.
 - Integrated Antonio's multi-market research runtime, adaptive virtual-paper strategy and durable
   paper journal into the existing single worker. The desktop can start a paper session with
   user-entered virtual amounts; research MCP exposes the same paper-only operations.
