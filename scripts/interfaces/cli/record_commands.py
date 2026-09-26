@@ -111,3 +111,20 @@ def command_receipts(args: argparse.Namespace) -> int:
         return 0
     finally:
         store.close()
+
+
+def command_notifications(args: argparse.Namespace) -> int:
+    """Read or acknowledge the local notification inbox."""
+    store = AuditStore()
+    try:
+        if args.ack is not None:
+            store.acknowledge_notification(args.ack)
+        notifications = store.device_notifications(
+            after_id=args.after,
+            limit=args.limit,
+            unread_only=args.unread,
+        )
+        print(json.dumps(notifications, indent=2))
+        return 0
+    finally:
+        store.close()

@@ -21,7 +21,12 @@ from grande_alpha.interfaces.cli.data_commands import (
     command_data_runtime_trace_audit,
     command_data_runtime_trace_manifest_template,
 )
-from grande_alpha.interfaces.cli.record_commands import command_receipts, command_runs, command_status
+from grande_alpha.interfaces.cli.record_commands import (
+    command_notifications,
+    command_receipts,
+    command_runs,
+    command_status,
+)
 from grande_alpha.interfaces.cli.research_commands import (
     command_evidence_run,
     command_evidence_show,
@@ -120,7 +125,6 @@ def command_session_run(args: argparse.Namespace) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    from grande_alpha.desktop.device_notifications import command_notifications
     from grande_alpha.interfaces.cli.broker_cli import command_engine_inspect
     from grande_alpha.interfaces.cli.earnings_commands import (
         command_earnings_fetch,
