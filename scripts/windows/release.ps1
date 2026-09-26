@@ -206,7 +206,7 @@ if (-not $RootComponent -or $RootComponent.name -ne 'grande-alpha' -or
 }
 # CycloneDX cannot resolve setuptools' dynamic version from pyproject.toml. Use the version
 # read from the wheel installed in the isolated runtime, and verify it against the source above.
-$RootComponent.version = $InstalledVersion
+$RootComponent | Add-Member -MemberType NoteProperty -Name version -Value $InstalledVersion -Force
 $SbomText = ConvertTo-Json -InputObject $Sbom -Depth 100
 Set-Content -LiteralPath $SbomPath -Value $SbomText -Encoding utf8
 $Sbom = $SbomText | ConvertFrom-Json
