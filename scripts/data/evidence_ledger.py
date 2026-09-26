@@ -4,7 +4,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-from grande_alpha.research.evidence import EVIDENCE_POLICY_VERSION
+from grande_alpha.research.evidence_contract import EVIDENCE_POLICY_VERSION
 from grande_alpha.research.historical import RUNTIME_REQUIRED_SYMBOLS
 
 

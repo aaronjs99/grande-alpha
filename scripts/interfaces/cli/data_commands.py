@@ -27,10 +27,8 @@ from grande_alpha.research.historical import (
     RUNTIME_VOLUME_SEMANTICS,
     HistoricalBundle,
 )
-from grande_alpha.research.runtime_trace import (
-    load_runtime_quote_trace_with_row_count,
-    runtime_trace_manifest_template,
-)
+from grande_alpha.research.runtime_trace import load_runtime_quote_trace_with_row_count
+from grande_alpha.research.runtime_trace_provenance import runtime_trace_manifest_template
 
 
 def _load_json_object(path: Path | None, label: str) -> dict[str, Any] | None:

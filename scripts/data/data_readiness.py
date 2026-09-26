@@ -23,7 +23,10 @@ from grande_alpha.data.dataset_manifest import (
 )
 from grande_alpha.domain.clock import utc_now
 from grande_alpha.domain.policy import session_key
-from grande_alpha.research.evidence import MIN_EVIDENCE_SESSIONS, MIN_TOTAL_EVIDENCE_SESSIONS
+from grande_alpha.research.evidence_contract import (
+    MIN_EVIDENCE_SESSIONS,
+    MIN_TOTAL_EVIDENCE_SESSIONS,
+)
 from grande_alpha.research.historical import (
     RUNTIME_REQUIRED_SYMBOLS,
     HistoricalBundle,

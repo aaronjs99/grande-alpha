@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 
 from grande_alpha.persistence.store import AuditStore
-from grande_alpha.research.evidence import (
+from grande_alpha.research.evidence_contract import (
     EVIDENCE_POLICY_VERSION,
     FINAL_HOLDOUT_PURGE_SESSIONS,
     FINAL_HOLDOUT_SESSIONS,
@@ -11,13 +11,11 @@ from grande_alpha.research.evidence import (
     PromotionReport,
     SensitivityPoint,
     WalkForwardResult,
-    candidate_grid,
-    parameter_sweep,
-    promotion_report,
     strategy_fingerprint,
     tested_risk_envelope,
-    walk_forward,
 )
+from grande_alpha.research.evidence_promotion import promotion_report
+from grande_alpha.research.evidence_search import candidate_grid, parameter_sweep, walk_forward
 from grande_alpha.research.evidence_statistics import (
     RandomControl,
     cost_stress,
