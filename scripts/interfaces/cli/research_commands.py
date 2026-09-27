@@ -14,6 +14,7 @@ from grande_alpha.domain.product import PRODUCT_PLANS, configured_upgrade_url, c
 from grande_alpha.domain.terminology import TERM_HELP
 from grande_alpha.interfaces.cli.cli_table import format_table
 from grande_alpha.interfaces.cli.data_commands import _load_json_object, _runtime_trace_readiness
+from grande_alpha.interfaces.cli.parser_common import output_options, source_options
 from grande_alpha.interfaces.cli.render import print_json as _json
 from grande_alpha.interfaces.cli.render import sandbox_metric_rows as _sandbox_metric_rows
 from grande_alpha.persistence.store import AuditStore
@@ -28,6 +29,73 @@ from grande_alpha.research.research_service import run_evidence_lab
 from grande_alpha.research.runtime_trace import load_runtime_quote_trace_with_row_count
 from grande_alpha.research.sandbox import load_sandbox_config
 from grande_alpha.research.sandbox_models import SandboxConfig
+
+
+def add_research_commands(root_commands) -> None:
+    from grande_alpha.interfaces.cli.worker_cli import add_research_mcp_command
+    from grande_alpha.research.portfolio_replay import command_replay as command_portfolio_replay
+    from grande_alpha.research.qualification import command_qualification_check
+    from grande_alpha.research.qualification_evidence import (
+        command_forward_append,
+        command_forward_report,
+        command_replay_report,
+    )
+    from grande_alpha.strategy.mixed_portfolio import command_plan
+    from grande_alpha.strategy.mixed_portfolio import command_template as mixed_template
+
+    research = root_commands.add_parser("research", help="Replay and evidence tools; no broker orders")
+    commands = research.add_subparsers(dest="research_command", required=True)
+    add_research_mcp_command(commands)
+
+    portfolio = commands.add_parser("portfolio", help="Broker-isolated mixed-allocation research")
+    portfolio_commands = portfolio.add_subparsers(dest="portfolio_command", required=True)
+    template = portfolio_commands.add_parser("template", help="Mixed-portfolio research input template")
+    template.set_defaults(func=mixed_template)
+    plan = portfolio_commands.add_parser("plan", help="Compute research targets; never orders")
+    plan.add_argument("--input", required=True)
+    plan.set_defaults(func=command_plan)
+    replay = portfolio_commands.add_parser("replay", help="Causal multi-day paper accounting; no broker orders")
+    replay.add_argument("--input", required=True)
+    replay.set_defaults(func=command_portfolio_replay)
+    replay_report = portfolio_commands.add_parser("replay-report", help="Compact cost-inclusive evidence report")
+    replay_report.add_argument("--input", required=True)
+    replay_report.set_defaults(func=command_replay_report)
+    forward_append = portfolio_commands.add_parser("forward-append", help="Append a near-real-time paper frame")
+    forward_append.add_argument("--database", required=True)
+    forward_append.add_argument("--input", required=True)
+    forward_append.set_defaults(func=command_forward_append)
+    forward_report = portfolio_commands.add_parser("forward-report", help="Replay append-only forward frames")
+    forward_report.add_argument("--database", required=True)
+    forward_report.add_argument("--settings", required=True)
+    forward_report.set_defaults(func=command_forward_report)
+
+    qualification = commands.add_parser("qualification-check", help="Check a historical certificate")
+    qualification.add_argument("--certificate", required=True)
+    qualification.add_argument("--candidate-digest", required=True)
+    qualification.set_defaults(func=command_qualification_check)
+
+    evidence = commands.add_parser("evidence", help="Show or run the exact Evidence Lab gate table")
+    evidence_commands = evidence.add_subparsers(dest="evidence_command", required=True)
+    evidence_show = evidence_commands.add_parser("show", help="Show a saved evidence receipt")
+    evidence_show.add_argument("--id", type=int, help="Promotion receipt ID; default is latest")
+    evidence_show.add_argument("--failures-only", action="store_true")
+    output_options(evidence_show, compact=True)
+    evidence_show.set_defaults(func=command_evidence_show)
+
+    evidence_run = evidence_commands.add_parser("run", help="Run and record the shared evidence pipeline")
+    source_options(evidence_run, allow_runtime_trace=True)
+    evidence_run.add_argument("--failures-only", action="store_true")
+    output_options(evidence_run, compact=True)
+    evidence_run.set_defaults(func=command_evidence_run)
+
+    sandbox = commands.add_parser("sandbox", help="Run a broker-isolated virtual replay")
+    sandbox_commands = sandbox.add_subparsers(dest="sandbox_command", required=True)
+    sandbox_run = sandbox_commands.add_parser("run", help="Run a virtual sandbox replay")
+    source_options(sandbox_run)
+    sandbox_run.add_argument("--fills", type=int, default=20, help="Number of latest virtual fills to print")
+    sandbox_run.add_argument("--no-save", action="store_true")
+    output_options(sandbox_run)
+    sandbox_run.set_defaults(func=command_sandbox_run)
 
 
 def _config_from_args(args: argparse.Namespace) -> SandboxConfig:

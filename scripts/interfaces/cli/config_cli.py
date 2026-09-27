@@ -16,7 +16,42 @@ from grande_alpha.configuration.config import (
 )
 from grande_alpha.execution.process_lock import ProcessLock
 from grande_alpha.interfaces.cli.cli_table import format_table
+from grande_alpha.interfaces.cli.parser_common import output_options
 from grande_alpha.persistence.store import upgrade_execution_store
+
+
+def add_config_commands(root_commands) -> None:
+    config = root_commands.add_parser("config", help="Inspect or explicitly upgrade local configuration")
+    commands = config.add_subparsers(dest="config_command", required=True)
+    show = commands.add_parser("show", help="Read validated settings without writing files")
+    show.add_argument("--path", type=Path, help="Configuration file to inspect")
+    show.add_argument("--json", action="store_true")
+    show.add_argument("--width", type=int)
+    show.set_defaults(func=command_config_show)
+
+    upgrade = commands.add_parser("upgrade", help="Back up and upgrade one existing configuration")
+    upgrade.add_argument("--path", type=Path, help="Configuration file to upgrade")
+    upgrade.add_argument("--json", action="store_true")
+    upgrade.set_defaults(func=command_config_upgrade)
+
+    import_legacy = commands.add_parser(
+        "import-legacy", help="Explicitly copy recoverable legacy data without deleting its source"
+    )
+    import_legacy.add_argument("--source", type=Path, required=True, help="Legacy data directory")
+    import_legacy.add_argument("--destination", type=Path, help="Target data directory")
+    import_legacy.add_argument("--json", action="store_true")
+    import_legacy.set_defaults(func=command_config_import_legacy)
+
+    from grande_alpha.interfaces.cli.research_commands import command_glossary, command_plans
+
+    glossary = commands.add_parser("glossary", help="Search the same definitions used by the GUI")
+    glossary.add_argument("query", nargs="?")
+    output_options(glossary)
+    glossary.set_defaults(func=command_glossary)
+
+    plans = commands.add_parser("plans", help="Show the free Community entitlement and truthful Pro roadmap")
+    output_options(plans)
+    plans.set_defaults(func=command_plans)
 
 
 def command_config_show(args: argparse.Namespace) -> int:

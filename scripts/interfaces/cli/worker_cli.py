@@ -13,6 +13,59 @@ from grande_alpha.execution.worker_ipc import LocalControlClient, LocalControlEr
 from grande_alpha.execution.worker_process import launch_worker
 
 
+def add_session_commands(root_commands) -> None:
+    session = root_commands.add_parser("session", help="Control the mixed stock/ETF trading worker")
+    commands = session.add_subparsers(dest="session_command", required=True)
+    candidate = commands.add_parser(
+        "candidate-template", help="Print an unfilled mixed stock/ETF scope; grants nothing"
+    )
+    candidate.set_defaults(func=command_candidate_template)
+
+    stop = commands.add_parser(
+        "stop", help="Durably block new worker orders; does not claim broker cancellation"
+    )
+    stop.set_defaults(func=command_worker_stop)
+    status = commands.add_parser("status", help="Read the shared worker's actual status")
+    status.set_defaults(func=command_worker_control)
+
+    connect = commands.add_parser("connect", help="Start the hidden worker and connect its broker session")
+    connect.add_argument("--authenticate", action="store_true", help="Permit interactive broker login")
+    connect.set_defaults(func=command_worker_control)
+
+    review = commands.add_parser("review", help="Review exact autonomous candidate and broker account")
+    review.add_argument("--candidate", required=True)
+    review.add_argument("--authorization", required=True)
+    review.add_argument("--earnings-database", required=True)
+    review.add_argument("--poll-seconds", type=float, default=5.0)
+    review.set_defaults(func=command_worker_control)
+
+    for name, description in (
+        ("authorize", "Interactively approve the exact reviewed scope"),
+        ("start", "Start an already reviewed and approved worker session"),
+        ("revoke", "Interactively revoke exact account authorization"),
+        ("recovery-ack", "Acknowledge manual loss recovery without resetting daily losses"),
+        ("shutdown", "Stop trading and close the hidden worker"),
+    ):
+        command = commands.add_parser(name, help=description)
+        command.set_defaults(func=command_worker_control)
+
+    run = commands.add_parser("run", help="Interactively review, authorize, and start the shared worker")
+    run.add_argument("--candidate", required=True, help="Mixed stock/ETF candidate JSON")
+    run.add_argument("--authorization", required=True, help="Exact-scope authorization path")
+    run.add_argument("--earnings-database", required=True, help="Earnings observation database")
+    run.add_argument("--poll-seconds", type=float, default=5.0)
+    run.set_defaults(func=command_worker_run)
+
+
+def add_research_mcp_command(research_commands) -> None:
+    research_mcp = research_commands.add_parser(
+        "mcp", help="Opt into the current worker's separate research-only MCP connection"
+    )
+    commands = research_mcp.add_subparsers(dest="research_mcp_command", required=True)
+    for name in ("status", "enable", "disable"):
+        commands.add_parser(name).set_defaults(func=command_research_mcp)
+
+
 def _client(*, launch: bool) -> LocalControlClient:
     target = data_dir()
     return launch_worker(target) if launch else LocalControlClient(target)

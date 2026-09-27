@@ -19,6 +19,7 @@ from grande_alpha.data.evidence_ledger import audit_evidence_ledger
 from grande_alpha.domain.market_calendar import regular_session_times
 from grande_alpha.domain.policy import session_key
 from grande_alpha.interfaces.cli.cli_table import format_table
+from grande_alpha.interfaces.cli.parser_common import output_options, runtime_trace_options
 from grande_alpha.interfaces.cli.render import print_json as _json
 from grande_alpha.research.historical_models import (
     RUNTIME_ANALYSIS_PRICE_SEMANTICS,
@@ -29,6 +30,55 @@ from grande_alpha.research.historical_models import (
 )
 from grande_alpha.research.runtime_trace import load_runtime_quote_trace_with_row_count
 from grande_alpha.research.runtime_trace_provenance import runtime_trace_manifest_template
+
+
+def add_data_commands(root_commands) -> None:
+    data = root_commands.add_parser("data", help="Earnings and historical-data observations")
+    commands = data.add_subparsers(dest="data_command", required=True)
+    from grande_alpha.interfaces.cli.earnings_commands import add_earnings_commands
+
+    add_earnings_commands(commands)
+
+    audit = commands.add_parser(
+        "audit", help="Read-only audit of local caches, a CSV import, and the evidence ledger"
+    )
+    audit.add_argument("--csv", type=Path, help="Aligned QQQ/TQQQ/SQQQ source CSV")
+    audit.add_argument(
+        "--interval", help="Actual CSV bar interval; required with --csv and never inferred"
+    )
+    audit.add_argument("--manifest", type=Path, help="Dataset provenance manifest JSON")
+    audit.add_argument(
+        "--target-interval",
+        default="5s",
+        help="Exact runtime evidence interval to qualify against; default 5s",
+    )
+    audit.add_argument("--cache-dir", type=Path, help="Cache directory to inspect when --csv is omitted")
+    audit.add_argument("--database", type=Path, help="Evidence SQLite database to inventory read-only")
+    output_options(audit)
+    audit.set_defaults(func=command_data_audit)
+
+    template = commands.add_parser(
+        "manifest-template", help="Print the exact provenance-manifest template without writing a file"
+    )
+    template.add_argument("--target-interval", default="5s")
+    template.set_defaults(func=command_data_manifest_template)
+
+    trace = commands.add_parser(
+        "runtime-trace",
+        help="Audit or describe a synchronized runtime quote trace without broker access",
+    )
+    trace_commands = trace.add_subparsers(dest="runtime_trace_command", required=True)
+    trace_audit = trace_commands.add_parser("audit", help="Audit one inclusive trace range read-only")
+    runtime_trace_options(trace_audit, allow_manifest=True)
+    output_options(trace_audit)
+    trace_audit.set_defaults(func=command_data_runtime_trace_audit)
+
+    trace_template = trace_commands.add_parser(
+        "manifest-template",
+        help="Print a range-bound rights/provenance template without writing a file",
+    )
+    runtime_trace_options(trace_template, allow_manifest=False, require_range=True)
+    trace_template.set_defaults(func=command_data_runtime_trace_manifest_template)
 
 
 def _load_json_object(path: Path | None, label: str) -> dict[str, Any] | None:
