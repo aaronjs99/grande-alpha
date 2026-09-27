@@ -13,14 +13,19 @@ $ConfiguredPython = if ($PythonExecutable) {
 $PythonExe = if (Test-Path -LiteralPath $ConfiguredPython) { $ConfiguredPython } else { 'python' }
 $IconIco = Join-Path $ProjectRoot 'assets\brand\grande-alpha.ico'
 $IconPng = Join-Path $ProjectRoot 'scripts\assets\app-icon.png'
+$BuildOutput = Join-Path $ProjectRoot 'build\pyinstaller'
+$DistributionOutput = Join-Path $ProjectRoot 'dist'
+$SpecOutput = Join-Path $ProjectRoot 'artifacts\pyinstaller'
 
 $TemporaryRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath())
 $StageRoot = Join-Path $TemporaryRoot ("grande-alpha-pyinstaller-$([guid]::NewGuid().ToString('N'))")
 try {
     # PyInstaller cannot resolve setuptools' editable scripts/ -> grande_alpha mapping.
     New-Item -ItemType Directory -Path $StageRoot | Out-Null
+    New-Item -ItemType Directory -Path $BuildOutput, $DistributionOutput, $SpecOutput -Force | Out-Null
     Copy-Item -LiteralPath (Join-Path $ProjectRoot 'scripts') -Destination (Join-Path $StageRoot 'grande_alpha') -Recurse
     & $PythonExe -m PyInstaller --noconfirm --clean --windowed --name GRANDEAlpha `
+        --workpath $BuildOutput --distpath $DistributionOutput --specpath $SpecOutput `
         --paths $StageRoot `
         --icon $IconIco --add-data "${IconPng};grande_alpha/assets" `
         --collect-all keyring `
@@ -47,7 +52,7 @@ try {
 if ($BuildExitCode -ne 0) {
     throw "PyInstaller failed with exit code $BuildExitCode"
 }
-$Executable = Join-Path $ProjectRoot 'dist\GRANDEAlpha\GRANDEAlpha.exe'
+$Executable = Join-Path $DistributionOutput 'GRANDEAlpha\GRANDEAlpha.exe'
 if (-not (Test-Path -LiteralPath $Executable)) {
     throw "PyInstaller completed without producing $Executable"
 }

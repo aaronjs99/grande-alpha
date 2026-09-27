@@ -14,7 +14,6 @@ __pycache__/
 /dist/
 /artifacts/
 /release/
-*.spec
 
 # Local runtime data and logs
 /data/
