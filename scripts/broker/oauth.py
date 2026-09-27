@@ -204,7 +204,3 @@ class OAuthCallbackServer:
             self._thread.join(timeout=1.0)
         self._server = None
         self._thread = None
-
-
-def pretty_payload(payload: dict[str, Any]) -> str:
-    return json.dumps(payload, indent=2, default=str)

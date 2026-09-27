@@ -151,8 +151,3 @@ TERM_HELP: dict[str, str] = {
     "Trial-adjusted significance": "Statistical evidence after correcting for every candidate tried on the dataset.",
     "Walk-forward": "Purged chronological train/test folds that evaluate selections on later unseen sessions.",
 }
-
-
-def term_help(term: str) -> str | None:
-    """Return the registered explanation for a product term, if any."""
-    return TERM_HELP.get(term)

@@ -1,4 +1,4 @@
-"""Stock-capable ticket/risk primitives; not connected to the live strategy driver."""
+"""Shared ticket and risk checks used by the mixed execution path."""
 
 from __future__ import annotations
 

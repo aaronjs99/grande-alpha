@@ -213,9 +213,7 @@ def tested_risk_envelope(config: SandboxConfig) -> dict[str, float | int]:
         "max_daily_notional": 2.0 * contract.order_notional * contract.max_entries_per_day,
         "max_total_exposure": contract.initial_cash * contract.max_exposure_pct,
         "max_daily_loss": contract.initial_cash * contract.max_daily_loss_pct,
-        # RiskEngine counts every irreversible placement invocation. Each replay entry can
-        # consume one buy and one sell invocation, so an entry-only count would block the
-        # certified exit at exactly the moment it is required.
+        # Count both sides of each permitted round trip so replayed exits fit the envelope.
         "max_trades": 2 * contract.max_entries_per_day,
         "max_orders_per_minute": 2,
         "max_spread_bps": contract.base_spread_bps * 3.0,

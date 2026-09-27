@@ -71,11 +71,6 @@ def theme_css(source, *, base="dark"):
     return re.sub(r"#[0-9a-fA-F]{6}\b", lambda m: color(m.group(), base=base), source)
 
 
-def set_widget_style(widget, source):
-    widget.setProperty("grandeThemeStyle", source)
-    widget.setStyleSheet(theme_css(source))
-
-
 def set_item_foreground(item, value, *, base="dark"):
     value = QColor(value).name()
     item.setData(COLOR_ROLE, (value, base))
@@ -101,9 +96,6 @@ def apply_application_theme(theme):
     app.setPalette(palette)
     app.setStyleSheet(theme_css(STYLESHEET))
     for widget in app.allWidgets():
-        source = widget.property("grandeThemeStyle")
-        if source is not None:
-            widget.setStyleSheet(theme_css(source))
         if isinstance(widget, QTableWidget):
             for row in range(widget.rowCount()):
                 for column in range(widget.columnCount()):

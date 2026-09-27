@@ -86,19 +86,6 @@ def market_session_allowed(
     return start <= local.timestamp() <= end
 
 
-def regular_session_allowed(
-    timestamp: datetime,
-    no_trade_open_minutes: int,
-    no_trade_close_minutes: int,
-) -> bool:
-    return market_session_allowed(
-        timestamp,
-        no_trade_open_minutes,
-        no_trade_close_minutes,
-        "regular_hours",
-    )
-
-
 def session_key(timestamp: datetime, market_hours: str = "regular_hours") -> str:
     return trading_date(timestamp, market_hours).isoformat()
 
