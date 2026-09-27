@@ -1,10 +1,9 @@
 from __future__ import annotations
 
 import re
-from importlib import import_module
 
 from PySide6.QtCore import QSettings, Qt
-from PySide6.QtGui import QBrush, QColor, QPalette, QPen
+from PySide6.QtGui import QColor, QPalette
 from PySide6.QtWidgets import QApplication, QTableWidget
 
 # Canonical legacy colors remain dark; originals are retained for lossless toggling.
@@ -114,40 +113,6 @@ def apply_application_theme(theme):
                         set_item_foreground(item, saved[0], base=saved[1])
 
 
-def theme_plot(plot):
-    # Plotting belongs to the optional legacy research screens, not the
-    # worker control panel or its packaged startup dependency graph.
-    pg = import_module("pyqtgraph")
-    plot.setBackground(color("#0e1720"))
-    for name in ("left", "right", "top", "bottom"):
-        axis = plot.getAxis(name)
-        axis.setPen(pg.mkPen(color("#223142")))
-        axis.setTextPen(pg.mkPen(color("#a9bac8")))
-        if axis.labelText or axis.labelUnits:
-            axis.setLabel(axis.labelText, units=axis.labelUnits, **{"color": color("#a9bac8")})
-    for item in plot.getPlotItem().items:
-        opts = getattr(item, "opts", {})
-        if not hasattr(item, "_grande_theme_pens"):
-            item._grande_theme_pens = {k: QPen(v) for k, v in opts.items() if k in ("pen", "symbolPen") and isinstance(v, QPen)}
-            if isinstance(item, pg.InfiniteLine):
-                item._grande_theme_pens["pen"] = QPen(item.pen)
-            item._grande_theme_brushes = {k: QBrush(v) for k, v in opts.items() if k in ("brush", "symbolBrush") and isinstance(v, QBrush)}
-        for key, original in item._grande_theme_pens.items():
-            pen = QPen(original)
-            pen.setColor(QColor(color(original.color())))
-            getattr(item, "setPen" if key == "pen" else "setSymbolPen")(pen)
-        for key, original in item._grande_theme_brushes.items():
-            brush = QBrush(original)
-            brush.setColor(QColor(color(original.color())))
-            setter = getattr(item, "setBrush" if key == "brush" else "setSymbolBrush", None)
-            if setter:
-                setter(brush)
-    legend = plot.getPlotItem().legend
-    if legend:
-        for _, label in legend.items:
-            label.setText(label.text, color=color("#e9f0f6"))
-
-
 STYLESHEET = """
 QWidget { background: #0b1118; color: #e9f0f6; font-size: 10pt; }
 QMainWindow { background: #081018; }
@@ -168,7 +133,6 @@ QPushButton:hover { background: #213447; }
 QPushButton:disabled { color: #596b7a; background: #121b24; }
 QPushButton#primary { background: #00c805; border-color: #00c805; color: #021004; font-weight: 700; }
 QPushButton#danger { background: #c62d42; border-color: #ec5266; color: white; font-weight: 700; }
-QPushButton#flatten { background: #7f3d18; border-color: #c66a2e; color: white; }
 QTableWidget { background: #0e1720; alternate-background-color: #101c27; border: 1px solid #223142; gridline-color: #223142; }
 QTableWidget::item:selected { background: #244663; color: #ffffff; }
 QHeaderView::section { background: #14202b; color: #a9bac8; padding: 6px; border: 0; border-right: 1px solid #223142; }
@@ -188,5 +152,5 @@ STYLESHEET += """
 QComboBox, QPlainTextEdit, QTextEdit { background: #0e1720; color: #e9f0f6; border: 1px solid #2c4155; padding: 5px; }
 QComboBox QAbstractItemView { background: #0e1720; color: #e9f0f6; selection-background-color: #244663; }
 QPushButton:focus { border: 2px solid #3478a4; }
-QPushButton#danger, QPushButton#flatten { color: white; }
+QPushButton#danger { color: white; }
 """

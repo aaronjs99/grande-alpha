@@ -42,7 +42,7 @@ def main() -> int:
         from grande_alpha.ui.themes import apply_application_theme, saved_theme
     except ModuleNotFoundError as exc:
         missing_module = exc.name or ""
-        if missing_module in {"pyqtgraph", "qasync"} or missing_module.startswith("PySide6"):
+        if missing_module == "qasync" or missing_module.startswith("PySide6"):
             print(
                 "The GRANDE Alpha desktop requires the optional desktop dependencies. "
                 "Install with 'pip install grande-alpha[desktop]'.",
