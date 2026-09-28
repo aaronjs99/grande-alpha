@@ -1,16 +1,61 @@
-# Responsive desktop UI audit — 2026-08-19
+# Historical public product and responsive UI audits — August 2026
 
-## Audit scope
+This document consolidates the public-product audit and responsive desktop audit from August 2026.
+It preserves their dated screenshots and findings while removing repeated image references. All
+statements about the “current build,” “now,” or “after” refer to the audit-time snapshots, not the
+current checkout. These records are historical evidence, not current readiness claims; use the
+capability matrix and current guides for present behavior.
 
-This combined UX and accessibility audit covers the current PySide6 desktop shell, market overview,
+## Public-product audit snapshot
+
+The scope covered the then-packaged Windows first-run journey, research sandbox, permission
+surfaces, plans, and public-support boundary.
+
+The audit compared its then-current product journey with an earlier baseline. “Before,” “After,”
+and health labels below describe that comparison only. The captures used generalized screenshots;
+no broker account was connected and no order was placed.
+
+![Community and planned Pro plans at the audit snapshot](../images/product/community-and-pro-plans.png)
+
+| Step | Description | Before | After | Evidence and remaining risk |
+|---:|---|---|---|---|
+| 1 | Launch and understand product mode | Critical | Healthy | The audited build opened disclosure-led onboarding and stated that research mode had no broker, remote data, or real orders. |
+| 2 | Choose optional capabilities | Missing | Healthy | Broker read access, remote market data, and the capital planning ledger were off by default; onboarding could not enable real orders. |
+| 3 | Begin the primary research task | Poor | Healthy | Getting Started led to the local sandbox. Trading cards and live authority were absent when broker permission was off. |
+| 4 | Configure and inspect a sandbox run | Needs work | Improved | Source provenance and fictional aliases were explicit; remote community sources were disabled. The configuration surface was still dense and benefited from a large display. |
+| 5 | Grant or revoke broker/live authority | Needs work | Improved | Independent settings, an exact live-enable phrase, per-session confirmation, limits, receipts, stop/cancel, disconnect, and credential forgetting were present. No production broker connection was captured; connected-state layout used an isolated fake broker and synthetic account data. |
+| 6 | Understand privacy, support, and ownership | Missing | Improved | Privacy, security, support, license, notices, diagnostics, and non-affiliation language were present. Public issues and private security-advisory guidance included no-secrets instructions; response times were not guaranteed. |
+| 7 | Install and verify a public artifact | Missing | Improved | Wheel, Windows package, SBOM/checksum automation, CI, and dependency audit were present. Code signing and external legal/security review remained required before broad binary distribution. |
+
+The audit’s source inspection and Qt checks reported accessible names on key onboarding,
+permission, and button controls. It did not independently exercise Windows UI Automation or a screen
+reader. Keyboard-only traversal, focus visibility across dense sandbox controls, high-DPI scaling,
+Windows High Contrast, screen-reader announcements, zoom, and reduced-motion behavior remained
+unverified. No WCAG conformance claim was made.
+
+The audit also recorded these evidence gaps: no production broker account or real order was used;
+no cancel race, market outage, credential-vault corruption, or account restriction was induced; and
+no external penetration test, legal review, market-data licensing review, or assistive-technology
+audit had been completed. These are historical observations, not a status report for the current
+release.
+
+The audit supported a community-preview candidate only. It did not establish production,
+regulatory, accessibility, or profitability readiness.
+
+## Responsive UI audit snapshot — 2026-08-19
+
+### Audit scope
+
+At the time, this UX and accessibility audit covered the PySide6 desktop shell, market overview,
 Getting Started, Live Readiness, Research Sandbox, Settings, supervised-session authorization, and
-single-order confirmation. The user goal is to keep the same information and controls usable on portrait
-and landscape monitors without clipped primary actions.
+single-order confirmation. The recorded user goal was to keep the same information and controls usable
+on portrait and landscape monitors without clipped primary actions.
 
-The final captures use an isolated native Windows Qt process, a fake broker, and a temporary audit database. They do
-not connect to Robinhood, change the saved app configuration, or touch the scheduled shadow process.
+The captures used an isolated native Windows Qt process, a fake broker, and a temporary audit database.
+They did not connect to Robinhood, change the saved app configuration, or touch the scheduled shadow
+process.
 
-## Accepted-reference alignment
+### Accepted-reference alignment
 
 The user-provided landscape references establish the accepted product language: dark desktop shell,
 brand and mode badge, a compact KPI band, chart and quotes beside one another, a tabbed task workspace,
@@ -18,7 +63,7 @@ and dense but adjustable evidence tables. The 1366-by-768 and 1920-by-1080 after
 that hierarchy. Responsive behavior is added only when the same composition cannot fit without clipping;
 it does not introduce a new visual system or substitute assets.
 
-## Prioritized baseline findings
+### Prioritized baseline findings
 
 | Priority | Baseline finding | Direct evidence | Implemented response |
 | --- | --- | --- | --- |
@@ -27,16 +72,16 @@ it does not introduce a new visual system or substitute assets.
 | P2 | The Sandbox configuration/results composition was optimized for a wide surface only. | The baseline 1366-by-768 Sandbox capture left the results pane narrow and vertically dense. | Switch the main and fill splitters by available aspect/width and reflow result metrics. |
 | P2 | Hidden header controls could leave unexplained grid space. | Intermediate constrained captures showed action gaps unrelated to visible choices. | Reflow only visible actions at every breakpoint. |
 
-## Flow and health
+### Flow and health
 
-### 1. Baseline small-window request — addressed
+#### 1. Baseline small-window request — addressed
 
 Before this work, geometry checks measured both the requested 900-by-1200 and 1024-by-700 windows at a
 forced 1180-pixel width. The hard minimum has been removed and the exact requested dimensions are now
 covered by automated geometry tests and the current screenshots below. Historical screenshots containing
 installation-specific copy are intentionally excluded from the public bundle.
 
-### 2. Portrait main workspace at 900 by 1200 — healthy
+#### 2. Portrait main workspace at 900 by 1200 — healthy
 
 ![Responsive portrait main workspace](../images/audit/responsive-after-01-main-900x1200.png)
 
@@ -44,7 +89,7 @@ The window now honors 900 pixels. Header actions form a compact two-column grid,
 columns without clipping either text line, and the chart and complete three-symbol quote table stack
 vertically. The market and tab workspaces remain separated by an adjustable splitter.
 
-### 3. Landscape main workspace at 1366 by 768 — healthy
+#### 3. Landscape main workspace at 1366 by 768 — healthy
 
 ![Responsive landscape main workspace](../images/audit/responsive-after-02-main-1366x768.png)
 
@@ -52,14 +97,14 @@ The landscape layout retains the efficient one-row KPI band and horizontal chart
 actions consume only their real slots, so hidden live controls no longer leave unexplained gaps. The
 research/onboarding workspace receives more vertical room than in the intermediate narrow layout.
 
-### 4. Wide desktop at 1920 by 1080 — healthy
+#### 4. Wide desktop at 1920 by 1080 — healthy
 
 ![Responsive wide desktop](../images/audit/responsive-after-03-main-1920x1080.png)
 
 The existing wide-screen hierarchy is preserved: brand and actions share one row, all KPI cards remain in
 one band, and chart, quote table, and tab content expand with the window.
 
-### 5. Constrained landscape at 1024 by 700 — healthy with intentional scrolling
+#### 5. Constrained landscape at 1024 by 700 — healthy with intentional scrolling
 
 ![Responsive constrained landscape](../images/audit/responsive-after-04-main-1024x700.png)
 
@@ -69,7 +114,7 @@ short vertical panes. Getting Started has its own vertical scroll area, so every
 and disclosure remains reachable. The tab bar uses its standard scroll affordance, while tables retain
 pixel-based horizontal scrolling and manually adjustable columns.
 
-### 6. Research Sandbox in landscape and portrait — healthy
+#### 6. Research Sandbox in landscape and portrait — healthy
 
 ![Responsive landscape sandbox](../images/audit/responsive-after-05-sandbox-1366x768.png)
 
@@ -80,7 +125,7 @@ narrow portrait surface. Metric cards reflow to the available result width. The 
 switches orientation when its result pane is too narrow. Both halves remain independently scrollable and
 resizable.
 
-### 7. Live Readiness at 1024 by 700 — healthy
+#### 7. Live Readiness at 1024 by 700 — healthy
 
 ![Responsive Live Readiness](../images/audit/responsive-after-10-live-readiness-1024x700.png)
 
@@ -102,7 +147,7 @@ and is capped at 520 pixels instead of expanding into a large empty table body. 
 outside-app jurisdiction/account responsibility remain directly below the checklist. That responsibility
 is not a fake pass/fail gate and is excluded from the readiness count.
 
-### 8. Settings and supervised confirmations — healthy
+#### 8. Settings and supervised confirmations — healthy
 
 ![Responsive settings](../images/audit/responsive-after-06-settings-840x680.png)
 
@@ -115,7 +160,7 @@ by 520. The supervised-session dialog scrolls risk/routing detail while keeping 
 phrase, and authorization controls visible. The single-order dialog similarly scrolls the immutable review
 and disclosure while keeping the exact order phrase and safe-default Decline action visible at 1024 by 700.
 
-## Strengths retained
+### Strengths retained
 
 - The established dark palette, typography, status colors, card style, tabs, and glossary affordances remain
   unchanged.
@@ -124,7 +169,7 @@ and disclosure while keeping the exact order phrase and safe-default Decline act
 - Existing table resizing, header help, scrollbars, and the View > Reset Window & Table Columns recovery
   action remain available.
 
-## Accessibility and UX risks addressed
+### Accessibility and UX risks addressed
 
 - Primary controls no longer depend on a 1180-pixel minimum width.
 - Hidden controls no longer reserve blank grid positions.
@@ -133,7 +178,7 @@ and disclosure while keeping the exact order phrase and safe-default Decline act
 - Safety-critical dialog actions stay visible while long review content scrolls independently.
 - Narrow form layouts may wrap long labels above their fields instead of forcing horizontal clipping.
 
-## Evidence limits
+### Evidence limits
 
 - Native Windows capture verifies the local Segoe UI rendering at the captured display scale as well as
   geometry, hierarchy, color, and visible clipping. Other display scales still require separate testing.
@@ -142,7 +187,7 @@ and disclosure while keeping the exact order phrase and safe-default Decline act
   technology and DPI testing.
 - No claim of full WCAG conformance is made.
 
-## Historical checks
+### Historical checks
 
 The captures above were made with an isolated broker stub at four viewports: 900 by 1200,
 1366 by 768, 1920 by 1080, and 1024 by 700. The original automated layout suite has been

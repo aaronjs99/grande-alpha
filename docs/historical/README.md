@@ -12,5 +12,4 @@ the dated records below do not certify that integration or live execution.
 - [Research upgrade, 2026-08-09](RESEARCH_UPGRADE_2026-08-09.md)
 - [Strategy benchmark, 2026-08-09](STRATEGY_RESEARCH_2026-08-09.md)
 - [Runtime champion selection, 2026-08-11](CHAMPION_SELECTION_2026-08-11.md)
-- [Product audit, 2026-08](PRODUCT_AUDIT_2026-08.md)
-- [Responsive UI audit, 2026-08-19](RESPONSIVE_UI_AUDIT_2026-08-19.md)
+- [Public product and responsive UI audits, August 2026](PRODUCT_AND_RESPONSIVE_AUDIT_2026-08.md)
