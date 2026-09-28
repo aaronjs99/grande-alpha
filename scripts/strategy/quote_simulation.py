@@ -1,3 +1,5 @@
+"""Virtual quote execution for offline research replay; it never submits orders."""
+
 from __future__ import annotations
 
 import random

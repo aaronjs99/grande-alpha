@@ -20,7 +20,7 @@ from grande_alpha.research.sandbox_models import (
     interval_minutes,
 )
 from grande_alpha.strategy.core import build_strategy
-from grande_alpha.strategy.shadow import QuoteSimulationExecutor
+from grande_alpha.strategy.quote_simulation import QuoteSimulationExecutor
 
 
 class RuntimeObservationReplayEngine:

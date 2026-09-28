@@ -26,6 +26,10 @@ the research MCP and the broker's trading MCP are separate protocols and permiss
 The research bridge cannot inherit a trading grant, and its prompts and proposals cannot reach
 an order path. Headless code must not import Qt; the desktop dependency set is optional.
 
+The offline replay executor is `strategy/quote_simulation.py`. It creates virtual fills and has no
+broker connection; persisted checkpoint records retain their historical `shadow_*` names. It is
+not the retired broker-connected live-shadow route.
+
 The research MCP starts disabled each worker session. An explicit desktop or CLI opt-in creates a
 new local mailbox lease; a compatible AI client starts a stdio server and can exchange only bounded
 research commands with the worker. Stop, Revoke, or shutdown revokes the lease and discards queued
