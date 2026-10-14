@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Kept Windows packaging compatible with PowerShell 5.1 by reading its declared tool dependencies
+  from a Python file, avoiding native argument rewriting of embedded quotes.
 - Restored Antonio's visual Agent desk, six bot cards, paper chart, compact activity, and local
   read-only chat around the shared worker. Moved setup/status details into dialogs, kept Stop
   visible while scrolling, and restored pyqtgraph only in the optional desktop dependency set.

@@ -37,7 +37,8 @@ try {
     $BuildPython = Join-Path $BuildEnvironment 'Scripts\python.exe'
     & $BuildPython -I -m pip install --disable-pip-version-check --upgrade pip 'setuptools>=83' wheel
     if ($LASTEXITCODE -ne 0) { throw 'The isolated packaging tools could not be installed.' }
-    $BuildRequirementsJson = & $PythonExe -I -c 'import json,sys,tomllib; from pathlib import Path; data=tomllib.loads(Path(sys.argv[1]).read_text(encoding="utf-8")); print(json.dumps([value for value in data["project"]["optional-dependencies"]["dev"] if value.split(">", 1)[0] in {"pyinstaller", "pip-audit"}]))' (Join-Path $ProjectRoot 'pyproject.toml')
+    # Windows PowerShell 5.1 strips embedded quotes in native -c arguments.
+    $BuildRequirementsJson = & $PythonExe -I (Join-Path $PSScriptRoot 'build_requirements.py') (Join-Path $ProjectRoot 'pyproject.toml')
     if ($LASTEXITCODE -ne 0) { throw 'The packaging dependency configuration could not be read.' }
     $BuildRequirements = @($BuildRequirementsJson | ConvertFrom-Json)
     & $BuildPython -I -m pip install --disable-pip-version-check "${ProjectRoot}[desktop]" @BuildRequirements

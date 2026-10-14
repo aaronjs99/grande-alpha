@@ -62,6 +62,12 @@ and loopback-only routing passed with a fake model service; local Ollama was unr
 the availability probe, so no model-generated answer is validated. Installed-profile operation,
 Python 3.12 locally, and provider-observed execution remain untested here.
 
+Both Python versions passed the pushed CI's source checks. Its first package job exposed
+Windows PowerShell 5.1 stripping quoted Python `-c` arguments; packaging now calls
+`scripts/windows/build_requirements.py` instead. The dependency read passed directly under
+Windows PowerShell locally. A full local build under that shell was blocked by its script
+execution policy, which was left intact; the configured CI runner supplies that full check.
+
 ### Local worker-recovery checkpoint — 2026-10-14
 
 On Windows with Python 3.11.9, `python tools/verify_worker_recovery.py` passed all 23 cases,
