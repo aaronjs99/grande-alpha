@@ -41,6 +41,14 @@ def review_text(review: dict[str, Any]) -> str:
         f"  {key.removeprefix('max_').replace('_', ' ')}: {display_value(value)}"
         for key, value in sorted((review.get("limits") or {}).items())
     )
+    recovery = review.get("loss_recovery") or {}
+    if recovery.get("unit") == "manual":
+        recovery_text = "  Manual acknowledgement"
+    elif recovery.get("unit"):
+        recovery_text = f"  Delay: {recovery.get('delay')} {recovery.get('unit')}"
+    else:
+        recovery_text = "  Not reported"
+    lines.extend(("", "Loss recovery", recovery_text))
     lines.extend(("", "Allocation policy"))
     lines.extend(
         f"  {key.replace('_', ' ')}: {display_value(value)}"

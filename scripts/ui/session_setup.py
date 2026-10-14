@@ -6,10 +6,43 @@ import copy
 import json
 from pathlib import Path
 
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QFileDialog, QMessageBox
+
+from grande_alpha.configuration.json_inputs import load_json
+from grande_alpha.execution.candidate_profile import (
+    check_candidate_shape,
+    save_candidate_document,
+    validate_candidate,
+)
+from grande_alpha.ui.candidate_editor import CandidateEditor
 
 
 class SessionSetup:
+    def _edit_candidate(self, *, new: bool) -> None:
+        if self._candidate_editor is not None and self._candidate_editor.isVisible():
+            self._candidate_editor.raise_()
+            return
+        source = self.candidate_edit.text().strip()
+        try:
+            dialog = CandidateEditor(
+                self.data_dir, self,
+                document=None if new else self._candidate_document,
+                source_path=None if new or not source else Path(source),
+                example=new,
+            )
+        except (TypeError, ValueError) as error:
+            self._show_error(f"Could not open the session editor: {error}")
+            return
+        self._candidate_editor = dialog
+        dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        dialog.accepted.connect(lambda: self._load_candidate(dialog.saved_path) if dialog.saved_path else None)
+        def finished(_result):
+            if self._candidate_editor is dialog:
+                self._candidate_editor = None
+        dialog.finished.connect(finished)
+        dialog.open()
+
     def _choose_candidate(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
             self, "Choose strategy and limits candidate", str(self.data_dir), "JSON files (*.json)"
@@ -24,15 +57,19 @@ class SessionSetup:
             self._load_candidate(Path(text))
         else:
             self._candidate_document = None
+            self._candidate_ready = False
             self._limits_dirty = False
             self._invalidate_review("Candidate cleared")
             self._refresh_controls()
 
     def _load_candidate(self, path: Path) -> None:
+        self._invalidate_review("Candidate changed")
+        self._candidate_ready = False
         try:
             if not path.is_file() or path.stat().st_size > 65_536:
                 raise ValueError("Choose an existing candidate no larger than 64 KiB")
-            document = json.loads(path.read_text(encoding="utf-8"))
+            document = load_json(path, max_bytes=65_536)
+            check_candidate_shape(document)
             scope = document.get("scope") if isinstance(document, dict) else None
             if not isinstance(scope, dict):
                 raise ValueError("The candidate has no execution scope")
@@ -42,9 +79,15 @@ class SessionSetup:
             self._loading_limits = True
             for key, _label, kind in self.LIMIT_FIELDS:
                 raw_value = scope[key]
+                if raw_value is None:
+                    self.limit_inputs[key].clear()
+                    self.limit_inputs[key].setEnabled(False)
+                    continue
                 if kind == "integer":
                     if type(raw_value) is not int or raw_value <= 0:
                         raise ValueError(f"{key} must be a positive whole number")
+                    if not self.limit_inputs[key].minimum() <= raw_value <= self.limit_inputs[key].maximum():
+                        raise ValueError(f"{key} exceeds this visual editor's range")
                     self.limit_inputs[key].setValue(raw_value)
                 else:
                     if isinstance(raw_value, bool) or not isinstance(raw_value, (int, float)):
@@ -60,13 +103,17 @@ class SessionSetup:
             self._limits_dirty = False
             self.candidate_edit.setText(str(path.resolve()))
             symbols = ", ".join(scope.get("allowed_symbols") or ()) or "no symbols"
-            self.limit_state.setText(
-                f"Loaded {symbols}. Adjust the risk envelope only, or continue with the unchanged candidate."
-            )
+            try:
+                validate_candidate(document)
+                self._candidate_ready = True
+                self.limit_state.setText(f"Loaded {symbols}. Ready for Review after connecting.")
+            except ValueError as error:
+                self.limit_state.setText(f"Draft · Edit setup to complete this candidate. {error}")
             self._invalidate_review("Candidate loaded")
             self._clear_banner()
-        except (OSError, UnicodeError, json.JSONDecodeError, TypeError, ValueError) as error:
+        except (OSError, UnicodeError, json.JSONDecodeError, TypeError, ValueError, OverflowError) as error:
             self._candidate_document = None
+            self._candidate_ready = False
             self._limits_dirty = False
             for control in self.limit_inputs.values():
                 control.setEnabled(False)
@@ -131,17 +178,11 @@ class SessionSetup:
             raise ValueError("Per-order limit cannot exceed exposure or daily traded amount")
         document = copy.deepcopy(self._candidate_document)
         document["scope"].update(values)
-        target = target.resolve()
+        validate_candidate(document)
         source = Path(self.candidate_edit.text().strip()).resolve()
-        if target == source:
-            raise ValueError("The loaded source candidate is never overwritten; choose a new file")
-        if target.exists() and not overwrite:
-            raise ValueError("The destination already exists; explicit overwrite confirmation is required")
-        target.parent.mkdir(parents=True, exist_ok=True)
-        temporary = target.with_name(f".{target.name}.tmp")
-        temporary.write_text(json.dumps(document, indent=2, allow_nan=False) + "\n", encoding="utf-8")
-        temporary.replace(target)
+        target = save_candidate_document(target, document, source_path=source, overwrite=overwrite)
         self._candidate_document = document
+        self._candidate_ready = True
         self.candidate_edit.setText(str(target))
         self._limits_dirty = False
         self.limit_state.setText(f"Saved bounded candidate: {target.name}")

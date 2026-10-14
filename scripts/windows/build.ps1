@@ -47,10 +47,24 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Worker recovery acceptance failed in the isolated packaging environment.' }
     & $BuildPython -I (Join-Path $ProjectRoot 'tools\verify_agent_desk.py')
     if ($LASTEXITCODE -ne 0) { throw 'Agent desk acceptance failed in the isolated packaging environment.' }
+    & $BuildPython -I (Join-Path $ProjectRoot 'tools\verify_session_setup.py')
+    if ($LASTEXITCODE -ne 0) { throw 'Session setup acceptance failed in the isolated packaging environment.' }
+    & $BuildPython -I (Join-Path $ProjectRoot 'tools\verify_local_ai.py')
+    if ($LASTEXITCODE -ne 0) { throw 'Optional AI acceptance failed in the isolated packaging environment.' }
     New-Item -ItemType Directory -Path $BuildOutput, $DistributionOutput, $SpecOutput -Force | Out-Null
     & $BuildPython -I -m pip freeze --all --exclude grande-alpha | Set-Content -LiteralPath (Join-Path $SpecOutput 'resolved-requirements.txt') -Encoding UTF8
     if ($LASTEXITCODE -ne 0) { throw 'The resolved packaging dependencies could not be recorded.' }
     Copy-Item -LiteralPath (Join-Path $ProjectRoot 'scripts') -Destination (Join-Path $StageRoot 'grande_alpha') -Recurse
+    $SavedAnalysisPath = $env:PATH
+    try {
+        # Native dependency lookup must not collect unrelated DLLs from caller PATH
+        # (for example Poppler ICU, which is incompatible with Qt's Windows ICU shim).
+        $env:PATH = @(
+            (Split-Path -Parent $BuildPython),
+            (Split-Path -Parent $PythonExe),
+            (Join-Path $env:WINDIR 'System32'),
+            $env:WINDIR
+        ) -join [IO.Path]::PathSeparator
     & $BuildPython -I -m PyInstaller --noconfirm --clean --windowed --name GRANDEAlpha `
         --workpath $BuildOutput --distpath $DistributionOutput --specpath $SpecOutput `
         --paths $StageRoot `
@@ -65,7 +79,24 @@ try {
         --hidden-import mcp.shared.auth `
         (Join-Path $ProjectRoot 'scripts\app.py')
     $BuildExitCode = $LASTEXITCODE
+    } finally {
+        $env:PATH = $SavedAnalysisPath
+    }
     if ($BuildExitCode -ne 0) { throw "PyInstaller failed with exit code $BuildExitCode" }
+    $DesktopReport = Join-Path $StageRoot 'desktop-check.json'
+    $DesktopCheckProcess = Start-Process -FilePath (Join-Path $DistributionOutput 'GRANDEAlpha\GRANDEAlpha.exe') `
+        -ArgumentList '--check-desktop', '--report', "`"$DesktopReport`"" -WindowStyle Hidden -PassThru
+    if (-not $DesktopCheckProcess.WaitForExit(30000)) {
+        $DesktopCheckProcess.Kill()
+        throw 'The packaged desktop startup check timed out.'
+    }
+    if ($DesktopCheckProcess.ExitCode -ne 0 -or -not (Test-Path -LiteralPath $DesktopReport)) {
+        if (Test-Path -LiteralPath $DesktopReport) { Get-Content -LiteralPath $DesktopReport }
+        throw 'The packaged desktop could not start. Do not install or distribute this build.'
+    }
+    $DesktopResult = Get-Content -LiteralPath $DesktopReport -Raw | ConvertFrom-Json
+    if ($DesktopResult.ok -ne $true) { throw 'The packaged desktop check did not confirm success.' }
+    Write-Host 'Packaged desktop startup passed with disposable data; no worker, broker, or AI request.'
     & $BuildPython -I -m pip_audit --strict --progress-spinner off --path (Join-Path $DistributionOutput 'GRANDEAlpha\_internal')
     if ($LASTEXITCODE -ne 0) { throw 'The packaged dependency audit failed. Do not distribute this build.' }
 } finally {

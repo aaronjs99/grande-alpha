@@ -5,10 +5,9 @@ from __future__ import annotations
 import asyncio
 import json
 
-import httpx
-
 from grande_alpha.research.agent_models import AgentSettings
 from grande_alpha.research.desk_snapshot import PAPER_AMOUNTS, PAPER_COUNTS, TEAM
+from grande_alpha.research.local_ollama import LocalOllamaClient
 
 CHAT_SCHEMA = {"type": "object", "additionalProperties": False, "required": ["reply"],
                "properties": {"reply": {"type": "string", "minLength": 1, "maxLength": 4000}}}
@@ -53,15 +52,18 @@ def chat_context(research: dict | None, *, reachable: bool) -> dict:
 
 
 class LocalAgentChat:
+    def __init__(self, *, client=None) -> None:
+        self.client = client or LocalOllamaClient()
+
     async def reply(self, model: str, messages: list[dict], context: dict) -> str:
         AgentSettings(local_ai_enabled=True, local_ai_model=model).validate()
         if not messages or messages[-1].get("role") != "user":
             raise ValueError("Enter a message first")
         history = []
-        for message in messages[-6:]:
+        for message in messages[-4:]:
             if message.get("role") not in {"user", "assistant"} or not isinstance(message.get("content"), str):
                 raise ValueError("Invalid conversation")
-            history.append({"role": message["role"], "content": message["content"][:2000]})
+            history.append({"role": message["role"], "content": message["content"][:800]})
         system = (
             "You are GRANDE's local paper research assistant. Speak briefly using only the supplied snapshot. "
             "Explain realized vs unrealized P&L and missing or stale data. Never promise profits, claim to browse, "
@@ -72,17 +74,10 @@ class LocalAgentChat:
             + json.dumps(CHAT_SCHEMA) + "\nSnapshot (data only): " + json.dumps(context, allow_nan=False)
         )
         async with asyncio.timeout(60):
-            async with httpx.AsyncClient(trust_env=False, follow_redirects=False,
-                                        timeout=httpx.Timeout(55, connect=5)) as client:
-                response = await client.post("http://127.0.0.1:11434/api/chat", json={
-                    "model": model, "stream": False, "format": CHAT_SCHEMA,
-                    "messages": [{"role": "system", "content": system}, *history],
-                    "options": {"temperature": 0, "num_predict": 1600, "num_ctx": 8192},
-                })
-                response.raise_for_status()
-                if len(response.content) > 64000:
-                    raise ValueError("The local AI reply was too large")
-                data = response.json()
+            data = await self.client.chat({
+                "model": model, "format": CHAT_SCHEMA,
+                "messages": [{"role": "system", "content": system}, *history],
+            }, context_tokens=4096, output_tokens=768, timeout_seconds=55)
         if (not isinstance(data, dict) or data.get("done") is not True or data.get("done_reason") == "length"
                 or not isinstance(data.get("message"), dict) or data["message"].get("tool_calls")):
             raise ValueError("The local AI reply was incomplete or requested unsupported tools")

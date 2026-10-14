@@ -20,7 +20,9 @@ Nothing is sent merely by launching the app or using deterministic/CSV research.
 - The separately optional **local Ollama analyst** sends research briefs, symbols, and numeric market observations
   to the loopback Ollama service only while an analysis run is active. GRANDE does not send account
   balances, account IDs, positions, or credentials to the model. Ollama's configuration controls
-  further processing; use an installed local model for local inference. Stop the agent to revoke
+  further processing. GRANDE checks installed-model metadata and rejects cloud-routed and
+  embedding-only models before sending prompts. A conservative RAM check may leave AI unavailable.
+  Stop the agent to revoke
   these requests. Neither broker nor model requests begin just by opening the Agent tab.
 - The optional **research MCP connection** shares research prompts, symbols, timestamped
   numeric observations, worker status, and proposal labels with a compatible local AI client.
@@ -30,11 +32,13 @@ Nothing is sent merely by launching the app or using deterministic/CSV research.
   Access starts off each app session and must be explicitly enabled again after revocation.
   Already shared data cannot be recalled. Applied prompts appear in local research receipts;
   do not include secrets. See [research MCP controls](docs/RESEARCH.md#agent-research-prompts-and-local-mcp).
-- **AI chat** sends up to six conversation messages and a bounded virtual-paper snapshot to
+- **AI chat** sends up to four trimmed conversation messages and a bounded virtual-paper snapshot to
   local Ollama only after Send. The snapshot includes paper metrics, module stages and recent
   research handoffs, with no broker account identifiers, real balances/positions/orders,
   credentials, source documents or local paths. It cannot apply settings or start sessions.
-  Cancel reply stops the in-flight request; Clear removes this window's conversation.
+  Cancel reply stops the local wait; server-side generation may finish later. Clear removes this
+  window's conversation. AI is off by default and neither opening chat nor model discovery loads
+  a model. No model downloads or cloud fallback are performed.
 - Opening external documentation uses the system browser and is governed by the destination's privacy policy.
 
 ## Diagnostics

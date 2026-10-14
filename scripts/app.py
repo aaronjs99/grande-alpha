@@ -33,6 +33,10 @@ def main() -> int:
 
         worker_argv = [argument for argument in sys.argv[1:] if argument != "--worker"]
         return worker_main(worker_argv)
+    if "--check-desktop" in sys.argv:
+        from grande_alpha.desktop.startup_check import main as desktop_check
+
+        return desktop_check([argument for argument in sys.argv[1:] if argument != "--check-desktop"])
     try:
         from PySide6.QtGui import QIcon
         from PySide6.QtWidgets import QApplication, QMessageBox

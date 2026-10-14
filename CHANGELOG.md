@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- Added first-use broker session creation/editing with visible example settings, saved drafts,
+  full candidate validation before Review, and source-file preservation. Preparation remains
+  local and grants no approval or order authority.
+- Kept Ollama optional and off by default. Chat and analyst requests now share installed-local
+  model checks, conservative RAM admission, bounded context/output, and a cross-process request
+  lock. Cloud-routed and embedding-only models are rejected; no model is downloaded or loaded
+  on desktop/chat startup.
+- Removed the execution-policy bypass from source shortcuts and added packaged shortcut
+  installation without changing shared Python packages.
+- Isolated native dependency lookup during Windows packaging after an unrelated Poppler ICU
+  DLL broke Qt startup. Builds now exercise the frozen desktop and setup with disposable data
+  before reporting success. Retired shortcuts are backed up before removal.
 - Kept Windows packaging compatible with PowerShell 5.1 by reading its declared tool dependencies
   from a Python file, avoiding native argument rewriting of embedded quotes.
 - Restored Antonio's visual Agent desk, six bot cards, paper chart, compact activity, and local

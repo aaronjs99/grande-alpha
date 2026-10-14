@@ -2,6 +2,7 @@ param(
     [Parameter(Position = 0)]
     [ValidateSet('setup', 'verify', 'build', 'release', 'doctor', 'install', 'run', 'cli', 'help')]
     [string]$Task = 'help',
+    [switch]$Packaged,
     [Parameter(ValueFromRemainingArguments = $true)]
     [string[]]$TaskArgs
 )
@@ -56,6 +57,8 @@ switch ($Task) {
         Invoke-Python -Arguments @('-m', 'compileall', '-q', 'scripts')
         Invoke-Python -Arguments @('tools/verify_worker_recovery.py')
         Invoke-Python -Arguments @('tools/verify_agent_desk.py')
+        Invoke-Python -Arguments @('tools/verify_session_setup.py')
+        Invoke-Python -Arguments @('tools/verify_local_ai.py')
         # Build from a fresh sdist so removed source files cannot leak from build/lib.
         $BuildOutputDir = Join-Path ([IO.Path]::GetTempPath()) "grande-alpha-verify-$([guid]::NewGuid().ToString('N'))"
         try {
@@ -90,7 +93,7 @@ switch ($Task) {
     'build' { & (Join-Path $WindowsTools 'build.ps1') @TaskArgs; exit $LASTEXITCODE }
     'release' { & (Join-Path $WindowsTools 'release.ps1') @TaskArgs; exit $LASTEXITCODE }
     'doctor' { & (Join-Path $WindowsTools 'doctor.ps1') @TaskArgs; exit $LASTEXITCODE }
-    'install' { & (Join-Path $WindowsTools 'install.ps1') @TaskArgs; exit $LASTEXITCODE }
+    'install' { & (Join-Path $WindowsTools 'install.ps1') -Packaged:$Packaged @TaskArgs; exit $LASTEXITCODE }
     'run' {
         $PythonExe = Get-GrandeAlphaPython $ProjectRoot
         & $PythonExe -c 'import grande_alpha.app'

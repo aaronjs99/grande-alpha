@@ -24,8 +24,10 @@ class DeskChatDialog(QDialog):
         heading = QLabel("AI CHAT")
         heading.setObjectName("chatTitle")
         box.addWidget(heading)
-        note = QLabel("Local Ollama · advisory only")
-        note.setToolTip("Sends a bounded paper snapshot and your last six messages to 127.0.0.1 only. "
+        note = QLabel("Optional Ollama · core sessions work with AI off")
+        note.setWordWrap(True)
+        note.setToolTip("Sends a bounded paper snapshot and up to four recent messages to a verified local model. "
+                        "Checks RAM before inference and rejects cloud-routed and embedding-only models. "
                         "No account identifiers or broker orders. It cannot change settings or start sessions.")
         box.addWidget(note)
         self.model = QLineEdit()

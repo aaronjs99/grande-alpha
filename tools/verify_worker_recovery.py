@@ -25,6 +25,7 @@ from PySide6.QtGui import QCloseEvent, QFont, QFontDatabase
 from PySide6.QtWidgets import QApplication
 
 from grande_alpha import cli
+from grande_alpha.execution.candidate_profile import candidate_template
 from grande_alpha.execution.session_worker import SessionWorker
 from grande_alpha.execution.worker_control import WorkerControlStore
 from grande_alpha.execution.worker_ipc import LocalControlClient, LocalControlError, LocalControlServer
@@ -62,6 +63,17 @@ def live_status() -> dict:
         "research": {"enabled": True, "running": True, "phase": "Researching"},
         "error": "", "generation": 2,
     }
+
+
+def write_candidate(path: Path) -> None:
+    document = candidate_template()
+    document["scope"].update(account_number="fixture-account", allowed_symbols=["QQQ"],
+                             starts_at="2026-10-14T08:00:00-07:00", expires_at="2026-10-14T16:00:00-07:00",
+                             max_order_usd=10, max_exposure_usd=100, max_daily_notional_usd=200,
+                             max_daily_loss_usd=5, max_orders=5, max_orders_per_minute=1,
+                             max_quote_age_seconds=8, max_spread_bps=20)
+    document["earnings_thresholds"] = {key: 1 for key in document["earnings_thresholds"]}
+    path.write_text(json.dumps(document), encoding="utf-8")
 
 
 class CleanupRuntime:
@@ -424,9 +436,8 @@ class RecoveryAcceptance(unittest.TestCase):
         async def scenario() -> None:
             self.window._apply_status({**live_status(), "running": False, "generation": 1})
             candidate = self.path / "candidate.json"
-            candidate.write_text("{}", encoding="utf-8")
-            self.window.candidate_edit.setText(str(candidate))
-            self.window._candidate_document = {}
+            write_candidate(candidate)
+            self.window._load_candidate(candidate)
             entered, release = asyncio.Event(), asyncio.Event()
             async def request(operation, payload, *, timeout_seconds=10):
                 if operation == "status":
@@ -537,9 +548,8 @@ class RecoveryAcceptance(unittest.TestCase):
             worker = SessionWorker(control, runtime)
             server = LocalControlServer(self.path, worker.handle)
             candidate = self.path / "candidate.json"
-            candidate.write_text("{}", encoding="utf-8")
-            self.window.candidate_edit.setText(str(candidate))
-            self.window._candidate_document = {}
+            write_candidate(candidate)
+            self.window._load_candidate(candidate)
             with patch("grande_alpha.execution.worker_ipc._token", return_value="b" * 64):
                 try:
                     await server.start()

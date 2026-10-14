@@ -26,6 +26,7 @@ from grande_alpha.execution.worker_status import disconnected_worker_status
 from grande_alpha.research.agent_chat import LocalAgentChat, chat_context, parse_chat_reply
 from grande_alpha.research.agent_models import AgentSnapshot
 from grande_alpha.research.desk_snapshot import desk_snapshot, paper_summary
+from grande_alpha.research.local_ollama import LocalOllamaClient
 from grande_alpha.ui.session_window import SessionWindow
 
 
@@ -379,20 +380,28 @@ class ProjectionAcceptance(unittest.TestCase):
 
     def test_chat_uses_only_loopback_and_rejects_tool_calls(self):
         captured = {}
+        class Response:
+            def __init__(self, data):
+                self.data = data
+                self.content = json.dumps(data).encode()
+            def raise_for_status(self): pass
+            def json(self): return self.data
         class Client:
             def __init__(self, **kwargs): captured.update(kwargs)
             async def __aenter__(self): return self
             async def __aexit__(self, *args): return None
+            async def get(self, url, **kwargs):
+                return Response({"models": [] if url.endswith("/ps") else [{"name": "test-model", "size": 1024 ** 3}]})
             async def post(self, url, **kwargs):
                 captured["url"] = url
-                class Response:
-                    content = b"{}"
-                    def raise_for_status(self): pass
-                    def json(self): return {"done": True, "message": {"tool_calls": [{"start": True}], "content": '{"reply":"ok"}'}}
-                return Response()
-        with patch("grande_alpha.research.agent_chat.httpx.AsyncClient", Client):
-            with self.assertRaises(ValueError):
-                asyncio.run(LocalAgentChat().reply("test-model", [{"role": "user", "content": "Explain"}], {}))
+                if url.endswith("/show"):
+                    return Response({"capabilities": ["completion"]})
+                return Response({"done": True, "message": {"tool_calls": [{"start": True}], "content": '{"reply":"ok"}'}})
+        with tempfile.TemporaryDirectory(prefix="grande-chat-check-") as scratch:
+            with patch("grande_alpha.research.local_ollama.httpx.AsyncClient", Client):
+                client = LocalOllamaClient(lock_path=Path(scratch) / "ai.lock", memory_available=lambda: 16 * 1024 ** 3)
+                with self.assertRaisesRegex(ValueError, "unsupported tools"):
+                    asyncio.run(LocalAgentChat(client=client).reply("test-model", [{"role": "user", "content": "Explain"}], {}))
         self.assertEqual(captured["url"], "http://127.0.0.1:11434/api/chat")
         self.assertIs(captured["trust_env"], False)
         self.assertIs(captured["follow_redirects"], False)

@@ -88,6 +88,7 @@ class SessionWindow(SessionWindowLifecycle, SessionSetup, SessionStatus, Session
         self._review_result: dict[str, Any] | None = None
         self._authorized_scope = ""
         self._candidate_document: dict[str, Any] | None = None
+        self._candidate_ready = False
         self._limits_dirty = False
         self._loading_limits = False
         self._busy = False
@@ -102,6 +103,7 @@ class SessionWindow(SessionWindowLifecycle, SessionSetup, SessionStatus, Session
         self._closing = False
         self._tray_icon: QSystemTrayIcon | None = None
         self._approval_dialog: StartApprovalDialog | None = None
+        self._candidate_editor: QDialog | None = None
         self._exit_warning_box: QMessageBox | None = None
         self._tasks: set[asyncio.Task] = set()
         self._layout_mode = ""

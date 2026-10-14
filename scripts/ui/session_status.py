@@ -219,7 +219,7 @@ class SessionStatus:
         return f"{hours}h {minutes}m ago" if minutes else f"{hours}h ago"
 
     def _can_review(self) -> bool:
-        if self._limits_dirty or self._candidate_document is None:
+        if self._limits_dirty or self._candidate_document is None or not self._candidate_ready:
             return False
         candidate = Path(self.candidate_edit.text().strip()) if self.candidate_edit.text().strip() else None
         return bool(
@@ -258,9 +258,12 @@ class SessionStatus:
             self._connect_action.setEnabled(can_connect)
         self.refresh_status_button.setEnabled(not self._status_in_flight and not self._exit_in_flight)
         self.connect_button.setText("Connected" if connected else "Connect Robinhood")
-        self.limits_group.setEnabled(connected and not running and not transition_busy)
+        can_prepare = not running and not transition_busy
+        self.limits_group.setEnabled(can_prepare)
+        self.new_candidate_button.setEnabled(can_prepare)
+        self.edit_candidate_button.setEnabled(can_prepare and self._candidate_document is not None)
         self.save_limits_button.setEnabled(
-            connected and not running and not transition_busy and self._candidate_document is not None
+            can_prepare and self._candidate_ready
             and self._limits_dirty
         )
         self.review_button.setEnabled(not transition_busy and self._can_review())

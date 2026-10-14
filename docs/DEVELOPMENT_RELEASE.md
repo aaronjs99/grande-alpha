@@ -14,6 +14,8 @@ python -m ruff check scripts
 python -m compileall -q scripts
 python tools/verify_worker_recovery.py
 python tools/verify_agent_desk.py
+python tools/verify_session_setup.py
+python tools/verify_local_ai.py
 .\grande.ps1 verify
 ```
 
@@ -31,7 +33,11 @@ charts, stage animations, handoff deduplication, bounded/private-free projection
 startup and paper status races. It also completes the real 24-cycle synthetic demo through the
 local channel, checks virtual fills/history and Stop, and exercises mocked chat failure/cancel/
 retry. It uses disposable data and in-memory IPC credentials; no broker or model is contacted.
-Both validators run in `verify`, CI and the isolated Windows build.
+The session-setup validator exercises drafts, complete candidate round trips, explicit validation,
+source/destination preservation, example isolation and narrow editor layouts. The optional-AI
+validator uses fake HTTP plus real disposable process locks to check RAM admission, local model
+metadata, cold/warm lifetime options, contention and cancellation. All four validators run in
+`verify`, CI and the isolated Windows build. They submit no real order and load no real model.
 
 For the 0.19.0 integration, also verify the current-user worker's ownership and authentication,
 stop fencing, stalled/ambiguous operations, restart recovery, and explicit offline execution-store
@@ -43,6 +49,34 @@ provider-observed execution or installed-product acceptance. See the [architectu
 [research MCP guide](RESEARCH.md#agent-research-prompts-and-local-mcp).
 
 ## Packaging and distribution
+
+### Optional AI and first-use broker setup — 2026-10-14
+
+The source verification and Windows build passed. The freshly installed package passed 62
+disposable acceptance checks: 23 recovery, 19 desk, 13 candidate setup, and 7 optional-AI cases.
+The build's frozen dependency metadata audit reported no known vulnerabilities. All 150 bundled
+GRANDE Python modules matched the current source; frozen version/worker-help entrypoints exited 0.
+The headless CLI, worker and analyst imported with desktop libraries blocked.
+
+An initial real desktop launch exposed an ICU DLL collision missed by source checks and the
+headless entrypoints: PyInstaller had collected an incompatible Poppler DLL from the caller's
+PATH. Native analysis now uses only the build/base Python and Windows directories, with PATH
+restored afterward. The frozen `--check-desktop` gate creates the actual Qt desk and candidate
+editor with disposable data, then confirms that no runtime files, worker, broker or model
+request was created. The final build passed that gate, and the installed desktop shortcut
+opened the expected main window. Both shortcut identities passed; verified retired links were
+preserved under the local runtime's `retired-shortcuts` directory. This single launch does not
+establish clean-profile installation, prolonged operation or provider acceptance.
+
+The actual candidate editor was rendered at 610×730 and 370×650 with Windows Segoe UI. Both
+pages fit without horizontal overflow or overlapping labels/fields. Its example remains a
+draft without an explicit account and symbol universe; saving grants no trading authority.
+Independent review fixes cover atomic source preservation, integer display range, strict JSON
+loading, and unverifiable loaded-model status. Review now displays loss-recovery terms too.
+Ollama's metadata endpoint was reachable and reported no loaded models; no model-generated
+answer was attempted or validated. No broker connection, order, permit or credential change
+was made during these checks. Current provider behavior and earnings coverage still need
+operator-observed acceptance before claiming live readiness.
 
 ### Agent desk checkpoint — 2026-10-14
 

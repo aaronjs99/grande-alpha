@@ -26,9 +26,17 @@ The mixed candidate template leaves financial limits unfilled. Authorization for
 may be recorded outside market hours. The engine waits for a supported regular session and fresh
 broker data before considering an order.
 
-While a session runs, the setup form gives way to a monitor showing the latest strategy check and
-when the worker last received a market snapshot. A broker response is not proof of a fill; check
-orders, fills, balances, and positions directly with Robinhood. **Stop trading** stays visible.
+**New session** opens a form; no candidate file has to be written by hand. Its clearly labelled
+example uses $10 per order, $100 total exposure, $200 daily traded amount, a $5 daily loss stop,
+five orders per day and one per minute, with manual loss recovery and a one-hour window. These are
+illustrative settings, not personalized risk advice or a guarantee that losses cannot exceed the
+stop. Fill your exact account and allowed symbols, check the Strategy tab, and save the candidate.
+**Edit setup** reopens a draft or complete candidate and saves a new copy. Unfilled fields remain
+blank; incomplete candidates cannot reach Review or Start. Preparing a file works while disconnected.
+
+The Agent desk stays open while sessions run. **Session details** shows the latest strategy check
+and when the worker last received a market snapshot. A broker response is not proof of a fill;
+check orders, fills, balances, and positions directly with Robinhood. **STOP** stays visible.
 
 Practice trading and historical replay are useful but optional. They are not mandatory activation
 periods or profit certificates.
@@ -69,10 +77,19 @@ flow. Desktop Connect and paper startup never recover saved live intent automati
 running intent needs Stop and a new review. **Session details** contains full status, guidance,
 data coverage, and control logs. **View** switches the desk's light/dark appearance.
 
+Ollama is optional. Paper trading, broker setup, Review and live controls work with AI off, which
+is the default. Opening the app or chat does not start Ollama or load any model.
+
 **AI chat** opens Antonio's conversation view. Enter an installed Ollama model name and send a
 question. It receives a bounded paper snapshot and recent messages at loopback only; it cannot
 start sessions, apply settings or send orders. Missing models show an error; replies can be
-cancelled and retried. Chat requires Ollama to be running separately.
+cancelled and retried. Chat requires Ollama to be running separately. Before inference, GRANDE
+checks installed-model metadata and available RAM, rejects cloud-routed and embedding-only models,
+and uses explicit context and reply limits. It keeps a conservative 2 GiB RAM reserve and allows
+one GRANDE request at a time. This is an admission estimate, not a memory guarantee. A model observed
+cold is requested with immediate release after the reply; already-loaded models are not explicitly
+unloaded. Cancelling a reply stops the local wait; it cannot guarantee the Ollama server has stopped
+generating. GRANDE never downloads a model, kills other applications, or changes Ollama settings.
 
 After reviewing a connected account, open **Session details** and enable **research MCP** for this worker
 session, or use `research mcp enable` from the CLI. It starts off, is separate from trading,

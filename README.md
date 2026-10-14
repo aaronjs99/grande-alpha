@@ -33,15 +33,23 @@ The package source lives under `scripts/`.
 
 The desktop opens Antonio's **Agent desk**: virtual equity, paper P&L, recent activity, and six
 research modules. **Start paper** opens editable virtual amounts and a synthetic demo; opening
-the app starts nothing. **AI chat** uses an installed local Ollama model for read-only discussion.
+the app starts nothing. AI is optional and off by default; paper and broker sessions work without
+Ollama. **AI chat** can use an installed local model for read-only discussion after a RAM check.
 Setup and technical details live in separate dialogs. **STOP** stays visible while scrolling.
 
 For broker execution, open **Session → Broker session setup** and follow
-**Connect account → Set limits → Review → Start**. Each user chooses
+**Connect account → Set limits → Review → Start**. **New session** prepares a local candidate;
+its visible example uses $10 per order, $100 exposure and a $5 daily loss stop for one hour.
+Complete the account and symbol fields, adjust the settings, save, then Review. Incomplete files
+can be saved and reopened as drafts but cannot be reviewed or started. Each user chooses
 their own capital, symbols, order and exposure caps, daily loss limit, and recovery policy. An
 approval may be made outside market hours, but an order still needs a supported open session,
 fresh executable data, broker permission, and intact risk controls. Practice and replay are
 optional research tools, not mandatory waiting periods or profitability certificates.
+
+After building, `.\grande.ps1 install -Packaged` installs desktop and Start Menu shortcuts to the
+local executable without updating shared Python packages. Source shortcuts launch Python directly;
+neither shortcut uses an execution-policy bypass.
 
 ## Current limits
 

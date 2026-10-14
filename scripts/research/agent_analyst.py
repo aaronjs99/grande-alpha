@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 
-import httpx
+from grande_alpha.research.local_ollama import LocalOllamaClient
 
 AI_REQUEST_TIMEOUT_SECONDS = 45.0
 AI_MAX_ANALYSIS_AGE_SECONDS = 60.0
@@ -125,6 +125,9 @@ def parse_decisions(payload: str, expected_keys: set[str], source_ids: dict[str,
 
 
 class OllamaAnalyst:
+    def __init__(self, *, client=None) -> None:
+        self.client = client or LocalOllamaClient()
+
     async def analyze(
         self, model: str, observations: list[dict], *, research_brief: str = "", market_brief: str = ""
     ) -> dict[str, tuple[str, str]]:
@@ -137,15 +140,12 @@ class OllamaAnalyst:
                         if (item.get('source_context') or {}).get('news_required', True)}
         schema = _decision_schema(observations, source_ids, news_ids)
         # Fixed loopback endpoint, no proxy inheritance, redirects or broker credentials.
-        async with httpx.AsyncClient(timeout=httpx.Timeout(AI_REQUEST_TIMEOUT_SECONDS, connect=5.0),
-                                     trust_env=False, follow_redirects=False) as client:
-            response = await client.post(
-                "http://127.0.0.1:11434/api/chat",
-                json={
+        try:
+            data = await self.client.chat(
+                {
                     "model": model,
                     "stream": False,
                     "format": schema,
-                    "options": {"temperature": 0, "num_predict": 4096},
                     "messages": [
                         {
                             "role": "system",
@@ -183,19 +183,17 @@ class OllamaAnalyst:
                             }, allow_nan=False),
                         },
                     ],
-                },
+                }, context_tokens=8192, output_tokens=2048,
+                timeout_seconds=AI_REQUEST_TIMEOUT_SECONDS,
             )
-            response.raise_for_status()
-            try:
-                data = response.json()
-            except ValueError:
-                raise AnalystResponseError("invalid_json") from None
-            if not isinstance(data, dict) or data.get("done") is not True or not isinstance(data.get("message"), dict):
-                raise AnalystResponseError("incomplete_response")
-            if data.get("done_reason") == "length":
-                raise AnalystResponseError("output_limit")
-            if data["message"].get("tool_calls"):
-                raise AnalystResponseError("tool_request")
-            return parse_decisions(
-                data.get("message", {}).get("content"), {item["key"] for item in observations}, source_ids, news_ids
-            )
+        except json.JSONDecodeError:
+            raise AnalystResponseError("invalid_json") from None
+        if not isinstance(data, dict) or data.get("done") is not True or not isinstance(data.get("message"), dict):
+            raise AnalystResponseError("incomplete_response")
+        if data.get("done_reason") == "length":
+            raise AnalystResponseError("output_limit")
+        if data["message"].get("tool_calls"):
+            raise AnalystResponseError("tool_request")
+        return parse_decisions(
+            data.get("message", {}).get("content"), {item["key"] for item in observations}, source_ids, news_ids
+        )

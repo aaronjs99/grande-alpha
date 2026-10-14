@@ -113,6 +113,7 @@ class BrokerSessionRuntime:
                        if key.startswith("max_")},
             "allocation_policy": asdict(policy),
             "earnings_thresholds": thresholds,
+            "loss_recovery": {"unit": scope.loss_recovery_unit, "delay": scope.loss_recovery_delay},
             "starts_at": scope.starts_at.isoformat(),
             "expires_at": scope.expires_at.isoformat() if scope.expires_at else None,
             "orders_submitted": False,
