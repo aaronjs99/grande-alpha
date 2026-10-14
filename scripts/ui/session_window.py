@@ -31,6 +31,7 @@ from PySide6.QtWidgets import (
 from grande_alpha import __version__
 from grande_alpha.execution.worker_ipc import LocalControlClient
 from grande_alpha.execution.worker_process import launch_worker
+from grande_alpha.execution.worker_status import stop_existing_worker
 from grande_alpha.ui.session_components import (
     StartApprovalDialog,
     StatusCard,
@@ -73,7 +74,10 @@ class SessionWindow(SessionWindowLifecycle, SessionSetup, SessionStatus, Session
         self._launcher = launcher
         self._client_factory = client_factory
         self._client: LocalControlClient | None = client_factory(self.data_dir)
-        self._status: dict[str, Any] = {}
+        self._status: dict[str, Any] = {"worker_reachable": False, "control_record": "unchecked"}
+        self._last_worker_status: dict[str, Any] = {}
+        self._last_status_at: str | None = None
+        self._status_epoch = 0
         self._review_result: dict[str, Any] | None = None
         self._authorized_scope = ""
         self._candidate_document: dict[str, Any] | None = None
@@ -164,9 +168,9 @@ class SessionWindow(SessionWindowLifecycle, SessionSetup, SessionStatus, Session
         self.status_layout = QGridLayout(self.status_panel)
         self.status_layout.setContentsMargins(0, 0, 0, 0)
         self.status_layout.setSpacing(9)
-        self.worker_card = StatusCard("Worker", "OFFLINE")
-        self.account_card = StatusCard("Account", "Not connected")
-        self.session_card = StatusCard("Session", "Stopped")
+        self.worker_card = StatusCard("Worker", "CHECKING")
+        self.account_card = StatusCard("Account", "Unverified")
+        self.session_card = StatusCard("Session", "Unverified")
         self.coverage_card = StatusCard("Data coverage", "Awaiting first cycle")
         self.event_card = StatusCard("Last control update", "Open the app")
         self.status_cards = (
@@ -177,6 +181,18 @@ class SessionWindow(SessionWindowLifecycle, SessionSetup, SessionStatus, Session
             self.event_card,
         )
         self.outer.addWidget(self.status_panel)
+
+        self.status_notice = QLabel("Checking the local worker. Opening this window does not start trading.")
+        self.status_notice.setObjectName("settingsDescription")
+        self.status_notice.setWordWrap(True)
+        self.status_notice.setAccessibleName("Worker status and recovery guidance")
+        self.refresh_status_button = QPushButton("Refresh status")
+        self.refresh_status_button.setAccessibleName("Retry the local worker status without starting it")
+        self.refresh_status_button.clicked.connect(
+            lambda: self._spawn(self._refresh_status(show_errors=False))
+        )
+        self.status_layout.addWidget(self.status_notice, 10, 0, 1, 4)
+        self.status_layout.addWidget(self.refresh_status_button, 10, 4)
 
         self.content = QWidget()
         self.content_layout = QGridLayout(self.content)
@@ -200,9 +216,9 @@ class SessionWindow(SessionWindowLifecycle, SessionSetup, SessionStatus, Session
         menu_bar = self.menuBar()
         menu_bar.setNativeMenuBar(False)
         session = menu_bar.addMenu("Session")
-        connect = QAction("Connect", self)
-        connect.triggered.connect(lambda: self._spawn(self._connect()))
-        session.addAction(connect)
+        self._connect_action = QAction("Connect", self)
+        self._connect_action.triggered.connect(lambda: self._spawn(self._connect()))
+        session.addAction(self._connect_action)
         review = QAction("Review exact session", self)
         review.triggered.connect(lambda: self._spawn(self._review()))
         session.addAction(review)
@@ -210,6 +226,10 @@ class SessionWindow(SessionWindowLifecycle, SessionSetup, SessionStatus, Session
         stop.triggered.connect(lambda: self._spawn(self._stop()))
         stop.setShortcut("Ctrl+Shift+S")
         session.addAction(stop)
+        refresh = QAction("Refresh status", self)
+        refresh.setShortcut("F5")
+        refresh.triggered.connect(lambda: self._spawn(self._refresh_status(show_errors=False)))
+        session.addAction(refresh)
         session.addSeparator()
         exit_action = QAction("Exit…", self)
         exit_action.setShortcut("Ctrl+Q")
@@ -245,7 +265,7 @@ class SessionWindow(SessionWindowLifecycle, SessionSetup, SessionStatus, Session
         narrow = width < 900 or height > width
         mode = "portrait" if narrow else "landscape"
         primary_panel = (
-            self.monitor_panel if self._status.get("running") is True else self.flow_panel
+            self.monitor_panel if self._monitor_required() else self.flow_panel
         )
         if not force and mode == self._layout_mode and primary_panel is self._primary_panel:
             return
@@ -269,7 +289,10 @@ class SessionWindow(SessionWindowLifecycle, SessionSetup, SessionStatus, Session
             self.content_layout.setRowStretch(0, 0)
             self.content_layout.setRowStretch(1, 1)
             self.content_layout.setColumnStretch(0, 1)
+            self.content_layout.setColumnStretch(1, 0)
             self._reflow_grid(self.status_layout, self.status_cards, 2)
+            self.status_layout.addWidget(self.status_notice, 3, 0, 1, 2)
+            self.status_layout.addWidget(self.refresh_status_button, 4, 0, 1, 2)
             self.activity.setMinimumHeight(230)
             self.outer.setContentsMargins(10, 9, 10, 12)
         else:
@@ -284,6 +307,8 @@ class SessionWindow(SessionWindowLifecycle, SessionSetup, SessionStatus, Session
             self.content_layout.setColumnStretch(1, 2)
             self.content_layout.setRowStretch(0, 1)
             self._reflow_grid(self.status_layout, self.status_cards, 5)
+            self.status_layout.addWidget(self.status_notice, 1, 0, 1, 4)
+            self.status_layout.addWidget(self.refresh_status_button, 1, 4)
             self.activity.setMinimumHeight(0)
             self.outer.setContentsMargins(18, 15, 18, 18)
 
@@ -308,28 +333,13 @@ class SessionWindow(SessionWindowLifecycle, SessionSetup, SessionStatus, Session
 
     def _write_durable_stop_fence(self) -> dict[str, Any]:
         """Emergency local fence used only when the authenticated IPC is unavailable."""
-        from grande_alpha.execution.worker_control import WorkerControlStore
-
-        control_path = self.data_dir / "grande_alpha.db"
-        if not control_path.is_file():
-            raise RuntimeError("No local worker control record exists")
-        control = WorkerControlStore(control_path)
-        try:
-            state = control.stop()
-        finally:
-            control.close()
-        return {
-            "running": False,
-            "generation": state.generation,
-            "broker_verified": False,
-            "orders_cancelled": False,
-        }
+        return stop_existing_worker(self.data_dir)
 
     async def _durable_stop_fallback(self) -> dict[str, Any]:
         return await asyncio.to_thread(self._write_durable_stop_fence)
 
     async def _connect(self) -> None:
-        if self._busy:
+        if self._busy or self._stop_in_flight or self._exit_in_flight or not self._can_connect():
             return
         self._set_busy(True)
         self._clear_banner()
@@ -364,6 +374,7 @@ class SessionWindow(SessionWindowLifecycle, SessionSetup, SessionStatus, Session
         if self._busy or not self._can_review():
             return
         self._set_busy(True)
+        self._status_epoch += 1
         self._clear_banner()
         payload = {
             "candidate_path": str(Path(self.candidate_edit.text().strip()).resolve()),
@@ -374,6 +385,7 @@ class SessionWindow(SessionWindowLifecycle, SessionSetup, SessionStatus, Session
         try:
             result = await self._request("review", payload, timeout_seconds=300)
             self._worker_seen = True
+            self._status_epoch += 1
             self._review_result = result
             self._authorized_scope = ""
             self._render_review(result)
@@ -394,7 +406,7 @@ class SessionWindow(SessionWindowLifecycle, SessionSetup, SessionStatus, Session
         self._refresh_controls()
 
     def _prompt_start(self) -> None:
-        if not self._review_result or self._busy or self._stop_in_flight:
+        if not self._review_result or not self.start_button.isEnabled():
             return
         # A previous completed Stop does not permanently block a later explicit
         # approval. A Stop pressed while this dialog is open sets the flag again.
@@ -413,7 +425,9 @@ class SessionWindow(SessionWindowLifecycle, SessionSetup, SessionStatus, Session
         dialog.open()
 
     async def _authorize_and_start(self, phrase: str) -> None:
-        if self._busy or self._stop_in_flight or self._stop_requested or not self._review_result:
+        if (self._busy or self._stop_in_flight or self._stop_requested or self._exit_in_flight
+                or not self._review_result or self._status.get("worker_reachable") is not True
+                or self._status.get("connected") is not True):
             return
         scope = self._review_result.get("scope_digest")
         if not isinstance(scope, str) or phrase != f"AUTHORIZE {scope}":
@@ -450,6 +464,7 @@ class SessionWindow(SessionWindowLifecycle, SessionSetup, SessionStatus, Session
         if self._stop_in_flight or self._exit_in_flight:
             return
         self._stop_requested = True
+        self._status_epoch += 1
         if self._approval_dialog is not None:
             self._approval_dialog.reject()
         self._stop_in_flight = True
@@ -466,12 +481,7 @@ class SessionWindow(SessionWindowLifecycle, SessionSetup, SessionStatus, Session
         except Exception as error:
             try:
                 fallback = await self._durable_stop_fallback()
-                self._status.update(
-                    running=False,
-                    phase="Stopped — local fence",
-                    generation=fallback["generation"],
-                )
-                self._apply_status(dict(self._status))
+                self._apply_disconnected_status(fallback)
                 self._log(
                     "warning",
                     "Worker IPC was unavailable. The durable local stop fence was written; broker orders and holdings are unverified.",
@@ -565,6 +575,8 @@ class SessionWindow(SessionWindowLifecycle, SessionSetup, SessionStatus, Session
 
     # ---------- State and messaging ----------
     def _invalidate_review(self, reason: str) -> None:
+        if self._approval_dialog is not None:
+            self._approval_dialog.reject()
         if self._review_result is not None:
             self._log("info", f"Previous review cleared: {reason.lower()}.")
         self._review_result = None

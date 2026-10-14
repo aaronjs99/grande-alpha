@@ -1,10 +1,9 @@
+"""General dataset commands; runtime-trace commands register through their own module."""
+
 from __future__ import annotations
 
 import argparse
-import json
-from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
-from typing import Any
 
 from platformdirs import user_data_path
 
@@ -16,20 +15,30 @@ from grande_alpha.data.data_readiness import (
 )
 from grande_alpha.data.dataset_manifest import manifest_template
 from grande_alpha.data.evidence_ledger import audit_evidence_ledger
-from grande_alpha.domain.market_calendar import regular_session_times
-from grande_alpha.domain.policy import session_key
 from grande_alpha.interfaces.cli.cli_table import format_table
-from grande_alpha.interfaces.cli.parser_common import output_options, runtime_trace_options
+from grande_alpha.interfaces.cli.parser_common import output_options
 from grande_alpha.interfaces.cli.render import print_json as _json
-from grande_alpha.research.historical_models import (
-    RUNTIME_ANALYSIS_PRICE_SEMANTICS,
-    RUNTIME_EXECUTION_PRICE_SEMANTICS,
-    RUNTIME_OBSERVATION_SCHEMA,
-    RUNTIME_VOLUME_SEMANTICS,
-    HistoricalBundle,
+
+# Keep the existing import paths available while the runtime-trace implementation
+# lives with its own command group and reusable data qualification function.
+from grande_alpha.interfaces.cli.runtime_trace_commands import (
+    _load_json_object as _load_json_object,
 )
-from grande_alpha.research.runtime_trace import load_runtime_quote_trace_with_row_count
-from grande_alpha.research.runtime_trace_provenance import runtime_trace_manifest_template
+from grande_alpha.interfaces.cli.runtime_trace_commands import (
+    _load_runtime_trace_from_data_args as _load_runtime_trace_from_data_args,
+)
+from grande_alpha.interfaces.cli.runtime_trace_commands import (
+    _runtime_trace_readiness as _runtime_trace_readiness,
+)
+from grande_alpha.interfaces.cli.runtime_trace_commands import (
+    add_runtime_trace_commands,
+)
+from grande_alpha.interfaces.cli.runtime_trace_commands import (
+    command_data_runtime_trace_audit as command_data_runtime_trace_audit,
+)
+from grande_alpha.interfaces.cli.runtime_trace_commands import (
+    command_data_runtime_trace_manifest_template as command_data_runtime_trace_manifest_template,
+)
 
 
 def add_data_commands(root_commands) -> None:
@@ -63,161 +72,10 @@ def add_data_commands(root_commands) -> None:
     template.add_argument("--target-interval", default="5s")
     template.set_defaults(func=command_data_manifest_template)
 
-    trace = commands.add_parser(
-        "runtime-trace",
-        help="Audit or describe a synchronized runtime quote trace without broker access",
-    )
-    trace_commands = trace.add_subparsers(dest="runtime_trace_command", required=True)
-    trace_audit = trace_commands.add_parser("audit", help="Audit one inclusive trace range read-only")
-    runtime_trace_options(trace_audit, allow_manifest=True)
-    output_options(trace_audit)
-    trace_audit.set_defaults(func=command_data_runtime_trace_audit)
-
-    trace_template = trace_commands.add_parser(
-        "manifest-template",
-        help="Print a range-bound rights/provenance template without writing a file",
-    )
-    runtime_trace_options(trace_template, allow_manifest=False, require_range=True)
-    trace_template.set_defaults(func=command_data_runtime_trace_manifest_template)
+    add_runtime_trace_commands(commands)
 
 
-def _load_json_object(path: Path | None, label: str) -> dict[str, Any] | None:
-    if path is None:
-        return None
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        raise ValueError(f"Could not read {label}: {exc}") from exc
-    if not isinstance(payload, dict):
-        raise ValueError(f"{label.capitalize()} must contain one JSON object")
-    return payload
 
-
-def _runtime_trace_readiness(
-    bundle: HistoricalBundle,
-    *,
-    quote_row_count: int,
-    range_start: date | None,
-    range_end: date | None,
-    now: datetime | None = None,
-) -> dict[str, Any]:
-    quality = bundle.quality
-    provenance = bundle.provenance
-    if quality is None or provenance is None:
-        raise ValueError("Runtime trace has no quality or provenance record")
-    reference = now or datetime.now(UTC)
-    age_days = (reference - bundle.end).total_seconds() / 86_400
-    actual_sessions = {session_key(frame.start, bundle.market_hours) for frame in bundle.frames}
-    actual_start = date.fromisoformat(min(actual_sessions))
-    actual_end = date.fromisoformat(max(actual_sessions))
-    expected_start = range_start or actual_start
-    expected_end = range_end or actual_end
-    expected_sessions: list[str] = []
-    cursor = expected_start
-    while cursor <= expected_end:
-        if regular_session_times(cursor) is not None:
-            expected_sessions.append(cursor.isoformat())
-        cursor += timedelta(days=1)
-    missing_range_sessions = sorted(set(expected_sessions) - actual_sessions)
-    interval_seconds = int(bundle.interval[:-1]) if bundle.interval.endswith("s") else 60
-    exact_schema = bool(
-        bundle.frames
-        and all(frame.has_exact_runtime_observation for frame in bundle.frames)
-        and provenance.observation_schema == RUNTIME_OBSERVATION_SCHEMA
-        and provenance.analysis_price_semantics == RUNTIME_ANALYSIS_PRICE_SEMANTICS
-        and provenance.execution_price_semantics == RUNTIME_EXECUTION_PRICE_SEMANTICS
-        and provenance.volume_semantics == RUNTIME_VOLUME_SEMANTICS
-        and provenance.validator_profile == "exact_execution_quotes"
-    )
-    exact_cadence = bool(
-        provenance.source_resolution_seconds is not None
-        and 0 < provenance.source_resolution_seconds <= interval_seconds
-    )
-    checks = [
-        {
-            "name": "Exact runtime observation schema",
-            "passed": exact_schema,
-            "observed": (
-                f"{len(bundle.frames)} causal frames; schema={provenance.observation_schema}; "
-                f"validator={provenance.validator_profile} v{provenance.validator_version}"
-            ),
-            "requirement": "Every frame is one synchronized QQQ/TQQQ/SQQQ causal runtime observation",
-        },
-        {
-            "name": "Provenance and source rights",
-            "passed": bundle.evidence_provenance_eligible,
-            "observed": (
-                f"kind={provenance.source_kind}; manifest v{provenance.manifest_version}; "
-                f"eligible={bundle.evidence_provenance_eligible}"
-            ),
-            "requirement": "Content-bound manifest v1 with user-reviewed research and automated-research rights",
-        },
-        {
-            "name": "Exact native cadence",
-            "passed": exact_cadence,
-            "observed": f"maximum accepted within-stream delta {provenance.source_resolution_seconds}s",
-            "requirement": f"Positive source cadence no coarser than {interval_seconds}s",
-        },
-        {
-            "name": "Requested range coverage",
-            "passed": not missing_range_sessions,
-            "observed": (
-                f"{len(actual_sessions)} observed sessions; {len(expected_sessions)} expected; "
-                f"{len(missing_range_sessions)} absent"
-            ),
-            "requirement": "Every scheduled equity session in the inclusive requested range is present",
-        },
-        {
-            "name": "Data breadth",
-            "passed": quality.sessions >= 141,
-            "observed": f"{quality.sessions} sessions",
-            "requirement": "At least 141 sessions: 120 development, one purge, and 20 final holdout",
-        },
-        {
-            "name": "Data recency",
-            "passed": 0 <= age_days <= 30,
-            "observed": f"{age_days:.1f} days old",
-            "requirement": "Final observation no more than 30 days old",
-        },
-        {
-            "name": "Data integrity",
-            "passed": bool(
-                quality.clean
-                and quality.missing_intervals == 0
-                and quality.missing_sessions == 0
-                and quality.session_coverage_pct >= 95.0
-            ),
-            "observed": (
-                f"{quality.missing_intervals} missing intervals; "
-                f"{quality.missing_sessions} omitted sessions; "
-                f"{quality.duplicate_timestamps} duplicates; "
-                f"{quality.session_coverage_pct:.1f}% complete"
-            ),
-            "requirement": "Zero missing/duplicate intervals or sessions and at least 95% complete sessions",
-        },
-    ]
-    return {
-        "operation": "read_only_runtime_trace_audit",
-        "broker_calls": 0,
-        "holdout_reserved_or_evaluated": False,
-        "database_open_mode": "ro",
-        "source": bundle.source,
-        "dataset_hash": bundle.dataset_hash,
-        "provenance_hash": bundle.provenance_hash,
-        "source_trace_sha256": provenance.source_trace_sha256,
-        "interval": bundle.interval,
-        "market_hours": bundle.market_hours,
-        "range_start": range_start.isoformat() if range_start is not None else None,
-        "range_end": range_end.isoformat() if range_end is not None else None,
-        "observed_start": bundle.start.isoformat(),
-        "observed_end": bundle.end.isoformat(),
-        "quote_row_count": quote_row_count,
-        "frames": len(bundle.frames),
-        "sessions": quality.sessions,
-        "complete_sessions": quality.complete_sessions,
-        "checks": checks,
-        "input_ready": all(check["passed"] for check in checks),
-    }
 
 
 def _print_data_report(report: DatasetReadinessReport, width: int | None) -> None:
@@ -393,95 +251,4 @@ def command_data_audit(args: argparse.Namespace) -> int:
 
 def command_data_manifest_template(args: argparse.Namespace) -> int:
     _json(manifest_template(args.target_interval))
-    return 0
-
-
-def _load_runtime_trace_from_data_args(
-    args: argparse.Namespace,
-    *,
-    include_manifest: bool,
-) -> tuple[HistoricalBundle, int]:
-    if include_manifest and args.manifest is not None and (args.start is None or args.end is None):
-        raise ValueError("A manifest-backed runtime-trace audit requires --start and --end")
-    manifest = _load_json_object(args.manifest, "runtime-trace manifest") if include_manifest else None
-    return load_runtime_quote_trace_with_row_count(
-        args.database,
-        bar_seconds=args.bar_seconds,
-        market_hours=args.session,
-        manifest=manifest,
-        start=args.start,
-        end=args.end,
-    )
-
-
-def command_data_runtime_trace_audit(args: argparse.Namespace) -> int:
-    """Audit one exact trace range without opening the evidence ledger for writes."""
-
-    bundle, row_count = _load_runtime_trace_from_data_args(args, include_manifest=True)
-    payload = _runtime_trace_readiness(
-        bundle,
-        quote_row_count=row_count,
-        range_start=args.start,
-        range_end=args.end,
-    )
-    if args.json:
-        _json(payload)
-    else:
-        print(
-            "READ-ONLY RUNTIME-TRACE AUDIT - SQLite mode=ro; no broker call, trial, "
-            "holdout reservation, or holdout evaluation was performed."
-        )
-        print(
-            format_table(
-                ["Item", "Value"],
-                [
-                    [
-                        "Range",
-                        f"{payload['range_start'] or 'first row'} through {payload['range_end'] or 'last row'}",
-                    ],
-                    ["Observed", f"{payload['observed_start']} through {payload['observed_end']}"],
-                    ["Source rows", payload["quote_row_count"]],
-                    ["Causal frames", payload["frames"]],
-                    ["Sessions", f"{payload['sessions']} total; {payload['complete_sessions']} complete"],
-                    ["Dataset hash", payload["dataset_hash"]],
-                ],
-                args.width,
-            )
-        )
-        print()
-        print(
-            format_table(
-                ["Gate", "Status", "Observed", "Requirement"],
-                [
-                    [
-                        check["name"],
-                        "PASS" if check["passed"] else "FAIL",
-                        check["observed"],
-                        check["requirement"],
-                    ]
-                    for check in payload["checks"]
-                ],
-                args.width,
-            )
-        )
-        print(
-            "\nINPUT READY"
-            if payload["input_ready"]
-            else "\nINPUT NOT READY - do not run Evidence Lab on this range."
-        )
-    return 0 if payload["input_ready"] else 1
-
-
-def command_data_runtime_trace_manifest_template(args: argparse.Namespace) -> int:
-    """Print a range-bound template; never save it or touch the holdout ledger."""
-
-    bundle, row_count = _load_runtime_trace_from_data_args(args, include_manifest=False)
-    _json(
-        runtime_trace_manifest_template(
-            bundle,
-            row_count,
-            range_start=args.start,
-            range_end=args.end,
-        )
-    )
     return 0

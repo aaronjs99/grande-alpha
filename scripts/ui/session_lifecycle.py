@@ -65,7 +65,8 @@ class SessionWindowLifecycle:
         if self._closing:
             event.accept()
             return
-        if not self._worker_seen and not self._launch_in_progress and not self._status:
+        if (not self._worker_seen and not self._launch_in_progress
+                and self._status.get("control_record") == "missing"):
             self.status_timer.stop()
             event.accept()
             return
@@ -96,6 +97,7 @@ class SessionWindowLifecycle:
 
     async def _shutdown_then_close(self) -> None:
         self._stop_requested = True
+        self._status_epoch += 1
         if self._approval_dialog is not None:
             self._approval_dialog.reject()
         self._exit_in_flight = True
@@ -110,7 +112,7 @@ class SessionWindowLifecycle:
                     await asyncio.sleep(0.05)
                 if self._launch_in_progress:
                     raise RuntimeError("The local worker is still starting")
-            if self._worker_seen:
+            if self._worker_seen or self._status.get("control_record") != "missing":
                 result = await self._request("shutdown", {}, timeout_seconds=8)
                 if result.get("stopped") is not True:
                     raise RuntimeError("The worker did not confirm its stop fence")
@@ -132,7 +134,7 @@ class SessionWindowLifecycle:
         self._exit_in_flight = False
         self._refresh_controls()
         if warning:
-            self._show_exit_warning_then_close(warning)
+            self._show_exit_warning_then_close(warning, stop_confirmed=result.get("stopped") is True)
         else:
             self._complete_close()
 
@@ -156,11 +158,11 @@ class SessionWindowLifecycle:
             return ""
         return "Trading is locally stopped, but " + "; ".join(parts) + ". Check the broker directly."
 
-    def _show_exit_warning_then_close(self, message: str) -> None:
+    def _show_exit_warning_then_close(self, message: str, *, stop_confirmed: bool = True) -> None:
         self._log("warning", message)
         box = QMessageBox(self)
         box.setIcon(QMessageBox.Icon.Warning)
-        box.setWindowTitle("Stopped — verify the broker")
+        box.setWindowTitle("Local stop recorded — verify broker" if stop_confirmed else "Stop unconfirmed — verify broker")
         box.setText(message)
         box.setInformativeText(
             "GRANDE Alpha will now exit. This warning does not claim cancellation or a flat account."

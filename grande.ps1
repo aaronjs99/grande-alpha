@@ -54,6 +54,7 @@ switch ($Task) {
     'verify' {
         Invoke-Python -Arguments @('-m', 'ruff', 'check', 'scripts')
         Invoke-Python -Arguments @('-m', 'compileall', '-q', 'scripts')
+        Invoke-Python -Arguments @('tools/verify_worker_recovery.py')
         # Build from a fresh sdist so removed source files cannot leak from build/lib.
         $BuildOutputDir = Join-Path ([IO.Path]::GetTempPath()) "grande-alpha-verify-$([guid]::NewGuid().ToString('N'))"
         try {

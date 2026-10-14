@@ -19,6 +19,13 @@ development launcher; the command line and desktop entrypoints are `grande-alpha
 | Local worker controls | `execution/session_worker.py`, `execution/worker_control.py`, `execution/worker_ipc.py`, `execution/worker_process.py` | User-started hidden mixed worker and authenticated local controls; installed and provider acceptance remain outstanding |
 | Interfaces | `cli.py`, `interfaces/cli/`, `app.py`, `ui/session_window.py`, `ui/session_panels.py`, `ui/session_setup.py`, `ui/session_status.py`, `ui/session_lifecycle.py` | CLI prompts and output stay in interface adapters; the desktop composes focused setup, status, panel, and exit components |
 
+Runtime-trace input qualification lives in `data/runtime_trace_readiness.py` and
+accepts a recorded `HistoricalBundle`, row count, requested date range, and optional
+reference clock. It returns the existing read-only readiness report without importing
+the CLI or opening a broker/database. `interfaces/cli/runtime_trace_commands.py` owns
+runtime-trace argument registration, file adapters, and presentation; `data_commands.py`
+retains general dataset commands and compatibility imports for its existing trace helpers.
+
 The desktop and CLI use one user-owned hidden worker. Attended ETF and live-shadow modes were
 retired; historical research and offline replay records remain. Source checks do not establish an
 installed or provider-validated trading service. In particular,
@@ -36,6 +43,14 @@ research commands with the worker. Stop, Revoke, or shutdown revokes the lease a
 work; expired commands cannot become later broker actions.
 The bridge has no public listener, account export, or broker credentials. See
 [research and setup](RESEARCH.md#agent-research-prompts-and-local-mcp).
+
+Disconnected worker status and emergency fallback fencing share `execution/worker_status.py`.
+Status opens only an existing database with SQLite `mode=ro`; fallback Stop uses `mode=rw`
+and validates the singleton before changing its generation. Neither initializes a control record.
+Recorded running intent is separate from worker reachability and broker truth. The desktop keeps
+previous observations marked unverified and rejects status probes that predate a control change.
+Start changes intent through an atomic scope/generation comparison; in-process Stop and shutdown
+also block concurrent Start during cleanup.
 
 ## Order lifecycle
 

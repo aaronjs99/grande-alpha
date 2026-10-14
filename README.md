@@ -41,7 +41,7 @@ optional research tools, not mandatory waiting periods or profitability certific
 
 The desktop and command line control the same user-started hidden mixed stock/ETF worker. The
 former attended ETF and live-shadow routes have been retired; historical records and offline replay
-remain available. The automated regression suite has been removed; installed Windows and
+remain available. A focused offline worker-recovery validator is available; installed Windows and
 provider-observed recovery are still pending. Verify the exact worker state rather than assuming a
 desktop badge proves a broker session is live.
 Provider-specific order schemas, earnings coverage, restart/partial-fill behavior, and installed

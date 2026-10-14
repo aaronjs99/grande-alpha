@@ -18,13 +18,37 @@ $DistributionOutput = Join-Path $ProjectRoot 'dist'
 $SpecOutput = Join-Path $ProjectRoot 'artifacts\pyinstaller'
 
 $TemporaryRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath())
-$StageRoot = Join-Path $TemporaryRoot ("grande-alpha-pyinstaller-$([guid]::NewGuid().ToString('N'))")
+$StageRoot = Join-Path $TemporaryRoot ("ga-pyi-$([guid]::NewGuid().ToString('N'))")
+$SavedPipEnvironment = @{}
+foreach ($Setting in Get-ChildItem Env: | Where-Object { $_.Name -like 'PIP_*' }) {
+    $SavedPipEnvironment[$Setting.Name] = $Setting.Value
+}
 try {
+    # Redirects and private indexes from the caller must not escape the build environment.
+    foreach ($SettingName in $SavedPipEnvironment.Keys) { Remove-Item -LiteralPath "Env:$SettingName" }
+    $env:PIP_CONFIG_FILE = 'NUL'
     # PyInstaller cannot resolve setuptools' editable scripts/ -> grande_alpha mapping.
     New-Item -ItemType Directory -Path $StageRoot | Out-Null
+    # Keep shared Python packages and unrelated keyring plugins out of the executable.
+    # PySide6's nested QML files must fit Windows' default path-length limit.
+    $BuildEnvironment = Join-Path $StageRoot 'v'
+    & $PythonExe -I -m venv $BuildEnvironment
+    if ($LASTEXITCODE -ne 0) { throw 'The isolated packaging environment could not be created.' }
+    $BuildPython = Join-Path $BuildEnvironment 'Scripts\python.exe'
+    & $BuildPython -I -m pip install --disable-pip-version-check --upgrade pip 'setuptools>=83' wheel
+    if ($LASTEXITCODE -ne 0) { throw 'The isolated packaging tools could not be installed.' }
+    $BuildRequirementsJson = & $PythonExe -I -c 'import json,sys,tomllib; from pathlib import Path; data=tomllib.loads(Path(sys.argv[1]).read_text(encoding="utf-8")); print(json.dumps([value for value in data["project"]["optional-dependencies"]["dev"] if value.split(">", 1)[0] in {"pyinstaller", "pip-audit"}]))' (Join-Path $ProjectRoot 'pyproject.toml')
+    if ($LASTEXITCODE -ne 0) { throw 'The packaging dependency configuration could not be read.' }
+    $BuildRequirements = @($BuildRequirementsJson | ConvertFrom-Json)
+    & $BuildPython -I -m pip install --disable-pip-version-check "${ProjectRoot}[desktop]" @BuildRequirements
+    if ($LASTEXITCODE -ne 0) { throw 'The declared packaging dependencies could not be installed.' }
+    & $BuildPython -I (Join-Path $ProjectRoot 'tools\verify_worker_recovery.py')
+    if ($LASTEXITCODE -ne 0) { throw 'Worker recovery acceptance failed in the isolated packaging environment.' }
     New-Item -ItemType Directory -Path $BuildOutput, $DistributionOutput, $SpecOutput -Force | Out-Null
+    & $BuildPython -I -m pip freeze --all --exclude grande-alpha | Set-Content -LiteralPath (Join-Path $SpecOutput 'resolved-requirements.txt') -Encoding UTF8
+    if ($LASTEXITCODE -ne 0) { throw 'The resolved packaging dependencies could not be recorded.' }
     Copy-Item -LiteralPath (Join-Path $ProjectRoot 'scripts') -Destination (Join-Path $StageRoot 'grande_alpha') -Recurse
-    & $PythonExe -m PyInstaller --noconfirm --clean --windowed --name GRANDEAlpha `
+    & $BuildPython -I -m PyInstaller --noconfirm --clean --windowed --name GRANDEAlpha `
         --workpath $BuildOutput --distpath $DistributionOutput --specpath $SpecOutput `
         --paths $StageRoot `
         --icon $IconIco --add-data "${IconPng};grande_alpha/assets" `
@@ -38,10 +62,21 @@ try {
         --hidden-import mcp.shared.auth `
         (Join-Path $ProjectRoot 'scripts\app.py')
     $BuildExitCode = $LASTEXITCODE
+    if ($BuildExitCode -ne 0) { throw "PyInstaller failed with exit code $BuildExitCode" }
+    & $BuildPython -I -m pip_audit --strict --progress-spinner off --path (Join-Path $DistributionOutput 'GRANDEAlpha\_internal')
+    if ($LASTEXITCODE -ne 0) { throw 'The packaged dependency audit failed. Do not distribute this build.' }
 } finally {
+    foreach ($Setting in Get-ChildItem Env: | Where-Object { $_.Name -like 'PIP_*' }) {
+        Remove-Item -LiteralPath "Env:$($Setting.Name)"
+    }
+    foreach ($SettingName in $SavedPipEnvironment.Keys) {
+        Set-Item -LiteralPath "Env:$SettingName" -Value $SavedPipEnvironment[$SettingName]
+    }
     $ResolvedStage = [IO.Path]::GetFullPath($StageRoot)
     if ($ResolvedStage.StartsWith($TemporaryRoot, [StringComparison]::OrdinalIgnoreCase) -and
-        (Split-Path -Leaf $ResolvedStage) -like 'grande-alpha-pyinstaller-*') {
+        (Split-Path -Leaf $ResolvedStage) -match '^ga-pyi-[0-9a-f]{32}$' -and
+        (Test-Path -LiteralPath $ResolvedStage -PathType Container) -and
+        -not ((Get-Item -LiteralPath $ResolvedStage -Force).Attributes -band [IO.FileAttributes]::ReparsePoint)) {
         try {
             Remove-Item -LiteralPath $ResolvedStage -Recurse -Force
         } catch {

@@ -84,6 +84,21 @@ order. Manual loss-stop recovery requires an explicit acknowledgement. A timed d
 eligible only after its stored deadline, and never resets the same day's loss latch. A loss stop can
 allow backed, risk-reducing exits; ordinary Stop or Revoke cannot.
 
+## When worker status is unavailable
+
+An unreachable worker appears as **Unknown — worker unreachable** when local running intent
+is recorded or cannot be read. Previous strategy checks and market snapshots are marked as
+last reported; account, data coverage, research, and paper status are unverified. Use
+**Refresh status** or **F5** to retry without starting a worker. Connect and Start stay locked
+while running intent is unresolved.
+
+**STOP TRADING** can write a durable fence to an existing worker record when communication
+fails. **Local stop recorded** confirms that local fence, while worker activity, already-sent
+orders, and holdings remain unverified. A later connection requires a new review before Start.
+Stop cannot create or repair a missing, corrupt, or incompatible control record; the app reports
+that failure. **Stop trading and exit** also attempts the fence after a cold disconnected launch
+and distinguishes an unconfirmed stop from a recorded fence.
+
 ## Local data and privacy
 
 Application records are stored under the current Windows user's `GRANDEAlpha` application-data

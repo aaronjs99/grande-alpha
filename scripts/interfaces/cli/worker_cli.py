@@ -8,9 +8,9 @@ from pathlib import Path
 
 from grande_alpha.configuration.config import data_dir
 from grande_alpha.execution.candidate_profile import candidate_template
-from grande_alpha.execution.worker_control import WorkerControlStore
 from grande_alpha.execution.worker_ipc import LocalControlClient, LocalControlError
 from grande_alpha.execution.worker_process import launch_worker
+from grande_alpha.execution.worker_status import disconnected_worker_status, stop_existing_worker
 
 
 def add_session_commands(root_commands) -> None:
@@ -25,7 +25,9 @@ def add_session_commands(root_commands) -> None:
         "stop", help="Durably block new worker orders; does not claim broker cancellation"
     )
     stop.set_defaults(func=command_worker_stop)
-    status = commands.add_parser("status", help="Read the shared worker's actual status")
+    status = commands.add_parser(
+        "status", help="Read worker status, or read-only local intent if the worker is unreachable"
+    )
     status.set_defaults(func=command_worker_control)
 
     connect = commands.add_parser("connect", help="Start the hidden worker and connect its broker session")
@@ -120,7 +122,12 @@ def command_worker_control(args) -> int:
     operation = args.session_command
     if operation == "status":
         client = _client(launch=False)
-        _show(client.request("status", {}))
+        try:
+            status = client.request("status", {}, timeout_seconds=3)
+        except (LocalControlError, OSError, TimeoutError):
+            _show(disconnected_worker_status(data_dir()))
+            return 1
+        _show({**status, "worker_reachable": True, "status_source": "worker"})
         return 0
     if operation == "connect":
         _show(_client(launch=True).request("connect", {"authenticate": bool(args.authenticate)},
@@ -171,16 +178,8 @@ def command_worker_stop(_args) -> int:
         _show(result)
         return 0
     except (LocalControlError, OSError, TimeoutError) as error:
-        control_path = target / "grande_alpha.db"
-        if not control_path.is_file():
-            raise RuntimeError("No worker control record exists; no local session was stopped") from error
-        control = WorkerControlStore(control_path)
-        try:
-            state = control.stop()
-        finally:
-            control.close()
-        _show({"running": False, "generation": state.generation,
-               "broker_cleanup_verified": False, "worker_response": str(error)})
+        _show({**stop_existing_worker(target), "broker_cleanup_verified": False,
+               "worker_response": str(error)})
         return 0
 
 

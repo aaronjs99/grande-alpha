@@ -22,6 +22,8 @@ class SessionWorker:
         self._task: asyncio.Task | None = None
         self._phase = "Idle"
         self._last_error = ""
+        self._stopping = 0
+        self._shutting_down = False
         self.shutdown_requested = asyncio.Event()
 
     def status(self) -> dict:
@@ -42,6 +44,11 @@ class SessionWorker:
         }
 
     async def handle(self, operation: str, payload: dict) -> dict:
+        if operation in {
+            "connect", "review", "authorize", "start", "recovery_ack",
+            "research_enable", "research_paper_start",
+        } and (self._stopping or self._shutting_down):
+            raise RuntimeError("The worker is stopping; wait for cleanup before starting another session")
         if operation == "status":
             return self.status()
         if operation == "connect":
@@ -95,6 +102,8 @@ class SessionWorker:
                 raise RuntimeError("Exact user permit was not verified")
             if hasattr(self.runtime, "stop_research"):
                 await self.runtime.stop_research()
+            if self._stopping or self._shutting_down:
+                raise RuntimeError("Start was cancelled because the worker is stopping")
             state = self.control.start(state.scope_digest, expected_generation=payload["expected_generation"])
             self._launch(state, recover=False)
             return self.status()
@@ -140,12 +149,14 @@ class SessionWorker:
         if operation == "shutdown":
             if payload:
                 raise ValueError("Shutdown does not accept extra fields")
-            await self.stop()
+            self._shutting_down = True
             try:
-                report = await self.runtime.cleanup_report(self.control.current())
-            except Exception:
-                report = {"broker_verified": False, "orders_cancelled": False,
-                          "warning": "Broker cleanup status could not be verified"}
+                await self.stop()
+                try:
+                    report = await self.runtime.cleanup_report(self.control.current())
+                except Exception:
+                    report = {"broker_verified": False, "orders_cancelled": False,
+                              "warning": "Broker cleanup status could not be verified"}
             finally:
                 self.shutdown_requested.set()
             return {"stopped": True, "process_exiting": True, **report}
@@ -179,6 +190,8 @@ class SessionWorker:
                 self.runtime.disable_research()
 
     async def recover(self) -> None:
+        if self._stopping or self._shutting_down:
+            return
         state = self.control.current()
         if not state.running:
             return
@@ -192,22 +205,26 @@ class SessionWorker:
             self._last_error = str(error)
 
     async def stop(self) -> dict:
-        self.control.stop()
-        if hasattr(self.runtime, "stop_research"):
-            with contextlib.suppress(Exception):
-                await self.runtime.stop_research()
-        elif hasattr(self.runtime, "disable_research"):
-            with contextlib.suppress(Exception):
-                self.runtime.disable_research()
-        self._phase = "Stopped"
-        task = self._task
-        if task is not None and not task.done():
-            task.cancel()
-            try:
-                await asyncio.wait_for(task, timeout=5)
-            except (asyncio.CancelledError, TimeoutError):
-                pass
-        return self.status()
+        self._stopping += 1
+        try:
+            self.control.stop()
+            task = self._task
+            if hasattr(self.runtime, "stop_research"):
+                with contextlib.suppress(Exception):
+                    await self.runtime.stop_research()
+            elif hasattr(self.runtime, "disable_research"):
+                with contextlib.suppress(Exception):
+                    self.runtime.disable_research()
+            self._phase = "Stopped"
+            if task is not None and not task.done():
+                task.cancel()
+                try:
+                    await asyncio.wait_for(task, timeout=5)
+                except (asyncio.CancelledError, TimeoutError):
+                    pass
+            return self.status()
+        finally:
+            self._stopping -= 1
 
     async def close(self) -> None:
         await self.stop()

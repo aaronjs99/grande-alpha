@@ -94,9 +94,13 @@ class WorkerControlStore:
                 raise RuntimeError("Worker control changed while start was being approved")
             if not row["scope_digest"] or scope_digest != row["scope_digest"]:
                 raise RuntimeError("Start scope differs from the reviewed scope")
-            self._db.execute(
-                "UPDATE worker_control SET generation=generation+1,running=1 WHERE id=1"
+            changed = self._db.execute(
+                "UPDATE worker_control SET generation=generation+1,running=1 "
+                "WHERE id=1 AND running=0 AND generation=? AND scope_digest=?",
+                (row["generation"], scope_digest),
             )
+            if changed.rowcount != 1:
+                raise RuntimeError("Worker control changed while start was being approved")
         return self.current()
 
     def stop(self) -> WorkerState:

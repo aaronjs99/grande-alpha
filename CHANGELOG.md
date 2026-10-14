@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- Made desktop and CLI worker recovery distinguish unreachable activity, recorded local stop
+  fences, and broker state. Added status retry, stale-observation labels, and safe disconnected
+  close/exit; fallback Stop refuses missing or incompatible control records.
+- Prevented stale cross-process Start and concurrent Start during Stop/shutdown cleanup from
+  restoring running intent. Added a focused offline worker-recovery acceptance validator to
+  development verification and CI, using disposable data and no broker connection.
+- Isolated Windows packaging from shared Python packages and unrelated plugins. Builds run
+  worker acceptance in the temporary environment, record resolved versions, and fail on
+  vulnerable packaged dependencies; short temporary paths avoid changing Windows path settings.
+- Required the current cryptography patch line for source/runtime installs after the packaged
+  audit identified an older vulnerable dependency. Shared Python installations are left intact.
+
 - Separated historical research records from data transformations and centralized the exchange
   timezone and exact-quote validator contract to avoid drift between persistence, research,
   execution, and strategy code.
@@ -18,8 +30,8 @@
 - Kept the compact session UI and five-guide documentation structure. Removed the disconnected
   legacy Agent desk, duplicate background supervisor, paid X connector and Codex-specific setup
   wizard rather than maintaining a second process or client-specific control surface.
-- Removed the automated regression suite and its runner dependencies. CI now performs lint,
-  compilation, packaging, and dependency checks only; execution safeguards remain in the product.
+- Removed the old automated regression suite and its runner dependencies. The focused worker
+  recovery validator uses only the standard library and existing desktop dependencies.
 - Removed the disconnected nine-action research module, its stale plan/glossary claims, redundant
   source-map page, and unreferenced screenshots; dated research records remain intact.
 - No installed-Windows acceptance, provider-observed execution, or profitability result is claimed

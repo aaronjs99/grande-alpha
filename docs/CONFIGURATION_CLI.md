@@ -83,6 +83,13 @@ acceptance items in the [capability matrix](USER_GUIDE.md#implemented-behavior-a
 are complete.
 
 Use `session stop` to fence new submissions without claiming to cancel broker orders.
+`session status` reports JSON: exit `0` means a worker response was received, and exit `1`
+means the worker was unreachable. The latter reads the existing control database in read-only
+mode and reports `running: null`, `connected: null`, `recorded_running`, `local_stop_recorded`, and recovery guidance.
+An absent or unreadable record never becomes a successful stop or a connected broker. Unexpected
+command failures still return exit `2`. A fallback `session stop` returns `stopped: true` only after
+committing a fence to a valid existing record, with `worker_reachable: false` and
+`broker_verified: false`; it does not create or migrate a database.
 Use `session status`, `session review`, `session authorize`, `session start`, and `session shutdown`
 to control that worker from another terminal; `session stop` writes a durable local
 stop fence even if worker communication fails. `research mcp enable|disable|status` controls the

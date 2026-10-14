@@ -23,6 +23,7 @@ jobs:
       - run: python -m pip install -e ".[desktop,dev]"
       - run: python -m ruff check scripts
       - run: python -m compileall -q scripts
+      - run: python tools/verify_worker_recovery.py
       - run: python -m build
       - run: python -m pip_audit
 

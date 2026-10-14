@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+import asyncio
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import QListWidgetItem
 
+from grande_alpha.execution.worker_status import disconnected_worker_status
 from grande_alpha.ui.session_components import display_value
 
 
@@ -22,38 +24,83 @@ class SessionStatus:
         if self._status_in_flight:
             return
         self._status_in_flight = True
+        epoch = self._status_epoch
+        self._refresh_controls()
         try:
             status = await self._request("status", {}, timeout_seconds=3)
+            if epoch != self._status_epoch:
+                return
             self._worker_seen = True
             self._apply_status(status)
         except Exception as error:
-            previous = self._status
-            self._status = {}
-            self.worker_card.value.setText("OFFLINE")
-            self.session_card.value.setText("Stopped")
-            if previous:
-                self._log("warning", "Local worker is no longer reachable.")
+            if epoch != self._status_epoch:
+                return
+            status = await asyncio.to_thread(disconnected_worker_status, self.data_dir)
+            if epoch != self._status_epoch:
+                return
+            self._apply_disconnected_status(status)
             if show_errors:
                 self._show_error(f"Worker status is unavailable: {error}")
-            self._refresh_controls()
         finally:
             self._status_in_flight = False
+            self._refresh_controls()
+
+    def _apply_disconnected_status(self, status: dict[str, Any]) -> None:
+        was_reachable = self._status.get("worker_reachable") is True
+        self._status_epoch += 1
+        self._status = status
+        self._invalidate_review("Worker status is unverified; review again after reconnecting")
+        self.worker_card.value.setText("OFFLINE")
+        phase = str(status["phase"])
+        self.session_card.value.setText("Unknown" if phase.startswith("Unknown") else phase)
+        self.session_card.value.setToolTip(phase)
+        self.session_card.value.setAccessibleDescription(phase)
+        self.account_card.value.setText("Unverified")
+        self.coverage_card.value.setText("Unverified")
+        self.coverage_card.setToolTip("The worker is unreachable; previous data coverage may be stale.")
+        age = self._age_text(self._last_status_at)
+        previous = f"Last worker response {age}. " if age is not None else ""
+        self.status_notice.setText(previous + status["guidance"])
+        self.connect_detail.setText(status["guidance"])
+        self._render_research_status(None)
+        self._update_monitor(self._last_worker_status, str(self._last_worker_status.get("phase", "")))
+        self.monitor_summary.setText(previous + status["guidance"])
+        self.monitor_cycle.setText("Last reported: " + self.monitor_cycle.text())
+        self.monitor_cycle_time.setText("Unverified — " + self.monitor_cycle_time.text())
+        self.monitor_data.setText("Last reported: " + self.monitor_data.text())
+        self._apply_responsive_layout(self.width(), self.height(), force=True)
+        if was_reachable:
+            self._log("warning", "Worker is unreachable; trading and broker state are unverified.")
+        self._refresh_controls()
 
     def _apply_status(self, status: dict[str, Any]) -> None:
+        current_generation = self._status.get("generation")
+        incoming_generation = status.get("generation")
+        if (type(current_generation) is int and type(incoming_generation) is int
+                and incoming_generation < current_generation):
+            raise RuntimeError("Worker response predates the current local control record; refresh status")
+        was_offline = self._status.get("worker_reachable") is False and self._last_status_at is not None
         was_running = self._status.get("running") is True
         previous_phase = self._status.get("phase")
         previous_error = self._status.get("error")
-        self._status = status
+        self._status_epoch += 1
+        self._status = {**status, "worker_reachable": True, "status_source": "worker"}
+        self._last_worker_status = dict(status)
+        self._last_status_at = datetime.now(UTC).isoformat()
+        self.status_notice.setText("Worker status received just now. Broker confirmations remain authoritative.")
         if self._review_result is not None:
             reviewed_scope = self._review_result.get("scope_digest")
             worker_scope = status.get("scope_digest")
-            if worker_scope and reviewed_scope != worker_scope:
-                self._invalidate_review("Worker scope changed in another client")
+            if (reviewed_scope != worker_scope
+                    or self._review_result.get("generation") != incoming_generation):
+                self._invalidate_review("Worker scope or control generation changed; review again")
         running = status.get("running") is True
         connected = status.get("connected") is True
         phase = str(status.get("phase") or ("Running" if running else "Stopped"))
         self.worker_card.value.setText("RUNNING" if running else "READY")
         self.session_card.value.setText(phase)
+        self.session_card.value.setToolTip(phase)
+        self.session_card.value.setAccessibleDescription(phase)
         account = status.get("account_masked") or ""
         if account:
             self.account_card.value.setText(str(account))
@@ -65,6 +112,8 @@ class SessionStatus:
             self.connect_detail.setText(
                 f"Worker connected{f' to {account}' if account else ''}."
             )
+        else:
+            self.connect_detail.setText("Worker reachable; no broker connection was reported.")
         error = str(status.get("error") or "")
         self._render_research_status(status.get("research"))
         coverage = status.get("data_coverage")
@@ -83,6 +132,10 @@ class SessionStatus:
         self._update_monitor(status, phase)
         if running != was_running:
             self._apply_responsive_layout(self.width(), self.height(), force=True)
+        elif was_offline:
+            self._apply_responsive_layout(self.width(), self.height(), force=True)
+        if was_offline:
+            self._log("info", "Worker status is available again. Review the session before another Start.")
         if phase != previous_phase and previous_phase is not None:
             self._log("info", f"Worker phase: {phase}")
         if error and error != previous_error:
@@ -165,6 +218,7 @@ class SessionStatus:
         candidate = Path(self.candidate_edit.text().strip()) if self.candidate_edit.text().strip() else None
         return bool(
             self._status.get("connected") is True
+            and self._status.get("worker_reachable") is True
             and not self._status.get("running")
             and candidate is not None
             and candidate.is_file()
@@ -172,12 +226,31 @@ class SessionStatus:
             and self.earnings_edit.text().strip()
         )
 
+    def _can_connect(self) -> bool:
+        if self._status.get("worker_reachable") is False:
+            return self._status.get("control_record") == "missing" or self._status.get("local_stop_recorded") is True
+        return self._status.get("running") is not True
+
+    def _monitor_required(self) -> bool:
+        if self._status.get("running") is True:
+            return True
+        return self._status.get("worker_reachable") is False and (
+            self._status.get("recorded_running") is True
+            or self._status.get("control_record") == "unavailable"
+            or (self._last_worker_status.get("running") is True
+                and self._status.get("local_stop_recorded") is not True)
+        )
+
     def _refresh_controls(self) -> None:
         connected = self._status.get("connected") is True
         running = self._status.get("running") is True
         reviewed_scope = self._review_result.get("scope_digest") if self._review_result else ""
         transition_busy = self._busy or self._stop_in_flight or self._exit_in_flight
-        self.connect_button.setEnabled(not transition_busy and not running)
+        can_connect = not transition_busy and self._can_connect()
+        self.connect_button.setEnabled(can_connect)
+        if getattr(self, "_connect_action", None) is not None:
+            self._connect_action.setEnabled(can_connect)
+        self.refresh_status_button.setEnabled(not self._status_in_flight and not self._exit_in_flight)
         self.connect_button.setText("Connected" if connected else "Connect Robinhood")
         self.limits_group.setEnabled(connected and not running and not transition_busy)
         self.save_limits_button.setEnabled(
@@ -200,6 +273,7 @@ class SessionStatus:
         account_ready = connected and bool(self._status.get("account"))
         can_start_paper = (
             (account_ready if broker_quotes else True) and not self._status.get("running")
+            and self._can_connect()
             and not transition_busy and not self._paper_busy and not paper_active
             and bool(self.paper_initial_cash.text().strip()) and bool(self.paper_trade_cash.text().strip())
             and (not self.paper_local_ai.isChecked() or bool(self.paper_ai_model.text().strip()))
@@ -210,6 +284,10 @@ class SessionStatus:
         self.stop_button.setEnabled(not self._stop_in_flight and not self._exit_in_flight)
 
     def _render_research_status(self, research: Any) -> None:
+        if self._status.get("worker_reachable") is False:
+            self.research_status.setText("Research and paper status unverified · worker unreachable")
+            self.research_button.setText("Enable research MCP")
+            return
         if not isinstance(research, dict):
             self.research_status.setText("Research MCP off · broker orders unavailable")
             self.research_button.setText("Enable research MCP")
