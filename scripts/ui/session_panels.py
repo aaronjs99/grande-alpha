@@ -79,37 +79,21 @@ class SessionPanelBuilder:
         layout.setContentsMargins(14, 12, 14, 14)
         layout.setSpacing(11)
 
-        heading = QLabel("Start a bounded session")
-        heading.setObjectName("dialogTitle")
-        layout.addWidget(heading)
-
         self.connect_group = QGroupBox("1  Connect")
         connect_layout = QVBoxLayout(self.connect_group)
-        connect_text = QLabel(
-            "Open the broker sign-in only if needed, then verify the Agentic account exposed to the worker."
-        )
-        connect_text.setObjectName("settingsDescription")
-        connect_text.setWordWrap(True)
         self.connect_button = QPushButton("Connect Robinhood")
         self.connect_button.setObjectName("primary")
         self.connect_button.clicked.connect(lambda: self._spawn(self._connect()))
         self.connect_detail = QLabel("Not connected")
         self.connect_detail.setObjectName("settingsDescription")
         self.connect_detail.setWordWrap(True)
-        connect_layout.addWidget(connect_text)
         connect_layout.addWidget(self.connect_button)
         connect_layout.addWidget(self.connect_detail)
         layout.addWidget(self.connect_group)
 
         self.limits_group = QGroupBox("2  Set limits")
         limits_layout = QVBoxLayout(self.limits_group)
-        help_text = QLabel(
-            "Choose an existing strategy candidate, adjust only its risk envelope, then save a new copy. "
-            "The strategy, account, symbols, time window, and research thresholds remain unchanged."
-        )
-        help_text.setObjectName("settingsDescription")
-        help_text.setWordWrap(True)
-        limits_layout.addWidget(help_text)
+        self.limits_group.setToolTip("Choose a strategy candidate. Edited limits are saved as a new candidate.")
 
         candidate_row = QHBoxLayout()
         self.candidate_edit = QLineEdit()
@@ -123,6 +107,7 @@ class SessionPanelBuilder:
         limits_layout.addLayout(candidate_row)
 
         self.limits_form = QFormLayout()
+        self.limits_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
         self.limit_inputs: dict[str, QDoubleSpinBox | QSpinBox] = {}
         for key, label, kind in self.LIMIT_FIELDS:
             if kind == "integer":
@@ -146,6 +131,7 @@ class SessionPanelBuilder:
         limits_layout.addLayout(self.limits_form)
 
         support_form = QFormLayout()
+        support_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
         self.authorization_edit = QLineEdit(str(self.data_dir / "mixed-authorization.json"))
         self.authorization_edit.setAccessibleName("Local exact-scope authorization file")
         self.authorization_edit.textChanged.connect(self._review_input_changed)
@@ -205,45 +191,35 @@ class SessionPanelBuilder:
         start_layout.addWidget(self.start_button)
         layout.addWidget(self.start_group)
 
-        self.research_disclosure = QPushButton("Optional research & paper  ▸")
-        self.research_disclosure.setCheckable(True)
-        self.research_disclosure.setToolTip(
-            "Show controls for the worker-hosted research-only MCP bridge"
-        )
-        self.research_disclosure.toggled.connect(self._toggle_research_panel)
-        layout.addWidget(self.research_disclosure)
+        layout.addStretch()
+        return panel
+
+    def _build_paper_panel(self) -> QWidget:
         self.research_panel = QFrame()
         self.research_panel.setObjectName("card")
         research_layout = QVBoxLayout(self.research_panel)
         research_layout.setContentsMargins(12, 10, 12, 12)
-        research_note = QLabel(
-            "Optional research bridge hosted by the same worker and broker session. It can read research "
-            "context, but order tools are structurally unavailable. Stop, Revoke, and Exit disable it."
-        )
-        research_note.setObjectName("settingsDescription")
-        research_note.setWordWrap(True)
         self.research_status = QLabel("Off · orders unavailable")
         self.research_status.setWordWrap(True)
         self.research_status.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self.research_button = QPushButton("Enable research MCP")
         self.research_button.clicked.connect(lambda: self._spawn(self._toggle_research()))
-        research_layout.addWidget(research_note)
-        research_layout.addWidget(self.research_status)
-        research_layout.addWidget(self.research_button)
-
         paper_note = QLabel(
-            "Virtual paper only · no broker orders. Choose the amounts yourself; current quotes require a reviewed account."
+            "Virtual money. Demo prices are synthetic; broker quotes require a connected, reviewed account."
         )
         paper_note.setObjectName("settingsDescription")
         paper_note.setWordWrap(True)
         research_layout.addWidget(paper_note)
         paper_form = QFormLayout()
+        paper_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
         self.paper_source = QComboBox()
         self.paper_source.addItem("Synthetic demo", "demo")
         self.paper_source.addItem("Current broker quotes", "broker_quotes")
-        self.paper_initial_cash = QLineEdit()
+        self.paper_initial_cash = QLineEdit("1000")
+        self.paper_initial_cash.setAccessibleName("Virtual starting cash")
         self.paper_initial_cash.setPlaceholderText("Virtual starting cash")
-        self.paper_trade_cash = QLineEdit()
+        self.paper_trade_cash = QLineEdit("100")
+        self.paper_trade_cash.setAccessibleName("Virtual cash per entry")
         self.paper_trade_cash.setPlaceholderText("Virtual cash per entry")
         self.paper_loop_demo = QCheckBox("Repeat the synthetic demo until stopped")
         self.paper_news = QCheckBox("Include public news headlines")
@@ -283,17 +259,9 @@ class SessionPanelBuilder:
         self.paper_local_ai.toggled.connect(self.paper_ai_model.setEnabled)
         self.paper_local_ai.toggled.connect(self._refresh_controls)
         self.paper_ai_model.textChanged.connect(self._refresh_controls)
-        self._update_paper_options()
-        self.research_panel.setVisible(False)
-        layout.addWidget(self.research_panel)
-        layout.addStretch()
-        return panel
-
-    def _toggle_research_panel(self, expanded: bool) -> None:
-        self.research_panel.setVisible(expanded)
-        self.research_disclosure.setText(
-            "Optional research & paper  ▾" if expanded else "Optional research & paper  ▸"
-        )
+        # The status and optional MCP connection live in Session details.
+        research_layout.addStretch()
+        return self.research_panel
 
     def _update_paper_options(self) -> None:
         current_quotes = self.paper_source.currentData() == "broker_quotes"
@@ -326,14 +294,10 @@ class SessionPanelBuilder:
         layout.setContentsMargins(14, 12, 14, 14)
         title = QLabel("Activity")
         title.setObjectName("dialogTitle")
-        note = QLabel("Local control events only. Broker confirmations remain authoritative.")
-        note.setObjectName("settingsDescription")
-        note.setWordWrap(True)
         self.activity = QListWidget()
         self.activity.setAccessibleName("Session activity")
         self.activity.setAlternatingRowColors(True)
         layout.addWidget(title)
-        layout.addWidget(note)
         layout.addWidget(self.activity, 1)
         self._log("info", "Ready. Connect to begin; no worker was started by opening this window.")
         return panel

@@ -13,17 +13,20 @@ from pathlib import Path
 from typing import Any
 
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QAction, QFont, QResizeEvent
+from PySide6.QtGui import QAction, QResizeEvent
 from PySide6.QtWidgets import (
-    QApplication,
+    QDialog,
+    QDialogButtonBox,
     QFrame,
     QGridLayout,
+    QHBoxLayout,
     QLabel,
     QMainWindow,
     QMessageBox,
     QPushButton,
     QScrollArea,
     QSystemTrayIcon,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -32,6 +35,9 @@ from grande_alpha import __version__
 from grande_alpha.execution.worker_ipc import LocalControlClient
 from grande_alpha.execution.worker_process import launch_worker
 from grande_alpha.execution.worker_status import stop_existing_worker
+from grande_alpha.ui.desk_chat import DeskChatDialog
+from grande_alpha.ui.desk_theme import DASHBOARD_STYLE
+from grande_alpha.ui.research_desk import ResearchDesk
 from grande_alpha.ui.session_components import (
     StartApprovalDialog,
     StatusCard,
@@ -41,6 +47,7 @@ from grande_alpha.ui.session_lifecycle import SessionWindowLifecycle
 from grande_alpha.ui.session_panels import SessionPanelBuilder
 from grande_alpha.ui.session_setup import SessionSetup
 from grande_alpha.ui.session_status import SessionStatus
+from grande_alpha.ui.themes import apply_application_theme, current_theme, theme_css
 
 
 class SessionWindow(SessionWindowLifecycle, SessionSetup, SessionStatus, SessionPanelBuilder, QMainWindow):
@@ -117,110 +124,156 @@ class SessionWindow(SessionWindowLifecycle, SessionSetup, SessionStatus, Session
 
     # ---------- UI construction ----------
     def _build_ui(self) -> None:
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.setStyleSheet(theme_css(DASHBOARD_STYLE, base="light"))
         root = QWidget()
-        scroll.setWidget(root)
-        self.setCentralWidget(scroll)
+        root.setObjectName("agentCanvas")
+        self.setCentralWidget(root)
         self.outer = QVBoxLayout(root)
         self.outer.setContentsMargins(18, 15, 18, 18)
-        self.outer.setSpacing(14)
-
+        self.outer.setSpacing(10)
         self.header = QWidget()
         self.header_layout = QGridLayout(self.header)
         self.header_layout.setContentsMargins(0, 0, 0, 0)
-        self.header_layout.setHorizontalSpacing(14)
-        self.header_layout.setVerticalSpacing(10)
         self.brand_panel = QWidget()
         brand_layout = QVBoxLayout(self.brand_panel)
         brand_layout.setContentsMargins(0, 0, 0, 0)
-        brand_layout.setSpacing(1)
-        brand = QLabel("GRANDE ALPHA")
-        font = QFont(QApplication.font())
-        font.setPointSize(18)
-        font.setBold(True)
-        brand.setFont(font)
-        subtitle = QLabel("One local worker · exact limits · explicit start · immediate stop")
-        subtitle.setObjectName("settingsDescription")
-        subtitle.setWordWrap(True)
-        brand_layout.addWidget(brand)
-        brand_layout.addWidget(subtitle)
-        self.stop_button = QPushButton("STOP TRADING")
-        self.stop_button.setObjectName("danger")
-        self.stop_button.setMinimumHeight(44)
-        self.stop_button.setAccessibleName("Stop the local trading worker")
-        self.stop_button.setToolTip(
-            "Immediately fence new local submissions. Already-sent broker orders and filled holdings remain."
-        )
+        brand_layout.setSpacing(0)
+        eyebrow = QLabel("GRANDE ALPHA")
+        eyebrow.setObjectName("eyebrow")
+        title = QLabel("AGENT DESK")
+        title.setObjectName("dashboardTitle")
+        brand_layout.addWidget(eyebrow)
+        brand_layout.addWidget(title)
+        self.toolbar = QWidget()
+        row = QHBoxLayout(self.toolbar)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(6)
+        self.setup_button = QPushButton("Setup")
+        self.setup_button.setAccessibleName("Open session setup")
+        self.setup_button.clicked.connect(lambda: self._show_setup("paper"))
+        self.chat_button = QPushButton("AI chat")
+        self.chat_button.clicked.connect(self._show_chat)
+        self.stop_button = QPushButton("STOP")
+        self.stop_button.setObjectName("stopAgent")
+        self.stop_button.setMinimumHeight(32)
+        self.stop_button.setAccessibleName("Stop trading and paper research")
+        self.stop_button.setToolTip("Fence new local submissions and stop research. Verify already-sent orders and holdings with the broker.")
         self.stop_button.clicked.connect(lambda: self._spawn(self._stop()))
-        self.header_layout.addWidget(self.brand_panel, 0, 0)
-        self.header_layout.addWidget(self.stop_button, 0, 1)
+        for button in (self.setup_button, self.chat_button, self.stop_button):
+            row.addWidget(button)
         self.outer.addWidget(self.header)
 
+        self.status_notice = QLabel("Checking worker…")
+        self.status_notice.setObjectName("deskHeartbeat")
+        self.status_notice.setWordWrap(True)
+        self.status_notice.setAccessibleName("Worker and trading status")
+        status_row = QHBoxLayout()
+        status_row.addWidget(self.status_notice, 1)
+        self.refresh_status_button = QPushButton("Refresh")
+        self.refresh_status_button.setAccessibleName("Refresh local worker status")
+        self.refresh_status_button.clicked.connect(lambda: self._spawn(self._refresh_status(show_errors=False)))
+        status_row.addWidget(self.refresh_status_button)
+        self.outer.addLayout(status_row)
         self.banner = QLabel()
         self.banner.setObjectName("validationWarning")
         self.banner.setWordWrap(True)
-        self.banner.setVisible(False)
+        self.banner.setTextFormat(Qt.TextFormat.PlainText)
+        self.banner.hide()
         self.outer.addWidget(self.banner)
 
+        self.desk = ResearchDesk()
+        self.desk_scroll = QScrollArea()
+        self.desk_scroll.setWidgetResizable(True)
+        self.desk_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.desk_scroll.setWidget(self.desk)
+        self.outer.addWidget(self.desk_scroll, 1)
+        self.desk_controls = QHBoxLayout()
+        self.desk_start_button = QPushButton("Start paper")
+        self.desk_start_button.setObjectName("primary")
+        self.desk_start_button.clicked.connect(lambda: self._show_setup("paper"))
+        self.desk_stop_button = QPushButton("Stop paper")
+        self.desk_stop_button.clicked.connect(lambda: self._spawn(self._stop_paper()))
+        self.details_button = QPushButton("Session details")
+        self.details_button.clicked.connect(lambda: self._show_setup("details"))
+        self.desk_controls.addWidget(self.desk_start_button)
+        self.desk_controls.addWidget(self.desk_stop_button)
+        self.desk_controls.addStretch()
+        self.desk_controls.addWidget(self.details_button)
+        self.outer.addLayout(self.desk_controls)
+
+        self.setup_dialog = QDialog(self)
+        self.setup_dialog.setWindowTitle("GRANDE · Session setup")
+        self.setup_dialog.setMinimumSize(340, 430)
+        setup_layout = QVBoxLayout(self.setup_dialog)
+        self.setup_tabs = QTabWidget()
+        self.flow_panel = self._build_flow_panel()
+        self.paper_panel = self._build_paper_panel()
+        self.details_panel = QWidget()
+        details_layout = QVBoxLayout(self.details_panel)
         self.status_panel = QWidget()
         self.status_layout = QGridLayout(self.status_panel)
-        self.status_layout.setContentsMargins(0, 0, 0, 0)
-        self.status_layout.setSpacing(9)
         self.worker_card = StatusCard("Worker", "CHECKING")
         self.account_card = StatusCard("Account", "Unverified")
         self.session_card = StatusCard("Session", "Unverified")
         self.coverage_card = StatusCard("Data coverage", "Awaiting first cycle")
         self.event_card = StatusCard("Last control update", "Open the app")
-        self.status_cards = (
-            self.worker_card,
-            self.account_card,
-            self.session_card,
-            self.coverage_card,
-            self.event_card,
-        )
-        self.outer.addWidget(self.status_panel)
-
-        self.status_notice = QLabel("Checking the local worker. Opening this window does not start trading.")
-        self.status_notice.setObjectName("settingsDescription")
-        self.status_notice.setWordWrap(True)
-        self.status_notice.setAccessibleName("Worker status and recovery guidance")
-        self.refresh_status_button = QPushButton("Refresh status")
-        self.refresh_status_button.setAccessibleName("Retry the local worker status without starting it")
-        self.refresh_status_button.clicked.connect(
-            lambda: self._spawn(self._refresh_status(show_errors=False))
-        )
-        self.status_layout.addWidget(self.status_notice, 10, 0, 1, 4)
-        self.status_layout.addWidget(self.refresh_status_button, 10, 4)
-
-        self.content = QWidget()
-        self.content_layout = QGridLayout(self.content)
-        self.content_layout.setContentsMargins(0, 0, 0, 0)
-        self.content_layout.setSpacing(12)
-        self.flow_panel = self._build_flow_panel()
+        self.status_cards = (self.worker_card, self.account_card, self.session_card,
+                             self.coverage_card, self.event_card)
+        self._reflow_grid(self.status_layout, self.status_cards, 2)
+        details_layout.addWidget(self.status_panel)
+        self.recovery_detail = QLabel("Checking the worker")
+        self.recovery_detail.setWordWrap(True)
+        self.recovery_detail.setTextFormat(Qt.TextFormat.PlainText)
+        details_layout.addWidget(self.recovery_detail)
         self.monitor_panel = self._build_monitor_panel()
+        details_layout.addWidget(self.monitor_panel)
+        details_layout.addWidget(self.research_status)
+        details_layout.addWidget(self.research_button)
         self.activity_panel = self._build_activity_panel()
-        self.outer.addWidget(self.content, 1)
+        details_layout.addWidget(self.activity_panel)
+        for title, widget in (("Paper", self.paper_panel), ("Broker session", self.flow_panel),
+                              ("Details", self.details_panel)):
+            scroll = QScrollArea()
+            scroll.setWidgetResizable(True)
+            scroll.setFrameShape(QFrame.Shape.NoFrame)
+            scroll.setWidget(widget)
+            self.setup_tabs.addTab(scroll, title)
+        setup_layout.addWidget(self.setup_tabs)
+        close = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        close.rejected.connect(self.setup_dialog.reject)
+        setup_layout.addWidget(close)
+        self._chat_dialog = DeskChatDialog(self)
+        self._update_paper_options()
 
-        footer = QLabel(
-            "The desktop never holds the broker connection. The separate local worker owns it and "
-            "accepts only authenticated machine-local commands."
-        )
-        footer.setObjectName("settingsDescription")
-        footer.setWordWrap(True)
-        self.outer.addWidget(footer)
+    def _show_setup(self, section: str = "paper") -> None:
+        self.setup_tabs.setCurrentIndex({"paper": 0, "broker": 1, "details": 2}[section])
+        self.setup_dialog.resize(min(720, self.width() - 20), min(740, self.height() - 40))
+        self.setup_dialog.show()
+        self.setup_dialog.raise_()
+        self.setup_dialog.activateWindow()
 
+    def _show_chat(self) -> None:
+        self._chat_dialog.resize(min(540, self.width() - 20), min(640, self.height() - 40))
+        self._chat_dialog.show()
+        self._chat_dialog.raise_()
+        self._chat_dialog.activateWindow()
+
+    def _toggle_theme(self) -> None:
+        apply_application_theme("dark" if current_theme() == "light" else "light")
+        self.setStyleSheet(theme_css(DASHBOARD_STYLE, base="light"))
+        self.desk.apply_theme()
 
     def _build_menus(self) -> None:
         menu_bar = self.menuBar()
         menu_bar.setNativeMenuBar(False)
         session = menu_bar.addMenu("Session")
+        setup = session.addAction("Broker session setup…")
+        setup.triggered.connect(lambda: self._show_setup("broker"))
         self._connect_action = QAction("Connect", self)
         self._connect_action.triggered.connect(lambda: self._spawn(self._connect()))
         session.addAction(self._connect_action)
         review = QAction("Review exact session", self)
-        review.triggered.connect(lambda: self._spawn(self._review()))
+        review.triggered.connect(lambda: self._show_setup("broker"))
         session.addAction(review)
         stop = QAction("Stop trading", self)
         stop.triggered.connect(lambda: self._spawn(self._stop()))
@@ -236,6 +289,9 @@ class SessionWindow(SessionWindowLifecycle, SessionSetup, SessionStatus, Session
         exit_action.triggered.connect(self.close)
         session.addAction(exit_action)
 
+        appearance = menu_bar.addMenu("View")
+        theme = appearance.addAction("Switch light / dark")
+        theme.triggered.connect(self._toggle_theme)
         help_menu = menu_bar.addMenu("Help")
         about = QAction("About GRANDE Alpha", self)
         about.triggered.connect(
@@ -262,65 +318,27 @@ class SessionWindow(SessionWindowLifecycle, SessionSetup, SessionStatus, Session
             layout.setColumnStretch(column, 1)
 
     def _apply_responsive_layout(self, width: int, height: int, *, force: bool = False) -> None:
-        narrow = width < 900 or height > width
+        narrow = width < 750
         mode = "portrait" if narrow else "landscape"
-        primary_panel = (
-            self.monitor_panel if self._monitor_required() else self.flow_panel
-        )
-        if not force and mode == self._layout_mode and primary_panel is self._primary_panel:
-            return
         self._layout_mode = mode
-        self._primary_panel = primary_panel
         self.header_layout.removeWidget(self.brand_panel)
-        self.header_layout.removeWidget(self.stop_button)
-        self.content_layout.removeWidget(self.flow_panel)
-        self.content_layout.removeWidget(self.monitor_panel)
-        self.content_layout.removeWidget(self.activity_panel)
-        self.flow_panel.hide()
-        self.monitor_panel.hide()
-        self.activity_panel.hide()
-        if narrow:
-            self.header_layout.addWidget(self.brand_panel, 0, 0)
-            self.header_layout.addWidget(self.stop_button, 1, 0)
-            self.content_layout.addWidget(primary_panel, 0, 0)
-            self.content_layout.addWidget(self.activity_panel, 1, 0)
-            primary_panel.show()
-            self.activity_panel.show()
-            self.content_layout.setRowStretch(0, 0)
-            self.content_layout.setRowStretch(1, 1)
-            self.content_layout.setColumnStretch(0, 1)
-            self.content_layout.setColumnStretch(1, 0)
-            self._reflow_grid(self.status_layout, self.status_cards, 2)
-            self.status_layout.addWidget(self.status_notice, 3, 0, 1, 2)
-            self.status_layout.addWidget(self.refresh_status_button, 4, 0, 1, 2)
-            self.activity.setMinimumHeight(230)
-            self.outer.setContentsMargins(10, 9, 10, 12)
-        else:
-            self.header_layout.addWidget(self.brand_panel, 0, 0)
-            self.header_layout.addWidget(self.stop_button, 0, 1)
-            self.header_layout.setColumnStretch(0, 1)
-            self.content_layout.addWidget(primary_panel, 0, 0)
-            self.content_layout.addWidget(self.activity_panel, 0, 1)
-            primary_panel.show()
-            self.activity_panel.show()
-            self.content_layout.setColumnStretch(0, 3)
-            self.content_layout.setColumnStretch(1, 2)
-            self.content_layout.setRowStretch(0, 1)
-            self._reflow_grid(self.status_layout, self.status_cards, 5)
-            self.status_layout.addWidget(self.status_notice, 1, 0, 1, 4)
-            self.status_layout.addWidget(self.refresh_status_button, 1, 4)
-            self.activity.setMinimumHeight(0)
-            self.outer.setContentsMargins(18, 15, 18, 18)
+        self.header_layout.removeWidget(self.toolbar)
+        self.header_layout.addWidget(self.brand_panel, 0, 0)
+        self.header_layout.addWidget(self.toolbar, 1 if narrow else 0, 0 if narrow else 1)
+        self.header_layout.setColumnStretch(0, 1)
+        self.outer.setContentsMargins(10 if narrow else 18, 10, 10 if narrow else 18, 12)
+        self.desk.reflow(width - (40 if narrow else 55))
 
     def resizeEvent(self, event: QResizeEvent) -> None:  # noqa: N802 - Qt API
         super().resizeEvent(event)
         self._apply_responsive_layout(event.size().width(), event.size().height())
 
     # ---------- Worker controls ----------
-    def _spawn(self, coroutine) -> None:
+    def _spawn(self, coroutine) -> asyncio.Task:
         task = asyncio.create_task(coroutine)
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
+        return task
 
     async def _request(
         self, operation: str, payload: dict[str, Any], *, timeout_seconds: float = 10
@@ -339,7 +357,7 @@ class SessionWindow(SessionWindowLifecycle, SessionSetup, SessionStatus, Session
         return await asyncio.to_thread(self._write_durable_stop_fence)
 
     async def _connect(self) -> None:
-        if self._busy or self._stop_in_flight or self._exit_in_flight or not self._can_connect():
+        if self._busy or self._paper_busy or self._stop_in_flight or self._exit_in_flight or not self._can_connect():
             return
         self._set_busy(True)
         self._clear_banner()
@@ -348,7 +366,7 @@ class SessionWindow(SessionWindowLifecycle, SessionSetup, SessionStatus, Session
             self._launch_in_progress = True
             try:
                 self._client = await asyncio.to_thread(
-                    self._launcher, self.data_dir, timeout_seconds=12
+                    self._launcher, self.data_dir, timeout_seconds=12, recover_existing=False
                 )
             finally:
                 self._launch_in_progress = False
@@ -501,11 +519,13 @@ class SessionWindow(SessionWindowLifecycle, SessionSetup, SessionStatus, Session
         research = self._status.get("research")
         enabled = isinstance(research, dict) and research.get("enabled") is True
         operation = "research_disable" if enabled else "research_enable"
+        self._status_epoch += 1
         self._research_busy = True
         self._refresh_controls()
         self._clear_banner()
         try:
             result = await self._request(operation, {}, timeout_seconds=30)
+            self._status_epoch += 1
             self._status["research"] = result
             self._render_research_status(result)
             self._log(
@@ -522,8 +542,10 @@ class SessionWindow(SessionWindowLifecycle, SessionSetup, SessionStatus, Session
             self._refresh_controls()
 
     async def _start_paper(self) -> None:
-        if self._paper_busy or self._exit_in_flight:
+        if not self._can_start_paper():
             return
+        self._stop_requested = False
+        self._status_epoch += 1
         initial_cash = self.paper_initial_cash.text().strip()
         trade_cash = self.paper_trade_cash.text().strip()
         if not initial_cash or not trade_cash:
@@ -532,6 +554,16 @@ class SessionWindow(SessionWindowLifecycle, SessionSetup, SessionStatus, Session
         self._paper_busy = True
         self._refresh_controls()
         try:
+            if self._status.get("worker_reachable") is not True:
+                self._launch_in_progress = True
+                try:
+                    self._client = await asyncio.to_thread(self._launcher, self.data_dir,
+                                                          timeout_seconds=12, recover_existing=False)
+                finally:
+                    self._launch_in_progress = False
+                self._worker_seen = True
+            if self._stop_requested or self._exit_in_flight:
+                return
             result = await self._request(
                 "research_paper_start",
                 {
@@ -546,8 +578,14 @@ class SessionWindow(SessionWindowLifecycle, SessionSetup, SessionStatus, Session
                 },
                 timeout_seconds=10,
             )
+            if self._stop_requested or self._exit_in_flight:
+                await self._request("stop", {}, timeout_seconds=8)
+                await self._refresh_status(show_errors=False)
+                return
+            self._status_epoch += 1
             self._status["research"] = result
             self._render_research_status(result)
+            self.setup_dialog.hide()
             self._log("info", "Virtual paper session started; no broker orders are available.")
             await self._refresh_status(show_errors=False)
         except Exception as error:
@@ -560,9 +598,11 @@ class SessionWindow(SessionWindowLifecycle, SessionSetup, SessionStatus, Session
         if self._paper_busy or self._exit_in_flight:
             return
         self._paper_busy = True
+        self._status_epoch += 1
         self._refresh_controls()
         try:
             result = await self._request("research_paper_stop", {}, timeout_seconds=10)
+            self._status_epoch += 1
             self._status["research"] = result
             self._render_research_status(result)
             self._log("info", "Virtual paper session stopped; recorded fills and holdings remain saved.")

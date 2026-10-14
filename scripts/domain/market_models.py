@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import math
-from dataclasses import field
+from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
 from numbers import Real
@@ -17,6 +17,7 @@ class Regime(StrEnum):
     FLAT = "flat"
 
 
+@dataclass(frozen=True)
 class Quote:
     symbol: str
     bid: float
@@ -91,6 +92,7 @@ class Quote:
         return max(self.bid_timestamp, self.ask_timestamp)
 
 
+@dataclass(frozen=True)
 class Bar:
     symbol: str
     start: datetime
@@ -102,6 +104,7 @@ class Bar:
     volume: float = 0.0
 
 
+@dataclass(frozen=True)
 class Signal:
     regime: Regime
     confidence: float

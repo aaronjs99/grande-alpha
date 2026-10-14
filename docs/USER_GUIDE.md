@@ -58,7 +58,23 @@ Agent research status as confirmation that the mixed worker is active or authori
 
 ## Optional research connection
 
-After reviewing a connected account, expand **Research MCP** and enable it for this worker
+The default Agent desk shows **virtual** equity, paper P&L, simulated fills, closed-trade win rate,
+recent chart marks, and NOVA / ORIN / VELA / KADE / RUNE / ZARA stage reports. **Start paper** opens
+the Paper setup tab with editable $1,000 starting cash and $100 per entry. These defaults apply
+only to virtual money. Press **Start virtual paper** to run the synthetic demo, or choose broker
+quotes after connecting and reviewing an account. **Stop paper** retains the virtual journal.
+
+Broker setup is under **Session → Broker session setup**. It retains the exact review and approval
+flow. Desktop Connect and paper startup never recover saved live intent automatically; unresolved
+running intent needs Stop and a new review. **Session details** contains full status, guidance,
+data coverage, and control logs. **View** switches the desk's light/dark appearance.
+
+**AI chat** opens Antonio's conversation view. Enter an installed Ollama model name and send a
+question. It receives a bounded paper snapshot and recent messages at loopback only; it cannot
+start sessions, apply settings or send orders. Missing models show an error; replies can be
+cancelled and retried. Chat requires Ollama to be running separately.
+
+After reviewing a connected account, open **Session details** and enable **research MCP** for this worker
 session, or use `research mcp enable` from the CLI. It starts off, is separate from trading,
 and exposes only bounded research context and controls to a compatible local AI client.
 Stop, Revoke, or worker shutdown closes the connection and discards queued requests. Already
@@ -92,7 +108,7 @@ last reported; account, data coverage, research, and paper status are unverified
 **Refresh status** or **F5** to retry without starting a worker. Connect and Start stay locked
 while running intent is unresolved.
 
-**STOP TRADING** can write a durable fence to an existing worker record when communication
+The main **STOP** button can write a durable fence to an existing worker record when communication
 fails. **Local stop recorded** confirms that local fence, while worker activity, already-sent
 orders, and holdings remain unverified. A later connection requires a new review before Start.
 Stop cannot create or repair a missing, corrupt, or incompatible control record; the app reports

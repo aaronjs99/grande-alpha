@@ -141,4 +141,3 @@ def runtime_trace_readiness(
         "checks": checks,
         "input_ready": all(check["passed"] for check in checks),
     }
-

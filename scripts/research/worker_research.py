@@ -11,6 +11,7 @@ from grande_alpha.domain.clock import utc_now
 from grande_alpha.research.agent_bridge import AgentBridge
 from grande_alpha.research.agent_models import AgentSettings
 from grande_alpha.research.agent_runtime import AgentRuntime
+from grande_alpha.research.desk_snapshot import desk_snapshot, paper_summary
 from grande_alpha.research.paper.ledger import PaperLedger
 
 
@@ -159,7 +160,8 @@ class WorkerResearch:
             "phase": snapshot.phase if snapshot else "Off",
             "bridge_path": str(self.bridge.path) if self.bridge.session else None,
             "orders_available": False,
-            "paper": self.agent.paper_context() if self.agent is not None else None,
+            "paper": paper_summary(self.agent.paper_context()) if self.agent is not None else None,
+            "desk": desk_snapshot(snapshot),
         }
 
     async def _poll(self) -> None:

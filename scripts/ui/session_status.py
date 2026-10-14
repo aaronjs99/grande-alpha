@@ -60,7 +60,12 @@ class SessionStatus:
         self.coverage_card.setToolTip("The worker is unreachable; previous data coverage may be stale.")
         age = self._age_text(self._last_status_at)
         previous = f"Last worker response {age}. " if age is not None else ""
-        self.status_notice.setText(previous + status["guidance"])
+        guidance = previous + status["guidance"]
+        self.status_notice.setText("Worker unavailable · " + (
+            "local stop saved" if status.get("local_stop_recorded") is True else "trading unverified"
+        ))
+        self.status_notice.setToolTip(guidance)
+        self.recovery_detail.setText(guidance)
         self.connect_detail.setText(status["guidance"])
         self._render_research_status(None)
         self._update_monitor(self._last_worker_status, str(self._last_worker_status.get("phase", "")))
@@ -87,7 +92,8 @@ class SessionStatus:
         self._status = {**status, "worker_reachable": True, "status_source": "worker"}
         self._last_worker_status = dict(status)
         self._last_status_at = datetime.now(UTC).isoformat()
-        self.status_notice.setText("Worker status received just now. Broker confirmations remain authoritative.")
+        self.status_notice.setToolTip("Worker status received just now. Broker confirmations remain authoritative.")
+        self.recovery_detail.setText("Worker status received just now. Verify orders and holdings with the broker.")
         if self._review_result is not None:
             reviewed_scope = self._review_result.get("scope_digest")
             worker_scope = status.get("scope_digest")
@@ -245,7 +251,7 @@ class SessionStatus:
         connected = self._status.get("connected") is True
         running = self._status.get("running") is True
         reviewed_scope = self._review_result.get("scope_digest") if self._review_result else ""
-        transition_busy = self._busy or self._stop_in_flight or self._exit_in_flight
+        transition_busy = self._busy or self._stop_in_flight or self._exit_in_flight or self._paper_busy
         can_connect = not transition_busy and self._can_connect()
         self.connect_button.setEnabled(can_connect)
         if getattr(self, "_connect_action", None) is not None:
@@ -269,21 +275,39 @@ class SessionStatus:
         research = self._status.get("research")
         paper = research.get("paper") if isinstance(research, dict) else None
         paper_active = isinstance(paper, dict) and paper.get("active") is True
-        broker_quotes = self.paper_source.currentData() == "broker_quotes"
-        account_ready = connected and bool(self._status.get("account"))
-        can_start_paper = (
-            (account_ready if broker_quotes else True) and not self._status.get("running")
-            and self._can_connect()
-            and not transition_busy and not self._paper_busy and not paper_active
-            and bool(self.paper_initial_cash.text().strip()) and bool(self.paper_trade_cash.text().strip())
-            and (not self.paper_local_ai.isChecked() or bool(self.paper_ai_model.text().strip()))
-        )
-        self.paper_start_button.setEnabled(can_start_paper)
+        self.paper_start_button.setEnabled(self._can_start_paper())
         self.paper_stop_button.setEnabled(paper_active and not self._paper_busy and not transition_busy)
+        self.desk_start_button.setEnabled(not paper_active and not transition_busy)
+        self.desk_stop_button.setEnabled(self.paper_stop_button.isEnabled())
         # Stop remains visible and actionable even when status probing failed. It never starts a worker.
         self.stop_button.setEnabled(not self._stop_in_flight and not self._exit_in_flight)
 
+    def _can_start_paper(self) -> bool:
+        research = self._status.get("research") or {}
+        paper = research.get("paper") or {}
+        broker_quotes = self.paper_source.currentData() == "broker_quotes"
+        account_ready = self._status.get("connected") is True and bool(self._status.get("account"))
+        return bool(
+            (account_ready if broker_quotes else True) and not self._status.get("running")
+            and self._can_connect() and not paper.get("active")
+            and not (self._busy or self._stop_in_flight or self._exit_in_flight or self._paper_busy)
+            and self.paper_initial_cash.text().strip() and self.paper_trade_cash.text().strip()
+            and (not self.paper_local_ai.isChecked() or self.paper_ai_model.text().strip())
+        )
+
     def _render_research_status(self, research: Any) -> None:
+        reachable = self._status.get("worker_reachable") is True
+        self.desk.render(research if reachable else self._last_worker_status.get("research"), reachable=reachable)
+        if reachable:
+            report = research if isinstance(research, dict) else {}
+            paper = report.get("paper") or {}
+            mode = "Paper" if paper.get("active") is True else "Research"
+            self.status_notice.setText(
+                f"● Trading · {self._status.get('phase') or 'Running'}" if self._status.get("running") is True else
+                f"● {mode} · {report.get('phase') or 'Running'}" if report.get("running") is True else
+                "○ Connected · trading stopped" if self._status.get("connected") is True else
+                "○ Worker ready · broker not connected"
+            )
         if self._status.get("worker_reachable") is False:
             self.research_status.setText("Research and paper status unverified · worker unreachable")
             self.research_button.setText("Enable research MCP")
@@ -303,7 +327,7 @@ class SessionStatus:
                 f"Paper {state} · {paper.get('source', 'unknown source')} · "
                 f"virtual equity ${paper.get('equity', '—')} · "
                 f"P&L ${paper.get('total_pnl', '—')} · "
-                f"{len(paper.get('positions', []))} virtual holdings"
+                f"{paper.get('position_count', 0)} virtual holdings"
             )
         self.research_status.setText(
             f"Research: {phase} · broker orders unavailable\n{paper_status}\n{bridge}"
@@ -327,6 +351,7 @@ class SessionStatus:
         while self.activity.count() > 200:
             self.activity.takeItem(self.activity.count() - 1)
         self.event_card.value.setText(message[:48] + ("…" if len(message) > 48 else ""))
+        self.desk.record_event({"error": "WARN", "warning": "WARN", "success": "BOOK"}.get(level, "INFO"), message)
 
     def _show_error(self, message: str) -> None:
         self.banner.setText(message)

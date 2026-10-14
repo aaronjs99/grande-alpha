@@ -31,7 +31,13 @@ The launcher uses the selected system Python; a persistent virtual environment i
 For headless use, install the core package without desktop extras and run `grande-alpha-cli --help`.
 The package source lives under `scripts/`.
 
-The intended user flow is **Connect account → Set limits → Review → Start**. Each user chooses
+The desktop opens Antonio's **Agent desk**: virtual equity, paper P&L, recent activity, and six
+research modules. **Start paper** opens editable virtual amounts and a synthetic demo; opening
+the app starts nothing. **AI chat** uses an installed local Ollama model for read-only discussion.
+Setup and technical details live in separate dialogs. **STOP** stays visible while scrolling.
+
+For broker execution, open **Session → Broker session setup** and follow
+**Connect account → Set limits → Review → Start**. Each user chooses
 their own capital, symbols, order and exposure caps, daily loss limit, and recovery policy. An
 approval may be made outside market hours, but an order still needs a supported open session,
 fresh executable data, broker permission, and intact risk controls. Practice and replay are

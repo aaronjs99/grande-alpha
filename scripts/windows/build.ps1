@@ -44,6 +44,8 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'The declared packaging dependencies could not be installed.' }
     & $BuildPython -I (Join-Path $ProjectRoot 'tools\verify_worker_recovery.py')
     if ($LASTEXITCODE -ne 0) { throw 'Worker recovery acceptance failed in the isolated packaging environment.' }
+    & $BuildPython -I (Join-Path $ProjectRoot 'tools\verify_agent_desk.py')
+    if ($LASTEXITCODE -ne 0) { throw 'Agent desk acceptance failed in the isolated packaging environment.' }
     New-Item -ItemType Directory -Path $BuildOutput, $DistributionOutput, $SpecOutput -Force | Out-Null
     & $BuildPython -I -m pip freeze --all --exclude grande-alpha | Set-Content -LiteralPath (Join-Path $SpecOutput 'resolved-requirements.txt') -Encoding UTF8
     if ($LASTEXITCODE -ne 0) { throw 'The resolved packaging dependencies could not be recorded.' }

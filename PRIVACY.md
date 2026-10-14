@@ -30,6 +30,11 @@ Nothing is sent merely by launching the app or using deterministic/CSV research.
   Access starts off each app session and must be explicitly enabled again after revocation.
   Already shared data cannot be recalled. Applied prompts appear in local research receipts;
   do not include secrets. See [research MCP controls](docs/RESEARCH.md#agent-research-prompts-and-local-mcp).
+- **AI chat** sends up to six conversation messages and a bounded virtual-paper snapshot to
+  local Ollama only after Send. The snapshot includes paper metrics, module stages and recent
+  research handoffs, with no broker account identifiers, real balances/positions/orders,
+  credentials, source documents or local paths. It cannot apply settings or start sessions.
+  Cancel reply stops the in-flight request; Clear removes this window's conversation.
 - Opening external documentation uses the system browser and is governed by the destination's privacy policy.
 
 ## Diagnostics

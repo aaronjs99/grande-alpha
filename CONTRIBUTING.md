@@ -46,8 +46,9 @@ Run the source application only when interactive UI testing is necessary:
 
 ## Check your change
 
-The repository has no automated regression suite. The standard check runs linting, bytecode
-compilation, and a wheel build; it does not exercise broker or desktop runtime behavior:
+The standard check runs linting, bytecode compilation, a wheel build, and two focused offline
+acceptance validators for worker recovery and the Agent desk. These exercise desktop controls,
+disposable storage and local IPC; they never connect a broker or establish provider readiness:
 
 ```powershell
 .\grande.ps1 verify

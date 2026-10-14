@@ -33,6 +33,20 @@ the research MCP and the broker's trading MCP are separate protocols and permiss
 The research bridge cannot inherit a trading grant, and its prompts and proposals cannot reach
 an order path. Headless code must not import Qt; the desktop dependency set is optional.
 
+Antonio's `ui/agent_card.py` and `ui/agent_desk.py` presentation components are restored from
+`tony-dev` commit `6864716`; that branch is already in `master`'s ancestry. `ui/research_desk.py`
+adapts them to shared-worker status instead of restoring the retired controller. The setup
+form remains in `session_panels.py`, now in a dialog. The main Stop stays outside the desk scroll.
+`research/desk_snapshot.py` allows only bounded metrics, 160 recent equity marks, six stages,
+and twelve handoff events across IPC. The complete virtual journal remains in the worker.
+Offline views freeze and mark prior data as last reported. `research/agent_chat.py` and
+`ui/desk_chat.py` provide read-only loopback conversation with no control or order callback.
+
+Desktop worker startup passes `--no-recovery`. Under the process lock, this mode refuses saved
+live intent before creating a runtime or IPC server, and skips live recovery entirely. This
+prevents an intent changed after a stale desktop probe from being recovered by a demo click.
+An already-running worker keeps its own state; paper start is still rejected during live activity.
+
 The offline replay executor is `strategy/quote_simulation.py`. It creates virtual fills and has no
 broker connection; persisted checkpoint records retain their historical `shadow_*` names. It is
 not the retired broker-connected live-shadow route.

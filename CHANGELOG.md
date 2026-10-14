@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Restored Antonio's visual Agent desk, six bot cards, paper chart, compact activity, and local
+  read-only chat around the shared worker. Moved setup/status details into dialogs, kept Stop
+  visible while scrolling, and restored pyqtgraph only in the optional desktop dependency set.
+- Bounded desktop research status to paper metrics, recent chart marks and handoffs. Offline
+  views stop animation and mark cached data; chat has no settings or order authority.
+- Made desktop Connect/demo startup skip live recovery and refuse saved running intent under
+  the process lock. Protected paper Stop and research changes from stale status probes.
+- Restored frozen dataclass constructors for Quote/Bar/Signal lost during domain extraction;
+  the synthetic demo now completes with actual virtual fills. Added Agent desk acceptance to
+  verification, CI and isolated packaging.
 - Made desktop and CLI worker recovery distinguish unreachable activity, recorded local stop
   fences, and broker state. Added status retry, stale-observation labels, and safe disconnected
   close/exit; fallback Stop refuses missing or incompatible control records.
@@ -27,9 +37,8 @@
 - Prevented research and paper quote loops from running alongside a live session. Paper history
   persists locally but never resumes automatically; neither the simulator nor MCP has broker-order
   tools.
-- Kept the compact session UI and five-guide documentation structure. Removed the disconnected
-  legacy Agent desk, duplicate background supervisor, paid X connector and Codex-specific setup
-  wizard rather than maintaining a second process or client-specific control surface.
+- Retained the five-guide documentation structure, shared worker and exact-scope approval.
+  The duplicate background supervisor, paid X connector and Codex-specific setup wizard remain retired.
 - Removed the old automated regression suite and its runner dependencies. The focused worker
   recovery validator uses only the standard library and existing desktop dependencies.
 - Removed the disconnected nine-action research module, its stale plan/glossary claims, redundant

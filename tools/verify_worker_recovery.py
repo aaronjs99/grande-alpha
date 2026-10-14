@@ -517,11 +517,11 @@ class RecoveryAcceptance(unittest.TestCase):
             self.app.processEvents()
             self.window.resize(390, 650)
             self.app.processEvents()
-            self.assertEqual(self.window.centralWidget().horizontalScrollBar().maximum(), 0)
+            self.assertEqual(self.window.desk_scroll.horizontalScrollBar().maximum(), 0)
             self.assertGreaterEqual(
-                self.window.monitor_panel.width(), self.window.centralWidget().viewport().width() - 40
+                self.window.desk.width(), self.window.desk_scroll.viewport().width() - 40
             )
-            value = self.window.session_card.value
+            value = self.window.status_notice
             text_height = value.fontMetrics().boundingRect(
                 QRect(0, 0, value.width(), 1000), Qt.TextFlag.TextWordWrap, value.text()
             ).height()

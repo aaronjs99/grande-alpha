@@ -13,6 +13,7 @@ From the repository root:
 python -m ruff check scripts
 python -m compileall -q scripts
 python tools/verify_worker_recovery.py
+python tools/verify_agent_desk.py
 .\grande.ps1 verify
 ```
 
@@ -25,6 +26,13 @@ a real trading worker, reads user data, or changes credential storage. Both `ver
 Lint, compilation, packaging, and these local checks do not establish provider-observed execution
 or acceptance of an installed Windows product.
 
+`verify_agent_desk.py` covers the default desk, setup isolation, fixed Stop visibility, cached
+charts, stage animations, handoff deduplication, bounded/private-free projection, non-recovering
+startup and paper status races. It also completes the real 24-cycle synthetic demo through the
+local channel, checks virtual fills/history and Stop, and exercises mocked chat failure/cancel/
+retry. It uses disposable data and in-memory IPC credentials; no broker or model is contacted.
+Both validators run in `verify`, CI and the isolated Windows build.
+
 For the 0.19.0 integration, also verify the current-user worker's ownership and authentication,
 stop fencing, stalled/ambiguous operations, restart recovery, and explicit offline execution-store
 upgrade against disposable databases. Confirm that desktop and CLI agree on the same session without
@@ -35,6 +43,24 @@ provider-observed execution or installed-product acceptance. See the [architectu
 [research MCP guide](RESEARCH.md#agent-research-prompts-and-local-mcp).
 
 ## Packaging and distribution
+
+### Agent desk checkpoint — 2026-10-14
+
+On Windows / Python 3.11.9, the 23 worker recovery and 19 Agent desk checks passed against
+the final source and the freshly installed package in the isolated Windows build. Lint,
+compilation and the source distribution/wheel build passed. The actual synthetic demo
+completed all 24 cycles over the authenticated local channel, produced four virtual fills,
+and supplied the rendered history; it never constructed a broker connection.
+The first demo check exposed missing Quote/Bar/Signal dataclass constructors, which were restored.
+
+Light/dark desk renders at 1120×780 and 390×650, plus all three setup tabs at 370 pixels,
+had no horizontal overflow. Stop stayed above scrolling content. The final frozen worker
+and desk code matched compiled current source; `--version` / `--worker --help` exited 0.
+`grande.ps1 build` and its packaged dependency audit passed with no known vulnerabilities.
+The headless CLI/worker imported with Qt, qasync and pyqtgraph blocked. Chat error/cancel/retry
+and loopback-only routing passed with a fake model service; local Ollama was unreachable in
+the availability probe, so no model-generated answer is validated. Installed-profile operation,
+Python 3.12 locally, and provider-observed execution remain untested here.
 
 ### Local worker-recovery checkpoint — 2026-10-14
 

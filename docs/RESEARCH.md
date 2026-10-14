@@ -45,7 +45,7 @@ or approve financial limits. Do not include secrets in briefs or research receip
 MCP (Model Context Protocol) is an optional local stdio connection for a compatible AI client.
 It is not a hosted URL and does not install a model, create a cloud account, or connect to every
 AI product. Install the package with `.\grande.ps1 setup`, connect and review the account in the
-desktop, then expand **Research MCP** and enable it. The equivalent CLI actions are
+desktop, then open **Session details** and enable **research MCP**. The equivalent CLI actions are
 `grande-alpha-cli research mcp enable` and `grande-alpha-cli research mcp status`; status shows
 the local bridge path. Configure a compatible client to launch the installed
 `grande-alpha-mcp` stdio entrypoint with that bridge path. Reload the client's connection if
@@ -79,9 +79,10 @@ security boundary. There is no network listener or persistent MCP authorization.
 
 ### Virtual paper sessions
 
-The desktop's optional research section starts a paper session without requiring an external AI
+The desktop's **Start paper** dialog starts a paper session without requiring an external AI
 client. `start_paper_trading` offers the same operation through MCP. Both require explicitly
-supplied `initial_cash` and `trade_cash`; no financial amount is prefilled. The default source is
+supplied `initial_cash` and `trade_cash`. The desktop offers editable virtual defaults of $1,000
+and $100; these are not live financial limits. The default source is
 `demo`, which uses fixed synthetic quotes and never calls market-data or model providers. Select
 `source="broker_quotes"` only to simulate against current broker quotes. Optional public news,
 public Bluesky search and a named local Ollama model are available for broker-quote sessions;
@@ -90,9 +91,11 @@ observations and configured source excerpts. No X API or paid social connector i
 
 The simulation cannot reach order-placement methods. `stop_research` or **Stop paper** stops the
 simulation and discards pending virtual intents; existing virtual fills and positions remain in
-the local paper journal. Reopening GRANDE shows the last journal but does not resume it.
+the local paper journal. Reopening the desktop reconnects to an existing worker's reported
+paper journal; a fresh worker does not resume paper automatically.
 
-The initial policy is `adaptive-trend-v1`: it requires distinct-quote warm-up, a rising fast trend,
+The desktop uses the existing legacy rules by default. The runtime also contains
+`adaptive-trend-v1`: when configured, it requires distinct-quote warm-up, a rising fast trend,
 a breakout, and estimated movement above spread, slippage and observed-noise costs. Paper exits
 include modeled loss, trailing, target, trend-reversal and time rules. These are not broker-held
 stops. Fills require a later valid quote and apply 5 basis points of adverse slippage. The model
@@ -107,6 +110,17 @@ to change strategy, scope or authority.
 The MCP and paper journal are software interfaces, not deployment acceptance. Provider login,
 current market-data permissions, the external MCP client's handling of data, and real-order
 behavior require separate evidence.
+
+### Local desk chat
+
+**AI chat** restores Antonio's plain-text conversation view around the shared worker. An explicit
+Send uses `http://127.0.0.1:11434/api/chat`, with redirects and environment proxies disabled.
+It sends only bounded paper metrics, six module stages, recent research events and up to six
+conversation messages. Broker account identifiers, real balances/positions/orders, credentials,
+source documents, prompts and local paths are excluded. Replies are advisory; the format rejects
+tool calls and setting changes. The chat has no worker-control callback. No model is installed
+or contacted merely by opening the dialog. Model availability and answer accuracy are separate
+from the offline transport checks.
 
 ## Historical findings
 

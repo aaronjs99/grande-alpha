@@ -24,6 +24,7 @@ jobs:
       - run: python -m ruff check scripts
       - run: python -m compileall -q scripts
       - run: python tools/verify_worker_recovery.py
+      - run: python tools/verify_agent_desk.py
       - run: python -m build
       - run: python -m pip_audit
 
