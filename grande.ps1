@@ -59,6 +59,7 @@ switch ($Task) {
         Invoke-Python -Arguments @('tools/verify_agent_desk.py')
         Invoke-Python -Arguments @('tools/verify_session_setup.py')
         Invoke-Python -Arguments @('tools/verify_local_ai.py')
+        Invoke-Python -Arguments @('tools/verify_strategy_selection.py')
         # Build from a fresh sdist so removed source files cannot leak from build/lib.
         $BuildOutputDir = Join-Path ([IO.Path]::GetTempPath()) "grande-alpha-verify-$([guid]::NewGuid().ToString('N'))"
         try {

@@ -5,11 +5,13 @@ import random
 import statistics
 import uuid
 from collections import deque
+from datetime import timedelta
 
 from grande_alpha.domain.policy import (
     DecisionPolicy,
     PolicyConfig,
     PolicyPosition,
+    session_bounds,
     session_key,
     session_minutes,
 )
@@ -31,15 +33,16 @@ from grande_alpha.research.sandbox_models import (
     SandboxResult,
     interval_minutes,
 )
-from grande_alpha.strategy.core import build_strategy
+from grande_alpha.strategy.core import build_strategy, reset_intraday_strategy
 
 
 class SandboxReplayEngine:
     """Deterministic virtual execution with no broker or order-submission dependency."""
 
-    def __init__(self, config: SandboxConfig) -> None:
+    def __init__(self, config: SandboxConfig, *, reset_each_session: bool = False) -> None:
         config.validate()
         self.config = config
+        self.reset_each_session = reset_each_session
         self.contract = contract_from_config(config)
         self._rng = random.Random(self.contract.random_seed)
         self.policy = DecisionPolicy(
@@ -70,6 +73,7 @@ class SandboxReplayEngine:
         fills: list[SandboxFill] = []
         events: list[ExecutionEvent] = []
         closed_pnl: list[float] = []
+        partial_trade_pnl = 0.0
         curve: list[EquityPoint] = []
         recent_returns = {"TQQQS": deque(maxlen=30), "SQQQS": deque(maxlen=30)}
         previous_prices: dict[str, float] = {}
@@ -80,10 +84,17 @@ class SandboxReplayEngine:
         last_decision_counts: dict[str, int] = {}
         bar_minutes = interval_minutes(bundle.interval)
         execution_model = SandboxExecutionModel(self.contract, self._rng, bar_minutes)
-        session_last_indices: dict[str, int] = {}
-        for frame_index, replay_frame in enumerate(bundle.frames):
-            session_day = session_key(replay_frame.start, self.contract.market_hours)
-            session_last_indices[session_day] = frame_index
+        def record_exits(new_fills, remaining_position):
+            nonlocal partial_trade_pnl, consecutive_losses
+            exits = [fill for fill in new_fills if fill.realized_pnl is not None]
+            partial_trade_pnl += sum(fill.realized_pnl for fill in exits)
+            # Partial sell fills are one trade until the old position is fully closed.
+            if exits and (remaining_position is None or any(fill.side == "buy" for fill in new_fills)):
+                closed_pnl.append(partial_trade_pnl)
+                consecutive_losses = next_consecutive_losses(consecutive_losses, partial_trade_pnl)
+                partial_trade_pnl = 0.0
+                if consecutive_losses >= self.contract.max_consecutive_losses:
+                    paused_days.add(session_key(exits[-1].timestamp, self.contract.market_hours))
 
         def window_allowed(frame: ReplayFrame) -> bool:
             return bundle.interval == "1d" or self.policy.trading_window_allowed(frame.start)
@@ -96,6 +107,11 @@ class SandboxReplayEngine:
             day = session_key(frame.start, self.contract.market_hours)
             if previous_session is not None and day != previous_session:
                 consecutive_losses = 0
+                if self.reset_each_session:
+                    reset_intraday_strategy(strategy)
+                    for values in recent_returns.values():
+                        values.clear()
+                    previous_prices.clear()
             if (
                 self.contract.settlement_model == "cash_t1"
                 and previous_session is not None
@@ -112,18 +128,14 @@ class SandboxReplayEngine:
                 scheduled = None
             previous_session = day
             session_bar_counts[day] = session_bar_counts.get(day, 0) + 1
-            starting_equity = self._equity(cash, unsettled_cash, position, frame)
+            # Opening accounting cannot use the not-yet-observed current close.
+            starting_equity = cash + unsettled_cash + (
+                position.quantity * frame.bar_for_alias(position.symbol).open if position else 0)
             day_start_equity.setdefault(day, starting_equity)
             day_peak_equity[day] = max(day_peak_equity.get(day, starting_equity), starting_equity)
-            if daily_loss_reached(
-                self.contract,
-                session_start_equity=day_start_equity[day],
-                session_peak_equity=day_peak_equity[day],
-                current_equity=starting_equity,
-            ):
+            if daily_loss_reached(self.contract, session_start_equity=day_start_equity[day],
+                                  session_peak_equity=day_peak_equity[day], current_equity=starting_equity):
                 paused_days.add(day)
-                if position is not None and window_allowed(frame):
-                    scheduled = (index + 1 + self.contract.latency_bars, None, "Daily loss pause")
 
             scheduled_is_exit = position is not None and scheduled and scheduled[1] != position.symbol
             if (
@@ -131,31 +143,36 @@ class SandboxReplayEngine:
                 and index >= scheduled[0]
                 and (exit_window_allowed(frame) if scheduled_is_exit else window_allowed(frame))
             ):
-                cash, unsettled_cash, position, new_fills, new_events, complete = execution_model.transition(
-                    frame,
-                    index,
-                    cash,
-                    unsettled_cash,
-                    position,
-                    scheduled[1],
-                    scheduled[2],
-                    entries_by_day,
-                    paused_days,
-                    recent_returns,
-                    previous_range_bps,
-                    previous_volume,
-                )
-                fills.extend(new_fills)
-                events.extend(new_events)
-                for fill in new_fills:
-                    if fill.realized_pnl is not None:
-                        closed_pnl.append(fill.realized_pnl)
-                        consecutive_losses = next_consecutive_losses(
-                            consecutive_losses, fill.realized_pnl
-                        )
-                        if consecutive_losses >= self.contract.max_consecutive_losses:
-                            paused_days.add(day)
+                targets = [None, scheduled[1]] if scheduled_is_exit and scheduled[1] is not None else [scheduled[1]]
+                for target in targets:
+                    cash, unsettled_cash, position, new_fills, new_events, complete = execution_model.transition(
+                        frame, index, cash, unsettled_cash, position, target, scheduled[2],
+                        entries_by_day, paused_days, recent_returns, previous_range_bps, previous_volume,
+                    )
+                    fills.extend(new_fills)
+                    events.extend(new_events)
+                    record_exits(new_fills, position)
+                    opening_equity = cash + unsettled_cash + (
+                        position.quantity * frame.bar_for_alias(position.symbol).open if position else 0)
+                    if daily_loss_reached(self.contract, session_start_equity=day_start_equity[day],
+                                          session_peak_equity=day_peak_equity[day], current_equity=opening_equity):
+                        paused_days.add(day)
+                    # Closing a losing trade may pause entries before a rotation's buy.
+                    if not complete or day in paused_days:
+                        break
                 scheduled = None if complete else (index + 1, scheduled[1], scheduled[2])
+
+            # Risk and signals consume this completed bar only after its open fills.
+            marked_equity = self._equity(cash, unsettled_cash, position, frame)
+            day_peak_equity[day] = max(day_peak_equity[day], marked_equity)
+            if daily_loss_reached(self.contract, session_start_equity=day_start_equity[day],
+                                  session_peak_equity=day_peak_equity[day], current_equity=marked_equity):
+                paused_days.add(day)
+            if day in paused_days and position is not None:
+                due = index + 1 + self.contract.latency_bars
+                if scheduled is not None and scheduled[1] is None:
+                    due = min(due, scheduled[0])
+                scheduled = (due, None, "Daily loss pause")
 
             signal = strategy.on_bar(frame.qqq)
             policy_position = None
@@ -171,20 +188,31 @@ class SandboxReplayEngine:
                 last_decision_count=last_decision_counts.get(day, 0),
                 decision_stride=self.contract.decision_stride,
             )
-            if is_decision_due:
+            if is_decision_due and day not in paused_days:
                 last_decision_counts[day] = session_bar_counts[day]
                 decision = self.policy.decide(signal, frame.start, policy_position)
                 current = position.symbol if position else None
                 decision_window = exit_window_allowed(frame) if current is not None else window_allowed(frame)
-                if decision_window and decision.target_symbol != current:
-                    if scheduled is None or scheduled[1] != decision.target_symbol:
+                if decision_window:
+                    if position is not None and scheduled is not None and scheduled[1] is None:
+                        # Finish a scheduled cash exit before accepting a new direction.
+                        # This includes hard stops/time exits whose condition may later clear.
+                        pass
+                    elif decision.target_symbol == current:
+                        scheduled = None  # Withdraw an obsolete entry or rotation.
+                    elif position is not None and decision.target_symbol is None:
+                        due = index + 1 + self.contract.latency_bars
+                        scheduled = (min(due, scheduled[0]) if scheduled else due, None, decision.reason)
+                    elif scheduled is None or scheduled[1] != decision.target_symbol:
                         scheduled = (
                             index + 1 + self.contract.latency_bars,
                             decision.target_symbol,
                             decision.reason,
                         )
 
-            if position is not None and self.contract.force_flat_at_end and index == session_last_indices[day]:
+            _opened, closed = session_bounds(frame.start, self.contract.market_hours)
+            reaches_close = frame.start < closed <= frame.start + timedelta(minutes=bar_minutes)
+            if position is not None and self.contract.force_flat_at_end and reaches_close:
                 cash, unsettled_cash, position, new_fills, new_events, _ = execution_model.transition(
                     frame,
                     index,
@@ -199,16 +227,11 @@ class SandboxReplayEngine:
                     previous_range_bps,
                     previous_volume,
                     use_close=True,
-                    bypass_execution_failures=True,
+                    bypass_execution_failures=False,
                 )
                 fills.extend(new_fills)
                 events.extend(new_events)
-                for fill in new_fills:
-                    if fill.realized_pnl is not None:
-                        closed_pnl.append(fill.realized_pnl)
-                        consecutive_losses = next_consecutive_losses(
-                            consecutive_losses, fill.realized_pnl
-                        )
+                record_exits(new_fills, position)
                 scheduled = None
 
             # Opening fills may use only observations from a previously completed frame.
@@ -237,35 +260,6 @@ class SandboxReplayEngine:
             )
 
         ending_position = position.symbol if position else None
-        if position is not None and self.contract.force_flat_at_end:
-            final_frame = bundle.frames[-1]
-            cash, unsettled_cash, position, new_fills, new_events, _ = execution_model.transition(
-                final_frame,
-                len(bundle.frames),
-                cash,
-                unsettled_cash,
-                position,
-                None,
-                "End of replay forced virtual flatten",
-                entries_by_day,
-                paused_days,
-                recent_returns,
-                previous_range_bps,
-                previous_volume,
-                use_close=True,
-                bypass_execution_failures=True,
-            )
-            fills.extend(new_fills)
-            events.extend(new_events)
-            closed_pnl.extend(fill.realized_pnl for fill in new_fills if fill.realized_pnl is not None)
-            ending_position = None
-            curve[-1] = EquityPoint(
-                final_frame.start,
-                cash + unsettled_cash,
-                cash,
-                None,
-                unsettled_cash,
-            )
 
         final_equity = curve[-1].equity
         max_drawdown, max_drawdown_bars = self._drawdown(curve)

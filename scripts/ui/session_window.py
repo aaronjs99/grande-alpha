@@ -104,6 +104,7 @@ class SessionWindow(SessionWindowLifecycle, SessionSetup, SessionStatus, Session
         self._tray_icon: QSystemTrayIcon | None = None
         self._approval_dialog: StartApprovalDialog | None = None
         self._candidate_editor: QDialog | None = None
+        self._strategy_dialog: QDialog | None = None
         self._exit_warning_box: QMessageBox | None = None
         self._tasks: set[asyncio.Task] = set()
         self._layout_mode = ""
@@ -294,6 +295,9 @@ class SessionWindow(SessionWindowLifecycle, SessionSetup, SessionStatus, Session
         appearance = menu_bar.addMenu("View")
         theme = appearance.addAction("Switch light / dark")
         theme.triggered.connect(self._toggle_theme)
+        strategies = menu_bar.addMenu("Research")
+        compare = strategies.addAction("Compare strategies…")
+        compare.triggered.connect(self._show_strategy_comparison)
         help_menu = menu_bar.addMenu("Help")
         about = QAction("About GRANDE Alpha", self)
         about.triggered.connect(
@@ -306,6 +310,13 @@ class SessionWindow(SessionWindowLifecycle, SessionSetup, SessionStatus, Session
             )
         )
         help_menu.addAction(about)
+
+    def _show_strategy_comparison(self) -> None:
+        from grande_alpha.ui.strategy_comparison import StrategyComparisonDialog
+        if self._strategy_dialog is None:
+            self._strategy_dialog = StrategyComparisonDialog(self)
+        self._strategy_dialog.open()
+        self._strategy_dialog.raise_()
 
     # ---------- Responsive layout ----------
     @staticmethod

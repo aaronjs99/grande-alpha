@@ -62,7 +62,7 @@ def candidate_grid(base: SandboxConfig, compact: bool = True) -> list[SandboxCon
                 }
             )
         ]
-    if base.strategy_name == "multi_horizon_trend":
+    if base.strategy_name in {"multi_horizon_trend", "cost_aware_trend"}:
         return [
             replace(base, trend_threshold_bps=value)
             for value in sorted(
@@ -146,7 +146,7 @@ def _candidate_label(config: SandboxConfig) -> str:
         return f"close threshold {config.close_momentum_bps:.1f} bps"
     if config.strategy_name == "opening_breakout":
         return f"range {config.opening_range_minutes}m; buffer {config.breakout_buffer_bps:.1f} bps"
-    if config.strategy_name == "multi_horizon_trend":
+    if config.strategy_name in {"multi_horizon_trend", "cost_aware_trend"}:
         return f"trend threshold {config.trend_threshold_bps:.1f} bps"
     if config.strategy_name == "conservative_ensemble":
         return f"votes {config.ensemble_min_votes}; threshold {config.trend_threshold_bps:.1f} bps"

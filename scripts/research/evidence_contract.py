@@ -13,7 +13,7 @@ from grande_alpha.execution.candidate_execution import (
 from grande_alpha.research.sandbox_models import INTERVAL_MINUTES, SandboxConfig
 from grande_alpha.strategy.core import StrategyConfig
 
-EVIDENCE_POLICY_VERSION = 15
+EVIDENCE_POLICY_VERSION = 16
 # This value is derived from the machine-readable mechanics assessment below. It must not
 # become true merely because entry sizing shares a helper: exact observations, fill economics,
 # exit lifecycle, and the provider order-confirmation contract must all align as well.
@@ -56,6 +56,7 @@ STRATEGY_FINGERPRINT_FIELDS = (
     "fast_ema",
     "slow_ema",
     "trend_threshold_bps",
+    "signal_cost_bps",
     "momentum_bars",
     "hard_stop_pct",
     "take_profit_pct",

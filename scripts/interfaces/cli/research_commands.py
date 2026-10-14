@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 from dataclasses import asdict, replace
+from pathlib import Path
 from typing import Any
 
 from grande_alpha.application.gate_guidance import gate_detail, promotion_overview
@@ -46,6 +47,13 @@ def add_research_commands(root_commands) -> None:
     research = root_commands.add_parser("research", help="Replay and evidence tools; no broker orders")
     commands = research.add_subparsers(dest="research_command", required=True)
     add_research_mcp_command(commands)
+
+    from grande_alpha.research.strategy_selection import command_compare
+    strategies = commands.add_parser("strategies", help="Fixed, cost-stressed shortlist; never enables trading")
+    strategy_commands = strategies.add_subparsers(dest="strategy_command", required=True)
+    compare = strategy_commands.add_parser("compare", help="Compare five frozen rules using a local historical JSON dataset")
+    compare.add_argument("--dataset", type=Path, required=True)
+    compare.set_defaults(func=command_compare)
 
     portfolio = commands.add_parser("portfolio", help="Broker-isolated mixed-allocation research")
     portfolio_commands = portfolio.add_subparsers(dest="portfolio_command", required=True)

@@ -108,6 +108,7 @@ def cost_stressed_config(base: SandboxConfig, multiplier: float) -> SandboxConfi
         raise ValueError("Cost multiplier must be finite and positive")
     return replace(
         base,
+        signal_cost_bps=base.strategy_config().round_trip_cost_bps,
         slippage_bps=base.slippage_bps * multiplier,
         base_spread_bps=base.base_spread_bps * multiplier,
         spread_volatility_multiplier=base.spread_volatility_multiplier * multiplier,

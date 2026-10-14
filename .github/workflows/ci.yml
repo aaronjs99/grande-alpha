@@ -27,6 +27,7 @@ jobs:
       - run: python tools/verify_agent_desk.py
       - run: python tools/verify_session_setup.py
       - run: python tools/verify_local_ai.py
+      - run: python tools/verify_strategy_selection.py
       - run: python -m build
       - run: python -m pip_audit
 

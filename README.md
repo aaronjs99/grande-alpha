@@ -37,6 +37,11 @@ the app starts nothing. AI is optional and off by default; paper and broker sess
 Ollama. **AI chat** can use an installed local model for read-only discussion after a RAM check.
 Setup and technical details live in separate dialogs. **STOP** stays visible while scrolling.
 
+**Research → Compare strategies** compares a fixed momentum/breakout shortlist against cash on
+local historical data, with identical virtual sizing and 1×/2×/3× execution costs. Selection uses
+only development dates, then tests the chosen rule on later dates. It can reject every active
+strategy. See [the comparison workflow and mathematics](docs/RESEARCH.md#strategy-comparison).
+
 For broker execution, open **Session → Broker session setup** and follow
 **Connect account → Set limits → Review → Start**. **New session** prepares a local candidate;
 its visible example uses $10 per order, $100 exposure and a $5 daily loss stop for one hour.

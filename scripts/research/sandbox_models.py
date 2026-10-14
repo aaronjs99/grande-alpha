@@ -43,6 +43,8 @@ class SandboxConfig:
     fast_ema: int = 8
     slow_ema: int = 21
     trend_threshold_bps: float = 4.0
+    # Freeze this in comparisons so cost stress cannot silently change the signal rule.
+    signal_cost_bps: float | None = None
     momentum_bars: int = 3
     # Number of completed analysis bars between policy action selections.
     # Keep 1 for legacy experiments; use the live value when seeking an exact certificate match.
@@ -125,6 +127,10 @@ class SandboxConfig:
         self.strategy_config().validate()
 
     def strategy_config(self) -> StrategyConfig:
+        cost_floor = (self.base_spread_bps + 2 * self.slippage_bps +
+                      2 * self.commission_per_order / self.order_notional * 10_000)
+        if self.signal_cost_bps is not None:
+            cost_floor = self.signal_cost_bps
         return StrategyConfig(
             strategy_name=self.strategy_name,
             warmup_bars=self.warmup_bars,
@@ -139,6 +145,7 @@ class SandboxConfig:
             opening_range_minutes=self.opening_range_minutes,
             breakout_buffer_bps=self.breakout_buffer_bps,
             ensemble_min_votes=self.ensemble_min_votes,
+            round_trip_cost_bps=cost_floor,
         )
 
 

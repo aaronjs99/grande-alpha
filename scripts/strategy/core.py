@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+import statistics
 from collections import deque
 from dataclasses import dataclass
 from datetime import datetime
@@ -10,9 +12,10 @@ from grande_alpha.domain.market_models import Bar, Quote, Regime, Signal
 from grande_alpha.domain.policy import EASTERN
 
 STRATEGY_NAMES = {
-    "cash": "Cash / hold — runtime champion",
+    "cash": "Cash / hold",
     "ema_momentum": "EMA momentum",
     "multi_horizon_trend": "Multi-horizon trend",
+    "cost_aware_trend": "Trend with cost and noise filter (experimental)",
     "close_momentum": "Closing-window momentum",
     "first_half_hour_momentum": "First-half-hour momentum",
     "opening_breakout": "Opening-range breakout",
@@ -76,10 +79,14 @@ class StrategyConfig:
     opening_range_minutes: int = 30
     breakout_buffer_bps: float = 3.0
     ensemble_min_votes: int = 2
+    round_trip_cost_bps: float = 10.0
 
     def validate(self) -> None:
         if self.strategy_name not in STRATEGY_NAMES:
             raise ValueError(f"Unknown strategy: {self.strategy_name}")
+        if (isinstance(self.round_trip_cost_bps, bool) or not isinstance(self.round_trip_cost_bps, (int, float))
+                or not math.isfinite(self.round_trip_cost_bps) or self.round_trip_cost_bps < 0):
+            raise ValueError("The round-trip cost floor must be finite and nonnegative")
         if self.fast_ema < 1 or self.slow_ema < 2 or self.fast_ema >= self.slow_ema:
             raise ValueError("Fast EMA must be positive and smaller than slow EMA")
         horizons = (self.trend_short_bars, self.trend_medium_bars, self.trend_long_bars)
@@ -219,6 +226,60 @@ class MultiHorizonTrendStrategy:
     def reset(self) -> None:
         self.bars.clear()
         self.last_signal = Signal(Regime.FLAT, 0.0, "Strategy reset", timestamp=utc_now())
+
+
+class CostAwareTrendStrategy:
+    """Fixed three-horizon trend rule with an observed cost/noise hurdle.
+
+    This hurdle tests past movement, not expected return or a probability of profit.
+    The 1.5 noise multiplier is a frozen research choice, not a fitted optimum.
+    """
+
+    def __init__(self, config: StrategyConfig) -> None:
+        config.validate()
+        self.config = config
+        self.bars: deque[Bar] = deque(maxlen=max(config.warmup_bars, config.trend_long_bars + 1))
+        self._cadence: float | None = None
+        self.last_signal = Signal(Regime.FLAT, 0, "Waiting for cost-aware trend warm-up")
+
+    def on_bar(self, bar: Bar) -> Signal:
+        if not math.isfinite(bar.close) or bar.close <= 0:
+            raise ValueError("Trend prices must be finite and positive")
+        if self.bars:
+            delta = (bar.start - self.bars[-1].start).total_seconds()
+            if delta <= 0:
+                raise ValueError("Trend bars must be strictly chronological")
+            new_day = bar.start.astimezone(EASTERN).date() != self.bars[-1].start.astimezone(EASTERN).date()
+            if new_day or (self._cadence is not None and delta > self._cadence * 1.5):
+                self.reset()
+            elif self._cadence is None:
+                self._cadence = delta
+        self.bars.append(bar)
+        needed = max(self.config.warmup_bars, self.config.trend_long_bars + 1)
+        if len(self.bars) < needed:
+            self.last_signal = Signal(Regime.FLAT, 0, f"Cost-aware trend warm-up {len(self.bars)}/{needed}", timestamp=bar.start)
+            return self.last_signal
+        closes = [item.close for item in self.bars]
+        increments = [math.log(b / a) * 10_000 for a, b in zip(closes, closes[1:], strict=False)]
+        noise = statistics.pstdev(increments[-self.config.trend_long_bars:])
+        horizons = (self.config.trend_short_bars, self.config.trend_medium_bars, self.config.trend_long_bars)
+        moves = [math.log(closes[-1] / closes[-1 - h]) * 10_000 for h in horizons]
+        hurdles = [max(self.config.trend_threshold_bps,
+                       self.config.round_trip_cost_bps + 1.5 * noise * math.sqrt(h)) for h in horizons]
+        direction = 1 if all(m > t for m, t in zip(moves, hurdles, strict=True)) else (
+            -1 if all(m < -t for m, t in zip(moves, hurdles, strict=True)) else 0)
+        regime = Regime.BULLISH if direction == 1 else Regime.BEARISH if direction == -1 else Regime.FLAT
+        confidence = min(1.0, min(abs(m) / max(t * 4, 1) for m, t in zip(moves, hurdles, strict=True))) if direction else 0.0
+        self.last_signal = Signal(regime, confidence,
+                                  "Trend moves " + "/".join(f"{m:+.1f}" for m in moves) +
+                                  " bps; cost/noise hurdles " + "/".join(f"{t:.1f}" for t in hurdles) + " bps",
+                                  timestamp=bar.start)
+        return self.last_signal
+
+    def reset(self) -> None:
+        self.bars.clear()
+        self._cadence = None
+        self.last_signal = Signal(Regime.FLAT, 0, "Waiting for cost-aware trend warm-up")
 
 
 class CloseMomentumStrategy:
@@ -413,9 +474,23 @@ def build_strategy(config: StrategyConfig) -> SignalStrategy:
         "cash": CashStrategy,
         "ema_momentum": MomentumStrategy,
         "multi_horizon_trend": MultiHorizonTrendStrategy,
+        "cost_aware_trend": CostAwareTrendStrategy,
         "close_momentum": CloseMomentumStrategy,
         "first_half_hour_momentum": FirstHalfHourMomentumStrategy,
         "opening_breakout": OpeningRangeBreakoutStrategy,
         "conservative_ensemble": ConservativeEnsembleStrategy,
     }
     return factories[config.strategy_name](config)
+
+
+def reset_intraday_strategy(strategy: SignalStrategy) -> None:
+    """Fresh intraday warm-up while preserving explicitly cross-session inputs."""
+    if isinstance(strategy, FirstHalfHourMomentumStrategy):
+        # Its date transition carries the last observed prior-session close.
+        # Calling reset would erase the input this particular rule requires.
+        return
+    if isinstance(strategy, ConservativeEnsembleStrategy):
+        for component in strategy.components:
+            reset_intraday_strategy(component)
+    else:
+        strategy.reset()

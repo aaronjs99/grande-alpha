@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- Added a fixed five-rule strategy comparison in the desktop and CLI, development-only
+  selection, a chronological final block, frozen signal rules under cost stress, explicit
+  cash fallback, dataset identities and source/coverage limitations. It grants no trading authority.
+- Added an experimental cost-aware multi-horizon trend rule using log returns and observed
+  volatility. Kept existing capped volatility/risk sizing; no model or parameter search is required.
+- Corrected generic replay phase ordering so a later close cannot change an earlier opening
+  fill; latched cash exits so latency cannot postpone them indefinitely; applied loss-streak
+  admission between rotation legs; and counted partial exits only after a full round trip.
+  Calendar-close liquidation attempts respect fill constraints; truncated recordings retain
+  their remaining holdings. Evidence policy version 16 invalidates earlier strategy fingerprints.
+
 - Added first-use broker session creation/editing with visible example settings, saved drafts,
   full candidate validation before Review, and source-file preservation. Preparation remains
   local and grants no approval or order authority.

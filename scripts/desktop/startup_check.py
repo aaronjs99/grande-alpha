@@ -43,6 +43,14 @@ def check_desktop() -> dict:
         if editor.tabs.widget(0).horizontalScrollBar().maximum() != 0:
             raise RuntimeError("The packaged setup form overflows at narrow width")
         editor.reject()
+        window._show_strategy_comparison()
+        comparison = window._strategy_dialog
+        comparison.resize(370, 620)
+        for _ in range(3):
+            app.processEvents()
+        if comparison.run_button.isEnabled() or window._tasks:
+            raise RuntimeError("The strategy comparison unexpectedly started work on opening")
+        comparison.reject()
         window._closing = True
         window.close()
         app.processEvents()
