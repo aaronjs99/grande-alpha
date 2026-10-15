@@ -12,11 +12,12 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import QEvent, Qt, QTimer
 from PySide6.QtGui import QAction, QResizeEvent
 from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
+    QFormLayout,
     QFrame,
     QGridLayout,
     QHBoxLayout,
@@ -107,15 +108,13 @@ class SessionWindow(SessionWindowLifecycle, SessionSetup, SessionStatus, Session
         self._strategy_dialog: QDialog | None = None
         self._exit_warning_box: QMessageBox | None = None
         self._tasks: set[asyncio.Task] = set()
-        self._layout_mode = ""
-        self._primary_panel: QWidget | None = None
 
         self.setWindowTitle(f"GRANDE Alpha {__version__}")
         self.setMinimumSize(390, 560)
         self.resize(1120, 780)
         self._build_ui()
         self._build_menus()
-        self._apply_responsive_layout(self.width(), self.height(), force=True)
+        self._apply_responsive_layout(self.width())
         self._refresh_controls()
 
         self.status_timer = QTimer(self)
@@ -209,6 +208,7 @@ class SessionWindow(SessionWindowLifecycle, SessionSetup, SessionStatus, Session
         self.setup_dialog.setMinimumSize(340, 430)
         setup_layout = QVBoxLayout(self.setup_dialog)
         self.setup_tabs = QTabWidget()
+        self._setup_forms: list[QFormLayout] = []
         self.flow_panel = self._build_flow_panel()
         self.paper_panel = self._build_paper_panel()
         self.details_panel = QWidget()
@@ -245,6 +245,8 @@ class SessionWindow(SessionWindowLifecycle, SessionSetup, SessionStatus, Session
         close = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
         close.rejected.connect(self.setup_dialog.reject)
         setup_layout.addWidget(close)
+        self.setup_dialog.installEventFilter(self)
+        self._reflow_setup(self.setup_dialog.width())
         self._chat_dialog = DeskChatDialog(self)
         self._update_paper_options()
 
@@ -254,6 +256,19 @@ class SessionWindow(SessionWindowLifecycle, SessionSetup, SessionStatus, Session
         self.setup_dialog.show()
         self.setup_dialog.raise_()
         self.setup_dialog.activateWindow()
+
+    def _reflow_setup(self, width: int) -> None:
+        for form in self._setup_forms:
+            form.setRowWrapPolicy(
+                QFormLayout.RowWrapPolicy.WrapAllRows if width < 480
+                else QFormLayout.RowWrapPolicy.WrapLongRows
+            )
+        self._reflow_grid(self.status_layout, self.status_cards, 1 if width < 560 else 2)
+
+    def eventFilter(self, watched, event):  # noqa: N802 - Qt API
+        if watched is getattr(self, "setup_dialog", None) and event.type() == QEvent.Type.Resize:
+            self._reflow_setup(event.size().width())
+        return super().eventFilter(watched, event)
 
     def _show_chat(self) -> None:
         self._chat_dialog.resize(min(540, self.width() - 20), min(640, self.height() - 40))
@@ -275,9 +290,6 @@ class SessionWindow(SessionWindowLifecycle, SessionSetup, SessionStatus, Session
         self._connect_action = QAction("Connect", self)
         self._connect_action.triggered.connect(lambda: self._spawn(self._connect()))
         session.addAction(self._connect_action)
-        review = QAction("Review exact session", self)
-        review.triggered.connect(lambda: self._show_setup("broker"))
-        session.addAction(review)
         stop = QAction("Stop trading", self)
         stop.triggered.connect(lambda: self._spawn(self._stop()))
         stop.setShortcut("Ctrl+Shift+S")
@@ -330,10 +342,8 @@ class SessionWindow(SessionWindowLifecycle, SessionSetup, SessionStatus, Session
         for column in range(columns):
             layout.setColumnStretch(column, 1)
 
-    def _apply_responsive_layout(self, width: int, height: int, *, force: bool = False) -> None:
+    def _apply_responsive_layout(self, width: int) -> None:
         narrow = width < 750
-        mode = "portrait" if narrow else "landscape"
-        self._layout_mode = mode
         self.header_layout.removeWidget(self.brand_panel)
         self.header_layout.removeWidget(self.toolbar)
         self.header_layout.addWidget(self.brand_panel, 0, 0)
@@ -344,7 +354,7 @@ class SessionWindow(SessionWindowLifecycle, SessionSetup, SessionStatus, Session
 
     def resizeEvent(self, event: QResizeEvent) -> None:  # noqa: N802 - Qt API
         super().resizeEvent(event)
-        self._apply_responsive_layout(event.size().width(), event.size().height())
+        self._apply_responsive_layout(event.size().width())
 
     # ---------- Worker controls ----------
     def _spawn(self, coroutine) -> asyncio.Task:

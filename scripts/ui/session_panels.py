@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QEvent, Qt
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -16,12 +16,42 @@ from PySide6.QtWidgets import (
     QListWidget,
     QPlainTextEdit,
     QPushButton,
+    QSizePolicy,
     QSpinBox,
     QVBoxLayout,
     QWidget,
 )
 
 from grande_alpha.ui.session_components import PreciseDoubleSpinBox
+
+
+class _OptionLabel(QLabel):
+    """A wrapping label that keeps its native checkbox's mouse and keyboard action."""
+
+    def __init__(self, text: str, checkbox: QCheckBox) -> None:
+        super().__init__(text)
+        self.checkbox = checkbox
+        self.setWordWrap(True)
+        self.setMinimumWidth(0)
+        policy = self.sizePolicy()
+        policy.setHorizontalPolicy(QSizePolicy.Policy.Ignored)
+        self.setSizePolicy(policy)
+        self.setBuddy(checkbox)
+        checkbox.setAccessibleName(text)
+        checkbox.installEventFilter(self)
+        self.setEnabled(checkbox.isEnabled())
+
+    def eventFilter(self, watched, event):  # noqa: N802 - Qt API
+        if watched is self.checkbox and event.type() == QEvent.Type.EnabledChange:
+            self.setEnabled(self.checkbox.isEnabled())
+        return super().eventFilter(watched, event)
+
+    def mouseReleaseEvent(self, event):  # noqa: N802 - Qt API
+        if event.button() == Qt.MouseButton.LeftButton and self.checkbox.isEnabled():
+            self.checkbox.click()
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
 
 
 class SessionPanelBuilder:
@@ -45,6 +75,7 @@ class SessionPanelBuilder:
         self.monitor_cycle.setWordWrap(True)
         self.monitor_cycle_time = QLabel("")
         self.monitor_cycle_time.setObjectName("settingsDescription")
+        self.monitor_cycle_time.setWordWrap(True)
 
         data_heading = QLabel("Market data")
         data_heading.setObjectName("settingsDescription")
@@ -141,6 +172,7 @@ class SessionPanelBuilder:
 
         support_form = QFormLayout()
         support_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
+        self._setup_forms.extend((self.limits_form, support_form))
         self.authorization_edit = QLineEdit(str(self.data_dir / "mixed-authorization.json"))
         self.authorization_edit.setAccessibleName("Local exact-scope authorization file")
         self.authorization_edit.textChanged.connect(self._review_input_changed)
@@ -210,6 +242,10 @@ class SessionPanelBuilder:
         research_layout.setContentsMargins(12, 10, 12, 12)
         self.research_status = QLabel("Off · orders unavailable")
         self.research_status.setWordWrap(True)
+        policy = self.research_status.sizePolicy()
+        policy.setHorizontalPolicy(QSizePolicy.Policy.Ignored)
+        self.research_status.setSizePolicy(policy)
+        self.research_status.setMinimumWidth(0)
         self.research_status.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self.research_button = QPushButton("Enable research MCP")
         self.research_button.clicked.connect(lambda: self._spawn(self._toggle_research()))
@@ -221,6 +257,7 @@ class SessionPanelBuilder:
         research_layout.addWidget(paper_note)
         paper_form = QFormLayout()
         paper_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
+        self._setup_forms.append(paper_form)
         self.paper_source = QComboBox()
         self.paper_source.addItem("Synthetic demo", "demo")
         self.paper_source.addItem("Current broker quotes", "broker_quotes")
@@ -230,21 +267,21 @@ class SessionPanelBuilder:
         self.paper_trade_cash = QLineEdit("100")
         self.paper_trade_cash.setAccessibleName("Virtual cash per entry")
         self.paper_trade_cash.setPlaceholderText("Virtual cash per entry")
-        self.paper_loop_demo = QCheckBox("Repeat the synthetic demo until stopped")
-        self.paper_news = QCheckBox("Include public news headlines")
-        self.paper_social = QCheckBox("Include unverified public Bluesky posts")
+        self.paper_loop_demo, repeat_row = self._paper_option("Repeat the synthetic demo until stopped")
+        self.paper_news, news_row = self._paper_option("Include public news headlines")
+        self.paper_social, social_row = self._paper_option("Include unverified public Bluesky posts")
         self.paper_social.setEnabled(False)
-        self.paper_local_ai = QCheckBox("Use a local Ollama model for advisory context")
+        self.paper_local_ai, ai_row = self._paper_option("Use a local Ollama model for advisory context")
         self.paper_ai_model = QLineEdit()
         self.paper_ai_model.setPlaceholderText("Installed local model name")
         self.paper_ai_model.setEnabled(False)
         paper_form.addRow("Price source", self.paper_source)
         paper_form.addRow("Starting amount", self.paper_initial_cash)
         paper_form.addRow("Amount per entry", self.paper_trade_cash)
-        paper_form.addRow("Demo", self.paper_loop_demo)
-        paper_form.addRow("Research", self.paper_news)
-        paper_form.addRow("Social", self.paper_social)
-        paper_form.addRow("Local AI", self.paper_local_ai)
+        paper_form.addRow("Demo", repeat_row)
+        paper_form.addRow("Research", news_row)
+        paper_form.addRow("Social", social_row)
+        paper_form.addRow("Local AI", ai_row)
         paper_form.addRow("Ollama model", self.paper_ai_model)
         research_layout.addLayout(paper_form)
         paper_buttons = QHBoxLayout()
@@ -274,6 +311,9 @@ class SessionPanelBuilder:
 
     def _update_paper_options(self) -> None:
         current_quotes = self.paper_source.currentData() == "broker_quotes"
+        self.paper_loop_demo.setEnabled(not current_quotes)
+        if current_quotes:
+            self.paper_loop_demo.setChecked(False)
         self.paper_news.setEnabled(current_quotes)
         if not current_quotes:
             self.paper_news.setChecked(False)
@@ -283,6 +323,18 @@ class SessionPanelBuilder:
         self.paper_local_ai.setEnabled(current_quotes)
         self.paper_ai_model.setEnabled(current_quotes and self.paper_local_ai.isChecked())
         self._refresh_controls()
+
+    @staticmethod
+    def _paper_option(text: str) -> tuple[QCheckBox, QWidget]:
+        checkbox = QCheckBox()
+        label = _OptionLabel(text, checkbox)
+        row = QWidget()
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(7)
+        layout.addWidget(checkbox, 0, Qt.AlignmentFlag.AlignTop)
+        layout.addWidget(label, 1)
+        return checkbox, row
 
     @staticmethod
     def _path_row(line_edit: QLineEdit, callback: Callable[[], None]) -> QWidget:

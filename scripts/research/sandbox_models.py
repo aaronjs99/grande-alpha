@@ -4,7 +4,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from typing import Any
 
-from grande_alpha.domain.execution_profile import execution_profile
+from grande_alpha.configuration.value_checks import require_finite_fields, require_integer_fields
 from grande_alpha.domain.market_models import Bar, Signal
 from grande_alpha.execution.candidate_execution import contract_from_config
 from grande_alpha.strategy.core import StrategyConfig
@@ -70,59 +70,14 @@ class SandboxConfig:
     force_flat_at_end: bool = True
 
     def validate(self) -> None:
-        execution_profile(self)
-        if self.settlement_model not in {"cash_t1", "instant"}:
-            raise ValueError("Settlement model must be cash_t1 or instant")
+        require_integer_fields(self, ("lookback_days", "csv_bar_seconds"))
+        if self.signal_cost_bps is not None:
+            require_finite_fields(self, ("signal_cost_bps",))
         if not 1 <= self.lookback_days <= 10_000:
             raise ValueError("Lookback must be between 1 and 10000 calendar days")
         if not 1 <= self.csv_bar_seconds <= 300:
             raise ValueError("CSV bar interval must be between 1 and 300 seconds")
-        if self.initial_cash <= 0 or self.order_notional <= 0:
-            raise ValueError("Starting cash and order notional must be positive")
-        if self.order_notional > self.initial_cash:
-            raise ValueError("Order notional cannot exceed starting virtual cash")
-        if self.fast_ema < 1 or self.slow_ema < 2 or self.fast_ema >= self.slow_ema:
-            raise ValueError("Fast EMA must be positive and smaller than slow EMA")
-        if self.momentum_bars < 1 or self.warmup_bars < self.slow_ema + 2:
-            raise ValueError("Warm-up must be at least slow EMA + 2; momentum must be positive")
-        if not 1 <= self.decision_stride <= 120:
-            raise ValueError("Decision stride must be between 1 and 120 analysis bars")
-        if self.trend_threshold_bps <= 0:
-            raise ValueError("Trend threshold must be positive")
-        nonnegative = (
-            self.slippage_bps,
-            self.base_spread_bps,
-            self.spread_volatility_multiplier,
-            self.commission_per_order,
-            self.rejection_rate_pct,
-        )
-        if any(value < 0 for value in nonnegative):
-            raise ValueError("Execution costs and rejection rate cannot be negative")
-        if self.latency_bars < 0 or not 0 < self.fill_fraction_pct <= 100:
-            raise ValueError("Latency must be nonnegative and fill fraction must be in (0,100]")
-        if not 0 < self.max_volume_participation_pct <= 100:
-            raise ValueError("Volume participation must be in (0,100]")
-        if not 0 <= self.rejection_rate_pct <= 100:
-            raise ValueError("Rejection rate must be between 0 and 100")
-        if self.hard_stop_pct <= 0 or self.take_profit_pct <= 0:
-            raise ValueError("Stop and take-profit percentages must be positive")
-        if self.max_hold_minutes < 1 or self.max_entries_per_day < 1:
-            raise ValueError("Maximum hold and daily entry cap must be positive")
-        if (
-            self.no_trade_open_minutes < 0
-            or self.no_trade_close_minutes < 0
-            or self.no_trade_open_minutes + self.no_trade_close_minutes >= 390
-        ):
-            raise ValueError("No-trade windows must be nonnegative and leave part of the session open")
-        for name, value in (
-            ("risk budget", self.risk_budget_pct),
-            ("maximum exposure", self.max_exposure_pct),
-            ("daily loss", self.max_daily_loss_pct),
-        ):
-            if not 0 < value <= 1:
-                raise ValueError(f"{name.title()} percentage must be in (0,1]")
-        if self.max_consecutive_losses < 1 or self.volatility_target_pct < 0:
-            raise ValueError("Loss pause must be positive and volatility target cannot be negative")
+        # Validate execution before deriving the strategy's cost per order.
         contract_from_config(self)
         self.strategy_config().validate()
 

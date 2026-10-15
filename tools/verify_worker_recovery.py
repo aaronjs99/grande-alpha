@@ -25,7 +25,9 @@ from PySide6.QtGui import QCloseEvent, QFont, QFontDatabase
 from PySide6.QtWidgets import QApplication
 
 from grande_alpha import cli
+from grande_alpha.domain.account_models import Account
 from grande_alpha.execution.candidate_profile import candidate_template
+from grande_alpha.execution.session_runtime import BrokerSessionRuntime
 from grande_alpha.execution.session_worker import SessionWorker
 from grande_alpha.execution.worker_control import WorkerControlStore
 from grande_alpha.execution.worker_ipc import LocalControlClient, LocalControlError, LocalControlServer
@@ -109,6 +111,433 @@ class CleanupRuntime:
 
     async def close(self) -> None:
         pass
+
+
+class BlockedAccountBroker:
+    """Hold only the account read; market data and order operations stay unavailable."""
+
+    def __init__(self) -> None:
+        self.connected = True
+        self.read_started = asyncio.Event()
+        self.read_release = asyncio.Event()
+
+    async def get_accounts(self) -> list[Account]:
+        self.read_started.set()
+        await self.read_release.wait()
+        return [Account("fixture-account", "Fixture", "individual", True, "active")]
+
+    async def disconnect(self) -> None:
+        self.connected = False
+
+    async def get_quotes(self, _symbols):
+        return {}
+
+    async def discover_crypto(self):
+        return []
+
+    async def discover_equities(self, _scan_id):
+        return []
+
+
+class TerminalRuntime(CleanupRuntime):
+    def __init__(self, outcome: str) -> None:
+        super().__init__()
+        self.outcome = outcome
+        self.run_started = asyncio.Event()
+        self.run_release = asyncio.Event()
+
+    async def run(self, _state, *, recover: bool) -> None:
+        self.run_started.set()
+        await self.run_release.wait()
+        if self.outcome == "error":
+            raise RuntimeError("Fixture runner failed")
+
+
+class TeardownBroker:
+    """Model an owner that remains alive after connect and disconnect failures."""
+
+    def __init__(self, *, failure: str = "") -> None:
+        self.failure = failure
+        self.cleanup_allowed = not failure
+        self.connected = False
+        self.owner_active = False
+        self.disconnect_attempts = 0
+
+    async def connect(self) -> None:
+        self.connected = True
+        self.owner_active = True
+        if self.failure == "connect":
+            raise RuntimeError("Fixture connect failed")
+
+    async def disconnect(self) -> None:
+        self.disconnect_attempts += 1
+        if not self.cleanup_allowed:
+            raise RuntimeError("Fixture transport is still closing")
+        self.connected = False
+        self.owner_active = False
+
+    async def get_accounts(self) -> list[Account]:
+        if self.failure == "accounts":
+            raise RuntimeError("Fixture accounts failed")
+        return [Account("fixture-account", "Fixture", "individual", True, "active")]
+
+
+class PendingConnectBroker(TeardownBroker):
+    def __init__(self, *, ignore_cancel: bool = False) -> None:
+        super().__init__()
+        self.ignore_cancel = ignore_cancel
+        self.connect_started = asyncio.Event()
+        self.connect_cancelled = asyncio.Event()
+        self.connect_release = asyncio.Event()
+
+    async def connect(self) -> None:
+        self.owner_active = True
+        self.connect_started.set()
+        try:
+            await self.connect_release.wait()
+        except asyncio.CancelledError:
+            self.connect_cancelled.set()
+            if not self.ignore_cancel:
+                raise
+            await self.connect_release.wait()
+        self.connected = True
+
+
+class LifecycleAcceptance(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        self.scratch = tempfile.TemporaryDirectory(prefix="grande-lifecycle-check-")
+        self.path = Path(self.scratch.name)
+
+    def tearDown(self) -> None:
+        self.scratch.cleanup()
+
+    async def _paper_start_invalidation(self, action: str) -> None:
+        control = recorded_session(self.path / action, running=False)
+        broker = BlockedAccountBroker()
+        runtime = BrokerSessionRuntime(self.path / action, control=control,
+                                       broker_factory=lambda *_: self.fail("Unexpected broker creation"))
+        runtime.broker = broker
+        worker = SessionWorker(control, runtime)
+        payload = {"source": "broker_quotes", "initial_cash": 1000, "trade_cash": 100,
+                   "loop_demo": False, "news_enabled": False, "social_enabled": False,
+                   "local_ai_enabled": False, "local_ai_model": ""}
+        starting = asyncio.create_task(worker.handle("research_paper_start", payload))
+        old_research = None
+        try:
+            await asyncio.wait_for(broker.read_started.wait(), timeout=1)
+            old_research = runtime.research
+            if action == "worker_stop":
+                await worker.stop()
+            elif action == "durable_stop":
+                other = WorkerControlStore(self.path / action / "grande_alpha.db")
+                try:
+                    other.stop()
+                finally:
+                    other.close()
+            elif action == "paper_stop":
+                await runtime.stop_paper_research()
+            elif action == "research_stop":
+                await runtime.stop_research()
+            elif action == "research_disable":
+                runtime.disable_research()
+            elif action == "service_disable":
+                old_research.disable()
+            elif action == "service_replace":
+                runtime.research = None
+                runtime._research_service()
+            elif action == "service_close":
+                await runtime._close_research()
+            elif action == "broker_replace":
+                runtime.broker = BlockedAccountBroker()
+            else:
+                raise AssertionError("Unknown lifecycle fixture")
+            broker.read_release.set()
+            with self.assertRaises(RuntimeError):
+                await starting
+            self.assertFalse(runtime.research_status()["running"])
+            self.assertFalse(old_research.status()["running"])
+            self.assertFalse(control.current().running)
+        finally:
+            broker.read_release.set()
+            await asyncio.gather(starting, return_exceptions=True)
+            await worker.close()
+            if old_research is not None and old_research is not runtime.research:
+                await old_research.close()
+            control.close()
+
+    async def test_broker_quote_paper_start_cannot_outlive_worker_stop(self) -> None:
+        await self._paper_start_invalidation("worker_stop")
+
+    async def test_broker_quote_paper_start_observes_another_clients_stop(self) -> None:
+        await self._paper_start_invalidation("durable_stop")
+
+    async def test_broker_quote_paper_start_cannot_restart_stopped_or_replaced_research(self) -> None:
+        for action in ("paper_stop", "research_stop", "research_disable", "service_disable",
+                       "service_replace", "service_close", "broker_replace"):
+            with self.subTest(action=action):
+                await self._paper_start_invalidation(action)
+
+    async def test_uninterrupted_broker_quote_paper_start_still_starts_virtual_research(self) -> None:
+        control = recorded_session(self.path, running=False)
+        broker = BlockedAccountBroker()
+        broker.read_release.set()
+        runtime = BrokerSessionRuntime(self.path, control=control)
+        runtime.broker = broker
+        try:
+            result = await runtime.start_paper_research(control.current(), {
+                "source": "broker_quotes", "initial_cash": 1000, "trade_cash": 100,
+                "loop_demo": False, "news_enabled": False, "social_enabled": False,
+                "local_ai_enabled": False, "local_ai_model": "",
+            })
+            self.assertTrue(result["running"])
+            self.assertFalse(result["orders_available"])
+            self.assertFalse(control.current().running)
+        finally:
+            await runtime.close()
+            control.close()
+
+    async def test_unexpected_runner_cancellation_clears_saved_recovery_intent(self) -> None:
+        for before_entry in (False, True):
+            with self.subTest(before_entry=before_entry):
+                control = recorded_session(self.path / str(before_entry))
+                runtime = TerminalRuntime("return")
+                worker = SessionWorker(control, runtime)
+                state = control.current()
+                try:
+                    await worker.recover()
+                    task = worker._task
+                    if not before_entry:
+                        await asyncio.wait_for(runtime.run_started.wait(), timeout=1)
+                    task.cancel()
+                    await asyncio.gather(task, return_exceptions=True)
+                    self.assertIsNone(worker._task)
+                    self.assertFalse(worker.status()["running"])
+                    self.assertEqual(control.current().generation, state.generation + 1)
+                    restarted = SessionWorker(control, TerminalRuntime("return"))
+                    await restarted.recover()
+                    self.assertIsNone(restarted._task)
+                finally:
+                    await worker.close()
+                    control.close()
+
+    async def test_terminal_outcomes_fence_their_own_running_generation(self) -> None:
+        for outcome in ("return", "error"):
+            with self.subTest(outcome=outcome):
+                control = recorded_session(self.path / outcome)
+                runtime = TerminalRuntime(outcome)
+                worker = SessionWorker(control, runtime)
+                state = control.current()
+                try:
+                    await worker.recover()
+                    task = worker._task
+                    runtime.run_release.set()
+                    await asyncio.gather(task, return_exceptions=True)
+                    self.assertFalse(control.current().running)
+                    self.assertEqual(control.current().generation, state.generation + 1)
+                    self.assertEqual(worker.status()["phase"], "Error" if outcome == "error" else "Stopped")
+                finally:
+                    await worker.close()
+                    control.close()
+
+    async def test_explicit_stop_cancellation_does_not_advance_generation_twice(self) -> None:
+        control = recorded_session(self.path)
+        runtime = TerminalRuntime("return")
+        worker = SessionWorker(control, runtime)
+        try:
+            await worker.recover()
+            await asyncio.wait_for(runtime.run_started.wait(), timeout=1)
+            generation = control.current().generation
+            await worker.stop()
+            self.assertFalse(control.current().running)
+            self.assertEqual(control.current().generation, generation + 1)
+            self.assertIsNone(worker._task)
+        finally:
+            await worker.close()
+            control.close()
+
+    async def test_stale_terminal_cleanup_cannot_fence_a_newer_running_generation(self) -> None:
+        for outcome in ("return", "error", "cancel"):
+            with self.subTest(outcome=outcome):
+                control = recorded_session(self.path / outcome)
+                runtime = TerminalRuntime(outcome)
+                worker = SessionWorker(control, runtime)
+                try:
+                    await worker.recover()
+                    task = worker._task
+                    await asyncio.wait_for(runtime.run_started.wait(), timeout=1)
+                    control.stop()
+                    newer = control.start("fixture-scope", expected_generation=control.current().generation)
+                    if outcome == "cancel":
+                        task.cancel()
+                    else:
+                        runtime.run_release.set()
+                    await asyncio.gather(task, return_exceptions=True)
+                    self.assertEqual(control.current(), newer)
+                finally:
+                    await worker.close()
+                    control.close()
+
+    async def test_terminal_fence_is_atomic_with_another_clients_new_start(self) -> None:
+        control = recorded_session(self.path)
+        other = WorkerControlStore(self.path / "grande_alpha.db")
+        runtime = TerminalRuntime("return")
+        worker = SessionWorker(control, runtime)
+        newer = None
+
+        def replace_before_write(statement: str) -> None:
+            nonlocal newer
+            if statement.strip().upper() == "BEGIN" and newer is None:
+                other.stop()
+                newer = other.start("fixture-scope", expected_generation=other.current().generation)
+
+        try:
+            await worker.recover()
+            task = worker._task
+            await asyncio.wait_for(runtime.run_started.wait(), timeout=1)
+            control._db.set_trace_callback(replace_before_write)
+            runtime.run_release.set()
+            await asyncio.gather(task, return_exceptions=True)
+            self.assertIsNotNone(newer)
+            self.assertEqual(other.current(), newer)
+        finally:
+            control._db.set_trace_callback(None)
+            await worker.close()
+            other.close()
+            control.close()
+
+    async def test_failed_connect_retains_its_owner_until_teardown_succeeds(self) -> None:
+        for failure in ("connect", "contract", "accounts"):
+            with self.subTest(failure=failure):
+                first, second = TeardownBroker(failure=failure), TeardownBroker()
+                created = []
+
+                def factory(_interactive, *, brokers=(first, second), created=created):
+                    broker = brokers[len(created)]
+                    self.assertFalse(any(item.owner_active for item in created), "Two broker owners would overlap")
+                    created.append(broker)
+                    return broker
+
+                def validate(broker, *, first=first, failure=failure):
+                    if broker is first and failure == "contract":
+                        raise RuntimeError("Fixture contract failed")
+
+                runtime = BrokerSessionRuntime(self.path, broker_factory=factory, contract_validator=validate)
+                try:
+                    with self.assertRaisesRegex(RuntimeError, f"Fixture {failure} failed"):
+                        await runtime.connect(False)
+                    self.assertTrue(first.connected)
+                    self.assertIs(runtime.broker, first)
+                    self.assertFalse(runtime.connected)
+                    with self.assertRaisesRegex(RuntimeError, "still closing"):
+                        await runtime.connect(False)
+                    self.assertEqual(len(created), 1)
+                    self.assertIs(runtime.broker, first)
+                    self.assertEqual(first.disconnect_attempts, 2)
+                    first.cleanup_allowed = True
+                    result = await runtime.connect(False)
+                    self.assertTrue(result["connected"])
+                    self.assertEqual(len(created), 2)
+                    self.assertFalse(first.owner_active)
+                    self.assertIs(runtime.broker, second)
+                finally:
+                    first.cleanup_allowed = True
+                    await runtime.close()
+
+    async def test_failed_close_keeps_owner_available_for_a_later_cleanup_retry(self) -> None:
+        broker = TeardownBroker(failure="connect")
+        broker.connected = True
+        broker.owner_active = True
+        runtime = BrokerSessionRuntime(self.path)
+        runtime.broker = broker
+        try:
+            await runtime.close()
+            self.assertIs(runtime.broker, broker)
+            self.assertFalse(runtime.connected)
+            broker.cleanup_allowed = True
+            await runtime.close()
+            self.assertIsNone(runtime.broker)
+            self.assertFalse(broker.owner_active)
+        finally:
+            broker.cleanup_allowed = True
+            await runtime.close()
+
+    async def test_shutdown_during_interactive_connect_closes_without_waiting_for_login(self) -> None:
+        control = recorded_session(self.path, running=False)
+        broker = PendingConnectBroker()
+        created = []
+
+        def factory(_interactive):
+            self.assertFalse(created, "Shutdown must not create a replacement broker")
+            created.append(broker)
+            return broker
+
+        runtime = BrokerSessionRuntime(self.path, control=control,
+                                       broker_factory=factory, contract_validator=lambda _broker: None)
+        worker = SessionWorker(control, runtime)
+        connecting = asyncio.create_task(worker.handle("connect", {}))
+        queued = None
+        try:
+            await asyncio.wait_for(broker.connect_started.wait(), timeout=1)
+            queued = asyncio.create_task(runtime.connect())
+            await asyncio.sleep(0)
+            result = await worker.handle("shutdown", {})
+            self.assertTrue(result["process_exiting"])
+            await asyncio.wait_for(worker.close(), timeout=1)
+            self.assertTrue(connecting.done())
+            self.assertTrue(broker.connect_cancelled.is_set())
+            self.assertGreater(broker.disconnect_attempts, 0)
+            self.assertFalse(broker.owner_active)
+            self.assertFalse(runtime.connected)
+            self.assertIsNone(runtime.broker)
+            queued_result, = await asyncio.gather(queued, return_exceptions=True)
+            self.assertIsInstance(queued_result, RuntimeError)
+            self.assertEqual(len(created), 1)
+            with self.assertRaises(RuntimeError):
+                await runtime.connect()
+        finally:
+            broker.connect_release.set()
+            await asyncio.gather(connecting, *([queued] if queued is not None else []), return_exceptions=True)
+            await worker.close()
+            control.close()
+
+    async def test_close_is_bounded_when_connect_ignores_cancellation_and_rejects_late_success(self) -> None:
+        broker = PendingConnectBroker(ignore_cancel=True)
+        created = []
+
+        def factory(_interactive):
+            created.append(broker)
+            return broker
+
+        runtime = BrokerSessionRuntime(self.path, broker_factory=factory, contract_validator=lambda _broker: None)
+        connecting = asyncio.create_task(runtime.connect())
+        closing = None
+        try:
+            await asyncio.wait_for(broker.connect_started.wait(), timeout=1)
+            with patch("grande_alpha.execution.session_runtime.CONNECT_CLOSE_SECONDS", .02, create=True):
+                closing = asyncio.create_task(runtime.close())
+                done, _ = await asyncio.wait({closing}, timeout=1)
+                self.assertIn(closing, done, "Close must not wait indefinitely for a cancelled Connect")
+                with self.assertRaisesRegex(RuntimeError, "still closing"):
+                    await closing
+            self.assertTrue(broker.connect_cancelled.is_set())
+            self.assertIs(runtime.broker, broker)
+            self.assertFalse(runtime.connected)
+            with self.assertRaises(RuntimeError):
+                await runtime.connect()
+            broker.connect_release.set()
+            result, = await asyncio.gather(connecting, return_exceptions=True)
+            self.assertIsInstance(result, RuntimeError)
+            await runtime.close()
+            self.assertEqual(len(created), 1)
+            self.assertFalse(broker.owner_active)
+            self.assertFalse(runtime.connected)
+            self.assertIsNone(runtime.broker)
+        finally:
+            if closing is not None and not closing.done():
+                closing.cancel()
+            broker.connect_release.set()
+            await asyncio.gather(connecting, *([closing] if closing is not None else []), return_exceptions=True)
+            await runtime.close()
 
 
 class RecoveryAcceptance(unittest.TestCase):

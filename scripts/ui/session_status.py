@@ -73,7 +73,7 @@ class SessionStatus:
         self.monitor_cycle.setText("Last reported: " + self.monitor_cycle.text())
         self.monitor_cycle_time.setText("Unverified — " + self.monitor_cycle_time.text())
         self.monitor_data.setText("Last reported: " + self.monitor_data.text())
-        self._apply_responsive_layout(self.width(), self.height(), force=True)
+        self._apply_responsive_layout(self.width())
         if was_reachable:
             self._log("warning", "Worker is unreachable; trading and broker state are unverified.")
         self._refresh_controls()
@@ -136,10 +136,8 @@ class SessionStatus:
             self.coverage_card.value.setText("Awaiting first cycle")
             self.coverage_card.setToolTip("The worker has not reported a completed data snapshot.")
         self._update_monitor(status, phase)
-        if running != was_running:
-            self._apply_responsive_layout(self.width(), self.height(), force=True)
-        elif was_offline:
-            self._apply_responsive_layout(self.width(), self.height(), force=True)
+        if running != was_running or was_offline:
+            self._apply_responsive_layout(self.width())
         if was_offline:
             self._log("info", "Worker status is available again. Review the session before another Start.")
         if phase != previous_phase and previous_phase is not None:
@@ -236,16 +234,6 @@ class SessionStatus:
         if self._status.get("worker_reachable") is False:
             return self._status.get("control_record") == "missing" or self._status.get("local_stop_recorded") is True
         return self._status.get("running") is not True
-
-    def _monitor_required(self) -> bool:
-        if self._status.get("running") is True:
-            return True
-        return self._status.get("worker_reachable") is False and (
-            self._status.get("recorded_running") is True
-            or self._status.get("control_record") == "unavailable"
-            or (self._last_worker_status.get("running") is True
-                and self._status.get("local_stop_recorded") is not True)
-        )
 
     def _refresh_controls(self) -> None:
         connected = self._status.get("connected") is True

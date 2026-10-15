@@ -52,6 +52,12 @@ Research targets and replay fills are not broker orders. Saved activity and
 notifications remain local. `records notifications --unread` reads the on-device inbox;
 `--ack <id>` acknowledges one entry. GRANDE Alpha sends no notification email. See
 [research](RESEARCH.md) for data provenance and cost assumptions.
+
+`research sandbox run --no-save` skips the records database entirely. Missing sandbox settings
+use defaults; an existing invalid `sandbox_config.json` reports an error and keeps the file
+intact. Correct or explicitly replace that file before retrying; invalid input never silently
+selects a different strategy. Counts require integers, switches require booleans, and numeric
+settings must be finite.
 The separate `grande-alpha-mcp` entry point is a local stdio research interface, not a broker
 session runner. It cannot place orders or grant authority and needs explicit per-worker-session
 enablement in the desktop or `research mcp enable` CLI command. Configure the compatible client

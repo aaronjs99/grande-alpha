@@ -30,6 +30,8 @@ from grande_alpha.execution.worker_control import WorkerControlStore, WorkerPerm
 from grande_alpha.persistence.store import AuditStore
 from grande_alpha.research.worker_research import WorkerResearch
 
+CONNECT_CLOSE_SECONDS = 12.0
+
 
 class BrokerSessionRuntime:
     """Own the one broker transport used for review and autonomous execution."""
@@ -46,18 +48,23 @@ class BrokerSessionRuntime:
         )
         self._contract_validator = contract_validator
         self.broker = None
+        self._broker_unavailable = False
         self.account_masked = ""
         self.coverage: dict = {}
         self.last_data_at: str | None = None
         self.last_cycle: dict = {}
         self.research: WorkerResearch | None = None
+        self._research_revision = 0
         self._running = False
         self._connect_lock = asyncio.Lock()
+        self._connect_task: asyncio.Task | None = None
+        self._closing = False
         self._research_enable_lock = asyncio.Lock()
 
     @property
     def connected(self) -> bool:
-        return bool(self.broker is not None and self.broker.connected)
+        return bool(not self._closing and not self._broker_unavailable
+                    and self.broker is not None and self.broker.connected)
 
     @property
     def phase(self) -> str:
@@ -70,25 +77,50 @@ class BrokerSessionRuntime:
         return "Connected" if self.connected else "Idle"
 
     async def connect(self, authenticate: bool = True) -> dict:
+        if self._closing:
+            raise RuntimeError("The broker runtime is closing")
         async with self._connect_lock:
-            return await self._connect_once(authenticate)
+            if self._closing:
+                raise RuntimeError("The broker runtime is closing")
+            self._connect_task = asyncio.create_task(self._connect_once(authenticate))
+            try:
+                result = await self._connect_task
+                if self._closing:
+                    with contextlib.suppress(Exception):
+                        await self._disconnect_broker()
+                    raise RuntimeError("The broker runtime is closing")
+                return result
+            finally:
+                self._connect_task = None
 
     async def _connect_once(self, authenticate: bool) -> dict:
         if self.connected:
             return {"connected": True, "accounts": await self._accounts()}
         await self._close_research()
+        await self._disconnect_broker()
         self.broker = self._broker_factory(authenticate)
+        self._broker_unavailable = True
         try:
             async with asyncio.timeout(300 if authenticate else 30):
                 await self.broker.connect()
             self._contract_validator(self.broker)
-            return {"connected": True, "accounts": await self._accounts()}
+            accounts = await self._accounts()
+            self._broker_unavailable = False
+            return {"connected": True, "accounts": accounts}
         except BaseException:
             with contextlib.suppress(Exception):
-                async with asyncio.timeout(8):
-                    await self.broker.disconnect()
-            self.broker = None
+                await self._disconnect_broker()
             raise
+
+    async def _disconnect_broker(self) -> None:
+        if self.broker is None:
+            return
+        self._broker_unavailable = True
+        async with asyncio.timeout(8):
+            await self.broker.disconnect()
+        # Retain this identity if teardown raises: its transport still owns cleanup.
+        self.broker = None
+        self._broker_unavailable = False
 
     async def _accounts(self) -> list[dict]:
         accounts = await read_with_backoff(self.broker.get_accounts)
@@ -176,33 +208,47 @@ class BrokerSessionRuntime:
         return self.research
 
     async def start_paper_research(self, state: WorkerState, payload: dict) -> dict:
-        if self._running or bool(self.control and self.control.current().running):
+        current = self.control.current() if self.control is not None else state
+        if self._running or current.running:
             raise RuntimeError("Paper research cannot run alongside the live trading session")
+        if current.generation != state.generation:
+            raise RuntimeError("Worker control changed before paper research could start")
         research = self._research_service()
         if payload["source"] == "demo":
             research.prepare(None)
             return research.start_paper(payload)
         if not state.account or not self.connected:
             raise RuntimeError("Connect and review an account before using broker quotes")
+        broker = self.broker
+        revision = (self._research_revision, research._revision)
         accounts = [
-            account for account in await read_with_backoff(self.broker.get_accounts)
+            account for account in await read_with_backoff(broker.get_accounts)
             if account.account_number == state.account
         ]
+        current = self.control.current() if self.control is not None else state
+        if (current.generation != state.generation or current.running or self._running
+                or research is not self.research or broker is not self.broker or not self.connected
+                or revision != (self._research_revision, research._revision)):
+            raise RuntimeError("Paper research start was cancelled because the worker or research state changed")
         if len(accounts) != 1:
             raise RuntimeError("The reviewed account could not be freshly reconciled")
         research.prepare(accounts[0])
         return research.start_paper(payload)
 
     async def stop_paper_research(self) -> dict:
+        self._research_revision += 1
         return await self.research.stop_agent() if self.research is not None else self.research_status()
 
     def disable_research(self) -> dict:
+        self._research_revision += 1
         return self.research.disable() if self.research is not None else self.research_status()
 
     async def stop_research(self) -> dict:
+        self._research_revision += 1
         return await self.research.stop() if self.research is not None else self.research_status()
 
     async def _close_research(self) -> None:
+        self._research_revision += 1
         research, self.research = self.research, None
         if research is not None:
             await research.close()
@@ -351,9 +397,15 @@ class BrokerSessionRuntime:
                 self._running = False
 
     async def close(self) -> None:
-        await self._close_research()
-        if self.broker is not None:
+        self._closing = True
+        task = self._connect_task
+        if task is not None and not task.done():
+            task.cancel()
+            done, _ = await asyncio.wait({task}, timeout=CONNECT_CLOSE_SECONDS)
+            if not done:
+                # Keep the same owner fenced until its cancelled Connect unwinds.
+                raise RuntimeError("The broker connection is still closing; retry cleanup shortly")
+        async with asyncio.timeout(CONNECT_CLOSE_SECONDS), self._connect_lock:
+            await self._close_research()
             with contextlib.suppress(Exception):
-                async with asyncio.timeout(8):
-                    await self.broker.disconnect()
-            self.broker = None
+                await self._disconnect_broker()

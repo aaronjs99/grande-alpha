@@ -168,23 +168,22 @@ class SessionWorker:
         self._phase = "Recovering" if recover else "Starting"
         self._last_error = ""
         self._task = asyncio.create_task(self.runtime.run(state, recover=recover))
-        self._task.add_done_callback(self._finished)
+        self._task.add_done_callback(lambda task: self._finished(task, state.generation))
 
-    def _finished(self, task: asyncio.Task) -> None:
+    def _finished(self, task: asyncio.Task, generation: int) -> None:
+        error = None if task.cancelled() else task.exception()
         if task is not self._task:
             return
         self._task = None
-        if task.cancelled():
-            self._phase = "Stopped"
+        state = self.control.stop(expected_generation=generation)
+        if state.running or state.generation != generation + 1:
+            # Stop or a newer review/start already superseded this runner.
             return
-        error = task.exception()
         if error is not None:
             self._last_error = f"{type(error).__name__}: {error}"
             self._phase = "Error"
         else:
             self._phase = "Stopped"
-        if self.control.current().running:
-            self.control.stop()
         if hasattr(self.runtime, "disable_research"):
             with contextlib.suppress(Exception):
                 self.runtime.disable_research()

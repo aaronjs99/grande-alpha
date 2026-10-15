@@ -13,9 +13,10 @@ from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QVariantAnimation
-from PySide6.QtGui import QFont, QFontDatabase
-from PySide6.QtWidgets import QApplication
+from PySide6.QtCore import Qt, QVariantAnimation
+from PySide6.QtGui import QAccessible, QFont, QFontDatabase
+from PySide6.QtTest import QTest
+from PySide6.QtWidgets import QApplication, QLabel
 
 from grande_alpha.execution.session_runtime import BrokerSessionRuntime
 from grande_alpha.execution.session_worker import SessionWorker
@@ -110,6 +111,85 @@ class DeskAcceptance(unittest.TestCase):
         for card in desk.cards.values():
             self.assertFalse(card._working)
             self.assertEqual(card._breath.state(), QVariantAnimation.State.Stopped)
+
+    def test_setup_tabs_fit_with_long_status_and_bridge_paths_when_resized(self):
+        status = worker_status({
+            "enabled": True, "running": False, "phase": "Stopped",
+            "bridge_path": str(self.path / "research" / "agent-mcp-connection.json"),
+        })
+        status["last_cycle"] = {"status": "NO_TICKET", "at": "2026-10-14T18:00:00+00:00"}
+        self.window._apply_status(status)
+        self.window._log("info", "Worker is reachable; the last control update remains available for review.")
+        self.window.show()
+        self.window._show_setup("paper")
+        for width in (340, 370, 720, 340):
+            self.window.setup_dialog.resize(width, 610)
+            for index in range(self.window.setup_tabs.count()):
+                self.window.setup_tabs.setCurrentIndex(index)
+                for _ in range(3):
+                    self.app.processEvents()
+                scroll = self.window.setup_tabs.widget(index)
+                with self.subTest(width=width, tab=self.window.setup_tabs.tabText(index)):
+                    self.assertEqual(scroll.horizontalScrollBar().maximum(), 0)
+                    self.assertLessEqual(scroll.widget().width(), scroll.viewport().width())
+            for label in (self.window.monitor_cycle_time, self.window.research_status):
+                with self.subTest(width=width, text=label.text()):
+                    self.assertGreaterEqual(label.height(), label.heightForWidth(label.width()))
+        self.window.setup_dialog.reject()
+
+    def test_paper_option_labels_are_accessible_clickable_and_fit_at_minimum_width(self):
+        self.window.show()
+        self.window._show_setup("paper")
+        self.window.setup_dialog.resize(340, 610)
+        for control, text in (
+            (self.window.paper_loop_demo, "Repeat the synthetic demo until stopped"),
+            (self.window.paper_news, "Include public news headlines"),
+            (self.window.paper_social, "Include unverified public Bluesky posts"),
+            (self.window.paper_local_ai, "Use a local Ollama model for advisory context"),
+        ):
+            self.window.paper_source.setCurrentIndex(0 if control is self.window.paper_loop_demo else 1)
+            self.window.paper_news.setChecked(True)
+            self.window.setup_tabs.widget(0).ensureWidgetVisible(control)
+            for _ in range(3):
+                self.app.processEvents()
+            with self.subTest(option=text):
+                accessible = QAccessible.queryAccessibleInterface(control)
+                self.assertEqual(accessible.text(QAccessible.Text.Name), text)
+                labels = [label for label in control.parentWidget().findChildren(QLabel)
+                          if label.text() == text]
+                target = labels[0] if labels else control
+                checked = control.isChecked()
+                QTest.mouseClick(target, Qt.MouseButton.LeftButton)
+                self.assertEqual(control.isChecked(), not checked)
+                control.setFocus()
+                QTest.keyClick(control, Qt.Key.Key_Space)
+                self.assertEqual(control.isChecked(), checked)
+                if isinstance(target, QLabel):
+                    self.assertGreaterEqual(target.height(), target.heightForWidth(target.width()))
+                self.assertEqual(self.window.setup_tabs.widget(0).horizontalScrollBar().maximum(), 0)
+        self.window.setup_dialog.reject()
+
+    def test_changing_from_repeating_demo_to_quotes_clears_demo_only_payload(self):
+        async def scenario():
+            status = {**worker_status(), "connected": True, "account": "fixture-account"}
+            self.window._apply_status(status)
+            self.window.paper_loop_demo.setChecked(True)
+            self.window.paper_source.setCurrentIndex(1)
+            self.assertFalse(self.window.paper_loop_demo.isChecked())
+            self.assertFalse(self.window.paper_loop_demo.isEnabled())
+            requests = []
+            async def request(operation, payload, **_kwargs):
+                requests.append((operation, payload))
+                return research_fixture() if operation == "research_paper_start" else status
+            self.window._request = request
+            await self.window._start_paper()
+            self.assertEqual(requests[0][0], "research_paper_start")
+            self.assertEqual(requests[0][1]["source"], "broker_quotes")
+            self.assertIs(requests[0][1]["loop_demo"], False)
+            self.window.paper_source.setCurrentIndex(0)
+            self.assertTrue(self.window.paper_loop_demo.isEnabled())
+            self.assertFalse(self.window.paper_loop_demo.isChecked())
+        asyncio.run(scenario())
 
     def test_new_session_and_no_paper_clear_previous_metrics_and_chart(self):
         self.window._apply_status(worker_status(research_fixture()))

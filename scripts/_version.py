@@ -1,3 +1,3 @@
 """The package version used by builds and every GRANDE Alpha interface."""
 
-__version__ = "0.20.1"
+__version__ = "0.20.2"

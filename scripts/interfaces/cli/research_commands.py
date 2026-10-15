@@ -294,54 +294,54 @@ def command_sandbox_run(args: argparse.Namespace) -> int:
     config = _config_from_args(args)
     bundle = asyncio.run(_bundle_from_args(args, config))
     result = SandboxReplayEngine(config).run(bundle)
-    store = AuditStore()
-    try:
-        if not args.no_save:
+    if not args.no_save:
+        store = AuditStore()
+        try:
             _record_sandbox(store, config, bundle, result, args.note)
-        payload = {
-            "run_id": result.run_id,
-            "source": result.source,
-            "dataset_hash": bundle.dataset_hash,
-            "metrics": result.metrics(),
-            "fills": [fill.as_dict() for fill in result.fills],
-            "saved": not args.no_save,
-        }
-        if args.json:
-            _json(payload)
-            return 0
-        print(f"Sandbox run {result.run_id} | {'saved' if not args.no_save else 'not saved'}")
-        print(f"Source: {result.source}")
+        finally:
+            store.close()
+    payload = {
+        "run_id": result.run_id,
+        "source": result.source,
+        "dataset_hash": bundle.dataset_hash,
+        "metrics": result.metrics(),
+        "fills": [fill.as_dict() for fill in result.fills],
+        "saved": not args.no_save,
+    }
+    if args.json:
+        _json(payload)
+        return 0
+    print(f"Sandbox run {result.run_id} | {'saved' if not args.no_save else 'not saved'}")
+    print(f"Source: {result.source}")
+    print(
+        format_table(
+            ["Metric", "Value"],
+            _sandbox_metric_rows(result.metrics()),
+            args.width,
+        )
+    )
+    if args.fills:
+        rows = result.fills[-args.fills :]
+        print("\nVirtual fills")
         print(
             format_table(
-                ["Metric", "Value"],
-                _sandbox_metric_rows(result.metrics()),
+                ["Time", "Symbol", "Side", "Quantity", "Fill", "Realized P/L", "Reason"],
+                [
+                    [
+                        fill.timestamp.isoformat(),
+                        fill.symbol,
+                        fill.side.upper(),
+                        f"{fill.quantity:.6f}",
+                        f"${fill.price:,.2f}",
+                        f"${fill.realized_pnl:+,.2f}" if fill.realized_pnl is not None else "—",
+                        fill.reason,
+                    ]
+                    for fill in rows
+                ],
                 args.width,
             )
         )
-        if args.fills:
-            rows = result.fills[-args.fills :]
-            print("\nVirtual fills")
-            print(
-                format_table(
-                    ["Time", "Symbol", "Side", "Quantity", "Fill", "Realized P/L", "Reason"],
-                    [
-                        [
-                            fill.timestamp.isoformat(),
-                            fill.symbol,
-                            fill.side.upper(),
-                            f"{fill.quantity:.6f}",
-                            f"${fill.price:,.2f}",
-                            f"${fill.realized_pnl:+,.2f}" if fill.realized_pnl is not None else "—",
-                            fill.reason,
-                        ]
-                        for fill in rows
-                    ],
-                    args.width,
-                )
-            )
-        return 0
-    finally:
-        store.close()
+    return 0
 
 
 def command_glossary(args: argparse.Namespace) -> int:

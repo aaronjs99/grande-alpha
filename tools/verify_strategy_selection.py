@@ -350,6 +350,40 @@ class ComparisonDesktopChecks(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(path.read_text(encoding="utf-8"), "original history")
         self.assertIn("source history is preserved", self.dialog.status.text())
 
+    async def test_changing_history_or_failed_retry_clears_previous_dataset_summary(self):
+        report = {
+            "dataset": {"sessions": 45, "interval": "5m"},
+            "split": {"development_start": "2026-01-02T15:00:00+00:00",
+                      "development_end": "2026-02-10T20:55:00+00:00"},
+            "candidates": [{"strategy": "cash", "label": "Cash", "return_pct": 0,
+                            "max_drawdown_pct": 0, "round_trips": 0,
+                            "worst_block_return_pct": 0, "cost_stress": {"3": {"return_pct": 0}},
+                            "rejection_reasons": []}],
+            "selected_for_holdout": "cash",
+            "holdout": {"base": {"return_pct": 0}, "passed": False},
+            "blockers": ["Source provenance is unverified or synthetic"],
+        }
+        missing = Path(self.temp.name) / "different-history.json"
+        self.dialog.render(report)
+        self.assertIn("2026-01-02", self.dialog.summary.text())
+        with patch("grande_alpha.ui.strategy_comparison.QFileDialog.getOpenFileName",
+                   return_value=(str(missing), "")):
+            self.dialog._choose()
+        self.assertEqual(self.dialog.source.text(), "different-history.json")
+        self.assertNotIn("2026-01-02", self.dialog.summary.text())
+        self.assertNotIn("45 sessions", self.dialog.summary.text())
+        self.assertIsNone(self.dialog.report)
+        self.assertEqual(self.dialog.table.rowCount(), 0)
+        self.assertFalse(self.dialog.save.isEnabled())
+        # A file may also change or disappear between comparisons without a new choice.
+        self.dialog.render(report)
+        self.dialog.start()
+        await self.dialog._task
+        self.assertIn("unavailable", self.dialog.status.text())
+        self.assertNotIn("2026-01-02", self.dialog.summary.text())
+        self.assertIsNone(self.dialog.report)
+        self.assertFalse(self.dialog.save.isEnabled())
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

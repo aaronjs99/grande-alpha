@@ -103,11 +103,19 @@ class WorkerControlStore:
                 raise RuntimeError("Worker control changed while start was being approved")
         return self.current()
 
-    def stop(self) -> WorkerState:
+    def stop(self, *, expected_generation: int | None = None) -> WorkerState:
         with self._lock, self._db:
-            self._db.execute(
-                "UPDATE worker_control SET generation=generation+1,running=0 WHERE id=1"
-            )
+            if expected_generation is None:
+                self._db.execute(
+                    "UPDATE worker_control SET generation=generation+1,running=0 WHERE id=1"
+                )
+            else:
+                # A completed runner can fence only its own still-running intent.
+                self._db.execute(
+                    "UPDATE worker_control SET generation=generation+1,running=0 "
+                    "WHERE id=1 AND running=1 AND generation=?",
+                    (expected_generation,),
+                )
         return self.current()
 
     def may_submit(self, generation: int, scope_digest: str) -> bool:

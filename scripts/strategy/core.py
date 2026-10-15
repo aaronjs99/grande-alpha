@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol
 
+from grande_alpha.configuration.value_checks import require_finite_fields, require_integer_fields
 from grande_alpha.domain.clock import utc_now
 from grande_alpha.domain.market_models import Bar, Quote, Regime, Signal
 from grande_alpha.domain.policy import EASTERN
@@ -82,13 +83,23 @@ class StrategyConfig:
     round_trip_cost_bps: float = 10.0
 
     def validate(self) -> None:
-        if self.strategy_name not in STRATEGY_NAMES:
+        if not isinstance(self.strategy_name, str) or self.strategy_name not in STRATEGY_NAMES:
             raise ValueError(f"Unknown strategy: {self.strategy_name}")
-        if (isinstance(self.round_trip_cost_bps, bool) or not isinstance(self.round_trip_cost_bps, (int, float))
-                or not math.isfinite(self.round_trip_cost_bps) or self.round_trip_cost_bps < 0):
+        require_integer_fields(self, (
+            "warmup_bars", "fast_ema", "slow_ema", "momentum_bars", "trend_short_bars",
+            "trend_medium_bars", "trend_long_bars", "opening_range_minutes", "ensemble_min_votes",
+        ))
+        require_finite_fields(self, (
+            "trend_threshold_bps", "close_momentum_bps", "breakout_buffer_bps", "round_trip_cost_bps",
+        ))
+        if self.round_trip_cost_bps < 0:
             raise ValueError("The round-trip cost floor must be finite and nonnegative")
         if self.fast_ema < 1 or self.slow_ema < 2 or self.fast_ema >= self.slow_ema:
             raise ValueError("Fast EMA must be positive and smaller than slow EMA")
+        if self.momentum_bars < 1 or self.warmup_bars < self.slow_ema + 2:
+            raise ValueError("Warm-up must be at least slow EMA + 2; momentum must be positive")
+        if self.trend_threshold_bps <= 0:
+            raise ValueError("Trend threshold must be positive")
         horizons = (self.trend_short_bars, self.trend_medium_bars, self.trend_long_bars)
         if not (0 < horizons[0] < horizons[1] < horizons[2]):
             raise ValueError("Trend horizons must be positive and strictly increasing")

@@ -43,18 +43,8 @@ try {
     $BuildRequirements = @($BuildRequirementsJson | ConvertFrom-Json)
     & $BuildPython -I -m pip install --disable-pip-version-check "${ProjectRoot}[desktop]" @BuildRequirements
     if ($LASTEXITCODE -ne 0) { throw 'The declared packaging dependencies could not be installed.' }
-    & $BuildPython -I (Join-Path $ProjectRoot 'tools\verify_worker_recovery.py')
-    if ($LASTEXITCODE -ne 0) { throw 'Worker recovery acceptance failed in the isolated packaging environment.' }
-    & $BuildPython -I (Join-Path $ProjectRoot 'tools\verify_agent_desk.py')
-    if ($LASTEXITCODE -ne 0) { throw 'Agent desk acceptance failed in the isolated packaging environment.' }
-    & $BuildPython -I (Join-Path $ProjectRoot 'tools\verify_session_setup.py')
-    if ($LASTEXITCODE -ne 0) { throw 'Session setup acceptance failed in the isolated packaging environment.' }
-    & $BuildPython -I (Join-Path $ProjectRoot 'tools\verify_local_ai.py')
-    if ($LASTEXITCODE -ne 0) { throw 'Optional AI acceptance failed in the isolated packaging environment.' }
-    & $BuildPython -I (Join-Path $ProjectRoot 'tools\verify_strategy_selection.py')
-    if ($LASTEXITCODE -ne 0) { throw 'Strategy comparison acceptance failed in the isolated packaging environment.' }
-    & $BuildPython -I (Join-Path $ProjectRoot 'tools\verify_broker_connection.py')
-    if ($LASTEXITCODE -ne 0) { throw 'Broker connection acceptance failed in the isolated packaging environment.' }
+    & $BuildPython -I (Join-Path $ProjectRoot 'tools\verify.py')
+    if ($LASTEXITCODE -ne 0) { throw 'Offline acceptance failed in the isolated packaging environment.' }
     New-Item -ItemType Directory -Path $BuildOutput, $DistributionOutput, $SpecOutput -Force | Out-Null
     & $BuildPython -I -m pip freeze --all --exclude grande-alpha | Set-Content -LiteralPath (Join-Path $SpecOutput 'resolved-requirements.txt') -Encoding UTF8
     if ($LASTEXITCODE -ne 0) { throw 'The resolved packaging dependencies could not be recorded.' }

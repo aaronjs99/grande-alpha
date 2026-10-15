@@ -6,9 +6,9 @@ import math
 import statistics
 from dataclasses import asdict, dataclass, fields
 from datetime import datetime
-from numbers import Real
 from typing import Any
 
+from grande_alpha.configuration.value_checks import require_finite_fields, require_integer_fields
 from grande_alpha.domain.execution_profile import execution_profile
 from grande_alpha.domain.policy import session_minutes
 
@@ -57,10 +57,9 @@ class CandidateExecutionContract:
     force_flat_at_end: bool = True
 
     def validate(self) -> None:
-        execution_profile(self)
         if self.contract_version != CONTRACT_VERSION:
             raise ValueError("Unsupported candidate execution contract version")
-        integer_fields = (
+        require_integer_fields(self, (
             "latency_bars",
             "random_seed",
             "decision_stride",
@@ -69,15 +68,10 @@ class CandidateExecutionContract:
             "no_trade_open_minutes",
             "no_trade_close_minutes",
             "max_consecutive_losses",
-        )
-        if any(
-            isinstance(getattr(self, name), bool) or not isinstance(getattr(self, name), int)
-            for name in integer_fields
-        ):
-            raise ValueError("Candidate lifecycle counts must be integers")
+        ))
         if self.settlement_model not in {"cash_t1", "instant"}:
             raise ValueError("Settlement model must be cash_t1 or instant")
-        numeric_fields = (
+        require_finite_fields(self, (
             "initial_cash",
             "order_notional",
             "slippage_bps",
@@ -94,14 +88,10 @@ class CandidateExecutionContract:
             "max_exposure_pct",
             "max_daily_loss_pct",
             "volatility_target_pct",
-        )
-        if any(
-            isinstance(getattr(self, name), bool)
-            or not isinstance(getattr(self, name), Real)
-            or not math.isfinite(float(getattr(self, name)))
-            for name in numeric_fields
-        ):
-            raise ValueError("Candidate execution contract values must be finite")
+        ))
+        if type(self.force_flat_at_end) is not bool:
+            raise ValueError("force_flat_at_end must be true or false")
+        execution_profile(self)
         if self.initial_cash <= 0 or self.order_notional <= 0:
             raise ValueError("Starting cash and order notional must be positive")
         if self.order_notional > self.initial_cash:
@@ -129,6 +119,8 @@ class CandidateExecutionContract:
             raise ValueError("Stop and take-profit percentages must be positive")
         if self.max_hold_minutes < 1 or self.max_entries_per_day < 1:
             raise ValueError("Maximum hold and daily entry cap must be positive")
+        # Leave time inside the selected session: regular 390m, extended 780m,
+        # or all-day 1440m. SandboxConfig uses this same execution constraint.
         if (
             self.no_trade_open_minutes < 0
             or self.no_trade_close_minutes < 0

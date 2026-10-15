@@ -37,7 +37,7 @@ class StrategyComparisonDialog(QDialog):
         self.setMinimumSize(350, 460)
         self.resize(920, 620)
         box = QVBoxLayout(self)
-        self.summary = QLabel("Compare five fixed rules after costs. Final test dates stay separate from selection.")
+        self.summary = QLabel()
         self.summary.setTextFormat(Qt.TextFormat.PlainText)
         self.summary.setWordWrap(True)
         box.addWidget(self.summary)
@@ -80,6 +80,13 @@ class StrategyComparisonDialog(QDialog):
         footer.addStretch()
         footer.addWidget(close)
         box.addLayout(footer)
+        self._reset_results()
+
+    def _reset_results(self):
+        self.report = None
+        self.table.setRowCount(0)
+        self.save.setEnabled(False)
+        self.summary.setText("Compare five fixed rules after costs. Final test dates stay separate from selection.")
 
     def showEvent(self, event):
         self._closed = False
@@ -93,9 +100,7 @@ class StrategyComparisonDialog(QDialog):
                                              str(self.owner.data_dir / "sandbox_cache"), "JSON history (*.json)")
         if path:
             self.path = Path(path)
-            self.report = None
-            self.table.setRowCount(0)
-            self.save.setEnabled(False)
+            self._reset_results()
             self.source.setText(self.path.name)
             self.status.setText("Ready · uses illustrative $1,000 virtual cash and at most $100 per entry; no model needed.")
             self.run_button.setEnabled(True)
@@ -109,9 +114,7 @@ class StrategyComparisonDialog(QDialog):
     async def _run(self, path, cancel):
         self.choose.setEnabled(False)
         self.run_button.setEnabled(False)
-        self.save.setEnabled(False)
-        self.report = None
-        self.table.setRowCount(0)
+        self._reset_results()
         self.status.setText("Comparing locally…")
         try:
             def compute():

@@ -5,6 +5,7 @@ from dataclasses import asdict
 from pathlib import Path
 
 from grande_alpha.configuration.config import data_dir
+from grande_alpha.configuration.json_inputs import load_json
 from grande_alpha.domain.market_models import Signal
 from grande_alpha.research.bar_replay import SandboxReplayEngine
 from grande_alpha.research.historical_models import HistoricalBundle
@@ -37,29 +38,36 @@ class SandboxReplayRunner:
             raise ValueError("Custom causal signals are supported only by exact runtime replay")
         return SandboxReplayEngine(config).run(bundle)
 
-
-
-
 def sandbox_config_path() -> Path:
     return data_dir() / "sandbox_config.json"
 
 
 def load_sandbox_config() -> SandboxConfig:
     path = sandbox_config_path()
-    if not path.exists():
-        return SandboxConfig()
+    problem = "are invalid or unreadable"
     try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
+        raw = load_json(path, max_bytes=65_536)
+        if not isinstance(raw, dict):
+            raise ValueError("Sandbox settings must be a JSON object")
         allowed = SandboxConfig.__dataclass_fields__.keys()
-        config = SandboxConfig(**{key: value for key, value in raw.items() if key in allowed})
+        unknown = sorted(raw.keys() - allowed)
+        if unknown:
+            problem = "contain unknown fields: " + ", ".join(repr(key) for key in unknown)
+            raise ValueError(problem)
+        config = SandboxConfig(**raw)
         config.validate()
         return config
-    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+    except FileNotFoundError:
         return SandboxConfig()
+    except (OSError, ValueError, TypeError, RecursionError):
+        raise ValueError(
+            f"Saved sandbox settings at {path} {problem}. "
+            "Correct this file or move it aside before retrying; it was left unchanged."
+        ) from None
 
 
 def save_sandbox_config(config: SandboxConfig) -> None:
     config.validate()
     path = sandbox_config_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(asdict(config), indent=2), encoding="utf-8")
+    path.write_text(json.dumps(asdict(config), indent=2, allow_nan=False), encoding="utf-8")

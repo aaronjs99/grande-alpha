@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Fenced delayed paper startup and terminal worker cleanup against Stop and newer sessions;
+  failed broker teardown keeps ownership until cleanup can be retried. Shutdown cancels and
+  bounds pending Connect cleanup, and rejects late connection success.
+- Rejected malformed/nonfinite research settings before replay, kept unsaved CLI replays out
+  of the records database, and preserved disposable saved-run round trips.
+- Fixed narrow setup status overflow and disabled the demo-only repeat option for broker quotes.
+  Local verification, CI and Windows packaging now use one offline acceptance checklist.
+
 - Fixed Connect rejecting valid no-parameter and nullable parameter schemas from Robinhood's
   current MCP catalog. Restored immutable account, portfolio, position, tradability and equity
   order records whose missing constructors also broke account decoding and inherited tickets.

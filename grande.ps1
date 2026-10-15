@@ -53,14 +53,9 @@ switch ($Task) {
         Write-Host "Python: $PythonExe" -ForegroundColor Green
     }
     'verify' {
-        Invoke-Python -Arguments @('-m', 'ruff', 'check', 'scripts')
-        Invoke-Python -Arguments @('-m', 'compileall', '-q', 'scripts')
-        Invoke-Python -Arguments @('tools/verify_worker_recovery.py')
-        Invoke-Python -Arguments @('tools/verify_agent_desk.py')
-        Invoke-Python -Arguments @('tools/verify_session_setup.py')
-        Invoke-Python -Arguments @('tools/verify_local_ai.py')
-        Invoke-Python -Arguments @('tools/verify_strategy_selection.py')
-        Invoke-Python -Arguments @('tools/verify_broker_connection.py')
+        Invoke-Python -Arguments @('-m', 'ruff', 'check', 'scripts', 'tools')
+        Invoke-Python -Arguments @('-m', 'compileall', '-q', 'scripts', 'tools')
+        Invoke-Python -Arguments @('tools/verify.py')
         # Build from a fresh sdist so removed source files cannot leak from build/lib.
         $BuildOutputDir = Join-Path ([IO.Path]::GetTempPath()) "grande-alpha-verify-$([guid]::NewGuid().ToString('N'))"
         try {

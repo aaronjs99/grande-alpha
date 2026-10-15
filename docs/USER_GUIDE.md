@@ -77,6 +77,10 @@ flow. Desktop Connect and paper startup never recover saved live intent automati
 running intent needs Stop and a new review. **Session details** contains full status, guidance,
 data coverage, and control logs. **View** switches the desk's light/dark appearance.
 
+Select an **Activity** update to read and copy its full message. Setup tabs adapt to narrow
+windows, including long status text. **Repeat** applies only to the synthetic demo and clears
+when you switch to broker quotes.
+
 Ollama is optional. Paper trading, broker setup, Review and live controls work with AI off, which
 is the default. Opening the app or chat does not start Ollama or load any model.
 
