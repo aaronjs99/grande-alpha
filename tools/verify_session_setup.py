@@ -253,7 +253,7 @@ class SessionSetupAcceptance(unittest.TestCase):
         scope, _policy, _thresholds = load_candidate(self.path / "copy.json")
         self.assertEqual(scope.max_order_usd, 9)
         self.assertEqual(self.window._candidate_document["scope"]["max_order_usd"], 9)
-        self.assertEqual(Path(self.window.candidate_edit.text()), self.path / "copy.json")
+        self.assertEqual(Path(self.window.candidate_edit.text()).resolve(), (self.path / "copy.json").resolve())
         self.assertIsNone(self.window._review_result)
         self.assertEqual(self.window._authorized_scope, "")
         self.assertFalse(self.window.start_button.isEnabled())
