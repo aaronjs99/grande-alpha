@@ -37,6 +37,10 @@ the app starts nothing. AI is optional and off by default; paper and broker sess
 Ollama. **AI chat** can use an installed local model for read-only discussion after a RAM check.
 Setup and technical details live in separate dialogs. **STOP** stays visible while scrolling.
 
+**Research → Paper journal** opens saved virtual fills without a worker, broker or AI connection.
+Choose a saved session, page through its fills, or export the displayed page to CSV. Saved marks
+can be stale; synthetic and forward paper records do not establish profitability.
+
 **Research → Compare strategies** compares a fixed momentum/breakout shortlist against cash on
 local historical data, with identical virtual sizing and 1×/2×/3× execution costs. Selection uses
 only development dates, then tests the chosen rule on later dates. It can reject every active
@@ -51,6 +55,8 @@ their own capital, symbols, order and exposure caps, daily loss limit, and recov
 approval may be made outside market hours, but an order still needs a supported open session,
 fresh executable data, broker permission, and intact risk controls. Practice and replay are
 optional research tools, not mandatory waiting periods or profitability certificates.
+**Edit setup** is the single editor for a candidate and saves a new copy; the setup panel shows
+its exact saved limits. Saving a changed copy requires a new review.
 
 After building, `.\grande.ps1 install -Packaged` installs desktop and Start Menu shortcuts to the
 local executable without updating shared Python packages. Source shortcuts launch Python directly;

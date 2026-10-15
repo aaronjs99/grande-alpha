@@ -58,9 +58,9 @@ def add_record_commands(root_commands) -> None:
 
 def command_status(args: argparse.Namespace) -> int:
     """Summarize historical local records; session status comes from the worker."""
-    store = AuditStore()
+    store = AuditStore.read_existing()
     try:
-        latest = store.research_promotion()
+        latest = store.research_promotion() if store is not None else None
         passes = (
             f"{sum(bool(gate.get('passed', False)) for gate in latest['gates'])}/{len(latest['gates'])}"
             if latest
@@ -73,7 +73,8 @@ def command_status(args: argparse.Namespace) -> int:
                 latest["status"] if latest else "NONE",
                 f"{passes} research checks; does not authorize trading",
             ],
-            ["Local records", str(store.path), "Use session status for the active worker"],
+            ["Local records", str(store.path) if store is not None else "Not initialized",
+             "Use session status for the active worker" if store is not None else "No local records database exists"],
         ]
         if args.json:
             _json({row[0]: {"value": row[1], "explanation": row[2]} for row in rows})
@@ -81,14 +82,15 @@ def command_status(args: argparse.Namespace) -> int:
             print(format_table(["Item", "Value", "Explanation"], rows, args.width))
         return 0
     finally:
-        store.close()
+        if store is not None:
+            store.close()
 
 
 def command_runs(args: argparse.Namespace) -> int:
-    store = AuditStore()
+    store = AuditStore.read_existing()
     try:
         if args.id:
-            run = store.sandbox_run(args.id)
+            run = store.sandbox_run(args.id) if store is not None else None
             if run is None:
                 raise ValueError("No sandbox run matches that complete run ID")
             if args.json:
@@ -115,11 +117,13 @@ def command_runs(args: argparse.Namespace) -> int:
                     )
                 )
             return 0
-        runs = store.recent_sandbox_runs(args.limit)
+        runs = store.recent_sandbox_runs(args.limit) if store is not None else []
         if args.json:
             _json(runs)
             return 0
         rows = []
+        if store is None:
+            print("Local records have not been initialized.")
         for run in runs:
             metrics = json.loads(run["metrics_json"])
             rows.append(
@@ -134,16 +138,19 @@ def command_runs(args: argparse.Namespace) -> int:
         print(format_table(["Run", "Time", "Source", "Return", "Trades"], rows, args.width))
         return 0
     finally:
-        store.close()
+        if store is not None:
+            store.close()
 
 
 def command_receipts(args: argparse.Namespace) -> int:
-    store = AuditStore()
+    store = AuditStore.read_existing()
     try:
-        receipts = store.recent_receipts(args.limit)
+        receipts = store.recent_receipts(args.limit) if store is not None else []
         if args.json:
             _json(receipts)
         else:
+            if store is None:
+                print("Local records have not been initialized.")
             print(
                 format_table(
                     ["Time", "Severity", "Category", "Summary"],
@@ -156,12 +163,15 @@ def command_receipts(args: argparse.Namespace) -> int:
             )
         return 0
     finally:
-        store.close()
+        if store is not None:
+            store.close()
 
 
 def command_notifications(args: argparse.Namespace) -> int:
     """Read or acknowledge the local notification inbox."""
-    store = AuditStore()
+    if type(args.after) is not int or args.after < 0 or type(args.limit) is not int or not 1 <= args.limit <= 1000:
+        raise ValueError("Notification cursor and limit are invalid")
+    store = AuditStore() if args.ack is not None else AuditStore.read_existing()
     try:
         if args.ack is not None:
             store.acknowledge_notification(args.ack)
@@ -169,8 +179,9 @@ def command_notifications(args: argparse.Namespace) -> int:
             after_id=args.after,
             limit=args.limit,
             unread_only=args.unread,
-        )
+        ) if store is not None else []
         print(json.dumps(notifications, indent=2))
         return 0
     finally:
-        store.close()
+        if store is not None:
+            store.close()

@@ -217,7 +217,7 @@ class SessionStatus:
         return f"{hours}h {minutes}m ago" if minutes else f"{hours}h ago"
 
     def _can_review(self) -> bool:
-        if self._limits_dirty or self._candidate_document is None or not self._candidate_ready:
+        if self._candidate_document is None or not self._candidate_ready:
             return False
         candidate = Path(self.candidate_edit.text().strip()) if self.candidate_edit.text().strip() else None
         return bool(
@@ -250,10 +250,6 @@ class SessionStatus:
         self.limits_group.setEnabled(can_prepare)
         self.new_candidate_button.setEnabled(can_prepare)
         self.edit_candidate_button.setEnabled(can_prepare and self._candidate_document is not None)
-        self.save_limits_button.setEnabled(
-            can_prepare and self._candidate_ready
-            and self._limits_dirty
-        )
         self.review_button.setEnabled(not transition_busy and self._can_review())
         self.start_button.setEnabled(
             bool(reviewed_scope) and connected and not running and not transition_busy

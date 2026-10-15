@@ -11,6 +11,13 @@ from fractions import Fraction
 from pathlib import Path
 from unittest.mock import patch
 
+from grande_alpha.configuration.config import (
+    AppConfig,
+    config_document,
+    load_config,
+    save_config,
+    upgrade_config,
+)
 from grande_alpha.domain.market_models import Bar, Regime
 from grande_alpha.execution.candidate_execution import CandidateExecutionContract
 from grande_alpha.research.bar_replay import SandboxReplayEngine
@@ -241,6 +248,46 @@ class SettingsInputChecks(unittest.TestCase):
         with self.assertRaises(ValueError):
             save_sandbox_config(SandboxConfig(force_flat_at_end="false"))
         self.assertEqual(self.path.read_bytes(), previous)
+
+
+class MainSettingsInputChecks(unittest.TestCase):
+    def setUp(self):
+        self.scratch = tempfile.TemporaryDirectory()
+        self.addCleanup(self.scratch.cleanup)
+        self.path = Path(self.scratch.name) / 'config.json'
+
+    def ambiguous(self):
+        text = json.dumps(config_document(AppConfig()))
+        return text.replace('"broker_connection_enabled": false',
+                            '"broker_connection_enabled": false, "broker_connection_enabled": true').encode()
+
+    def test_duplicate_permission_fields_never_choose_the_last_value(self):
+        before = self.ambiguous()
+        self.path.write_bytes(before)
+        for operation in (load_config, upgrade_config):
+            with self.subTest(operation=operation.__name__), self.assertRaisesRegex(ValueError, 'Duplicate JSON field'):
+                operation(self.path)
+            self.assertEqual(self.path.read_bytes(), before)
+        self.assertEqual(list(self.path.parent.iterdir()), [self.path])
+
+    def test_ambiguous_legacy_settings_are_not_upgraded_or_backed_up(self):
+        before = b'{"cadence_version":6,"broker_connection_enabled":false,"broker_connection_enabled":true}'
+        self.path.write_bytes(before)
+        with self.assertRaisesRegex(ValueError, 'Duplicate JSON field'):
+            upgrade_config(self.path)
+        self.assertEqual(self.path.read_bytes(), before)
+        self.assertEqual(list(self.path.parent.iterdir()), [self.path])
+
+    def test_normal_save_does_not_replace_an_ambiguous_existing_file(self):
+        before = self.ambiguous()
+        self.path.write_bytes(before)
+        with self.assertRaisesRegex(ValueError, 'Duplicate JSON field'):
+            save_config(AppConfig(), self.path)
+        self.assertEqual(self.path.read_bytes(), before)
+
+    def test_windows_utf8_bom_settings_remain_readable(self):
+        self.path.write_bytes(b'\xef\xbb\xbf' + json.dumps(config_document(AppConfig())).encode())
+        self.assertFalse(load_config(self.path).broker.broker_connection_enabled)
 
 
 if __name__ == "__main__":

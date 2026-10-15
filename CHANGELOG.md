@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Added a read-only desktop paper journal with session selection, complete fill pagination and
+  atomic CSV export of the displayed page. It needs no worker, broker or AI connection and
+  preserves virtual-data limitations, exact decimals and existing database files.
+- Consolidated candidate limits into one editor with a read-only saved summary. Cancelling keeps
+  the loaded setup; saving a copy clears its review. Enter no longer replaces edits with examples.
+- Kept records inspection from creating or migrating databases, made sandbox settings saves
+  atomic, and rejected duplicate main-settings fields before reads, saves or explicit upgrades.
+
 - Fenced delayed paper startup and terminal worker cleanup against Stop and newer sessions;
   failed broker teardown keeps ownership until cleanup can be retried. Shutdown cancels and
   bounds pending Connect cleanup, and rejects late connection success.

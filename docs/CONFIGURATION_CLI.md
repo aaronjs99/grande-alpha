@@ -22,6 +22,8 @@ dollar defaults. Saved `risk.default_max_*` preferences are unfilled in a new in
 never grant live limits; existing saved values remain readable but are not execution authority.
 The desktop edits a chosen candidate copy and requires review before Start.
 Never store an API key, OAuth token, or account password in configuration or the repository.
+Settings reads, saves and explicit upgrades reject duplicate JSON fields and nonfinite values;
+UTF-8 files with a byte-order mark are accepted. Ambiguous existing files remain untouched.
 
 The Alpha Vantage key can be stored with a hidden prompt:
 
@@ -52,12 +54,17 @@ Research targets and replay fills are not broker orders. Saved activity and
 notifications remain local. `records notifications --unread` reads the on-device inbox;
 `--ack <id>` acknowledges one entry. GRANDE Alpha sends no notification email. See
 [research](RESEARCH.md) for data provenance and cost assumptions.
+Records lists, status and evidence inspection open existing databases read-only. Missing records
+stay absent, and incompatible databases report an error instead of being initialized or migrated.
+Acknowledging a notification and saving research remain explicit writes.
 
 `research sandbox run --no-save` skips the records database entirely. Missing sandbox settings
 use defaults; an existing invalid `sandbox_config.json` reports an error and keeps the file
 intact. Correct or explicitly replace that file before retrying; invalid input never silently
 selects a different strategy. Counts require integers, switches require booleans, and numeric
 settings must be finite.
+Sandbox settings saves validate first and replace the file atomically; an interrupted write leaves
+the previous settings intact.
 The separate `grande-alpha-mcp` entry point is a local stdio research interface, not a broker
 session runner. It cannot place orders or grant authority and needs explicit per-worker-session
 enablement in the desktop or `research mcp enable` CLI command. Configure the compatible client

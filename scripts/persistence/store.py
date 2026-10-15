@@ -43,21 +43,58 @@ from .validation import (
 class AuditStore:
     """Compatibility facade; each operation belongs to one focused repository."""
 
-    def __init__(self, path: Path | None = None) -> None:
+    _RECORD_COLUMNS = {
+        "receipts": "id,created_at,category,severity,summary,payload_json",
+        "device_notifications": "id,receipt_id,created_at,severity,summary,acknowledged_at",
+        "sandbox_runs": "run_id,created_at,data_source,replay_start,replay_end,config_json,metrics_json",
+        "sandbox_fills": "id,run_id,filled_at,symbol,side,quantity,price,commission,realized_pnl,reason,cash_after,unsettled_cash_after",
+        "sandbox_execution_events": "id,run_id,event_at,symbol,side,status,requested_quantity,filled_quantity,reason",
+        "research_promotions": "id,created_at,dataset_hash,strategy_fingerprint,policy_version,status,source,replay_end,gates_json,risk_envelope_json,holdout_id,provenance_hash,provenance_json",
+    }
+
+    def __init__(self, path: Path | None = None, *, read_only: bool = False) -> None:
         self.path = path or (data_dir() / "grande_alpha.db")
-        self.path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
         self.notification_sink = None
-        self._connection = sqlite3.connect(self.path, check_same_thread=False)
+        if read_only:
+            # stat distinguishes a missing journal from one we cannot inspect.
+            self.path.stat()
+            connection = None
+            try:
+                connection = sqlite3.connect(
+                    f"{self.path.resolve().as_uri()}?mode=ro", uri=True, check_same_thread=False,
+                )
+                for table, columns in self._RECORD_COLUMNS.items():
+                    connection.execute(f"SELECT {columns} FROM {table} LIMIT 0")
+            except sqlite3.Error as exc:
+                if connection is not None:
+                    connection.close()
+                raise ValueError(
+                    f"Local records at {self.path} are incompatible or unreadable. "
+                    "Use a compatible application version; no schema updates were attempted."
+                ) from exc
+            self._connection = connection
+        else:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            self._connection = sqlite3.connect(self.path, check_same_thread=False)
         self._connection.row_factory = sqlite3.Row
         self._transactions = Transactions(self._connection, self._lock)
-        SchemaRepository(self)._initialize()
+        if not read_only:
+            SchemaRepository(self)._initialize()
         self.execution = ExecutionRepository(self)
         self.market = MarketRepository(self)
         self.receipts = ReceiptsRepository(self)
         self.research = ResearchRepository(self)
         self.sandbox = SandboxRepository(self)
         self.shadow = ShadowRepository(self)
+
+    @classmethod
+    def read_existing(cls, path: Path | None = None) -> AuditStore | None:
+        """Open existing records read-only, returning None only when absent."""
+        try:
+            return cls(path, read_only=True)
+        except FileNotFoundError:
+            return None
 
     def transaction(self):
         return self._transactions.transaction()

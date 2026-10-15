@@ -9,7 +9,6 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
-    QDoubleSpinBox,
     QFrame,
     QLabel,
     QLineEdit,
@@ -61,13 +60,6 @@ def review_text(review: dict[str, Any]) -> str:
     )
     lines.extend(("", f"Scope: {review.get('scope_digest') or 'Missing'}"))
     return "\n".join(lines)
-
-
-class PreciseDoubleSpinBox(QDoubleSpinBox):
-    """Show supported precision without trailing zeroes."""
-
-    def textFromValue(self, value: float) -> str:  # noqa: N802 - Qt API
-        return f"{value:.8f}".rstrip("0").rstrip(".")
 
 
 class StatusCard(QFrame):

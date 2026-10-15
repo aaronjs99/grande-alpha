@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from PySide6.QtCore import QEvent, Qt
+from PySide6.QtGui import QTextOption
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -17,12 +18,9 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
     QPushButton,
     QSizePolicy,
-    QSpinBox,
     QVBoxLayout,
     QWidget,
 )
-
-from grande_alpha.ui.session_components import PreciseDoubleSpinBox
 
 
 class _OptionLabel(QLabel):
@@ -124,13 +122,13 @@ class SessionPanelBuilder:
 
         self.limits_group = QGroupBox("2  Set limits")
         limits_layout = QVBoxLayout(self.limits_group)
-        self.limits_group.setToolTip("Choose a strategy candidate. Edited limits are saved as a new candidate.")
+        self.limits_group.setToolTip("Choose a candidate. Edit setup changes its settings and saves a new copy.")
 
         candidate_row = QHBoxLayout()
         self.candidate_edit = QLineEdit()
-        self.candidate_edit.setPlaceholderText("Strategy + limits candidate (.json)")
+        self.candidate_edit.setPlaceholderText("Choose or prepare a candidate (.json)")
+        self.candidate_edit.setReadOnly(True)
         self.candidate_edit.setAccessibleName("Strategy and limits candidate file")
-        self.candidate_edit.editingFinished.connect(self._candidate_path_entered)
         candidate_button = QPushButton("Choose…")
         candidate_button.clicked.connect(self._choose_candidate)
         candidate_row.addWidget(self.candidate_edit, 1)
@@ -146,33 +144,17 @@ class SessionPanelBuilder:
         prepare_row.addStretch()
         limits_layout.addLayout(prepare_row)
 
-        self.limits_form = QFormLayout()
-        self.limits_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
-        self.limit_inputs: dict[str, QDoubleSpinBox | QSpinBox] = {}
-        for key, label, kind in self.LIMIT_FIELDS:
-            if kind == "integer":
-                control: QDoubleSpinBox | QSpinBox = QSpinBox()
-                control.setRange(1, 1_000_000_000)
-            else:
-                control = PreciseDoubleSpinBox()
-                control.setDecimals(8)
-                control.setRange(0.00000001, 1_000_000_000_000.0)
-                if kind == "money":
-                    control.setPrefix("$")
-                elif kind == "bps":
-                    control.setSuffix(" bps")
-                elif kind == "seconds":
-                    control.setSuffix(" s")
-            control.setEnabled(False)
-            control.setAccessibleName(label)
-            control.valueChanged.connect(self._limit_changed)
-            self.limit_inputs[key] = control
-            self.limits_form.addRow(label, control)
-        limits_layout.addLayout(self.limits_form)
+        self.candidate_limits = QPlainTextEdit()
+        self.candidate_limits.setAccessibleName("Loaded candidate limits")
+        self.candidate_limits.setReadOnly(True)
+        self.candidate_limits.setWordWrapMode(QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere)
+        self.candidate_limits.setMinimumHeight(154)
+        self.candidate_limits.setMaximumHeight(190)
+        limits_layout.addWidget(self.candidate_limits)
 
         support_form = QFormLayout()
         support_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
-        self._setup_forms.extend((self.limits_form, support_form))
+        self._setup_forms.append(support_form)
         self.authorization_edit = QLineEdit(str(self.data_dir / "mixed-authorization.json"))
         self.authorization_edit.setAccessibleName("Local exact-scope authorization file")
         self.authorization_edit.textChanged.connect(self._review_input_changed)
@@ -192,14 +174,10 @@ class SessionPanelBuilder:
         support_form.addRow("Decision cadence", self.poll_seconds)
         limits_layout.addLayout(support_form)
 
-        self.save_limits_button = QPushButton("Save limits as a new candidate…")
-        self.save_limits_button.setEnabled(False)
-        self.save_limits_button.clicked.connect(self._choose_limit_destination)
-        self.limit_state = QLabel("New session prepares a candidate. Choose an existing file to continue one.")
-        self.limit_state.setObjectName("settingsDescription")
-        self.limit_state.setWordWrap(True)
-        limits_layout.addWidget(self.save_limits_button)
-        limits_layout.addWidget(self.limit_state)
+        self.candidate_state = QLabel("New session prepares a candidate. Choose an existing file to continue one.")
+        self.candidate_state.setObjectName("settingsDescription")
+        self.candidate_state.setWordWrap(True)
+        limits_layout.addWidget(self.candidate_state)
         layout.addWidget(self.limits_group)
 
         self.review_group = QGroupBox("3  Review")

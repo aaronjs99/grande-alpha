@@ -58,17 +58,6 @@ class SessionWindow(SessionWindowLifecycle, SessionSetup, SessionStatus, Session
     can be tested without a broker, subprocess, or network connection.
     """
 
-    LIMIT_FIELDS = (
-        ("max_order_usd", "Per order", "money"),
-        ("max_exposure_usd", "Total exposure", "money"),
-        ("max_daily_notional_usd", "Daily traded amount", "money"),
-        ("max_daily_loss_usd", "Daily loss stop", "money"),
-        ("max_orders", "Orders per day", "integer"),
-        ("max_orders_per_minute", "Orders per minute", "integer"),
-        ("max_spread_bps", "Maximum spread", "bps"),
-        ("max_quote_age_seconds", "Maximum quote age", "seconds"),
-    )
-
     def __init__(
         self,
         runtime_data_dir: Path,
@@ -90,8 +79,6 @@ class SessionWindow(SessionWindowLifecycle, SessionSetup, SessionStatus, Session
         self._authorized_scope = ""
         self._candidate_document: dict[str, Any] | None = None
         self._candidate_ready = False
-        self._limits_dirty = False
-        self._loading_limits = False
         self._busy = False
         self._stop_in_flight = False
         self._stop_requested = False
@@ -106,6 +93,7 @@ class SessionWindow(SessionWindowLifecycle, SessionSetup, SessionStatus, Session
         self._approval_dialog: StartApprovalDialog | None = None
         self._candidate_editor: QDialog | None = None
         self._strategy_dialog: QDialog | None = None
+        self._journal_dialog: QDialog | None = None
         self._exit_warning_box: QMessageBox | None = None
         self._tasks: set[asyncio.Task] = set()
 
@@ -308,6 +296,8 @@ class SessionWindow(SessionWindowLifecycle, SessionSetup, SessionStatus, Session
         theme = appearance.addAction("Switch light / dark")
         theme.triggered.connect(self._toggle_theme)
         strategies = menu_bar.addMenu("Research")
+        journal = strategies.addAction("Paper journal…")
+        journal.triggered.connect(self._show_paper_journal)
         compare = strategies.addAction("Compare strategies…")
         compare.triggered.connect(self._show_strategy_comparison)
         help_menu = menu_bar.addMenu("Help")
@@ -322,6 +312,14 @@ class SessionWindow(SessionWindowLifecycle, SessionSetup, SessionStatus, Session
             )
         )
         help_menu.addAction(about)
+
+    def _show_paper_journal(self) -> None:
+        from grande_alpha.ui.paper_journal import PaperJournalDialog
+
+        if self._journal_dialog is None:
+            self._journal_dialog = PaperJournalDialog(self)
+        self._journal_dialog.show()
+        self._journal_dialog.raise_()
 
     def _show_strategy_comparison(self) -> None:
         from grande_alpha.ui.strategy_comparison import StrategyComparisonDialog

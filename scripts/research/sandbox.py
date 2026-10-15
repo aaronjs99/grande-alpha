@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import os
+import uuid
 from dataclasses import asdict
 from pathlib import Path
 
@@ -68,6 +70,15 @@ def load_sandbox_config() -> SandboxConfig:
 
 def save_sandbox_config(config: SandboxConfig) -> None:
     config.validate()
+    payload = json.dumps(asdict(config), indent=2, allow_nan=False)
     path = sandbox_config_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(asdict(config), indent=2, allow_nan=False), encoding="utf-8")
+    pending = path.with_name(f".{path.name}.{uuid.uuid4().hex}.pending")
+    try:
+        with pending.open("x", encoding="utf-8", newline="\n") as stream:
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+        pending.replace(path)
+    finally:
+        pending.unlink(missing_ok=True)

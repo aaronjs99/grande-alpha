@@ -264,15 +264,16 @@ def _print_evidence(promotion: dict[str, Any], args: argparse.Namespace) -> None
 
 
 def command_evidence_show(args: argparse.Namespace) -> int:
-    store = AuditStore()
+    store = AuditStore.read_existing()
     try:
-        promotion = store.research_promotion(args.id)
+        promotion = store.research_promotion(args.id) if store is not None else None
         if promotion is None:
             raise ValueError("No matching evidence receipt exists; run the Evidence Lab first")
         _print_evidence(promotion, args)
         return 0
     finally:
-        store.close()
+        if store is not None:
+            store.close()
 
 
 def command_evidence_run(args: argparse.Namespace) -> int:

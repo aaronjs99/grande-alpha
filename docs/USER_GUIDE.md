@@ -33,6 +33,8 @@ illustrative settings, not personalized risk advice or a guarantee that losses c
 stop. Fill your exact account and allowed symbols, check the Strategy tab, and save the candidate.
 **Edit setup** reopens a draft or complete candidate and saves a new copy. Unfilled fields remain
 blank; incomplete candidates cannot reach Review or Start. Preparing a file works while disconnected.
+The setup panel displays saved limits; **Edit setup** is the one place to change them. Cancelling
+the editor preserves the loaded candidate and its review. Saving a changed copy clears the review.
 
 The Agent desk stays open while sessions run. **Session details** shows the latest strategy check
 and when the worker last received a market snapshot. A broker response is not proof of a fill;
@@ -71,6 +73,14 @@ recent chart marks, and NOVA / ORIN / VELA / KADE / RUNE / ZARA stage reports. *
 the Paper setup tab with editable $1,000 starting cash and $100 per entry. These defaults apply
 only to virtual money. Press **Start virtual paper** to run the synthetic demo, or choose broker
 quotes after connecting and reviewing an account. **Stop paper** retains the virtual journal.
+
+**Research → Paper journal** reads saved virtual fills independently of the worker. The session
+picker lists the latest 100 sessions. Each page shows up to 100 fills, newest first; **Older fills**
+continues through the complete journal, and **Refresh** returns to that session's latest page.
+**Export page** saves exactly the displayed page as CSV, preserving decimal quantities and prices.
+Replacing an existing export requires confirmation. The viewer never initializes or resumes a
+paper session, and malformed journals produce an error. Saved equity uses saved virtual marks,
+which may be stale; virtual fills omit fees and liquidity and do not establish a trading edge.
 
 Broker setup is under **Session → Broker session setup**. It retains the exact review and approval
 flow. Desktop Connect and paper startup never recover saved live intent automatically; unresolved

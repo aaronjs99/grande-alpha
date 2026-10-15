@@ -10,10 +10,13 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QFont, QFontDatabase
+from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QFormLayout
 
 from grande_alpha.execution.candidate_profile import candidate_template, load_candidate, validate_candidate
@@ -173,6 +176,41 @@ class SessionSetupAcceptance(unittest.TestCase):
         self.assertFalse(self.window.start_button.isEnabled())
         dialog.close()
 
+    def test_enter_in_an_editor_field_never_resets_entered_settings_to_example(self):
+        document = candidate_fixture()
+        document["scope"].update(max_order_usd=25, loss_recovery_unit="hours", loss_recovery_delay=2)
+        dialog = CandidateEditor(self.path, self.window, document=document)
+        dialog.show()
+        dialog.inputs["account_number"].setFocus()
+        self.app.processEvents()
+        with patch("grande_alpha.ui.candidate_editor.QFileDialog.getSaveFileName", return_value=("", "")):
+            QTest.keyClick(dialog.inputs["account_number"], Qt.Key.Key_Return)
+        self.app.processEvents()
+        self.assertEqual(dialog._document(), document)
+        self.assertTrue(dialog.isVisible())
+        self.assertEqual(list(self.path.iterdir()), [])
+        dialog.close()
+
+    def test_focusing_and_copying_loaded_path_never_reloads_or_invalidates_review(self):
+        source = self.path / "source.json"
+        source.write_text(json.dumps(candidate_fixture()), encoding="utf-8")
+        self.window._load_candidate(source)
+        self.window.show()
+        self.window._show_setup("broker")
+        self.app.processEvents()
+        reviewed = {"scope_digest": "fixture-scope", "generation": 1}
+        self.window._review_result = reviewed
+        self.window._authorized_scope = "fixture-scope"
+        self.window.candidate_edit.setFocus()
+        self.app.processEvents()
+        QTest.keyClick(self.window.candidate_edit, Qt.Key.Key_A, Qt.KeyboardModifier.ControlModifier)
+        QTest.keyClick(self.window.candidate_edit, Qt.Key.Key_Tab)
+        self.app.processEvents()
+        self.assertIs(self.window._review_result, reviewed)
+        self.assertEqual(self.window._authorized_scope, "fixture-scope")
+        self.assertEqual(self.window._candidate_document, candidate_fixture())
+        self.window.setup_dialog.reject()
+
     def test_session_and_strategy_pages_fit_a_narrow_window(self):
         dialog = CandidateEditor(self.path, self.window, example=True)
         dialog.show()
@@ -198,28 +236,105 @@ class SessionSetupAcceptance(unittest.TestCase):
                         self.assertFalse(label_item.widget().geometry().intersects(previous.widget().geometry()))
         dialog.close()
 
-    def test_limit_copy_cannot_stage_over_a_source_named_like_the_old_temp(self):
+    def test_full_editor_saves_changed_copy_without_touching_source_or_retaining_review(self):
         source = self.path / ".copy.json.tmp"
         source.write_text(json.dumps(candidate_fixture()), encoding="utf-8")
         before = source.read_bytes()
         self.window._load_candidate(source)
-        self.window.limit_inputs["max_order_usd"].setValue(9)
-        self.window._save_limits(self.path / "copy.json")
+        self.window._review_result = {"scope_digest": "fixture-scope", "generation": 1}
+        self.window._authorized_scope = "fixture-scope"
+        self.window._edit_candidate(new=False)
+        dialog = self.window._candidate_editor
+        dialog.inputs["max_order_usd"].setText("9")
+        dialog.save_to(self.path / "copy.json")
+        dialog.accept()
+        self.app.processEvents()
         self.assertEqual(source.read_bytes(), before)
         scope, _policy, _thresholds = load_candidate(self.path / "copy.json")
         self.assertEqual(scope.max_order_usd, 9)
+        self.assertEqual(self.window._candidate_document["scope"]["max_order_usd"], 9)
+        self.assertEqual(Path(self.window.candidate_edit.text()), self.path / "copy.json")
+        self.assertIsNone(self.window._review_result)
+        self.assertEqual(self.window._authorized_scope, "")
+        self.assertFalse(self.window.start_button.isEnabled())
 
-    def test_order_counts_outside_visual_range_are_rejected_without_clamping_review(self):
+    def test_valid_candidate_precision_and_large_counts_survive_loading_and_full_editing(self):
         for count in (2_000_000_000, 10**50):
             document = candidate_fixture()
             document["scope"]["max_orders"] = count
+            document["scope"]["max_order_usd"] = 0.123456789123
             path = self.path / "large.json"
             path.write_text(json.dumps(document), encoding="utf-8")
+            before = path.read_bytes()
             self.window._load_candidate(path)
-            self.assertFalse(self.window._candidate_ready)
-            self.assertIsNone(self.window._candidate_document)
+            self.assertTrue(self.window._candidate_ready)
+            self.assertEqual(self.window._candidate_document, document)
+            self.assertIn(str(count), self.window.candidate_limits.toPlainText())
+            self.assertIn("0.123456789123", self.window.candidate_limits.toPlainText())
+            self.window._edit_candidate(new=False)
+            dialog = self.window._candidate_editor
+            self.assertEqual(dialog.inputs["max_orders"].text(), str(count))
+            destination = self.path / f"edited-{count}.json"
+            dialog.save_to(destination)
+            dialog.accept()
+            self.app.processEvents()
+            scope, _policy, _thresholds = load_candidate(destination)
+            self.assertEqual(scope.max_orders, count)
+            self.assertEqual(scope.max_order_usd, 0.123456789123)
+            self.assertEqual(path.read_bytes(), before)
             self.assertFalse(self.window.start_button.isEnabled())
-            self.assertIn("range", self.window.banner.text())
+
+    def test_cancelling_full_editor_preserves_loaded_document_review_and_source(self):
+        source = self.path / "source.json"
+        document = candidate_fixture()
+        source.write_text(json.dumps(document), encoding="utf-8")
+        before = source.read_bytes()
+        self.window._load_candidate(source)
+        reviewed = {"scope_digest": "fixture-scope", "generation": 1}
+        self.window._review_result = reviewed
+        self.window._authorized_scope = "fixture-scope"
+        self.window._edit_candidate(new=False)
+        self.window._candidate_editor.inputs["max_order_usd"].setText("9")
+        self.window._candidate_editor.reject()
+        self.app.processEvents()
+        self.assertEqual(source.read_bytes(), before)
+        self.assertEqual(self.window._candidate_document, document)
+        self.assertIs(self.window._review_result, reviewed)
+        self.assertEqual(self.window._authorized_scope, "fixture-scope")
+        self.window._edit_candidate(new=False)
+        self.assertEqual(self.window._candidate_editor.inputs["max_order_usd"].text(), "10")
+        self.window._candidate_editor.reject()
+        self.app.processEvents()
+
+    def test_unchanged_accepted_candidates_preserve_large_integer_and_text_fields(self):
+        for exponent in (200, 1000):
+            with self.subTest(exponent=exponent):
+                document = candidate_fixture()
+                document["scope"].update(
+                    account_number="fixture-account-" + "A" * 256,
+                    max_orders=10**exponent,
+                    max_orders_per_minute=10**(exponent + 1),
+                    loss_recovery_unit="minutes",
+                    loss_recovery_delay=10**(exponent - 1),
+                )
+                validate_candidate(document)
+                source = self.path / f"source-{exponent}.json"
+                source.write_text(json.dumps(document), encoding="utf-8")
+                before = source.read_bytes()
+                dialog = CandidateEditor(self.path, self.window, document=document, source_path=source)
+                try:
+                    for name in ("max_orders", "max_orders_per_minute", "account_number"):
+                        self.assertEqual(dialog.inputs[name].text(), str(document["scope"][name]))
+                    destination = self.path / f"copy-{exponent}.json"
+                    dialog.save_to(destination)
+                    saved, _policy, _thresholds = load_candidate(destination)
+                    self.assertEqual(saved.account_number, document["scope"]["account_number"])
+                    self.assertEqual(saved.max_orders, document["scope"]["max_orders"])
+                    self.assertEqual(saved.max_orders_per_minute, document["scope"]["max_orders_per_minute"])
+                    self.assertEqual(saved.loss_recovery_delay, document["scope"]["loss_recovery_delay"])
+                    self.assertEqual(source.read_bytes(), before)
+                finally:
+                    dialog.close()
 
     def test_loading_an_invalid_file_invalidates_a_previous_review(self):
         path = self.path / "invalid.json"

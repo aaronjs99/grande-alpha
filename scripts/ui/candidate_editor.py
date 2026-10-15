@@ -34,6 +34,9 @@ from grande_alpha.execution.candidate_profile import (
 from grande_alpha.execution.equity_execution import symbol_valid
 from grande_alpha.strategy.mixed_portfolio import AllocationPolicy
 
+# A field in an accepted 64 KiB candidate must fit without silent truncation.
+MAX_FIELD_CHARS = 65_536
+
 SESSION_FIELDS = (
     ("account_number", "Robinhood account number", "text"),
     ("allowed_symbols", "Allowed stock / ETF symbols", "symbols"),
@@ -80,10 +83,15 @@ def _numeric(text: str, label: str, *, integer=False):
     if not text.strip():
         return None
     try:
-        if integer and not re.fullmatch(r"[0-9]+", text.strip()):
-            raise ValueError()
-        value = int(text) if integer else float(text)
-        _number(value, label, positive=True)
+        if integer:
+            if not re.fullmatch(r"[0-9]+", text.strip()):
+                raise ValueError()
+            value = int(text)
+            if value <= 0:
+                raise ValueError()
+        else:
+            value = float(text)
+            _number(value, label, positive=True)
         return value
     except (ValueError, OverflowError) as error:
         raise ValueError(
@@ -115,7 +123,7 @@ class CandidateEditor(QDialog):
         for key, label, kind in SESSION_FIELDS:
             control = QLineEdit()
             control.setAccessibleName(label)
-            control.setMaxLength(2048 if kind == "symbols" else 128)
+            control.setMaxLength(MAX_FIELD_CHARS)
             raw = scope[key]
             control.setText(
                 ", ".join(raw)
@@ -141,6 +149,7 @@ class CandidateEditor(QDialog):
         self.recovery_delay = QLineEdit(
             "" if scope["loss_recovery_delay"] is None else str(scope["loss_recovery_delay"])
         )
+        self.recovery_delay.setMaxLength(MAX_FIELD_CHARS)
         self.recovery_delay.setAccessibleName("Loss recovery delay")
         self.recovery_delay.setPlaceholderText("Positive whole number for a timed delay")
         self.recovery_delay.setEnabled(self.recovery_unit.currentText() != "manual")
@@ -169,7 +178,7 @@ class CandidateEditor(QDialog):
                 control.setText("" if raw is None else str(raw))
                 control.setPlaceholderText("Required")
                 control.setAccessibleName(label)
-                control.setMaxLength(128)
+                control.setMaxLength(MAX_FIELD_CHARS)
                 controls[key] = control
                 self._add_field(rules, label, control)
         self.status = QLabel("Unfilled candidates are saved as drafts. Complete them before Review.")
@@ -177,6 +186,8 @@ class CandidateEditor(QDialog):
         layout.addWidget(self.status)
         row = QHBoxLayout()
         self.example_button = QPushButton("Fill example")
+        self.example_button.setAutoDefault(False)
+        self.example_button.setDefault(False)
         self.example_button.clicked.connect(self.apply_example)
         row.addWidget(self.example_button)
         row.addStretch()
@@ -185,6 +196,7 @@ class CandidateEditor(QDialog):
         row.addWidget(cancel)
         self.save_button = QPushButton("Save candidate…")
         self.save_button.setObjectName("primary")
+        self.save_button.setDefault(True)
         self.save_button.clicked.connect(self._choose_save)
         row.addWidget(self.save_button)
         layout.addLayout(row)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import os
 import sys
@@ -51,6 +52,16 @@ def check_desktop() -> dict:
         if comparison.run_button.isEnabled() or window._tasks:
             raise RuntimeError("The strategy comparison unexpectedly started work on opening")
         comparison.reject()
+
+        async def check_journal():
+            window._show_paper_journal()
+            journal = window._journal_dialog
+            await journal._task
+            if journal._snapshot is None or journal._snapshot['session'] is not None or journal.export_button.isEnabled():
+                raise RuntimeError("The packaged paper journal did not open empty and read-only")
+            journal.reject()
+
+        asyncio.run(check_journal())
         window._closing = True
         window.close()
         app.processEvents()

@@ -11,6 +11,7 @@ from pathlib import Path
 
 from platformdirs import user_data_path
 
+from grande_alpha.configuration.json_inputs import load_json
 from grande_alpha.domain.execution_profile import execution_profile
 from grande_alpha.strategy.core import STRATEGY_NAMES
 
@@ -247,7 +248,7 @@ def load_config(path: Path | None = None) -> AppConfig:
     path = path or config_path()
     if not path.exists():
         return AppConfig()
-    raw = json.loads(path.read_text(encoding="utf-8"))
+    raw = load_json(path, max_bytes=65_536)
     if not isinstance(raw, dict):
         raise ValueError("Configuration must be a JSON object")
     if "schema_version" not in raw:
@@ -349,7 +350,7 @@ def upgrade_config(path: Path | None = None) -> Path | None:
     path = path or config_path()
     if not path.exists():
         return None
-    raw = json.loads(path.read_text(encoding="utf-8"))
+    raw = load_json(path, max_bytes=65_536)
     if not isinstance(raw, dict):
         raise ValueError("Configuration must be a JSON object")
     if type(raw.get("schema_version")) is int and raw["schema_version"] == CONFIG_SCHEMA_VERSION:

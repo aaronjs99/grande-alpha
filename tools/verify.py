@@ -16,6 +16,9 @@ VALIDATORS = (
     'verify_broker_connection.py',
     'verify_cli_workflows.py',
     'verify_research_inputs.py',
+    'verify_record_storage.py',
+    'verify_paper_journal.py',
+    'verify_journal_view.py',
 )
 
 
