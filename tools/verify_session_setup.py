@@ -317,6 +317,10 @@ class SessionSetupAcceptance(unittest.TestCase):
                     loss_recovery_unit="minutes",
                     loss_recovery_delay=10**(exponent - 1),
                 )
+                if exponent == 200:
+                    document["scope"].update(max_order_usd=10**200 + 1,
+                                             max_exposure_usd=10**201,
+                                             max_daily_notional_usd=10**202)
                 validate_candidate(document)
                 source = self.path / f"source-{exponent}.json"
                 source.write_text(json.dumps(document), encoding="utf-8")
@@ -332,6 +336,7 @@ class SessionSetupAcceptance(unittest.TestCase):
                     self.assertEqual(saved.max_orders, document["scope"]["max_orders"])
                     self.assertEqual(saved.max_orders_per_minute, document["scope"]["max_orders_per_minute"])
                     self.assertEqual(saved.loss_recovery_delay, document["scope"]["loss_recovery_delay"])
+                    self.assertEqual(saved.max_order_usd, document["scope"]["max_order_usd"])
                     self.assertEqual(source.read_bytes(), before)
                 finally:
                     dialog.close()

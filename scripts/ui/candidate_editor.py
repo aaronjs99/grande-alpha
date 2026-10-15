@@ -83,14 +83,14 @@ def _numeric(text: str, label: str, *, integer=False):
     if not text.strip():
         return None
     try:
+        whole = re.fullmatch(r"[0-9]+", text.strip()) is not None
+        if integer and not whole:
+            raise ValueError()
+        value = int(text) if whole else float(text)
         if integer:
-            if not re.fullmatch(r"[0-9]+", text.strip()):
-                raise ValueError()
-            value = int(text)
             if value <= 0:
                 raise ValueError()
         else:
-            value = float(text)
             _number(value, label, positive=True)
         return value
     except (ValueError, OverflowError) as error:
