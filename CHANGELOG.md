@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Fixed Connect rejecting valid no-parameter and nullable parameter schemas from Robinhood's
+  current MCP catalog. Restored immutable account, portfolio, position, tradability and equity
+  order records whose missing constructors also broke account decoding and inherited tickets.
+- Kept safe capability failures visible through local control without exposing arbitrary
+  provider exceptions. Activity updates are painted once; click or activate either row cell
+  to read and copy a stable full-message snapshot in a separate dialog.
+
 - Added a fixed five-rule strategy comparison in the desktop and CLI, development-only
   selection, a chronological final block, frozen signal rules under cost stress, explicit
   cash fallback, dataset identities and source/coverage limitations. It grants no trading authority.

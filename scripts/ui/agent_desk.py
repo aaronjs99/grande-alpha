@@ -39,13 +39,15 @@ class ActivityDelegate(QStyledItemDelegate):
         if not match:
             return super().paint(painter, option, index)
         tag, summary = match.groups()
+        first, separator, rest = summary.partition(" · ")
         opts.text = ""
         style = opts.widget.style() if opts.widget else QApplication.style()
         style.drawControl(QStyle.ControlElement.CE_ItemViewItem, opts, painter, opts.widget)
         shade = color({"RISK": "#a77924", "WARN": "#b74b63", "FILL": "#16845e", "IDEA": "#16845e",
                        "BOOK": "#9273c8"}.get(tag, "#566e7c"), base="light")
         painter.save()
-        badge = QRectF(option.rect.left() + 5, option.rect.top() + 5, 46, 17)
+        badge_y = option.rect.top() + (5 if separator else (option.rect.height() - 17) / 2)
+        badge = QRectF(option.rect.left() + 5, badge_y, 46, 17)
         tint = QColor(shade)
         tint.setAlpha(28)
         painter.setPen(QColor(shade))
@@ -55,16 +57,15 @@ class ActivityDelegate(QStyledItemDelegate):
         font.setPointSize(8)
         painter.setFont(font)
         painter.drawText(badge, Qt.AlignmentFlag.AlignCenter, tag)
-        first, separator, rest = summary.partition(" · ")
-        first_rect = option.rect.adjusted(59, 1, -5, -19)
+        first_rect = option.rect.adjusted(59, 1, -5, -19 if separator else -1)
         painter.setPen(QColor(color("#27343e", base="light")))
         painter.drawText(first_rect, Qt.AlignmentFlag.AlignVCenter,
                          painter.fontMetrics().elidedText(first, Qt.TextElideMode.ElideRight, first_rect.width()))
-        detail = rest if separator else summary
-        second_rect = option.rect.adjusted(5, 23, -5, -1)
-        painter.setPen(QColor(color("#627580", base="light")))
-        painter.drawText(second_rect, Qt.AlignmentFlag.AlignVCenter,
-                         painter.fontMetrics().elidedText(detail, Qt.TextElideMode.ElideRight, second_rect.width()))
+        if separator:
+            second_rect = option.rect.adjusted(5, 23, -5, -1)
+            painter.setPen(QColor(color("#627580", base="light")))
+            painter.drawText(second_rect, Qt.AlignmentFlag.AlignVCenter,
+                             painter.fontMetrics().elidedText(rest, Qt.TextElideMode.ElideRight, second_rect.width()))
         painter.restore()
 
 

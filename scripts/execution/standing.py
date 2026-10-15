@@ -14,23 +14,29 @@ REQUIRED_TOOL_ARGUMENTS = {
     "place_equity_order": frozenset({"account_number", "symbol", "side", "type", "market_hours", "time_in_force", "ref_id"}),
     "cancel_equity_order": frozenset({"account_number", "order_id"}),
 }
+class BrokerContractError(RuntimeError):
+    """Operator message using only fixed capability/argument names, never raw provider data."""
+
+
 def validate_contract(broker: object) -> None:
     snapshot = broker.tool_contract_snapshot()
     if snapshot.get("server_url") != ROBINHOOD_URL:
-        raise RuntimeError("Delegated trading requires the supported Robinhood MCP endpoint")
+        raise BrokerContractError("Delegated trading requires the supported Robinhood MCP endpoint")
     tools = snapshot.get("tools")
     if not isinstance(tools, list) or any(not isinstance(tool, dict) for tool in tools):
-        raise RuntimeError("Broker tool catalog is unavailable or malformed")
+        raise BrokerContractError("Broker tool catalog is unavailable or malformed")
     by_name = {tool.get("name"): tool for tool in tools}
     if len(by_name) != len(tools):
-        raise RuntimeError("Broker tool catalog contains duplicate names")
+        raise BrokerContractError("Broker tool catalog contains duplicate names")
     for name, arguments in REQUIRED_TOOL_ARGUMENTS.items():
         tool = by_name.get(name)
         schema = tool.get("inputSchema") if tool else None
-        properties = schema.get("properties") if isinstance(schema, dict) else None
+        # MCP permits {type: object, additionalProperties: false} for no-argument
+        # tools. Omitted properties differs from an explicitly invalid null value.
+        properties = schema.get("properties", {}) if isinstance(schema, dict) else None
         if (not isinstance(properties, dict) or not arguments <= properties.keys()
                 or schema.get("type", "object") != "object"):
-            raise RuntimeError(f"Broker capability {name} has a missing or incompatible input schema")
+            raise BrokerContractError(f"Broker capability {name} has a missing or incompatible input schema")
         required = schema.get("required", [])
         possible = set(arguments)
         if name in {"review_equity_order", "place_equity_order"}:
@@ -38,10 +44,13 @@ def validate_contract(broker: object) -> None:
         if name in {"get_equity_orders", "get_equity_positions"}:
             possible.add("cursor")
         if not isinstance(required, list) or not set(required) <= possible:
-            raise RuntimeError(f"Broker capability {name} requires unsupported arguments")
+            raise BrokerContractError(f"Broker capability {name} requires unsupported arguments")
         for argument in arguments:
             definition = properties[argument]
             expected_type = "array" if argument == "symbols" else "string"
-            if (not isinstance(definition, dict)
-                    or definition.get("type", expected_type) != expected_type):
-                raise RuntimeError(f"Broker capability {name} changed the {argument} argument type")
+            declared = definition.get("type") if isinstance(definition, dict) else None
+            compatible = declared == expected_type or (
+                isinstance(declared, list) and all(isinstance(item, str) for item in declared)
+                and expected_type in declared and set(declared) <= {expected_type, "null"})
+            if not compatible:
+                raise BrokerContractError(f"Broker capability {name} changed the {argument} argument type")

@@ -22,6 +22,8 @@ import uuid
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 
+from grande_alpha.execution.standing import BrokerContractError
+
 PROTOCOL_VERSION = 1
 MAX_MESSAGE_BYTES = 64 * 1024
 _TOKEN_SERVICE = "GRANDE Alpha local control"
@@ -198,6 +200,8 @@ class LocalControlServer:
             return response
         except TimeoutError:
             return _error(request_id, "deadline", "Request deadline expired")
+        except BrokerContractError as error:
+            return _error(request_id, "broker_contract", str(error))
         except Exception:
             return _error(request_id, "handler", "Control operation failed")
 

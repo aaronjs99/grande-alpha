@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
 from numbers import Real
 
 
+@dataclass(frozen=True)
 class Account:
     account_number: str
     nickname: str
@@ -19,6 +21,7 @@ class Account:
         return f"••••{self.account_number[-4:]}"
 
 
+@dataclass(frozen=True)
 class Portfolio:
     total_value: float
     buying_power: float
@@ -49,6 +52,7 @@ class Portfolio:
                 raise ValueError("Crypto portfolio values must be finite and nonnegative when available")
 
 
+@dataclass(frozen=True)
 class Position:
     symbol: str
     quantity: float
@@ -56,6 +60,7 @@ class Position:
     average_price: float | None = None
 
 
+@dataclass(frozen=True)
 class EquityTradability:
     symbol: str
     tradeable: bool

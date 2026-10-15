@@ -11,11 +11,14 @@ from PySide6.QtGui import QColor, QFontMetricsF
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QButtonGroup,
+    QDialog,
+    QDialogButtonBox,
     QFrame,
     QGridLayout,
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QPlainTextEdit,
     QPushButton,
     QSizePolicy,
     QTableWidget,
@@ -72,6 +75,7 @@ class ResearchDesk(QWidget):
         self._session = None
         self._last_event = 0
         self._reachable = False
+        self._activity_detail: QDialog | None = None
         self._times, self._values = [], []
         self._range = "all"
         self._desk_width = 1100
@@ -139,6 +143,9 @@ class ResearchDesk(QWidget):
         self.activity.setMinimumSize(0, 220)
         self.activity.setFixedHeight(220)
         self.activity.setAccessibleName("Research handoffs and local controls")
+        self.activity.setToolTip("Select an update to read and copy its full details")
+        self.activity.itemClicked.connect(self._show_activity_detail)
+        self.activity.itemActivated.connect(self._show_activity_detail)
         self.activity.horizontalHeader().setMinimumSectionSize(0)
         activity_box.addWidget(self.activity)
         layout.addLayout(self.middle)
@@ -197,6 +204,38 @@ class ResearchDesk(QWidget):
             points = max(11, min(25, int(25 * available / extent)))
             value.setStyleSheet(f"font-size: {points}pt;")
             value.setToolTip(value.text())
+
+    def _show_activity_detail(self, activated: QTableWidgetItem) -> None:
+        row = activated.row()
+        message, clock = self.activity.item(row, 1), self.activity.item(row, 0)
+        if message is None:
+            return
+        # Snapshot strings before polling can insert/remove the original row.
+        snapshot = message.text()
+        timestamp = (clock.toolTip() or clock.text()) if clock is not None else ""
+        if self._activity_detail is not None:
+            self._activity_detail.close()
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Activity details")
+        dialog.setMinimumSize(320, 280)
+        dialog.resize(600, 360)
+        dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        layout = QVBoxLayout(dialog)
+        layout.addWidget(label(timestamp, "settingsDescription"))
+        body = QPlainTextEdit()
+        body.setReadOnly(True)
+        body.setPlainText(snapshot)
+        body.setAccessibleName("Full activity message")
+        layout.addWidget(body, 1)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        self._activity_detail = dialog
+        def finished(_result):
+            if self._activity_detail is dialog:
+                self._activity_detail = None
+        dialog.finished.connect(finished)
+        dialog.open()
 
     def record_event(self, kind: str, text: str, at: str = "") -> None:
         row = 0

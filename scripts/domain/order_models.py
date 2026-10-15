@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import math
-from dataclasses import asdict, field
+from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from numbers import Real
 from typing import Any
@@ -11,6 +11,7 @@ from grande_alpha.domain.execution_profile import execution_profile
 from grande_alpha.domain.market_models import Quote
 
 
+@dataclass(frozen=True)
 class BrokerExecution:
     """One immutable provider-identified equity execution."""
 
@@ -46,6 +47,7 @@ class BrokerExecution:
             raise ValueError("Broker execution timestamp must be timezone-aware")
 
 
+@dataclass(frozen=True)
 class BrokerOrder:
     order_id: str
     symbol: str
@@ -181,6 +183,7 @@ class BrokerOrder:
         return min((item.timestamp for item in self.executions), default=None)
 
 
+@dataclass(frozen=True)
 class OrderIntent:
     ref_id: str
     symbol: str
@@ -273,6 +276,7 @@ class OrderIntent:
         return result
 
 
+@dataclass(frozen=True)
 class OrderReview:
     intent: OrderIntent
     market_data_disclosure: str | None

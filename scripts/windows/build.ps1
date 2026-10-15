@@ -53,6 +53,8 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Optional AI acceptance failed in the isolated packaging environment.' }
     & $BuildPython -I (Join-Path $ProjectRoot 'tools\verify_strategy_selection.py')
     if ($LASTEXITCODE -ne 0) { throw 'Strategy comparison acceptance failed in the isolated packaging environment.' }
+    & $BuildPython -I (Join-Path $ProjectRoot 'tools\verify_broker_connection.py')
+    if ($LASTEXITCODE -ne 0) { throw 'Broker connection acceptance failed in the isolated packaging environment.' }
     New-Item -ItemType Directory -Path $BuildOutput, $DistributionOutput, $SpecOutput -Force | Out-Null
     & $BuildPython -I -m pip freeze --all --exclude grande-alpha | Set-Content -LiteralPath (Join-Path $SpecOutput 'resolved-requirements.txt') -Encoding UTF8
     if ($LASTEXITCODE -ne 0) { throw 'The resolved packaging dependencies could not be recorded.' }
