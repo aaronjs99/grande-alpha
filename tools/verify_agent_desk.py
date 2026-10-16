@@ -8,6 +8,7 @@ import os
 import tempfile
 import unittest
 from dataclasses import replace
+from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import patch
 
@@ -48,7 +49,7 @@ def research_fixture() -> dict:
 
 def worker_status(research=None) -> dict:
     return {"connected": False, "running": False, "generation": 0, "phase": "Stopped",
-            "research": research, "last_cycle": {}}
+            "research": research, "last_cycle": {}, 'broker_context_seen': False}
 
 
 class DeskAcceptance(unittest.TestCase):
@@ -284,6 +285,27 @@ class DeskAcceptance(unittest.TestCase):
             asyncio.run(self.window._start_paper())
         self.assertFalse(self.window.paper_start_button.isEnabled())
 
+    def test_paper_only_details_use_readable_money_and_distinguish_the_broker_monitor(self):
+        research = research_fixture()
+        research['paper'].update(equity='998.5792997607922997201839720',
+                                 total_pnl='-1.4207002392077002798160280')
+        self.window._apply_status(worker_status(research))
+        details = self.window.research_status.text()
+        self.assertIn('$998.58', details)
+        self.assertIn('-$1.42', details)
+        self.assertNotIn('998.579', details)
+        self.assertIn('No broker session configured', self.window.monitor_summary.text())
+        self.assertNotIn('Verify orders', self.window.recovery_detail.text())
+        self.assertIn('simulated clock', self.window.desk.source.text())
+        self.assertEqual(self.window.desk.chart.getAxis('bottom').labelText, 'Demo time')
+
+    def test_failed_or_unknown_broker_context_cannot_show_paper_only_guidance(self):
+        for context in (True, None, 0):
+            with self.subTest(context=context):
+                self.window._apply_status({**worker_status(), 'broker_context_seen': context})
+                self.assertFalse(self.window._paper_only_worker())
+                self.assertIn('Verify orders', self.window.recovery_detail.text())
+
     def test_non_recovering_serve_refuses_new_saved_live_intent_without_touching_it(self):
         self.window._apply_disconnected_status(disconnected_worker_status(self.path))
         control = WorkerControlStore(self.path / "grande_alpha.db")
@@ -372,6 +394,7 @@ class DeskAcceptance(unittest.TestCase):
                     await server.start()
                     self.window._client = LocalControlClient(self.path)
                     await self.window._refresh_status(show_errors=False)
+                    run_started = datetime.now(UTC)
                     await self.window._start_paper()
                     await asyncio.wait_for(runtime.research.agent._task, timeout=8)
                     await self.window._refresh_status(show_errors=False)
@@ -382,6 +405,8 @@ class DeskAcceptance(unittest.TestCase):
                     self.assertGreater(len(self.window.desk.curve.getData()[0]), 1)
                     self.assertFalse(runtime.connected)
                     self.assertFalse(control.current().running)
+                    for event in self.window._status['research']['desk']['team_events']:
+                        self.assertGreaterEqual(datetime.fromisoformat(event['at']), run_started)
                     self.window.paper_loop_demo.setChecked(True)
                     await self.window._start_paper()
                     await asyncio.sleep(.025)

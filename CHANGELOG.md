@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Fixed paper-only shutdown showing a broker-verification warning despite having no reviewed
+  broker scope or transport. Uncertain stops, reviewed accounts, unreadable execution records,
+  open orders and holdings still warn; paper-only exit never claims a verified or flat account.
+- Separated actual activity time from the fixed demo clock, labeled synthetic chart/journal
+  timestamps, formatted paper amounts consistently, and distinguished broker monitoring from paper status.
+
 - Added a read-only desktop paper journal with session selection, complete fill pagination and
   atomic CSV export of the displayed page. It needs no worker, broker or AI connection and
   preserves virtual-data limitations, exact decimals and existing database files.

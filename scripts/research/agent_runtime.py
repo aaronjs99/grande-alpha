@@ -135,7 +135,7 @@ class AgentRuntime(AgentSourceAnalysis, AgentQuoteScreening):
     def _handoff(self, sender: str, recipient: str, message: str, kind: str = "SCAN") -> None:
         self._event_sequence += 1
         event = {"id": self._event_sequence, "from": sender, "to": recipient, "message": message,
-                 "kind": kind, "cycle": self.snapshot.cycle, "at": self._now().isoformat()}
+                 "kind": kind, "cycle": self.snapshot.cycle, "at": self._clock().isoformat()}
         self._publish(team_events=(*self.snapshot.team_events[-119:], event))
 
     def start(self, settings: AgentSettings) -> None:

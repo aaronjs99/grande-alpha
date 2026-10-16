@@ -48,6 +48,7 @@ class BrokerSessionRuntime:
         )
         self._contract_validator = contract_validator
         self.broker = None
+        self._broker_context_seen = False
         self._broker_unavailable = False
         self.account_masked = ""
         self.coverage: dict = {}
@@ -60,6 +61,10 @@ class BrokerSessionRuntime:
         self._connect_task: asyncio.Task | None = None
         self._closing = False
         self._research_enable_lock = asyncio.Lock()
+
+    @property
+    def broker_context_seen(self) -> bool:
+        return self._broker_context_seen or self.broker is not None
 
     @property
     def connected(self) -> bool:
@@ -98,6 +103,7 @@ class BrokerSessionRuntime:
             return {"connected": True, "accounts": await self._accounts()}
         await self._close_research()
         await self._disconnect_broker()
+        self._broker_context_seen = True
         self.broker = self._broker_factory(authenticate)
         self._broker_unavailable = True
         try:
@@ -115,6 +121,7 @@ class BrokerSessionRuntime:
     async def _disconnect_broker(self) -> None:
         if self.broker is None:
             return
+        self._broker_context_seen = True
         self._broker_unavailable = True
         async with asyncio.timeout(8):
             await self.broker.disconnect()
@@ -267,12 +274,22 @@ class BrokerSessionRuntime:
         """Report what is still known after a stop without claiming cancellation."""
         report = {
             "broker_verified": False,
+            "local_records_verified": None,
+            "broker_check_required": bool(
+                state.account or state.scope_digest or state.candidate_path or state.authorization_path
+                or state.earnings_database or state.running or self._running or self.broker_context_seen
+            ),
             "orders_cancelled": False,
             "open_order_ids": [],
             "positions": [],
             "local_unresolved_references": [],
             "warning": "Broker orders and holdings require direct confirmation",
         }
+        if not report['broker_check_required']:
+            # No reviewed scope or broker transport existed for this worker.
+            # This says nothing about external accounts or historical holdings.
+            report['warning'] = ''
+            return report
         if not state.account:
             return report
         try:
@@ -284,7 +301,9 @@ class BrokerSessionRuntime:
                 ]
             finally:
                 audit.close()
+            report['local_records_verified'] = True
         except (OSError, RuntimeError, ValueError) as error:
+            report['local_records_verified'] = False
             report["warning"] = f"Local execution records need review: {error}"
         if not self.connected:
             return report

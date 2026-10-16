@@ -139,6 +139,12 @@ class PaperJournalDialog(QDialog):
             source = 'Demo' if session['source'] == 'demo' else 'Broker quotes'
             self.sessions.addItem(f'{at} · {source}', session['session_id'])
         selected = result['session']
+        demo = selected is not None and selected['source'] == 'demo'
+        self.table.horizontalHeaderItem(1).setText('Demo time' if demo else 'Time (local)')
+        self.table.horizontalHeaderItem(1).setToolTip(
+            'Fixed simulated clock; the session picker shows when this run was started.' if demo else
+            'Quote timestamp in your local timezone.'
+        )
         self.table.setRowCount(len(result['fills']))
         if selected is None:
             self.summary.clear()

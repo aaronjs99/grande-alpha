@@ -90,6 +90,9 @@ data coverage, and control logs. **View** switches the desk's light/dark appeara
 Select an **Activity** update to read and copy its full message. Setup tabs adapt to narrow
 windows, including long status text. **Repeat** applies only to the synthetic demo and clears
 when you switch to broker quotes.
+Demo fills and chart marks use a fixed **Demo time** clock; the journal's session picker shows
+when the run was actually started. Activity uses the actual run time. A repeated demo reuses
+the same synthetic price path, so its results are a workflow check, not strategy evidence.
 
 Ollama is optional. Paper trading, broker setup, Review and live controls work with AI off, which
 is the default. Opening the app or chat does not start Ollama or load any model.
@@ -119,10 +122,13 @@ shared data cannot be recalled; do not put secrets in prompts. See the
 accepted order, or sell a filled position. Check the
 broker directly after a disconnection, unresolved placement, or shutdown.
 
-When closing a connected desktop window, choose **Keep running in tray**, **Stop trading and exit**,
+When closing the desktop, choose **Keep running in tray**, **Stop and exit**,
 or **Cancel**. The tray choice leaves the already-started worker running; it is not a Windows
 scheduler or startup service. Stop-and-exit completes even when broker cleanup cannot be verified,
 and retains local records for later reconciliation.
+A confirmed shutdown with no reviewed broker scope or attempted broker connection exits without a broker
+warning. This describes only this worker's session; it does not verify external accounts. Reviewed
+or uncertain broker state, unreadable execution records, open orders and holdings still warn.
 
 The mixed runner stores one approval for an exact account, candidate, symbol universe, and limits
 until revoked. A changed candidate needs a fresh approval. A restart may use the unchanged approval
@@ -143,7 +149,7 @@ The main **STOP** button can write a durable fence to an existing worker record 
 fails. **Local stop recorded** confirms that local fence, while worker activity, already-sent
 orders, and holdings remain unverified. A later connection requires a new review before Start.
 Stop cannot create or repair a missing, corrupt, or incompatible control record; the app reports
-that failure. **Stop trading and exit** also attempts the fence after a cold disconnected launch
+that failure. **Stop and exit** also attempts the fence after a cold disconnected launch
 and distinguishes an unconfirmed stop from a recorded fence.
 
 ## Local data and privacy
@@ -187,7 +193,7 @@ a cancellation request is never proof that an order is terminal or a holding is 
 | A strategy remains idle | Inspect market window, fresh quotes, available buying power, approval scope, loss state, and the selected policy. An idle result is not necessarily an error. |
 | Stop leaves a holding | Stop blocks local submissions; selling a filled holding is a separate reviewed action. Verify the broker position. |
 | Exit warns about unverified orders | Check the broker directly. The local stop fence does not prove cancellation, and durable records remain for reconciliation. |
-| The desktop closes but a session appears active | Check the worker's session status. Keep running in tray and closing a terminal do not stop it; Stop trading and exit writes the local fence. |
+| The desktop closes but a session appears active | Check the worker's session status. Keep running in tray and closing a terminal do not stop it; Stop and exit writes the local fence. |
 
 Never paste credentials, account identifiers, balances, or unredacted diagnostics into a public
 issue. If an installed app behaves differently from the source, update or reinstall the exact

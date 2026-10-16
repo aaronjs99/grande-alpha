@@ -513,10 +513,13 @@ class SessionWindow(SessionWindowLifecycle, SessionSetup, SessionStatus, Session
             result = await self._request("stop", {}, timeout_seconds=8)
             self._worker_seen = True
             self._apply_status(result)
-            self._log(
-                "warning",
-                "Trading stopped. New local submissions are fenced; verify broker orders and holdings separately.",
-            )
+            if self._paper_only_worker():
+                self._log('info', 'Local worker stopped. Saved paper records remain available.')
+            else:
+                self._log(
+                    "warning",
+                    "Trading stopped. New local submissions are fenced; verify broker orders and holdings separately.",
+                )
         except Exception as error:
             try:
                 fallback = await self._durable_stop_fallback()

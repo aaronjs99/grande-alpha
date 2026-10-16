@@ -60,7 +60,7 @@ class SessionPanelBuilder:
         layout.setContentsMargins(14, 12, 14, 14)
         layout.setSpacing(11)
 
-        heading = QLabel("Session monitor")
+        heading = QLabel("Broker session monitor")
         heading.setObjectName("dialogTitle")
         self.monitor_summary = QLabel("Start a session to monitor it here.")
         self.monitor_summary.setObjectName("settingsDescription")

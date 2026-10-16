@@ -22,7 +22,7 @@ class SessionWindowLifecycle:
         restore = menu.addAction("Open GRANDE Alpha")
         restore.triggered.connect(self._restore_from_tray)
         menu.addSeparator()
-        stop_exit = menu.addAction("Stop trading and exit")
+        stop_exit = menu.addAction("Stop and exit")
         stop_exit.triggered.connect(self._begin_stop_and_exit)
         tray.setContextMenu(menu)
         tray.activated.connect(
@@ -39,8 +39,10 @@ class SessionWindowLifecycle:
     def _ask_exit_action(self) -> str:
         dialog = QMessageBox(self)
         dialog.setWindowTitle("Close GRANDE Alpha")
-        dialog.setText("What should happen to the local trading worker?")
+        dialog.setText("What should happen to the local worker?")
         dialog.setInformativeText(
+            "Paper records will remain saved. Stop ends paper research and closes the worker."
+            if self._paper_only_worker() else
             "Stop fences new local submissions. Already-sent broker orders and filled holdings can remain; "
             "verify them in the broker."
         )
@@ -48,7 +50,7 @@ class SessionWindowLifecycle:
         if QSystemTrayIcon.isSystemTrayAvailable():
             tray_button = dialog.addButton("Keep running in tray", QMessageBox.ButtonRole.ActionRole)
         stop_button = dialog.addButton(
-            "Stop trading and exit", QMessageBox.ButtonRole.DestructiveRole
+            "Stop and exit", QMessageBox.ButtonRole.DestructiveRole
         )
         cancel_button = dialog.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
         dialog.exec()
@@ -145,9 +147,16 @@ class SessionWindowLifecycle:
         open_orders = result.get("open_order_ids")
         positions = result.get("positions")
         unresolved = result.get("local_unresolved_references")
+        paper_only = (
+            result.get('broker_check_required') is False
+            and result.get('stopped') is True and result.get('process_exiting') is True
+            and all(isinstance(items, list) and not items for items in (open_orders, positions, unresolved))
+        )
         parts = []
-        if result.get("broker_verified") is not True:
+        if result.get("broker_verified") is not True and not paper_only:
             parts.append("broker state was not verified")
+        if result.get('local_records_verified') is False:
+            parts.append('local execution records were not verified')
         if isinstance(open_orders, list) and open_orders:
             parts.append(f"{len(open_orders)} broker order(s) remain open")
         if isinstance(positions, list) and positions:

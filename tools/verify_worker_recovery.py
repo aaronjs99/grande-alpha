@@ -29,7 +29,7 @@ from grande_alpha.domain.account_models import Account
 from grande_alpha.execution.candidate_profile import candidate_template
 from grande_alpha.execution.session_runtime import BrokerSessionRuntime
 from grande_alpha.execution.session_worker import SessionWorker
-from grande_alpha.execution.worker_control import WorkerControlStore
+from grande_alpha.execution.worker_control import WorkerControlStore, WorkerState
 from grande_alpha.execution.worker_ipc import LocalControlClient, LocalControlError, LocalControlServer
 from grande_alpha.execution.worker_status import disconnected_worker_status, stop_existing_worker
 from grande_alpha.interfaces.cli import worker_cli
@@ -210,6 +210,94 @@ class LifecycleAcceptance(unittest.IsolatedAsyncioTestCase):
 
     def tearDown(self) -> None:
         self.scratch.cleanup()
+
+    async def test_unconfigured_paper_worker_exits_without_a_broker_warning_or_verification_claim(self):
+        control = WorkerControlStore(self.path / 'grande_alpha.db')
+        runtime = BrokerSessionRuntime(self.path, control=control,
+                                       broker_factory=lambda *_: self.fail('Paper exit constructed a broker'))
+        worker = SessionWorker(control, runtime)
+        try:
+            result = await worker.handle('shutdown', {})
+            self.assertIs(result.get('broker_check_required'), False)
+            self.assertIs(result['broker_verified'], False)
+            self.assertIs(result['orders_cancelled'], False)
+            self.assertEqual(SessionWindow._cleanup_warning(result), '')
+        finally:
+            await worker.close()
+            control.close()
+
+    async def test_reviewed_or_partial_live_scope_still_requires_broker_verification(self):
+        runtime = BrokerSessionRuntime(self.path)
+        try:
+            for values in ({'account': 'fixture'}, {'scope_digest': 'scope'}, {'candidate_path': 'candidate'},
+                           {'authorization_path': 'permit'}, {'earnings_database': 'earnings'}, {'running': True}):
+                with self.subTest(values=values):
+                    report = await runtime.cleanup_report(WorkerState(**values))
+                    self.assertIs(report.get('broker_check_required'), True)
+                    self.assertIn('broker state was not verified', SessionWindow._cleanup_warning(
+                        {'stopped': True, 'process_exiting': True, **report}))
+        finally:
+            await runtime.close()
+
+    async def test_unreviewed_broker_transport_is_not_classified_as_paper_only(self):
+        runtime = BrokerSessionRuntime(self.path)
+        runtime.broker = TeardownBroker()
+        try:
+            report = await runtime.cleanup_report(WorkerState())
+            self.assertIs(report.get('broker_check_required'), True)
+        finally:
+            await runtime.close()
+
+    async def test_failed_connection_retains_broker_context_after_transport_cleanup(self):
+        control = WorkerControlStore(self.path / 'grande_alpha.db')
+        broker = TeardownBroker()
+        def reject_contract(_broker):
+            raise ValueError('Fixture contract rejected')
+        runtime = BrokerSessionRuntime(self.path, control=control, broker_factory=lambda *_: broker,
+                                       contract_validator=reject_contract)
+        worker = SessionWorker(control, runtime)
+        try:
+            with self.assertRaisesRegex(ValueError, 'Fixture contract rejected'):
+                await worker.handle('connect', {'authenticate': False})
+            self.assertIsNone(runtime.broker)
+            self.assertIs(worker.status().get('broker_context_seen'), True)
+            result = await worker.handle('shutdown', {})
+            self.assertIs(result.get('broker_check_required'), True)
+            self.assertIn('broker state was not verified', SessionWindow._cleanup_warning(result))
+        finally:
+            await worker.close()
+            control.close()
+
+    async def test_unreadable_execution_records_still_warn_after_a_successful_broker_read(self):
+        class ConnectedBroker:
+            connected = True
+            async def get_orders(self, _account): return []
+            async def get_positions(self, _account): return []
+            async def disconnect(self): self.connected = False
+        runtime = BrokerSessionRuntime(self.path)
+        runtime.broker = ConnectedBroker()
+        try:
+            with patch('grande_alpha.execution.session_runtime.AuditStore', side_effect=ValueError('Fixture records unreadable')):
+                report = await runtime.cleanup_report(WorkerState(account='fixture'))
+            self.assertTrue(report['broker_verified'])
+            self.assertIs(report.get('local_records_verified'), False)
+            self.assertIn('local execution records were not verified', SessionWindow._cleanup_warning(
+                {'stopped': True, 'process_exiting': True, **report}))
+        finally:
+            await runtime.close()
+
+    async def test_quiet_paper_exit_requires_a_confirmed_stop_and_complete_empty_report(self):
+        clean = {'stopped': True, 'process_exiting': True, 'broker_check_required': False,
+                 'broker_verified': False, 'open_order_ids': [], 'positions': [],
+                 'local_unresolved_references': []}
+        self.assertEqual(SessionWindow._cleanup_warning(clean), '')
+        for key, value in (('stopped', False), ('process_exiting', False), ('broker_check_required', None),
+                           ('broker_check_required', 0), ('open_order_ids', None)):
+            with self.subTest(key=key, value=value):
+                self.assertTrue(SessionWindow._cleanup_warning({**clean, key: value}))
+        for key in ('open_order_ids', 'positions', 'local_unresolved_references'):
+            with self.subTest(key=key):
+                self.assertTrue(SessionWindow._cleanup_warning({**clean, key: ['fixture']}))
 
     async def _paper_start_invalidation(self, action: str) -> None:
         control = recorded_session(self.path / action, running=False)

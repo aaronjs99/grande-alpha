@@ -35,6 +35,7 @@ class SessionWorker:
             "account": state.account,
             "scope_digest": state.scope_digest,
             "connected": bool(getattr(self.runtime, "connected", False)),
+            "broker_context_seen": getattr(self.runtime, 'broker_context_seen', None),
             "data_coverage": getattr(self.runtime, "coverage", {}),
             "last_data_at": getattr(self.runtime, "last_data_at", None),
             "last_cycle": dict(getattr(self.runtime, "last_cycle", {}) or {}),

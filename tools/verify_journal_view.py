@@ -70,6 +70,14 @@ class JournalViewChecks(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(dialog.older_button.isEnabled())
         self.assertEqual(list(Path(self.scratch.name).iterdir()), [])
 
+    async def test_demo_and_broker_fill_clocks_are_labeled_explicitly(self):
+        dialog = await self.open(lambda *a, **k: snapshot())
+        self.assertEqual(dialog.table.horizontalHeaderItem(1).text(), 'Demo time')
+        result = snapshot()
+        result['session']['source'] = result['sessions'][0]['source'] = 'broker_quotes'
+        dialog._render(result)
+        self.assertEqual(dialog.table.horizontalHeaderItem(1).text(), 'Time (local)')
+
     async def test_pagination_uses_exclusive_cursor_and_refresh_returns_to_latest(self):
         calls = []
         def load(path, **options):

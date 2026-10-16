@@ -285,7 +285,8 @@ class ResearchDesk(QWidget):
         except (ValueError, TypeError, OverflowError):
             self.win_rate.setText("—")
         self._fit_metrics()
-        source = {"demo": "Demo · synthetic prices", "broker_quotes": "Broker quotes · virtual fills"}.get(paper.get("source"), "Paper · not started")
+        source = {"demo": "Demo · synthetic prices · simulated clock", "broker_quotes": "Broker quotes · virtual fills"}.get(paper.get("source"), "Paper · not started")
+        self.chart.setLabel('bottom', 'Demo time' if paper.get('source') == 'demo' else 'Pacific time')
         prefix = "Last reported · " if not reachable and paper else "Saved · " if paper and not paper.get("active") else ""
         self.source.setText(prefix + source
                             + (" · stale marks" if paper.get("stale_marks") else ""))

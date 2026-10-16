@@ -11,10 +11,19 @@ from PySide6.QtGui import QColor
 from PySide6.QtWidgets import QListWidgetItem
 
 from grande_alpha.execution.worker_status import disconnected_worker_status
+from grande_alpha.ui.research_desk import money
 from grande_alpha.ui.session_components import display_value
 
 
 class SessionStatus:
+    def _paper_only_worker(self) -> bool:
+        return (
+            self._status.get('worker_reachable') is True and self._status.get('connected') is False
+            and self._status.get('running') is False
+            and self._status.get('broker_context_seen') is False
+            and not any(self._status.get(key) for key in ('account', 'scope_digest', 'last_cycle', 'last_data_at'))
+        )
+
     def _schedule_status(self) -> None:
         if self._status_in_flight or self._closing:
             return
@@ -93,7 +102,11 @@ class SessionStatus:
         self._last_worker_status = dict(status)
         self._last_status_at = datetime.now(UTC).isoformat()
         self.status_notice.setToolTip("Worker status received just now. Broker confirmations remain authoritative.")
-        self.recovery_detail.setText("Worker status received just now. Verify orders and holdings with the broker.")
+        self.recovery_detail.setText(
+            "Worker status received just now. No broker session configured."
+            if self._paper_only_worker() else
+            "Worker status received just now. Verify orders and holdings with the broker."
+        )
         if self._review_result is not None:
             reviewed_scope = self._review_result.get("scope_digest")
             worker_scope = status.get("scope_digest")
@@ -148,6 +161,12 @@ class SessionStatus:
 
     def _update_monitor(self, status: dict[str, Any], phase: str) -> None:
         running = status.get("running") is True
+        if self._paper_only_worker():
+            self.monitor_summary.setText("No broker session configured. Paper sessions appear on the Agent desk and in Paper journal.")
+            self.monitor_cycle.setText("No broker strategy requested")
+            self.monitor_cycle_time.setText("")
+            self.monitor_data.setText("Broker market data not requested")
+            return
         if not running:
             self.monitor_summary.setText("Start a session to monitor it here.")
         elif phase == "Waiting for market":
@@ -312,8 +331,8 @@ class SessionStatus:
             state = "running" if paper.get("active") else "saved"
             paper_status = (
                 f"Paper {state} · {paper.get('source', 'unknown source')} · "
-                f"virtual equity ${paper.get('equity', '—')} · "
-                f"P&L ${paper.get('total_pnl', '—')} · "
+                f"virtual equity {money(paper.get('equity'))} · "
+                f"P&L {money(paper.get('total_pnl'), signed=True)} · "
                 f"{paper.get('position_count', 0)} virtual holdings"
             )
         self.research_status.setText(
