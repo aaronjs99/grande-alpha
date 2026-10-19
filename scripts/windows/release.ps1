@@ -33,6 +33,7 @@ $WheelCandidates = @(
 if ($WheelCandidates.Count -ne 1) {
     throw "Expected exactly one verified wheel for version $Version"
 }
+$DesktopWheel = "$($WheelCandidates[0].FullName)[desktop]"
 $RuntimeEnvironment = Join-Path $ProjectRoot "build\release-runtime-$PID"
 $BuildEnvironment = Join-Path $ProjectRoot "build\release-builder-$PID"
 $RuntimeConstraints = Join-Path $ProjectRoot "build\release-runtime-$PID.txt"
@@ -63,7 +64,7 @@ try {
     & $RuntimePython -m pip install --disable-pip-version-check --no-input --upgrade `
         $SetuptoolsRequirement
     if ($LASTEXITCODE -ne 0) { throw "Could not install modern setuptools in the release runtime" }
-    & $RuntimePython -m pip install --disable-pip-version-check --no-input $WheelCandidates[0].FullName
+    & $RuntimePython -m pip install --disable-pip-version-check --no-input $DesktopWheel
     if ($LASTEXITCODE -ne 0) { throw "Could not install the verified wheel in the release runtime" }
     $InstalledVersion = (& $RuntimePython -c `
         "from importlib.metadata import version; print(version('grande-alpha'))").Trim()
@@ -93,10 +94,13 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "Could not create the clean release build environment" }
     $BuildPython = Join-Path $BuildEnvironment 'Scripts\python.exe'
     & $BuildPython -m pip install --disable-pip-version-check --no-input `
-        --constraint $RuntimeConstraints $SetuptoolsRequirement $WheelCandidates[0].FullName
+        --constraint $RuntimeConstraints $SetuptoolsRequirement $DesktopWheel
     if ($LASTEXITCODE -ne 0) { throw "Could not install the verified wheel in the release builder" }
+    $BuildRequirementsJson = & $PythonExe -I (Join-Path $PSScriptRoot 'build_requirements.py') (Join-Path $ProjectRoot 'pyproject.toml')
+    if ($LASTEXITCODE -ne 0) { throw 'The packaging dependency configuration could not be read.' }
+    $BuildRequirements = @($BuildRequirementsJson | ConvertFrom-Json)
     & $BuildPython -m pip install --disable-pip-version-check --no-input `
-        --constraint $RuntimeConstraints 'pyinstaller>=6.13,<7'
+        --constraint $RuntimeConstraints @BuildRequirements
     if ($LASTEXITCODE -ne 0) { throw "Could not install the isolated release builder" }
 
     $RuntimeClosure = @(& $RuntimePython -m pip freeze --all) | Sort-Object
@@ -134,7 +138,16 @@ try {
         --requirement $BuilderAuditRequirements
     if ($LASTEXITCODE -ne 0) { throw "Release builder dependency vulnerability audit failed" }
 
-    & (Join-Path $ProjectRoot 'grande.ps1') build -PythonExecutable $BuildPython
+    & (Join-Path $PSScriptRoot 'build.ps1') -PythonExecutable $BuildPython -PreparedEnvironment
+    if ($LASTEXITCODE -ne 0) { throw 'The release executable build failed.' }
+    $CurrentCommit = (& git -C $ProjectRoot rev-parse HEAD).Trim()
+    if ($LASTEXITCODE -ne 0 -or $CurrentCommit -ne $ReleaseCommit) {
+        throw 'The release commit changed during packaging.'
+    }
+    $CurrentStatus = @(& git -C $ProjectRoot status --porcelain=v1 --untracked-files=all)
+    if ($LASTEXITCODE -ne 0 -or $CurrentStatus.Count -gt 0) {
+        throw 'The release source changed during packaging; do not archive this build.'
+    }
 
     if (Test-Path -LiteralPath $ReleaseRoot) {
         Remove-Item -LiteralPath $ReleaseRoot -Recurse -Force
@@ -228,6 +241,13 @@ $DevelopmentComponents = @(
             )
         }
 )
+$RequiredDesktopComponents = @('PySide6', 'pyqtgraph', 'qasync')
+$SbomComponentNames = @($Sbom.components | ForEach-Object { $_.name.ToLowerInvariant() })
+foreach ($ComponentName in $RequiredDesktopComponents) {
+    if ($ComponentName.ToLowerInvariant() -notin $SbomComponentNames) {
+        throw "Runtime SBOM is missing the desktop dependency $ComponentName"
+    }
+}
 if (
     $OwnComponents.Count -ne 1 -or
     $OwnComponents[0].version -ne $Version -or

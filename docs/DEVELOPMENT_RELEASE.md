@@ -66,7 +66,11 @@ python tools/verify.py --executable dist/GRANDEAlpha/GRANDEAlpha.exe
 
 The local `grande.ps1 release` command builds its own fresh source distribution and wheel for
 the clean release commit before preparing the unsigned archive. Ordinary `verify` does not
-build distribution archives. There is no automatic release or publication.
+build distribution archives. Release installs the wheel's desktop extra into a disposable
+runtime, pins that dependency closure in the audited builder, and passes that same builder to
+packaging without resolving another environment. Its runtime SBOM includes desktop dependencies;
+the recorded builder versions describe the tools that produced the executable. Archiving stops
+if the commit or working tree changes during packaging. There is no automatic release or publication.
 
 Version information comes from `scripts/_version.py` through package metadata. A version bump is
 not proof of production readiness. The 0.19.0 source release retires the separate attended and

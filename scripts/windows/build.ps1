@@ -1,5 +1,6 @@
 param(
-    [string]$PythonExecutable = ''
+    [string]$PythonExecutable = '',
+    [switch]$PreparedEnvironment
 )
 
 $ErrorActionPreference = 'Stop'
@@ -10,7 +11,15 @@ $ConfiguredPython = if ($PythonExecutable) {
 } else {
     Get-GrandeAlphaPython $ProjectRoot
 }
-$PythonExe = if (Test-Path -LiteralPath $ConfiguredPython) { $ConfiguredPython } else { 'python' }
+if (-not (Test-Path -LiteralPath $ConfiguredPython -PathType Leaf)) {
+    throw "Python executable not found: $ConfiguredPython"
+}
+$PythonExe = $ConfiguredPython
+if ($PreparedEnvironment -and (-not $PythonExecutable -or -not (Test-Path -LiteralPath (
+    Join-Path (Split-Path -Parent (Split-Path -Parent $PythonExe)) 'pyvenv.cfg'
+) -PathType Leaf))) {
+    throw 'PreparedEnvironment requires an explicit virtual-environment Python executable.'
+}
 $IconIco = Join-Path $ProjectRoot 'assets\brand\grande-alpha.ico'
 $IconPng = Join-Path $ProjectRoot 'scripts\assets\app-icon.png'
 $BuildOutput = Join-Path $ProjectRoot 'build\pyinstaller'
@@ -35,20 +44,25 @@ try {
     $env:PIP_CONFIG_FILE = 'NUL'
     # PyInstaller cannot resolve setuptools' editable scripts/ -> grande_alpha mapping.
     New-Item -ItemType Directory -Path $StageRoot | Out-Null
-    # Keep shared Python packages and unrelated keyring plugins out of the executable.
-    # PySide6's nested QML files must fit Windows' default path-length limit.
-    $BuildEnvironment = Join-Path $StageRoot 'v'
-    & $PythonExe -I -m venv $BuildEnvironment
-    if ($LASTEXITCODE -ne 0) { throw 'The isolated packaging environment could not be created.' }
-    $BuildPython = Join-Path $BuildEnvironment 'Scripts\python.exe'
-    & $BuildPython -I -m pip install --disable-pip-version-check --upgrade pip 'setuptools>=83' wheel
-    if ($LASTEXITCODE -ne 0) { throw 'The isolated packaging tools could not be installed.' }
-    # Windows PowerShell 5.1 strips embedded quotes in native -c arguments.
-    $BuildRequirementsJson = & $PythonExe -I (Join-Path $PSScriptRoot 'build_requirements.py') (Join-Path $ProjectRoot 'pyproject.toml')
-    if ($LASTEXITCODE -ne 0) { throw 'The packaging dependency configuration could not be read.' }
-    $BuildRequirements = @($BuildRequirementsJson | ConvertFrom-Json)
-    & $BuildPython -I -m pip install --disable-pip-version-check "${ProjectRoot}[desktop]" @BuildRequirements
-    if ($LASTEXITCODE -ne 0) { throw 'The declared packaging dependencies could not be installed.' }
+    if ($PreparedEnvironment) {
+        # Release already installed and audited this exact pinned environment.
+        $BuildPython = $PythonExe
+    } else {
+        # Keep shared Python packages and unrelated keyring plugins out of the executable.
+        # Short paths accommodate PySide6's nested QML files on Windows.
+        $BuildEnvironment = Join-Path $StageRoot 'v'
+        & $PythonExe -I -m venv $BuildEnvironment
+        if ($LASTEXITCODE -ne 0) { throw 'The isolated packaging environment could not be created.' }
+        $BuildPython = Join-Path $BuildEnvironment 'Scripts\python.exe'
+        & $BuildPython -I -m pip install --disable-pip-version-check --upgrade pip 'setuptools>=83' wheel
+        if ($LASTEXITCODE -ne 0) { throw 'The isolated packaging tools could not be installed.' }
+        # Windows PowerShell 5.1 strips embedded quotes in native -c arguments.
+        $BuildRequirementsJson = & $PythonExe -I (Join-Path $PSScriptRoot 'build_requirements.py') (Join-Path $ProjectRoot 'pyproject.toml')
+        if ($LASTEXITCODE -ne 0) { throw 'The packaging dependency configuration could not be read.' }
+        $BuildRequirements = @($BuildRequirementsJson | ConvertFrom-Json)
+        & $BuildPython -I -m pip install --disable-pip-version-check "${ProjectRoot}[desktop]" @BuildRequirements
+        if ($LASTEXITCODE -ne 0) { throw 'The declared packaging dependencies could not be installed.' }
+    }
     New-Item -ItemType Directory -Path $BuildOutput, $DistributionOutput, $SpecOutput -Force | Out-Null
     & $BuildPython -I -m pip freeze --all --exclude grande-alpha | Set-Content -LiteralPath (Join-Path $SpecOutput 'resolved-requirements.txt') -Encoding UTF8
     if ($LASTEXITCODE -ne 0) { throw 'The resolved packaging dependencies could not be recorded.' }

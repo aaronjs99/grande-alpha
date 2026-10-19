@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Made manual release packaging reuse its audited, pinned desktop environment. The runtime
+  dependency report now includes desktop packages, and archiving stops if the source changes
+  during the build.
+
 - Replaced eleven separate validator suites with seven local acceptance scenarios in one script;
   removed both GitHub Actions workflows. Local verification no longer rebuilds distribution archives.
   Windows builds now exercise the actual packaged paper worker, saved journal/CSV, Stop, restart and
