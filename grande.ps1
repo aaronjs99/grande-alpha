@@ -56,35 +56,6 @@ switch ($Task) {
         Invoke-Python -Arguments @('-m', 'ruff', 'check', 'scripts', 'tools')
         Invoke-Python -Arguments @('-m', 'compileall', '-q', 'scripts', 'tools')
         Invoke-Python -Arguments @('tools/verify.py')
-        # Build from a fresh sdist so removed source files cannot leak from build/lib.
-        $BuildOutputDir = Join-Path ([IO.Path]::GetTempPath()) "grande-alpha-verify-$([guid]::NewGuid().ToString('N'))"
-        try {
-            New-Item -ItemType Directory -Path $BuildOutputDir | Out-Null
-            Invoke-Python -Arguments @('-m', 'build', '--outdir', $BuildOutputDir)
-        } finally {
-            Remove-GeneratedPackageMetadata
-            if (Test-Path -LiteralPath $BuildOutputDir -PathType Container) {
-                $OutputItem = Get-Item -LiteralPath $BuildOutputDir -Force
-                $TempPrefix = [IO.Path]::GetFullPath([IO.Path]::GetTempPath())
-                if (-not $TempPrefix.EndsWith([IO.Path]::DirectorySeparatorChar)) {
-                    $TempPrefix += [IO.Path]::DirectorySeparatorChar
-                }
-                $IsExpectedOutput = $OutputItem.FullName.StartsWith(
-                    $TempPrefix, [StringComparison]::OrdinalIgnoreCase
-                ) -and $OutputItem.Name -match '^grande-alpha-verify-[0-9a-f]{32}$'
-                if ($IsExpectedOutput -and -not ($OutputItem.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
-                    $Entries = @(Get-ChildItem -LiteralPath $OutputItem.FullName -Force)
-                    if (@($Entries | Where-Object { $_.PSIsContainer }).Count -eq 0) {
-                        foreach ($Entry in $Entries) { Remove-Item -LiteralPath $Entry.FullName -Force }
-                        Remove-Item -LiteralPath $OutputItem.FullName -Force
-                    } else {
-                        Write-Warning "Leaving verification output with unexpected subdirectories: $($OutputItem.FullName)"
-                    }
-                } else {
-                    Write-Warning "Leaving verification output outside its expected temporary location: $($OutputItem.FullName)"
-                }
-            }
-        }
         Write-Host 'Verification passed.' -ForegroundColor Green
     }
     'build' { & (Join-Path $WindowsTools 'build.ps1') @TaskArgs; exit $LASTEXITCODE }

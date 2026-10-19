@@ -20,9 +20,14 @@ $ReleaseCommit = (& git -C $ProjectRoot rev-parse HEAD).Trim()
 if ($LASTEXITCODE -ne 0 -or -not $ReleaseCommit) { throw "Could not resolve the release commit" }
 
 & (Join-Path $ProjectRoot 'grande.ps1') verify
+if ($LASTEXITCODE -ne 0) { throw 'Local verification failed.' }
 
+# Build this release's wheel from a fresh sdist, rather than reusing an old artifact.
+$WheelOutput = Join-Path $ProjectRoot "artifacts\wheel-check\$ReleaseCommit-$([guid]::NewGuid().ToString('N'))"
+& $PythonExe -m build --outdir $WheelOutput
+if ($LASTEXITCODE -ne 0) { throw 'The release source-distribution/wheel build failed.' }
 $WheelCandidates = @(
-    Get-ChildItem -LiteralPath (Join-Path $ProjectRoot 'artifacts\wheel-check') `
+    Get-ChildItem -LiteralPath $WheelOutput `
         -Filter "grande_alpha-$Version-*.whl" -File
 )
 if ($WheelCandidates.Count -ne 1) {

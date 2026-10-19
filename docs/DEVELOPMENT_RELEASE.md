@@ -13,21 +13,24 @@ From the repository root:
 .\grande.ps1 verify
 ```
 
-This runs lint, compilation, offline acceptance, and a fresh source-distribution/wheel build.
-For acceptance checks alone, run `python tools/verify.py`. Its single explicit checklist is
-shared by local verification, both supported Python versions in CI, and the isolated Windows
-builder. A missing validator or failing suite stops the run; packaging cannot silently use a
-smaller checklist. Register new validators in that file once.
+This runs lint, compilation and seven local acceptance scenarios in `tools/verify.py`.
+There is no pytest suite, coverage service or GitHub Actions workflow. For acceptance alone,
+run `python tools/verify.py`. The checklist covers:
 
-The checks use disposable databases, fake broker/model services, rendered Qt widgets and
-fixture-authenticated local channels. They cover the desktop and CLI journeys, strict research
-inputs, exact candidate review and approval, stop/restart races, paper history, strategy
-comparison, account decoding, full activity details, and optional AI admission/cancellation.
-They never read a real profile, connect a broker, submit an order, or load a model.
+1. Offscreen desktop startup, narrow setup and empty journal without starting a worker.
+2. Strict JSON inputs, incomplete candidate rejection and source-preserving edits.
+3. Read-only records that neither initialize missing databases nor change saved files.
+4. Durable Stop, stale-start rejection and stopped state across restart.
+5. Broker catalog compatibility and account/portfolio/position decoding using local fixtures.
+6. Quiet paper-only exit while uncertain broker context still warns.
+7. A synthetic paper session through desktop controls and authenticated local IPC, chart updates,
+   complete journal pagination, exact CSV export, interrupted-save protection and Stop.
 
-Keep provider-observed execution and recovery, clean-profile installation, prolonged operation,
-and generated model accuracy separate from these results. Consult the exact commit's CI run
-for current outcomes; earlier passing counts are not a current acceptance certificate.
+All data is disposable. These checks never read the operator's profile, connect a broker,
+submit an order or load an AI model. Add a regression only when it protects an important
+workflow or a consequential failure; avoid rebuilding a large suite of implementation checks.
+Provider-observed execution, clean-profile installation, prolonged operation, strategy results
+and model accuracy remain separate evidence. Record the exact commit and local command output.
 
 ## Packaging and distribution
 
@@ -39,9 +42,13 @@ links, a dependency and secret audit, and a check that all command examples stil
 
 The Windows builder stages `scripts/` as a temporary `grande_alpha` package because PyInstaller
 does not resolve the editable package mapping by itself. It creates a short-lived packaging
-environment using only the declared desktop/runtime dependencies and packaging tools, runs the
-offline worker checks there, and audits metadata in the frozen tree. A failed install, acceptance
-check, or dependency audit fails the build. Short temporary paths accommodate Windows' default
+environment using only the declared desktop/runtime dependencies and packaging tools. It checks
+the frozen desktop, then starts the actual packaged worker with a disposable profile and runs
+paper Start → four fills → saved journal/CSV → shutdown → restart without resuming → repeat →
+Stop → exit. This uses virtual money and makes no broker or model request. Finally it audits
+metadata in the frozen tree. A failed install, acceptance check or dependency audit fails the
+build. The source checklist is not repeated inside packaging. Keep the installed app closed
+while rebuilding. Short temporary paths accommodate Windows' default
 path-length limit. The resolved versions are saved to
 `artifacts/pyinstaller/resolved-requirements.txt`; shared Python packages are not upgraded.
 The runtime's cryptography minimum excludes the older dependency version flagged during this
@@ -50,6 +57,16 @@ isolated executable does not repair a shared Python installation.
 Check both the frozen `--version` and
 `--worker --help` entrypoints; a successful executable build alone does not prove the worker was
 bundled.
+
+To repeat only the packaged paper workflow:
+
+```powershell
+python tools/verify.py --executable dist/GRANDEAlpha/GRANDEAlpha.exe
+```
+
+The local `grande.ps1 release` command builds its own fresh source distribution and wheel for
+the clean release commit before preparing the unsigned archive. Ordinary `verify` does not
+build distribution archives. There is no automatic release or publication.
 
 Version information comes from `scripts/_version.py` through package metadata. A version bump is
 not proof of production readiness. The 0.19.0 source release retires the separate attended and

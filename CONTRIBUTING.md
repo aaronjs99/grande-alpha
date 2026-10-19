@@ -24,7 +24,7 @@ cd grande-alpha
 ```
 
 Use these wrappers for local source work: they remove generated `grande_alpha.egg-info` metadata
-after installation and package verification. Direct setuptools commands may leave it behind.
+after installation. Direct setuptools commands may leave it behind.
 
 Run the source application only when interactive UI testing is necessary:
 
@@ -46,9 +46,9 @@ Run the source application only when interactive UI testing is necessary:
 
 ## Check your change
 
-The standard check runs linting, bytecode compilation, a wheel build, and two focused offline
-acceptance validators for worker recovery and the Agent desk. These exercise desktop controls,
-disposable storage and local IPC; they never connect a broker or establish provider readiness:
+The standard local check runs lint, compilation and seven acceptance scenarios in one script.
+They exercise desktop startup, candidate inputs, saved records, durable Stop, broker decoding,
+shutdown reporting and a paper session through local IPC. No real broker or model is contacted:
 
 ```powershell
 .\grande.ps1 verify
@@ -66,9 +66,9 @@ Keep each pull request focused. Explain:
 3. the checks and manual review performed; and
 4. documentation or migration effects.
 
-The pull-request template contains the required checklist. A passing CI run proves only that the
-repository checks completed; it does not establish trading profitability, broker approval, legal
-suitability, or release readiness.
+There are no GitHub Actions workflows or pytest suite. Record the local commands and their
+outcomes in the pull request. Passing checks do not establish trading profitability, broker
+approval, legal suitability, or release readiness.
 
 Changes intended for the stable product should identify the capability they advance in the
 [user guide](docs/USER_GUIDE.md#implemented-behavior-and-remaining-work) and preserve the

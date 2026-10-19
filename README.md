@@ -1,6 +1,5 @@
 # GRANDE Alpha
 
-[![CI](https://github.com/aaronjs99/grande-alpha/actions/workflows/ci.yml/badge.svg)](https://github.com/aaronjs99/grande-alpha/actions/workflows/ci.yml)
 [![Python 3.11–3.12](https://img.shields.io/badge/python-3.11–3.12-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
@@ -66,8 +65,8 @@ neither shortcut uses an execution-policy bypass.
 
 The desktop and command line control the same user-started hidden mixed stock/ETF worker. The
 former attended ETF and live-shadow routes have been retired; historical records and offline replay
-remain available. A focused offline worker-recovery validator is available; installed Windows and
-provider-observed recovery are still pending. Verify the exact worker state rather than assuming a
+remain available. Local acceptance checks exercise paper sessions and durable Stop; provider-observed
+recovery is still pending. Verify the exact worker state rather than assuming a
 desktop badge proves a broker session is live.
 Provider-specific order schemas, earnings coverage, restart/partial-fill behavior, and installed
 Windows operation still require end-to-end acceptance before this project can claim public live

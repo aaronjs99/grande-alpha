@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Replaced eleven separate validator suites with seven local acceptance scenarios in one script;
+  removed both GitHub Actions workflows. Local verification no longer rebuilds distribution archives.
+  Windows builds now exercise the actual packaged paper worker, saved journal/CSV, Stop, restart and
+  paper-only exit. Manual release packaging builds its own fresh wheel.
+
 - Fixed paper-only shutdown showing a broker-verification warning despite having no reviewed
   broker scope or transport. Uncertain stops, reviewed accounts, unreadable execution records,
   open orders and holdings still warn; paper-only exit never claims a verified or flat account.
@@ -22,7 +27,6 @@
 - Rejected malformed/nonfinite research settings before replay, kept unsaved CLI replays out
   of the records database, and preserved disposable saved-run round trips.
 - Fixed narrow setup status overflow and disabled the demo-only repeat option for broker quotes.
-  Local verification, CI and Windows packaging now use one offline acceptance checklist.
 
 - Fixed Connect rejecting valid no-parameter and nullable parameter schemas from Robinhood's
   current MCP catalog. Restored immutable account, portfolio, position, tradability and equity

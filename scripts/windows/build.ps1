@@ -16,6 +16,12 @@ $IconPng = Join-Path $ProjectRoot 'scripts\assets\app-icon.png'
 $BuildOutput = Join-Path $ProjectRoot 'build\pyinstaller'
 $DistributionOutput = Join-Path $ProjectRoot 'dist'
 $SpecOutput = Join-Path $ProjectRoot 'artifacts\pyinstaller'
+$Executable = Join-Path $DistributionOutput 'GRANDEAlpha\GRANDEAlpha.exe'
+if (@(Get-Process -Name GRANDEAlpha -ErrorAction SilentlyContinue | Where-Object {
+    $_.Path -eq $Executable
+}).Count -gt 0) {
+    throw 'Close GRANDE Alpha before rebuilding its executable, then run build again.'
+}
 
 $TemporaryRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath())
 $StageRoot = Join-Path $TemporaryRoot ("ga-pyi-$([guid]::NewGuid().ToString('N'))")
@@ -43,8 +49,6 @@ try {
     $BuildRequirements = @($BuildRequirementsJson | ConvertFrom-Json)
     & $BuildPython -I -m pip install --disable-pip-version-check "${ProjectRoot}[desktop]" @BuildRequirements
     if ($LASTEXITCODE -ne 0) { throw 'The declared packaging dependencies could not be installed.' }
-    & $BuildPython -I (Join-Path $ProjectRoot 'tools\verify.py')
-    if ($LASTEXITCODE -ne 0) { throw 'Offline acceptance failed in the isolated packaging environment.' }
     New-Item -ItemType Directory -Path $BuildOutput, $DistributionOutput, $SpecOutput -Force | Out-Null
     & $BuildPython -I -m pip freeze --all --exclude grande-alpha | Set-Content -LiteralPath (Join-Path $SpecOutput 'resolved-requirements.txt') -Encoding UTF8
     if ($LASTEXITCODE -ne 0) { throw 'The resolved packaging dependencies could not be recorded.' }
@@ -91,6 +95,8 @@ try {
     $DesktopResult = Get-Content -LiteralPath $DesktopReport -Raw | ConvertFrom-Json
     if ($DesktopResult.ok -ne $true) { throw 'The packaged desktop check did not confirm success.' }
     Write-Host 'Packaged desktop startup passed with disposable data; no worker, broker, or AI request.'
+    & $BuildPython -I (Join-Path $ProjectRoot 'tools\verify.py') --executable $Executable
+    if ($LASTEXITCODE -ne 0) { throw 'The packaged paper workflow failed. Do not install this build.' }
     & $BuildPython -I -m pip_audit --strict --progress-spinner off --path (Join-Path $DistributionOutput 'GRANDEAlpha\_internal')
     if ($LASTEXITCODE -ne 0) { throw 'The packaged dependency audit failed. Do not distribute this build.' }
 } finally {
