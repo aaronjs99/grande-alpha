@@ -221,24 +221,25 @@ class BrokerSessionRuntime:
         if current.generation != state.generation:
             raise RuntimeError("Worker control changed before paper research could start")
         research = self._research_service()
+        research.check_paper_start()
         if payload["source"] == "demo":
             research.prepare(None)
             return research.start_paper(payload)
-        if not state.account or not self.connected:
-            raise RuntimeError("Connect and review an account before using broker quotes")
+        if not self.connected:
+            raise RuntimeError("Connect an account before using broker quotes")
         broker = self.broker
         revision = (self._research_revision, research._revision)
-        accounts = [
-            account for account in await read_with_backoff(broker.get_accounts)
-            if account.account_number == state.account
-        ]
+        available = await read_with_backoff(broker.get_accounts)
+        accounts = ([account for account in available if account.account_number == state.account]
+                    if state.account else [account for account in available if account.agentic_allowed is True])
         current = self.control.current() if self.control is not None else state
         if (current.generation != state.generation or current.running or self._running
                 or research is not self.research or broker is not self.broker or not self.connected
                 or revision != (self._research_revision, research._revision)):
             raise RuntimeError("Paper research start was cancelled because the worker or research state changed")
         if len(accounts) != 1:
-            raise RuntimeError("The reviewed account could not be freshly reconciled")
+            raise RuntimeError("Broker-quote paper needs one unambiguous eligible account; check broker setup")
+        research.check_paper_start()
         research.prepare(accounts[0])
         return research.start_paper(payload)
 

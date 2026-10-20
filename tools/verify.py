@@ -135,6 +135,118 @@ async def check_broker(directory: Path) -> None:
     require((await adapter.get_positions("TEST-1234"))[0].symbol == "QQQ", "Position decoding failed")
     require("QQQ" in await adapter.get_tradability("TEST-1234", ["QQQ"]), "Tradability decoding failed")
 
+    # A provider's exception can contain credentials or account data. It must not
+    # enter snapshots, diagnostics, or the research context sent to AI clients.
+    from dataclasses import asdict
+
+    from grande_alpha.research.agent_models import AgentSettings
+    from grande_alpha.research.agent_runtime import AgentRuntime
+
+    async def unavailable(*_args):
+        raise RuntimeError("PRIVATE_TOKEN account=PRIVATE_ACCOUNT")
+
+    async def empty(*_args):
+        return []
+
+    agent = AgentRuntime(equity_quotes=unavailable, crypto_pairs=empty, crypto_quotes=unavailable,
+                         equity_scan=empty, connected=lambda: True, changed=lambda _snapshot: None,
+                         log=lambda *_args, **_kwargs: None)
+    try:
+        await agent.cycle()
+        status = json.dumps(asdict(agent.snapshot), default=str)
+        require("PRIVATE_TOKEN" not in status and "PRIVATE_ACCOUNT" not in status,
+                "Provider exception exposed private material in research status")
+        agent.start_paper(AgentSettings(), source="broker_quotes")
+        agent.paper._db.execute("PRAGMA query_only=ON")
+        await asyncio.wait_for(agent._task, timeout=3)
+        require(agent.snapshot.phase == "Error" and "Could not save session results" in agent.snapshot.error,
+                "Concurrent paper storage failure lost its actionable error")
+        from grande_alpha.research.worker_research import WorkerResearch
+
+        service = WorkerResearch(None, directory / "error-mcp.db", log=lambda *_args, **_kwargs: None)
+        service.agent = agent
+        require(service.status().get("error") == agent.snapshot.error,
+                "Paper failure guidance did not reach the desktop status")
+    finally:
+        await agent.close()
+
+    async def accounts():
+        return [SimpleNamespace(account_number="FIXTURE", agentic_allowed=True,
+                                rhs_account_number="", brokerage_account_type="")]
+
+    async def quotes(*_args, **_kwargs):
+        return {}
+
+    broker = SimpleNamespace(connected=True, get_accounts=accounts, get_quotes=quotes,
+                             discover_crypto=empty, get_crypto_quotes=quotes,
+                             discover_equities=empty, disconnect=empty)
+    control = WorkerControlStore(directory / "quote-only.db")
+    runtime = BrokerSessionRuntime(directory, control=control)
+    runtime.broker = broker
+    initial = control.current()
+    try:
+        result = await runtime.start_paper_research(initial, {**PAPER, "source": "broker_quotes"})
+        require(result["running"] is True and result["orders_available"] is False,
+                "Connected quote-only paper could not start")
+        require(control.current() == initial and not initial.account and not initial.scope_digest,
+                "Quote-only paper changed live review or authority")
+        settings = runtime.research.agent.settings
+        rejected(lambda: runtime.research.start_paper({**PAPER, "source": "broker_quotes",
+                                                      "local_ai_enabled": True, "local_ai_model": "fixture:model"}))
+        require(runtime.research.agent.settings == settings,
+                "Rejected paper Start changed the active AI settings")
+        account = runtime.research.account
+        for source in ("demo", "broker_quotes"):
+            try:
+                await runtime.start_paper_research(initial, {**PAPER, "source": source})
+            except (ValueError, RuntimeError):
+                pass
+            else:
+                raise AssertionError("Running paper accepted another Start")
+            require(runtime.research.account is account, "Rejected paper Start changed its active account")
+        await runtime.stop_paper_research()
+
+        entered, releases = [], [asyncio.Event(), asyncio.Event()]
+
+        async def delayed_accounts():
+            index = len(entered)
+            entered.append(index)
+            await releases[index].wait()
+            return [SimpleNamespace(account_number=f"FIXTURE-{index}", agentic_allowed=True,
+                                    rhs_account_number="", brokerage_account_type="")]
+
+        broker.get_accounts = delayed_accounts
+        starts = [asyncio.create_task(runtime.start_paper_research(initial, {**PAPER, "source": "broker_quotes"}))
+                  for _ in releases]
+        await asyncio.sleep(0)
+        require(len(entered) == 2, "Concurrent paper Start fixture did not reach both account reads")
+        releases[0].set()
+        await starts[0]
+        account = runtime.research.account
+        releases[1].set()
+        try:
+            await starts[1]
+        except (ValueError, RuntimeError):
+            pass
+        else:
+            raise AssertionError("Concurrent paper Start was accepted")
+        require(runtime.research.account is account, "Concurrent rejected Start changed the running account")
+        await runtime.stop_paper_research()
+
+        async def ambiguous():
+            return [*(await accounts()), SimpleNamespace(account_number="OTHER", agentic_allowed=True)]
+
+        broker.get_accounts = ambiguous
+        try:
+            await runtime.start_paper_research(initial, {**PAPER, "source": "broker_quotes"})
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("Paper silently selected among multiple eligible accounts")
+    finally:
+        await runtime.close()
+        control.close()
+
 
 async def check_exit(directory: Path) -> None:
     from grande_alpha.ui.session_window import SessionWindow
@@ -217,6 +329,18 @@ async def check_paper(directory: Path) -> None:
             require(paper["fill_count"] == 4 and paper["closed_trades"] == 2, "Demo did not complete its four-fill cycle")
             require(len(window.desk.curve.getData()[0]) > 1, "Paper equity chart did not update")
             require(not runtime.connected and not control.current().running, "Paper granted broker authority")
+            failed = {**window._status["research"], "phase": "Error", "error": "Could not save session results. Check disk space."}
+            window._render_research_status(failed)
+            require("error" in window.status_notice.text().lower() and "disk space" in window.research_status.text(),
+                    "Paper save failure looked like normal completion")
+            window._render_research_status({**failed, "phase": "Disconnected", "error": ""})
+            require("disconnected" in window.status_notice.text().lower(), "Disconnected paper looked successfully saved")
+            from grande_alpha.ui.strategy_comparison import StrategyComparisonDialog
+
+            with patch("grande_alpha.ui.strategy_comparison.Path.glob", side_effect=PermissionError("Fixture cache unavailable")):
+                comparison = StrategyComparisonDialog(window)
+            require(comparison.path is None and comparison.choose.isEnabled(), "Unavailable cache blocked manual history choice")
+            comparison.reject()
             journal = check_journal(directory, paper)
             dialog = PaperJournalDialog(window)
             dialog._render(journal)
@@ -324,7 +448,23 @@ def check_packaged(executable: Path) -> None:
             require(not stopped["research"]["running"] and stopped["research"]["paper"]["fill_count"] == count,
                     "Global Stop failed or paper continued filling")
             shutdown()
-            print(f"PASS packaged paper: 4 fills, equity {paper['equity']}; journal/CSV, Stop, restart, exit", flush=True)
+            launch()
+            request("research_paper_start", {**PAPER, "loop_demo": True})
+            deadline = time.monotonic() + 20
+            while True:
+                crash_paper = status()["research"]["paper"]
+                if crash_paper["fill_count"] >= 2:
+                    break
+                require(time.monotonic() < deadline, "Crash fixture did not save its virtual entries")
+                time.sleep(.5)
+            # Terminate only this owned synthetic child, then inspect durable recovery.
+            process.terminate()
+            process.wait(timeout=10)
+            require(not launch()["research"]["running"], "Crash recovery automatically resumed paper")
+            recovered = read_journal(directory / "agent-paper.db", session_id=crash_paper["session_id"])
+            require(recovered["fill_count"] >= crash_paper["fill_count"], "Crash lost committed paper fills")
+            shutdown()
+            print(f"PASS packaged paper: 4 fills, equity {paper['equity']}; journal/CSV, Stop, restart, crash, exit", flush=True)
         finally:
             if process is not None and process.poll() is None:
                 try:

@@ -1,6 +1,16 @@
 # Changelog
 
-## Unreleased
+## 0.22.0 - 2026-10-19
+
+- Let quote-only paper start after Connect when one eligible account is available, without
+  creating a live review or approval. Reject ambiguous accounts and retain Stop/start fencing.
+- Removed raw provider errors from research status and restored actionable storage-failure
+  messages when concurrent paper workers fail together. A rejected paper Start no longer
+  changes the active session's account or AI settings, including simultaneous Starts. Paper
+  errors and disconnections stay visible instead of appearing successfully saved.
+- Preselect saved intraday history without loading or running it, simplify comparison and saved-paper
+  status, and remove the numeric epoch multiplier from the chart's clock axis. Unavailable
+  cache files no longer prevent manual history selection.
 
 - Made manual release packaging reuse its audited, pinned desktop environment. The runtime
   dependency report now includes desktop packages, and archiving stops if the source changes

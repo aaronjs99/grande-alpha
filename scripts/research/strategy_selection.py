@@ -164,7 +164,7 @@ def compare_strategies(bundle: HistoricalBundle, *, base: SandboxConfig | None =
     reference = now or utc_now()
     blockers = []
     if not bundle.evidence_provenance_eligible:
-        blockers.append("Source provenance is unverified or synthetic")
+        blockers.append("Source rights and evidence provenance are not fully verified")
     if len(names) < 141:
         blockers.append(f"Only {len(names)} sessions; the full evidence workflow needs at least 141")
     if quality.complete_sessions != len(names) or quality.missing_intervals or quality.missing_sessions or quality.zero_volume_bars:

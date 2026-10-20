@@ -154,7 +154,9 @@ client. `start_paper_trading` offers the same operation through MCP. Both requir
 supplied `initial_cash` and `trade_cash`. The desktop offers editable virtual defaults of $1,000
 and $100; these are not live financial limits. The default source is
 `demo`, which uses fixed synthetic quotes and never calls market-data or model providers. Select
-`source="broker_quotes"` only to simulate against current broker quotes. Optional public news,
+`source="broker_quotes"` only to simulate against current broker quotes. After Connect, a unique
+eligible account can supply read-only quotes without a live-session Review or approval. Ambiguous
+account selection is rejected; existing reviewed account choices are preserved. Optional public news,
 public Bluesky search and a named local Ollama model are available for broker-quote sessions;
 the demo rejects these options. Social results are unverified, and Ollama receives only research
 observations and configured source excerpts. No X API or paid social connector is included.

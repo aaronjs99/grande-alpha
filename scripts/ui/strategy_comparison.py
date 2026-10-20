@@ -81,6 +81,26 @@ class StrategyComparisonDialog(QDialog):
         footer.addWidget(close)
         box.addLayout(footer)
         self._reset_results()
+        # Offer the newest saved intraday cache without loading prices or running
+        # a comparison until the user presses Compare.
+        cache_dir = self.owner.data_dir / "sandbox_cache"
+        newest = float("-inf")
+        try:
+            for path in cache_dir.glob("*.json"):
+                if "_5m_" not in path.name and "_1m_" not in path.name:
+                    continue
+                try:
+                    modified = path.stat().st_mtime if path.is_file() else float("-inf")
+                except OSError:
+                    continue
+                if modified > newest:
+                    self.path, newest = path, modified
+        except OSError:
+            pass  # Automatic discovery is optional; manual history selection remains available.
+        if self.path is not None:
+            self.source.setText(self.path.name)
+            self.status.setText("Saved history selected. Compare to check coverage, costs and later test dates.")
+            self.run_button.setEnabled(True)
 
     def _reset_results(self):
         self.report = None
@@ -151,11 +171,14 @@ class StrategyComparisonDialog(QDialog):
         self.summary.setText(f"{dataset['sessions']} sessions · {dataset['interval']} · development {split['development_start'][:10]} to {split['development_end'][:10]}")
         selected = report["selected_for_holdout"]
         result = report["holdout"]["base"]["return_pct"]
-        outcome = "No active strategy passed development; cash retained" if selected == "cash" else (
-            "Final screen passed; further validation required" if report["holdout"]["passed"] else
-            "Final screen failed; cash retained")
-        self.status.setText(f"{outcome}. Tested: {selected.replace('_', ' ')} · final test {result:+.2f}%. "
-                            "No trading approval. " + " · ".join(report["blockers"][:2]))
+        outcome = "Cash retained: no rule passed the after-cost screen" if selected == "cash" else (
+            f"{selected.replace('_', ' ')}: later test {result:+.2f}% · research screen passed"
+            if report["holdout"]["passed"] else
+            f"Cash retained: {selected.replace('_', ' ')} failed the later test ({result:+.2f}%)")
+        caveat = ("data rights and provenance need review" if not dataset.get("provenance_verified") else
+                  "further validation required")
+        self.status.setText(f"{outcome}.\nResearch only · {caveat}.")
+        self.status.setToolTip("\n".join(report["blockers"]))
         self.save.setEnabled(True)
 
     def _save(self):

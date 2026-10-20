@@ -307,8 +307,10 @@ class AgentRuntime(AgentSourceAnalysis, AgentQuoteScreening):
             pass
         except Exception as exc:
             self._discard_paper_intents()
+            storage_error = (isinstance(exc, sqlite3.Error) or
+                             isinstance(exc, ExceptionGroup) and exc.subgroup(sqlite3.Error) is not None)
             error = ("Could not save session results. Check available disk space and access to the app's data folder."
-                     if isinstance(exc, sqlite3.Error) else
+                     if storage_error else
                      f"Agent stopped ({type(exc).__name__}). Open Receipts to inspect the last completed step.")
             self._publish(running=False, phase="Error", next_cycle_at=None, error=error,
                           analysis_status={}, sources_loading=False)
@@ -525,7 +527,8 @@ class AgentRuntime(AgentSourceAnalysis, AgentQuoteScreening):
                     for key in list(self._history):
                         if key.startswith(f"{market.value}:"):
                             del self._history[key]
-                    status[market.value] = "Unavailable: worker timed out" if isinstance(exc, TimeoutError) else f"Unavailable: {str(exc)[:240]}"
+                    status[market.value] = ("Unavailable: worker timed out" if isinstance(exc, TimeoutError) else
+                                            "Unavailable: market data request failed; retry or reconnect")
                     progress("Unavailable")
                     self._handoff("NOVA" if market == AssetClass.EQUITY else "ORIN", "ZARA",
                                   f"{market.value} worker unavailable; inspect local status", "WARN")

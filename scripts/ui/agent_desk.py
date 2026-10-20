@@ -70,6 +70,11 @@ class ActivityDelegate(QStyledItemDelegate):
 
 
 class PacificAxis(pg.AxisItem):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Tick strings already show wall-clock time, not scaled epoch numbers.
+        self.enableAutoSIPrefix(False)
+
     def tickStrings(self, values, scale, spacing):
         result = []
         for value in values:

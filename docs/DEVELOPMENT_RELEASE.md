@@ -21,10 +21,13 @@ run `python tools/verify.py`. The checklist covers:
 2. Strict JSON inputs, incomplete candidate rejection and source-preserving edits.
 3. Read-only records that neither initialize missing databases nor change saved files.
 4. Durable Stop, stale-start rejection and stopped state across restart.
-5. Broker catalog compatibility and account/portfolio/position decoding using local fixtures.
+5. Broker catalog/record compatibility, private-error handling, visible storage-failure guidance,
+   rejected/concurrent Start fencing and quote-only paper that leaves live authority unchanged,
+   using local fixtures.
 6. Quiet paper-only exit while uncertain broker context still warns.
 7. A synthetic paper session through desktop controls and authenticated local IPC, chart updates,
-   complete journal pagination, exact CSV export, interrupted-save protection and Stop.
+   complete journal pagination, exact CSV export, interrupted-save protection, failure status,
+   unavailable-cache recovery and Stop.
 
 All data is disposable. These checks never read the operator's profile, connect a broker,
 submit an order or load an AI model. Add a regression only when it protects an important
@@ -45,7 +48,8 @@ does not resolve the editable package mapping by itself. It creates a short-live
 environment using only the declared desktop/runtime dependencies and packaging tools. It checks
 the frozen desktop, then starts the actual packaged worker with a disposable profile and runs
 paper Start → four fills → saved journal/CSV → shutdown → restart without resuming → repeat →
-Stop → exit. This uses virtual money and makes no broker or model request. Finally it audits
+Stop → abrupt owned-child termination → restart without resuming → exit. This uses virtual money
+and makes no broker or model request. Finally it audits
 metadata in the frozen tree. A failed install, acceptance check or dependency audit fails the
 build. The source checklist is not repeated inside packaging. Keep the installed app closed
 while rebuilding. Short temporary paths accommodate Windows' default

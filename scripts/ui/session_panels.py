@@ -228,7 +228,7 @@ class SessionPanelBuilder:
         self.research_button = QPushButton("Enable research MCP")
         self.research_button.clicked.connect(lambda: self._spawn(self._toggle_research()))
         paper_note = QLabel(
-            "Virtual money. Demo prices are synthetic; broker quotes require a connected, reviewed account."
+            "Virtual money. Demo prices are synthetic; current quotes require Connect and an eligible account."
         )
         paper_note.setObjectName("settingsDescription")
         paper_note.setWordWrap(True)

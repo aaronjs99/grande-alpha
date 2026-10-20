@@ -111,13 +111,20 @@ class WorkerResearch:
             paper=PaperLedger(self.bridge.path.with_name("agent-paper.db")),
         )
 
+    def check_paper_start(self) -> None:
+        if self.agent is not None and (
+            self.agent.snapshot.running or self.agent._task is not None and not self.agent._task.done()
+        ):
+            raise RuntimeError("Wait for the current research run to stop before starting another")
+
     def start_paper(self, payload: dict) -> dict:
+        self.check_paper_start()
         if self.agent is None:
             raise RuntimeError("Start the research service before starting paper research")
         if payload["source"] == "broker_quotes" and (
             self.account is None or not self.broker or not self.broker.connected
         ):
-            raise RuntimeError("Review a connected account before using broker quotes")
+            raise RuntimeError("A connected account is required for broker quotes")
         if self.execution_active():
             raise RuntimeError("Paper research cannot run alongside the live trading session")
         if payload["source"] == "demo" and any(
@@ -132,7 +139,6 @@ class WorkerResearch:
             local_ai_model=payload["local_ai_model"],
         )
         settings.validate()
-        self.agent.settings = settings
         self.agent.start_paper(
             settings,
             source=payload["source"],
@@ -158,6 +164,7 @@ class WorkerResearch:
             "enabled": bool(self.bridge.session),
             "running": bool(snapshot and snapshot.running),
             "phase": snapshot.phase if snapshot else "Off",
+            "error": snapshot.error[:512] if snapshot else "",
             "bridge_path": str(self.bridge.path) if self.bridge.session else None,
             "orders_available": False,
             "paper": paper_summary(self.agent.paper_context()) if self.agent is not None else None,

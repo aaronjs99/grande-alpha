@@ -72,7 +72,9 @@ The default Agent desk shows **virtual** equity, paper P&L, simulated fills, clo
 recent chart marks, and NOVA / ORIN / VELA / KADE / RUNE / ZARA stage reports. **Start paper** opens
 the Paper setup tab with editable $1,000 starting cash and $100 per entry. These defaults apply
 only to virtual money. Press **Start virtual paper** to run the synthetic demo, or choose broker
-quotes after connecting and reviewing an account. **Stop paper** retains the virtual journal.
+quotes after Connect. With one eligible account, quote-only paper needs no live-session Review
+or financial approval; it never changes live trading authority. Multiple eligible accounts need
+an explicit account choice in broker setup. **Stop paper** retains the virtual journal.
 
 **Research → Paper journal** reads saved virtual fills independently of the worker. The session
 picker lists the latest 100 sessions. Each page shows up to 100 fills, newest first; **Older fills**

@@ -292,7 +292,7 @@ class SessionStatus:
         research = self._status.get("research") or {}
         paper = research.get("paper") or {}
         broker_quotes = self.paper_source.currentData() == "broker_quotes"
-        account_ready = self._status.get("connected") is True and bool(self._status.get("account"))
+        account_ready = self._status.get("connected") is True
         return bool(
             (account_ready if broker_quotes else True) and not self._status.get("running")
             and self._can_connect() and not paper.get("active")
@@ -311,6 +311,10 @@ class SessionStatus:
             self.status_notice.setText(
                 f"● Trading · {self._status.get('phase') or 'Running'}" if self._status.get("running") is True else
                 f"● {mode} · {report.get('phase') or 'Running'}" if report.get("running") is True else
+                "○ Paper error · check session details" if paper and report.get("phase") == "Error" else
+                "○ Paper disconnected · reconnect to resume" if paper and report.get("phase") == "Disconnected" else
+                "○ Demo complete · paper saved" if paper.get("source") == "demo" and report.get("phase") == "Demo complete" else
+                "○ Paper stopped · saved" if paper.get("session_id") else
                 "○ Connected · trading stopped" if self._status.get("connected") is True else
                 "○ Worker ready · broker not connected"
             )
@@ -336,7 +340,9 @@ class SessionStatus:
                 f"{paper.get('position_count', 0)} virtual holdings"
             )
         self.research_status.setText(
-            f"Research: {phase} · broker orders unavailable\n{paper_status}\n{bridge}"
+            f"Research: {phase} · broker orders unavailable\n"
+            + (f"{research['error']}\n" if research.get("error") else "")
+            + f"{paper_status}\n{bridge}"
         )
         self.research_button.setText("Disable research MCP" if enabled else "Enable research MCP")
 
