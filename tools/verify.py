@@ -1,4 +1,4 @@
-"""Local acceptance: python tools/verify.py [--executable dist/GRANDEAlpha/GRANDEAlpha.exe].
+"""Local acceptance: python tools/verify.py [--source-worker | --executable PATH].
 
 Only disposable data and synthetic/fake services are used. No pytest or CI is required.
 """
@@ -11,6 +11,7 @@ import csv
 import json
 import os
 import subprocess
+import sys
 import tempfile
 import time
 from pathlib import Path
@@ -362,7 +363,7 @@ async def check_paper(directory: Path) -> None:
             app.processEvents()
 
 
-def check_packaged(executable: Path) -> None:
+def check_worker(executable: Path | None) -> None:
     """Exercise only synthetic operations in an isolated child worker."""
     import keyring
 
@@ -372,7 +373,10 @@ def check_packaged(executable: Path) -> None:
     if os.name == "nt":
         from keyring.backends.Windows import WinVaultKeyring
         keyring.set_keyring(WinVaultKeyring())
-    require(executable.is_file(), "Packaged executable is missing")
+    if executable is not None:
+        require(executable.is_file(), "Packaged executable is missing")
+    command = [str(executable)] if executable is not None else [sys.executable, "-m", "grande_alpha.app"]
+    label = "packaged paper" if executable is not None else "source worker paper"
     with tempfile.TemporaryDirectory(prefix="ga-packaged-paper-") as scratch:
         directory = Path(scratch)
         channel = _channel_id(directory)
@@ -394,11 +398,11 @@ def check_packaged(executable: Path) -> None:
 
         def launch():
             nonlocal process
-            process = subprocess.Popen([str(executable), "--worker", "--data-dir", str(directory), "--no-recovery"],
+            process = subprocess.Popen([*command, "--worker", "--data-dir", str(directory), "--no-recovery"],
                                        creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
             deadline = time.monotonic() + 20
             while True:
-                require(process.poll() is None, "Packaged worker exited during startup")
+                require(process.poll() is None, "Worker exited during startup")
                 try:
                     return status()
                 except LocalControlError:
@@ -464,7 +468,7 @@ def check_packaged(executable: Path) -> None:
             recovered = read_journal(directory / "agent-paper.db", session_id=crash_paper["session_id"])
             require(recovered["fill_count"] >= crash_paper["fill_count"], "Crash lost committed paper fills")
             shutdown()
-            print(f"PASS packaged paper: 4 fills, equity {paper['equity']}; journal/CSV, Stop, restart, crash, exit", flush=True)
+            print(f"PASS {label}: 4 fills, equity {paper['equity']}; journal/CSV, Stop, restart, crash, exit", flush=True)
         finally:
             if process is not None and process.poll() is None:
                 try:
@@ -479,10 +483,12 @@ def check_packaged(executable: Path) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--executable", type=Path, help="Check the shipped worker instead of source scenarios")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--executable", type=Path, help="Check the shipped worker instead of source scenarios")
+    mode.add_argument("--source-worker", action="store_true", help="Check an isolated source child, including crash recovery")
     arguments = parser.parse_args()
-    if arguments.executable:
-        check_packaged(arguments.executable.resolve())
+    if arguments.executable or arguments.source_worker:
+        check_worker(arguments.executable.resolve() if arguments.executable else None)
         return 0
     from grande_alpha.desktop.startup_check import check_desktop
     require(check_desktop()["ok"], "Desktop startup failed")

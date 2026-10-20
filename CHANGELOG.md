@@ -11,6 +11,8 @@
 - Preselect saved intraday history without loading or running it, simplify comparison and saved-paper
   status, and remove the numeric epoch multiplier from the chart's clock axis. Unavailable
   cache files no longer prevent manual history selection.
+- Added an optional source-child recovery check that reuses the packaged lifecycle scenario,
+  keeping source and frozen-executable evidence separate when Windows blocks unsigned builds.
 
 - Made manual release packaging reuse its audited, pinned desktop environment. The runtime
   dependency report now includes desktop packages, and archiving stops if the source changes

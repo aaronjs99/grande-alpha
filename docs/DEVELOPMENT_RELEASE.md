@@ -68,6 +68,17 @@ To repeat only the packaged paper workflow:
 python tools/verify.py --executable dist/GRANDEAlpha/GRANDEAlpha.exe
 ```
 
+To check the same isolated child-process lifecycle from source:
+
+```powershell
+python tools/verify.py --source-worker
+```
+
+Both modes use temporary records and synthetic prices. Source checks do not establish frozen
+executable startup. If Windows Application Control blocks an unsigned build, retain the failure
+and arrange an approved signing/install route; the release remains incomplete. Source development
+can continue with the existing Python environment and `grande.ps1 run`.
+
 The local `grande.ps1 release` command builds its own fresh source distribution and wheel for
 the clean release commit before preparing the unsigned archive. Ordinary `verify` does not
 build distribution archives. Release installs the wheel's desktop extra into a disposable
