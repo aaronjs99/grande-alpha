@@ -57,7 +57,7 @@ def source_options(
     *,
     allow_runtime_trace: bool = False,
 ) -> None:
-    source_choices = ["demo", "csv", "remote", "full-daily"]
+    source_choices = ["demo", "csv", "alpaca", "remote", "full-daily"]
     if allow_runtime_trace:
         source_choices.insert(2, "runtime-trace")
     parser.add_argument(
@@ -80,6 +80,8 @@ def source_options(
     )
     parser.add_argument("--interval", default="1m", help="CSV or remote interval, such as 5s, 1m, 5m, 60m")
     parser.add_argument("--acknowledge-community-data", action="store_true")
+    parser.add_argument("--allow-market-data", action="store_true",
+                        help="Allow this history download without changing saved permissions")
     parser.add_argument("--strategy", choices=sorted(STRATEGY_NAMES))
     parser.add_argument("--session", choices=("regular_hours", "extended_hours", "all_day_hours"))
     parser.add_argument("--order-type", choices=("market", "limit"))

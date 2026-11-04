@@ -13,7 +13,7 @@ From the repository root:
 .\grande.ps1 verify
 ```
 
-This runs lint, compilation and seven local acceptance scenarios in `tools/verify.py`.
+This runs lint, compilation and eight local acceptance scenarios in `tools/verify.py`.
 There is no pytest suite, coverage service or GitHub Actions workflow. For acceptance alone,
 run `python tools/verify.py`. The checklist covers:
 
@@ -25,9 +25,11 @@ run `python tools/verify.py`. The checklist covers:
    rejected/concurrent Start fencing and quote-only paper that leaves live authority unchanged,
    using local fixtures.
 6. Quiet paper-only exit while uncertain broker context still warns.
-7. A synthetic paper session through desktop controls and authenticated local IPC, chart updates,
+7. Bounded Alpaca-history pagination, cache reuse, credential-private failures, incomplete and
+   cancelled-save protection, using fake HTTP responses and a fixed clock.
+8. A synthetic paper session through desktop controls and authenticated local IPC, chart updates,
    complete journal pagination, exact CSV export, interrupted-save protection, failure status,
-   unavailable-cache recovery and Stop.
+   unavailable-cache recovery, local history-download controls and Stop.
 
 All data is disposable. These checks never read the operator's profile, connect a broker,
 submit an order or load an AI model. Add a regression only when it protects an important

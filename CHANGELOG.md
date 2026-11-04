@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.23.0 - 2026-11-03
+
+- Added Alpaca's delayed consolidated history for QQQ/TQQQ/SQQQ at 1-minute or 5-minute
+  resolution. Downloads cover completed regular sessions, paginate sequentially, cap the
+  date range and response sizes, and retain saved history when a request fails.
+- Added Download history beside Compare, with masked API keys, optional system-credential
+  storage, explicit per-download network permission, and cancellation on close.
+- History caches now stream to an atomic replacement instead of duplicating the entire
+  dataset during serialization. Cached history is reused without a network or key request.
+- Added `--source alpaca --allow-market-data` for exploratory CLI research. Existing Yahoo
+  and CSV paths remain available; downloaded bars do not grant live authority or data rights.
+- Added one history acceptance scenario to the existing local checker; no pytest or CI added.
+
 ## 0.22.0 - 2026-10-19
 
 - Let quote-only paper start after Connect when one eligible account is available, without

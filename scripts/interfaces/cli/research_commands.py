@@ -188,6 +188,15 @@ async def _bundle_from_args(
             return bundle
         return await asyncio.to_thread(load_csv_history, args.csv, args.interval)
     app_config = load_config()
+    if args.source == "alpaca":
+        if require_evidence_ready:
+            raise ValueError("Downloaded OHLCV supports exploratory research; Evidence Lab requires audited provenance")
+        if not app_config.data.remote_market_data_enabled and not args.allow_market_data:
+            raise RuntimeError("Use --allow-market-data to permit this Alpaca history download")
+        from grande_alpha.research.alpaca_history import AlpacaHistoricalDataProvider
+
+        return await AlpacaHistoricalDataProvider().fetch(config.lookback_days, args.interval,
+                                                        market_hours=config.market_hours)
     if not app_config.data.remote_market_data_enabled:
         raise RuntimeError("Community remote market data is disabled in Settings & Permissions")
     if not args.acknowledge_community_data:

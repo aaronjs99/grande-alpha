@@ -14,6 +14,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -276,6 +277,92 @@ async def check_exit(directory: Path) -> None:
         control.close()
 
 
+@patch("grande_alpha.research.alpaca_history.utc_now", new=lambda: datetime(2026, 11, 4, tzinfo=UTC))
+async def check_history(directory: Path) -> None:
+    import httpx
+
+    from grande_alpha.research.alpaca_history import AlpacaHistoricalDataProvider
+
+    calls = []
+    stamps = [f"2026-11-02T14:{30 + index:02d}:00Z" for index in range(30)]
+    rows = [{"t": stamp, "o": 100, "h": 101, "l": 99, "c": 100, "v": 500, "n": 10} for stamp in stamps]
+
+    def response(request):
+        calls.append(request)
+        require(request.url.host == "data.alpaca.markets", "History sent credentials to another host")
+        require(request.url.params["feed"] == "sip" and request.url.params["limit"] == "2000",
+                "History did not request bounded consolidated data")
+        require(request.headers["APCA-API-KEY-ID"] == "fixture", "History credentials were not supplied")
+        if "page_token" not in request.url.params:
+            return httpx.Response(200, json={"bars": {"QQQ": rows}, "next_page_token": "second"})
+        return httpx.Response(200, json={"bars": {"TQQQ": rows, "SQQQ": rows}, "next_page_token": None})
+
+    provider = AlpacaHistoricalDataProvider(credentials=("fixture", "PRIVATE_SECRET"), cache_dir=directory,
+                                          transport=httpx.MockTransport(response))
+    bundle = await provider.fetch(60, "1m")
+    require(len(calls) == 2 and len(bundle.frames) == 30, "History lost symbols across pagination")
+    require(bundle.provenance.provider == "Alpaca" and not bundle.provenance.evidence_eligible,
+            "History invented data rights or source identity")
+    require("PRIVATE_SECRET" not in provider.cache_path.read_text(), "History cache contains credentials")
+    cached = await provider.fetch(60, "1m")
+    require(cached.dataset_hash == bundle.dataset_hash and len(calls) == 2, "Saved history was downloaded again")
+    original = provider.cache_path.read_bytes()
+
+    def denied(_request):
+        return httpx.Response(403, text="PRIVATE_SECRET provider account details")
+
+    failed = AlpacaHistoricalDataProvider(credentials=("fixture", "PRIVATE_SECRET"), cache_dir=directory,
+                                        transport=httpx.MockTransport(denied))
+    try:
+        await failed.fetch(60, "1m", use_cache=False)
+    except RuntimeError as error:
+        require("PRIVATE_SECRET" not in str(error) and "403" in str(error), "History exposed a provider error")
+    else:
+        raise AssertionError("Denied history download was accepted")
+    require(provider.cache_path.read_bytes() == original, "Failed refresh changed saved history")
+
+    def repeated(_request):
+        return httpx.Response(200, json={"bars": {}, "next_page_token": "stuck"})
+
+    failed = AlpacaHistoricalDataProvider(credentials=("fixture", "PRIVATE_SECRET"), cache_dir=directory,
+                                        transport=httpx.MockTransport(repeated))
+    try:
+        await failed.fetch(60, "1m", use_cache=False)
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("History accepted a looping pagination token")
+    require(provider.cache_path.read_bytes() == original, "Incomplete download changed saved history")
+    from grande_alpha.research.historical_storage import save_bundle
+
+    with patch("grande_alpha.research.historical_storage.os.replace", side_effect=OSError("Fixture disk failure")):
+        rejected(lambda: save_bundle(bundle, provider.cache_path), (OSError,))
+    require(provider.cache_path.read_bytes() == original, "Interrupted history save destroyed the previous cache")
+    from threading import Event
+
+    cancelled = Event()
+    with patch("grande_alpha.research.historical_storage.os.fsync", side_effect=lambda _fd: cancelled.set()):
+        rejected(lambda: save_bundle(bundle, provider.cache_path, cancelled=cancelled), (InterruptedError,))
+    require(provider.cache_path.read_bytes() == original, "Cancelled history save published a new cache")
+    from grande_alpha.interfaces.cli.research_commands import _bundle_from_args
+
+    config = SimpleNamespace(lookback_days=60, market_hours="regular_hours")
+    permission = SimpleNamespace(data=SimpleNamespace(remote_market_data_enabled=False))
+    args = SimpleNamespace(source="alpaca", interval="1m", allow_market_data=False)
+    with patch("grande_alpha.interfaces.cli.research_commands.load_config", return_value=permission):
+        try:
+            await _bundle_from_args(args, config)
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("CLI history ignored missing per-download permission")
+        args.allow_market_data = True
+        with patch("grande_alpha.research.alpaca_history.AlpacaHistoricalDataProvider", return_value=provider):
+            require((await _bundle_from_args(args, config)).dataset_hash == bundle.dataset_hash,
+                    "CLI Alpaca source did not return the selected history")
+    require(permission.data.remote_market_data_enabled is False, "History enabled global network permissions")
+
+
 def check_journal(directory: Path, paper: dict) -> dict:
     path = directory / "agent-paper.db"
     journal = read_journal(path, session_id=paper["session_id"], limit=2)
@@ -341,6 +428,37 @@ async def check_paper(directory: Path) -> None:
             with patch("grande_alpha.ui.strategy_comparison.Path.glob", side_effect=PermissionError("Fixture cache unavailable")):
                 comparison = StrategyComparisonDialog(window)
             require(comparison.path is None and comparison.choose.isEnabled(), "Unavailable cache blocked manual history choice")
+            comparison._open_download()
+            download = comparison._download_dialog
+            require(download.interval.currentData() == "5m" and download.days.value() == 60,
+                    "History download did not default to a bounded window")
+            require(not download.download_button.isEnabled() and not download.allow_download.isChecked(),
+                    "Opening history setup silently allowed a network request")
+            require(download.secret.echoMode().name == "Password", "History setup exposed its secret field")
+            import httpx
+
+            from grande_alpha.domain.policy import EASTERN
+            from grande_alpha.research.alpaca_history import AlpacaHistoricalDataProvider, history_window
+
+            day = history_window(60)[1].astimezone(EASTERN).date()
+            stamp = datetime(day.year, day.month, day.day, 9, 30, tzinfo=EASTERN)
+            rows = [{"t": stamp.isoformat(), "o": 100, "h": 101, "l": 99, "c": 100, "v": 500}]
+            transport = httpx.MockTransport(lambda _request: httpx.Response(
+                200, json={"bars": {symbol: rows for symbol in ("QQQ", "TQQQ", "SQQQ")}, "next_page_token": None}))
+
+            def provider(**kwargs):
+                return AlpacaHistoricalDataProvider(transport=transport, **kwargs)
+
+            download.key.setText("fixture")
+            download.secret.setText("PRIVATE_SECRET")
+            download.remember.setChecked(False)
+            download.allow_download.setChecked(True)
+            with patch("grande_alpha.ui.history_download.AlpacaHistoricalDataProvider", side_effect=provider):
+                download.download_button.click()
+                await download._task
+            require(comparison.path is not None and comparison.path.is_file() and comparison.run_button.isEnabled(),
+                    "Downloaded history did not reach Compare")
+            require(not download.key.text() and not download.secret.text(), "Completed download retained typed keys")
             comparison.reject()
             journal = check_journal(directory, paper)
             dialog = PaperJournalDialog(window)
@@ -494,14 +612,14 @@ def main() -> int:
     require(check_desktop()["ok"], "Desktop startup failed")
     print("PASS desktop startup, narrow setup and empty journal; no worker or AI", flush=True)
     with tempfile.TemporaryDirectory(prefix="ga-acceptance-") as scratch:
-        for check in (check_inputs, check_records, check_stop, check_broker, check_exit, check_paper):
+        for check in (check_inputs, check_records, check_stop, check_broker, check_exit, check_history, check_paper):
             directory = Path(scratch) / check.__name__
             directory.mkdir()
             result = check(directory)
             if asyncio.iscoroutine(result):
                 asyncio.run(result)
             print(f"PASS {check.__name__.removeprefix('check_')}", flush=True)
-    print("7 local acceptance scenarios passed; no broker connection, order, or model request.", flush=True)
+    print("8 local acceptance scenarios passed; no broker connection, order, or model request.", flush=True)
     return 0
 
 

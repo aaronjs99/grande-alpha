@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
+from threading import Event
 from typing import Any
 
 from grande_alpha.domain.market_models import Bar, Quote
@@ -84,7 +87,7 @@ def _quote_from_dict(raw: dict[str, Any] | None) -> Quote | None:
     return quote
 
 
-def save_bundle(bundle: HistoricalBundle, path: Path) -> None:
+def save_bundle(bundle: HistoricalBundle, path: Path, *, cancelled: Event | None = None) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "source": bundle.source,
@@ -93,24 +96,38 @@ def save_bundle(bundle: HistoricalBundle, path: Path) -> None:
         "dataset_hash": bundle.dataset_hash,
         "market_hours": bundle.market_hours,
         "provenance": bundle.provenance.as_dict() if bundle.provenance is not None else None,
-        "frames": [
-            {
-                "start": frame.start.isoformat(),
-                "qqq": _bar_dict(frame.qqq),
-                "tqqq": _bar_dict(frame.tqqq),
-                "sqqq": _bar_dict(frame.sqqq),
-                "causal_timestamp": (
-                    frame.causal_timestamp.isoformat() if frame.causal_timestamp is not None else None
-                ),
-                "qqq_quote": _quote_dict(frame.qqq_quote),
-                "tqqq_quote": _quote_dict(frame.tqqq_quote),
-                "sqqq_quote": _quote_dict(frame.sqqq_quote),
-                "stream_id": frame.stream_id,
-            }
-            for frame in bundle.frames
-        ],
     }
-    path.write_text(json.dumps(payload, separators=(",", ":")), encoding="utf-8")
+    descriptor, temporary = tempfile.mkstemp(prefix=".history-", dir=path.parent)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as output:
+            output.write(json.dumps(payload, separators=(",", ":"), allow_nan=False)[:-1] + ',"frames":[')
+            for index, frame in enumerate(bundle.frames):
+                if cancelled is not None and cancelled.is_set():
+                    raise InterruptedError("History save cancelled")
+                if index:
+                    output.write(",")
+                row = {
+                    "start": frame.start.isoformat(),
+                    "qqq": _bar_dict(frame.qqq),
+                    "tqqq": _bar_dict(frame.tqqq),
+                    "sqqq": _bar_dict(frame.sqqq),
+                    "causal_timestamp": (
+                        frame.causal_timestamp.isoformat() if frame.causal_timestamp is not None else None
+                    ),
+                    "qqq_quote": _quote_dict(frame.qqq_quote),
+                    "tqqq_quote": _quote_dict(frame.tqqq_quote),
+                    "sqqq_quote": _quote_dict(frame.sqqq_quote),
+                    "stream_id": frame.stream_id,
+                }
+                json.dump(row, output, separators=(",", ":"), allow_nan=False)
+            output.write("]}")
+            output.flush()
+            os.fsync(output.fileno())
+        if cancelled is not None and cancelled.is_set():
+            raise InterruptedError("History save cancelled")
+        os.replace(temporary, path)
+    finally:
+        Path(temporary).unlink(missing_ok=True)
 
 
 def load_bundle(path: Path) -> HistoricalBundle:

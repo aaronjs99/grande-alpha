@@ -36,7 +36,19 @@ stock/ETF execution route.
 
 ## Strategy comparison
 
-Open **Research → Compare strategies**, choose a local historical JSON cache, then **Compare**.
+Open **Research → Compare strategies**. Use **Download history** for Alpaca's free delayed
+SIP history, or **Open file** for an existing JSON cache, then **Compare**. Alpaca downloads
+native 1m or 5m QQQ/TQQQ/SQQQ bars for up to 60 calendar days of completed regular sessions.
+It requests raw prices explicitly, follows every pagination token, bounds response sizes and
+retained data, and streams cache writes to an atomic replacement. A failed or cancelled write
+does not publish partial history. Sparse/misaligned symbols are rejected; gaps and zero-volume
+rows remain visible to the existing quality checks rather than being interpolated.
+
+The free plan excludes the latest 15 minutes; GRANDE leaves a 16-minute margin and does not
+use delayed history as a live quote feed. No provider response sets research-use, redistribution
+or live-approval flags. Generic OHLCV history remains exploratory rather than exact quote or
+licensed Evidence Lab input. The signup, secure-key and CLI steps are in the User Guide.
+
 Input requires aligned QQQ/TQQQ/SQQQ OHLCV bars, a matching content hash, regular calendar
 sessions, and at least 30 trading days at 1m or 5m cadence. Outside-session and off-grid bars
 are rejected. Empty, all-zero-volume closing stamps in old chart caches are excluded explicitly;

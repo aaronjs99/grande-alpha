@@ -31,6 +31,7 @@ class StrategyComparisonDialog(QDialog):
         super().__init__(owner)
         self.owner, self.path, self.report = owner, None, None
         self._task = None
+        self._download_dialog = None
         self._cancel = Event()
         self._closed = False
         self.setWindowTitle("GRANDE · Compare strategies")
@@ -42,13 +43,16 @@ class StrategyComparisonDialog(QDialog):
         self.summary.setWordWrap(True)
         box.addWidget(self.summary)
         row = QHBoxLayout()
-        self.choose = QPushButton("Choose history…")
+        self.choose = QPushButton("Open file…")
         self.choose.clicked.connect(self._choose)
         self.run_button = QPushButton("Compare")
         self.run_button.setObjectName("primary")
         self.run_button.setEnabled(False)
         self.run_button.clicked.connect(self.start)
+        self.download = QPushButton("Download history…")
+        self.download.clicked.connect(self._open_download)
         row.addWidget(self.choose)
+        row.addWidget(self.download)
         row.addWidget(self.run_button)
         box.addLayout(row)
         self.source = QLabel("Local cached JSON · QQQ, TQQQ and SQQQ · 1m or 5m · at least 30 sessions")
@@ -108,10 +112,30 @@ class StrategyComparisonDialog(QDialog):
         self.save.setEnabled(False)
         self.summary.setText("Compare five fixed rules after costs. Final test dates stay separate from selection.")
 
+    def _open_download(self):
+        from grande_alpha.ui.history_download import HistoryDownloadDialog
+
+        if self._download_dialog is None:
+            dialog = HistoryDownloadDialog(self)
+            self._download_dialog = dialog
+            dialog.history_ready.connect(self._download_ready)
+            dialog.finished.connect(lambda _result: setattr(self, "_download_dialog", None))
+            dialog.finished.connect(dialog.deleteLater)
+        self._download_dialog.open()
+
+    def _download_ready(self, path):
+        if not self._closed:
+            self.path = path
+            self._reset_results()
+            self.source.setText(path.name)
+            self.status.setText("Saved history ready. Compare to check coverage, costs and later test dates.")
+            self.run_button.setEnabled(True)
+
     def showEvent(self, event):
         self._closed = False
         busy = self._task is not None and not self._task.done()
         self.choose.setEnabled(not busy)
+        self.download.setEnabled(not busy)
         self.run_button.setEnabled(not busy and self.path is not None)
         super().showEvent(event)
 
@@ -133,6 +157,7 @@ class StrategyComparisonDialog(QDialog):
 
     async def _run(self, path, cancel):
         self.choose.setEnabled(False)
+        self.download.setEnabled(False)
         self.run_button.setEnabled(False)
         self._reset_results()
         self.status.setText("Comparing locally…")
@@ -151,6 +176,7 @@ class StrategyComparisonDialog(QDialog):
         finally:
             if not self._closed:
                 self.choose.setEnabled(True)
+                self.download.setEnabled(True)
                 self.run_button.setEnabled(self.path is not None)
 
     def render(self, report):
@@ -206,4 +232,6 @@ class StrategyComparisonDialog(QDialog):
     def reject(self):
         self._closed = True
         self._cancel.set()
+        if self._download_dialog is not None:
+            self._download_dialog.reject()
         super().reject()

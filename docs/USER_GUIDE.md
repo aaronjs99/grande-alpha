@@ -20,6 +20,40 @@ If you have an earlier flat settings file, run `.\grande.ps1 cli config upgrade`
 the desktop. This validates the old file and keeps a backup; startup never converts it silently.
 Keep credentials in Windows Credential Manager, not a JSON file or a Git commit.
 
+## Download minute-level history
+
+Open **Research → Compare strategies → Download history**. Create a free Alpaca account at
+[the Alpaca dashboard](https://app.alpaca.markets/) and generate its API key and secret. Enter
+them only in GRANDE's masked local fields. The download uses the market-data service; it does
+not connect Alpaca for trading or require a funded account. Leave **Remember keys securely on
+this PC** checked to keep the pair in Windows Credential Manager after a successful request.
+Newly typed keys always make a fresh request before replacing remembered keys.
+
+Choose **5 minutes / 60 calendar days** for lower memory use, or **1 minute** for finer history.
+Tick **Allow this market-data download**, then **Download**. Permission applies to this action;
+saved global permissions and broker controls are unchanged. Close cancels active requests.
+On success the new cache is selected in Compare; press **Compare** separately to evaluate it.
+Opening either dialog never starts a download. Existing caches can be reused without keys or
+a network request. Failed requests and interrupted saves preserve prior history.
+
+The free feed's most recent 15 minutes are restricted, so GRANDE requests only completed
+regular sessions and leaves a 16-minute margin. It downloads consolidated SIP bars for
+QQQ/TQQQ/SQQQ in small sequential pages, capped at 60 calendar days. It needs no additional
+SDK or Ollama model. Prices are raw/unadjusted OHLCV, not historical executable bid/ask.
+Independent source-rights review and the existing research limits remain in effect.
+See [Alpaca's historical-data FAQ](https://docs.alpaca.markets/us/docs/market-data-faq).
+
+For exploratory command-line replay, credentials can come from the local form or the standard
+`APCA_API_KEY_ID` / `APCA_API_SECRET_KEY` environment variables:
+
+```powershell
+.\grande.ps1 cli research sandbox run --source alpaca --allow-market-data --days 60 --interval 5m
+```
+
+Never put secrets into command arguments or configuration JSON. This option permits one
+market-history download; it does not enable any trading session. The demo remains the CLI
+default. Legacy Yahoo/CSV options remain available explicitly.
+
 For a first session, use the sequence **Connect account → Set limits → Review → Start**. Choose
 your own account, allowed symbols, order and exposure caps, daily loss amount, and recovery policy.
 The mixed candidate template leaves financial limits unfilled. Authorization for the mixed engine
